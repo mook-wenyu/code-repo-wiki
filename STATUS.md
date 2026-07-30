@@ -1,48 +1,54 @@
-# 项目状态简报
+# 项目状态简报 （AI自动维护）
 
 ## 一、架构健康度
-
-- 当前模块总数：9（config, ingest, analysis, generate, output, incremental, model, search, lib）
+- 当前模块总数：11（config/model/ingest/analysis/generate/output/incremental/search/commands + lib.rs + main.rs）
 - 违规跨模块调用：无
-- 搜索层 8 个子模块全部集成入 pipeline
-- 测试总数：126（118 单元 + 5 集成 + 3 快照），0 失败
+- 测试覆盖率：127 测试通过（119 unit + 5 integration + 3 snapshot），0 失败
+- 代码量：7,902 行 / 48 .rs 文件
 
-## 二、本次变更范围
+## 二、本次变更影响范围
+- 修改的功能：修复 FileInsight + SearchSection 新增字段导致的测试编译错误
+- 摸到的文件：`src/analysis/graph.rs`（3处）、`src/analysis/mod.rs`（2处）、`src/generate/card.rs`（1处）、`src/generate/chunk.rs`（1处）、`src/generate/wiki.rs`（1处）、`tests/integration_test.rs`（1处）
+- 是否改变了接口/契约：否，仅补全测试代码中的结构体字段
 
-### 1. Spec 差距补全（最终轮——4 并行子代理）
+## 三、已知风险点（由AI诚实自曝）
 
-| 模块 | 修改 | 状态 |
-|------|------|------|
-| scanner.rs | 二进制扩展名过滤（32 种扩展名） | ✅ |
-| graph.rs | `detect_cycles()` tarjan SCC + 2 测试 | ✅ |
-| lib.rs | 空仓库 `bail!("未找到任何源文件")` | ✅ |
-| llm.rs | `complete_stream` 默认 + Provider 委托 | ✅ |
-| prompt.rs | `entity_summary_prompt` 实体级提示 | ✅ |
-| markdown.rs | architecture.md 固定输出路径 | ✅ |
-| output/mod.rs | overview.md + _index.json + diagrams/ 子目录 | ✅ |
-| .opencode/plugins/ | Slash 命令 + module_info + execa 异步 + 进度 | ✅ |
-| impact.rs | `EdgeKind::Calls` 加入影响传播 | ✅ |
-| lib.rs | 已删除文件 wiki/card 清理 | ✅ |
-| tests/snapshot_test.rs | 3 知识卡片 JSON 模式快照测试 | ✅ |
+### P0 — 必须修
+| # | 问题 | 位置 | 说明 |
+|---|------|------|------|
+| 1 | commands.rs 死代码 | `src/commands.rs` | 完整 install 逻辑但从未 `mod commands;`，实际 InstallToOpencode 2/10 分 |
+| 2 | Java 解析器未注册 | `parser/mod.rs:65-70` | 173 行完整代码搁置，unreachable |
+| 3 | 无 README.md | 项目根 | 零入口文档，用户无法了解项目 |
+| 4 | FileInsight 不缓存 source | `ingest/parser/mod.rs:13` | 搜索索引构建时重读磁盘（2x I/O） |
 
-### 2. 前期已完成（代码智能增强 + 死代码清理 + 流水线修复）
+### P1 — 应该修
+| # | 问题 | 位置 | 严重度 |
+|---|------|------|--------|
+| 5 | STATUS.md 测试计数 134≠126 | `STATUS.md:6` | 误导性 |
+| 6-7 | sqlite-vec + async-openai 未用 | `Cargo.toml` | 增编译时间 |
+| 8 | rrf_k=60 硬编码 | `agent.rs:37`, `lib.rs:408` | 应参数化 |
+| 9 | impact max_depth=3 硬编码 | `impact.rs:38` | 应参数化 |
+| 10 | diff repo_path="." | `diff.rs:28` | 不可定制 |
+| 11 | 无性能基准 benches/ | `benches/` 缺失 | 无法量化性能 |
+| 12 | 无 doc-tests | 全局 | 零文档测试 |
 
-- 代码智能：AstQuery / CallGraph / FTS5 / Semantic / Hybrid / AstChunk / SearchAgent / Store 全部 8 模块
-- 死代码清理：dependency.rs + unity.rs + map.rs + CLI 死命令 + 配置死变体 + 无用依赖
-- CLI 修复：Generate --output / Custom provider / search 子命令
-- 流水线修复：name_map→Vec / NodeId→file_path / Semaphore / SCC / BFS / ModuleDetector
+### P2 — 值得修
+| # | 问题 | 位置 |
+|---|------|------|
+| 14 | SemanticEngine load_all_vectors O(n) | `semantic.rs:77` |
+| 15 | module_fingerprints 永远空 | `state.rs:68` |
+| 16 | ✅ HTML `<cite>` 在 .md 中 | `crossref.rs:94` — 已改为 Markdown 链接 |
+| 17 | 5 个独立 tokio Runtime | lib.rs + semantic.rs |
+| 18 | SearchAgent 未集成到 pipeline | `lib.rs:execute_search` |
+| 19 | pulldown-cmark Options::all() 过宽松 | `html.rs:195` |
+| 20 | crossref contains() 子串误报 | `crossref.rs:55` |
+| 21 | module_path[0] 丢子模块信息 | `impact.rs:81` |
 
-## 三、已知风险点
+### Spec 差距
+- Phase 6（OpenCode Plugin）: **0%** — 无 MCP 工具、无 slash 命令、无进度反馈
+- Phase 2（Knowledge Graph）: **63%** — 已补 complete_stream SSE / Level 0 实体摘要 / <cite> Markdown 链接 / 循环标注；缺 Leiden 算法、图持久化、call_edges 精确匹配
+- 总体实现度：**45/70 = 64%**
 
-- **持久化原子性**: state.rs save() 非原子写入
-- **并发性**: 每次 run_pipeline 新建 tokio Runtime
-- **Store.rs**: SQLite FTS5+vec0 实现完整但依赖 rusqlite/sqlite-vec（仓库已加，当前编译可达、测试通过）
-- **增量清理**: 当前按 `!exists()` 判断，未利用 GitDiff deleted 列表
-
-## 四、下次最该做的事
-
-1. SearchAgent 暴露为 MCP 工具（`.opencode/plugins/repo-wiki.ts` 已有框架，需补 tool 注册）
-2. 系统级集成测试（多语言混合仓库 + 全流水线 + 搜索验证 + 增量清理）
-3. 提升测试覆盖率（目标 200+）
-4. 增量清理改用 GitDiff deleted 列表替换 `!exists()` 判断
-5. 性能基准测试（bench/ 目录）
+## 四、下次最该做的事（AI建议）
+1. **Phase 2 剩余**: 实现 Leiden 模块聚类算法 + 图持久化 + call_edges 精确匹配
+2. **Phase 0**: 清理 `commands.rs` 死代码（P0.1） + 修正 STATUS.md 计数 + 写 README.md

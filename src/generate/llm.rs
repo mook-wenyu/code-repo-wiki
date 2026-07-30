@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use futures::StreamExt;
 use reqwest::Client;
 
 use crate::config::schema::LlmSection;
@@ -142,6 +143,63 @@ impl OpenAiProvider {
 impl LlmProvider for OpenAiProvider {
     fn model_name(&self) -> &str {
         &self.model
+    }
+
+    async fn complete_stream(&self, messages: &[Message]) -> Result<Vec<String>> {
+        self.call_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        let url = format!("{}/chat/completions", self.base_url);
+
+        let mut body = serde_json::json!({
+            "model": self.model,
+            "messages": messages.iter().map(|m| {
+                serde_json::json!({"role": m.role, "content": m.content})
+            }).collect::<Vec<_>>(),
+            "stream": true,
+        });
+        if let Some(maxt) = self.max_tokens {
+            body["max_tokens"] = serde_json::json!(maxt);
+        }
+        if let Some(temp) = self.temperature {
+            body["temperature"] = serde_json::json!(temp);
+        }
+
+        let resp = self
+            .client
+            .post(&url)
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("API 返回错误 ({}): {}", status, text);
+        }
+
+        let mut chunks = Vec::new();
+        let mut stream = resp.bytes_stream();
+        let mut buffer = String::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
+            while let Some(line_end) = buffer.find('\n') {
+                let line = buffer[..line_end].trim().to_string();
+                buffer = buffer[line_end + 1..].to_string();
+                if line.is_empty() || line == "data: [DONE]" {
+                    continue;
+                }
+                if let Some(json_str) = line.strip_prefix("data: ")
+                    && let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str)
+                        && let Some(content) = val["choices"][0]["delta"]["content"].as_str() {
+                            chunks.push(content.to_string());
+                        }
+            }
+        }
+
+        Ok(chunks)
     }
 
     async fn complete(&self, messages: &[Message]) -> Result<String> {
@@ -366,6 +424,72 @@ impl LlmProvider for AnthropicProvider {
         ))
     }
 
+    async fn complete_stream(&self, messages: &[Message]) -> Result<Vec<String>> {
+        self.call_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        let system = messages.iter().find(|m| m.role == "system").map(|m| &m.content);
+        let non_system: Vec<&Message> = messages.iter().filter(|m| m.role != "system").collect();
+
+        let anthropic_messages: Vec<serde_json::Value> = non_system
+            .iter()
+            .map(|m| {
+                serde_json::json!({"role": if m.role == "user" { "user" } else { "assistant" }, "content": m.content})
+            })
+            .collect();
+
+        let mut body = serde_json::json!({
+            "model": self.model,
+            "max_tokens": self.max_tokens.unwrap_or(4096),
+            "messages": anthropic_messages,
+            "stream": true,
+        });
+        if let Some(s) = system {
+            body["system"] = serde_json::json!(s);
+        }
+        if let Some(temp) = self.temperature {
+            body["temperature"] = serde_json::json!(temp);
+        }
+
+        let resp = self
+            .client
+            .post("https://api.anthropic.com/v1/messages")
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .json(&body)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Anthropic API 返回错误 ({}): {}", status, text);
+        }
+
+        let mut chunks = Vec::new();
+        let mut stream = resp.bytes_stream();
+        let mut buffer = String::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
+            while let Some(line_end) = buffer.find('\n') {
+                let line = buffer[..line_end].trim().to_string();
+                buffer = buffer[line_end + 1..].to_string();
+                if line.is_empty() {
+                    continue;
+                }
+                if let Some(json_str) = line.strip_prefix("data: ")
+                    && let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str)
+                        && val["type"] == "content_block_delta"
+                            && let Some(text) = val["delta"]["text"].as_str() {
+                                chunks.push(text.to_string());
+                            }
+            }
+        }
+
+        Ok(chunks)
+    }
+
     fn call_count(&self) -> usize {
         self.call_count.load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -400,11 +524,16 @@ impl LlmProvider for MockProvider {
     async fn complete(&self, _messages: &[Message]) -> Result<String> {
         self.call_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        // 模拟返回一个结构化的 JSON 响应
         Ok(
             r#"{"summary": "这是 Mock Provider 生成的模拟摘要", "key_entities": []}"#
                 .to_string(),
         )
+    }
+
+    async fn complete_stream(&self, _messages: &[Message]) -> Result<Vec<String>> {
+        self.call_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(vec!["模拟流式响应 chunk".to_string()])
     }
 
     fn call_count(&self) -> usize {

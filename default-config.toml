@@ -1,0 +1,19 @@
+[project]
+name = ""
+
+[scope]
+include = ["src/"]
+exclude = []
+
+[output]
+dir = "wiki"
+
+[llm]
+model = "gpt-4o"
+base_url = "https://api.openai.com/v1"
+api_key = ""
+
+[generate]
+max_concurrency = 4
+max_tokens = 4096
+temperature = 0.5

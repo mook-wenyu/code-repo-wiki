@@ -12,11 +12,12 @@ use super::hybrid::{self, SearchHit, rrf_merge};
 pub struct SearchAgent {
     text: TextEngine,
     semantic: Option<SemanticEngine>,
+    rrf_k: f64,
 }
 
 impl SearchAgent {
     pub fn new(text: TextEngine, semantic: Option<SemanticEngine>) -> Self {
-        Self { text, semantic }
+        Self { text, semantic, rrf_k: 60.0 }
     }
 
     /// 执行分层搜索。auto_backtrack 控制是否自动回退到语义引擎。
@@ -34,7 +35,7 @@ impl SearchAgent {
             if let Some(ref sem) = self.semantic && let Ok(sem_results) = sem.search(query, top_k * 2) {
                 all.push(hybrid::semantic_results_to_hits(sem_results));
             }
-            return rrf_merge(&all, top_k, 60.0);
+            return rrf_merge(&all, top_k, self.rrf_k);
         }
         hybrid::text_results_to_hits(text_results)
     }
@@ -66,6 +67,10 @@ impl SearchAgent {
     }
 
     pub fn text_engine(&self) -> &TextEngine { &self.text }
+
+    pub fn set_rrf_k(&mut self, k: f64) {
+        self.rrf_k = k;
+    }
 }
 
 #[cfg(test)]

@@ -42,7 +42,7 @@ impl GoProcessor {
                             name: name.to_string(), kind: kind.to_string(),
                             line_start: node.start_position().row + 1,
                             line_end: node.end_position().row + 1,
-                            doc_comment: None, signature: None,
+                            doc_comment: None, signature: None, summary: None,
                         });
                     }
                 }
@@ -54,7 +54,7 @@ impl GoProcessor {
                             name: name.to_string(), kind: "function".to_string(),
                             line_start: node.start_position().row + 1,
                             line_end: node.end_position().row + 1,
-                            doc_comment: None, signature: sig,
+                            doc_comment: None, signature: sig, summary: None,
                         });
                     }
                 }
@@ -66,7 +66,7 @@ impl GoProcessor {
                             name: name.to_string(), kind: "function".to_string(),
                             line_start: node.start_position().row + 1,
                             line_end: node.end_position().row + 1,
-                            doc_comment: None, signature: sig,
+                            doc_comment: None, signature: sig, summary: None,
                         });
                     }
                 }
@@ -105,14 +105,14 @@ impl GoProcessor {
                 let name = rest.split_whitespace().next().unwrap_or("").to_string();
                 if name.is_empty() { continue; }
                 let kind = if rest.contains("struct") { "struct" } else if rest.contains("interface") { "interface" } else { "type" };
-                entities.push(Entity { name, kind: kind.to_string(), line_start: line_no, line_end: line_no, doc_comment: None, signature: None });
+                entities.push(Entity { name, kind: kind.to_string(), line_start: line_no, line_end: line_no, doc_comment: None, signature: None, summary: None });
             } else if let Some(n) = t.strip_prefix("func ").and_then(|s| {
                 s.split('(').next().and_then(|first| {
                     if first.contains(' ') { first.split_whitespace().last().map(|s| s.to_string()) }
                     else { Some(first.split_whitespace().next().unwrap_or("").to_string()) }
                 })
             }) {
-                entities.push(Entity { name: n, kind: "function".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: Some(t.to_string()) });
+                entities.push(Entity { name: n, kind: "function".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: Some(t.to_string()), summary: None });
             }
         }
         (entities, imports)
@@ -125,10 +125,10 @@ impl LanguageProcessor for GoProcessor {
 
     fn parse(&self, source: &str, path: &Path) -> Result<FileInsight> {
         if source.is_empty() {
-            return Ok(FileInsight { path: path.to_path_buf(), language: "Go".into(), entities: vec![], imports: vec![], doc_comments: vec![] });
+            return Ok(FileInsight { path: path.to_path_buf(), language: "Go".into(), entities: vec![], imports: vec![], doc_comments: vec![], source: source.to_string() });
         }
         let (entities, imports) = Self::walk(source);
-        Ok(FileInsight { path: path.to_path_buf(), language: "Go".into(), entities, imports, doc_comments: vec![] })
+        Ok(FileInsight { path: path.to_path_buf(), language: "Go".into(), entities, imports, doc_comments: vec![], source: source.to_string() })
     }
 }
 

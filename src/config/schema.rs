@@ -166,6 +166,8 @@ impl Default for EmbedSection {
     }
 }
 
+fn default_rrf_k() -> usize { 60 }
+
 /// 搜索引擎配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchSection {
@@ -177,6 +179,9 @@ pub struct SearchSection {
     pub default_engine: SearchEngineType,
     /// 默认返回结果数
     pub default_top_k: usize,
+    /// RRF 合并参数 k（控制排序权重衰减）
+    #[serde(default = "default_rrf_k")]
+    pub rrf_k: usize,
 }
 
 impl Default for SearchSection {
@@ -186,6 +191,7 @@ impl Default for SearchSection {
             index_dir: ".search".to_string(),
             default_engine: SearchEngineType::Text,
             default_top_k: 10,
+            rrf_k: default_rrf_k(),
         }
     }
 }
@@ -204,11 +210,16 @@ pub enum SearchEngineType {
     Hybrid,
 }
 
+fn default_max_depth() -> usize { 3 }
+
 /// 增量更新配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IncrementalSection {
     pub enabled: bool,
     pub strategy: IncrementalStrategy,
+    /// BFS 传播变更影响的最大深度
+    #[serde(default = "default_max_depth")]
+    pub max_depth: usize,
 }
 
 impl Default for IncrementalSection {
@@ -216,6 +227,7 @@ impl Default for IncrementalSection {
         Self {
             enabled: true,
             strategy: IncrementalStrategy::GitDiff,
+            max_depth: default_max_depth(),
         }
     }
 }

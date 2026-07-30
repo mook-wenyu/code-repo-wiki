@@ -132,6 +132,7 @@ mod tests {
             line_end: 50,
             doc_comment: Some("HTTP 服务".into()),
             signature: None,
+            summary: None,
         };
         let insight = FileInsight {
             path: PathBuf::from("src/server.rs"),
@@ -143,6 +144,7 @@ mod tests {
                 line: 1,
             }],
             doc_comments: vec![],
+            source: String::new(),
         };
         chunk_by_file(&insight)
     }

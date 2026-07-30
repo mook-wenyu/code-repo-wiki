@@ -31,6 +31,7 @@ fn fixture_config() -> WikiConfig {
             index_dir: ".search".to_string(),
             default_engine: SearchEngineType::Text,
             default_top_k: 10,
+            rrf_k: 60,
         },
         ..Default::default()
     }

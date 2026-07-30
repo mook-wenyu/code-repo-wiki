@@ -401,6 +401,7 @@ mod tests {
                     line_end: 5,
                     doc_comment: None,
                     signature: Some("fn add(a: i32, b: i32) -> i32".into()),
+                    summary: None,
                 },
                 Entity {
                     name: "Sub".into(),
@@ -409,10 +410,12 @@ mod tests {
                     line_end: 10,
                     doc_comment: None,
                     signature: Some("struct Sub".into()),
+                    summary: None,
                 },
             ],
             imports: vec![],
             doc_comments: vec![],
+            source: String::new(),
         }];
         let kg = build(&insights).unwrap();
         assert_eq!(kg.graph.node_count(), 5);
@@ -432,9 +435,11 @@ mod tests {
                     line_end: 3,
                     doc_comment: None,
                     signature: Some("fn helper()".into()),
+                    summary: None,
                 }],
                 imports: vec![],
                 doc_comments: vec![],
+                source: String::new(),
             },
             FileInsight {
                 path: PathBuf::from("src/main.rs"),
@@ -446,6 +451,7 @@ mod tests {
                     line_end: 10,
                     doc_comment: None,
                     signature: Some("fn run()".into()),
+                    summary: None,
                 }],
                 imports: vec![ImportStmt {
                     source: "crate::utils::helper".into(),
@@ -453,6 +459,7 @@ mod tests {
                     line: 1,
                 }],
                 doc_comments: vec![],
+                source: String::new(),
             },
         ];
         let kg = build(&insights).unwrap();

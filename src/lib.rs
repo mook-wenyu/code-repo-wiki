@@ -9,6 +9,9 @@ pub mod search;
 
 use std::path::Path;
 
+use std::sync::{Arc, OnceLock};
+use tokio::runtime::Runtime;
+
 use anyhow::bail;
 
 /// 仓库分析结果，完整流水线的输出
@@ -28,6 +31,11 @@ pub struct AnalysisStats {
     pub total_edges: usize,
     pub modules_detected: usize,
     pub generation_time_ms: u64,
+}
+
+fn get_global_runtime() -> &'static Arc<Runtime> {
+    static RT: OnceLock<Arc<Runtime>> = OnceLock::new();
+    RT.get_or_init(|| Arc::new(Runtime::new().expect("创建 tokio Runtime 失败")))
 }
 
 /// 运行完整的分析流水线（配置文件路径）
@@ -56,8 +64,8 @@ pub fn run_pipeline(config_path: &Path) -> anyhow::Result<AnalysisResult> {
     stats.modules_detected = modules.len();
 
     // Phase 3: 生成（需要 tokio 运行时）
-    let runtime = tokio::runtime::Runtime::new()?;
-    let gen_output = runtime.block_on(generate::run_generation(&graph, &file_insights, &config))?;
+    let rt = get_global_runtime();
+    let gen_output = rt.block_on(generate::run_generation(&graph, &file_insights, &config))?;
 
     // Phase 4: 输出
     output::render_all(&gen_output.documents, &gen_output.cards, &graph, &config)?;
@@ -120,9 +128,9 @@ pub fn run_incremental_pipeline(config_path: &Path) -> anyhow::Result<AnalysisRe
     }
 
     // Phase 3: 增量生成
-    let runtime = tokio::runtime::Runtime::new()?;
+    let rt = get_global_runtime();
     let changed_set: std::collections::HashSet<std::path::PathBuf> = inc_result.changed_files.iter().cloned().collect();
-    let gen_output = runtime.block_on(
+    let gen_output = rt.block_on(
         generate::run_generation_filtered(&graph, &file_insights, &config, &changed_set)
     )?;
 
@@ -405,7 +413,7 @@ pub fn execute_search(
                 anyhow::bail!("搜索索引不存在，请先运行 `repo-wiki generate` 构建索引");
             }
 
-            Ok(search::hybrid::rrf_merge(&all_results, top_k, 60.0))
+            Ok(search::hybrid::rrf_merge(&all_results, top_k, config.search.rrf_k as f64))
         }
     }
 }

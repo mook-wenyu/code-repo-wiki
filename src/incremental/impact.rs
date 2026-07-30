@@ -9,7 +9,7 @@ use crate::model::{EdgeKind, KnowledgeGraph, NodeId};
 ///
 /// 从变更文件节点出发，沿 Imports/DependsOn 边双向 BFS 遍历 3 层，
 /// 找到所有直接或间接受影响的模块。
-pub fn propagate_impact(changed_files: &[PathBuf], graph: &KnowledgeGraph) -> Vec<String> {
+pub fn propagate_impact(changed_files: &[PathBuf], graph: &KnowledgeGraph, max_depth: usize) -> Vec<String> {
     if graph.graph.node_count() == 0 {
         return Vec::new();
     }
@@ -35,7 +35,6 @@ pub fn propagate_impact(changed_files: &[PathBuf], graph: &KnowledgeGraph) -> Ve
         return Vec::new();
     }
 
-    let max_depth = 3;
     let mut affected: HashSet<String> = HashSet::new();
 
     for &start in &start_nodes {
@@ -168,7 +167,7 @@ mod tests {
     fn test_propagate_impact() {
         let graph = make_simple_graph();
         let changed = vec![PathBuf::from("src/db.rs")];
-        let affected = propagate_impact(&changed, &graph);
+        let affected = propagate_impact(&changed, &graph, 3);
 
         assert!(affected.contains(&"db".to_string()));
         assert!(affected.contains(&"net".to_string()));
@@ -179,7 +178,7 @@ mod tests {
     fn test_no_impact_for_unknown_file() {
         let graph = make_simple_graph();
         let changed = vec![PathBuf::from("unknown.rs")];
-        let affected = propagate_impact(&changed, &graph);
+        let affected = propagate_impact(&changed, &graph, 3);
         assert!(affected.is_empty());
     }
 
@@ -187,7 +186,7 @@ mod tests {
     fn test_empty_graph() {
         let graph = KnowledgeGraph::default();
         let changed = vec![PathBuf::from("src/main.rs")];
-        let affected = propagate_impact(&changed, &graph);
+        let affected = propagate_impact(&changed, &graph, 3);
         assert!(affected.is_empty());
     }
 
@@ -196,7 +195,7 @@ mod tests {
         // 测试反向传播：db.rs 变更 → net（导入 db）→ core（依赖 net）应全部受影响
         let graph = make_simple_graph();
         let changed = vec![PathBuf::from("src/db.rs")];
-        let affected = propagate_impact(&changed, &graph);
+        let affected = propagate_impact(&changed, &graph, 3);
 
         assert!(affected.contains(&"db".to_string()));
         assert!(affected.contains(&"net".to_string()));
@@ -209,7 +208,7 @@ mod tests {
         // 验证同一模块不会重复出现在结果中
         let graph = make_simple_graph();
         let changed = vec![PathBuf::from("src/db.rs")];
-        let affected = propagate_impact(&changed, &graph);
+        let affected = propagate_impact(&changed, &graph, 3);
 
         let unique: std::collections::HashSet<_> = affected.iter().cloned().collect();
         assert_eq!(affected.len(), unique.len());

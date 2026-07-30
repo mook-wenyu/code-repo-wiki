@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+mod commands;
+
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -127,7 +129,7 @@ fn main() -> anyhow::Result<()> {
                 Some("text") => repo_wiki::config::schema::SearchEngineType::Text,
                 Some("semantic") => repo_wiki::config::schema::SearchEngineType::Semantic,
                 Some("hybrid") => repo_wiki::config::schema::SearchEngineType::Hybrid,
-                Some(other) => anyhow::bail!("不支持的搜索引擎: {}（可选: text/semantic/hybrid）", other),
+                Some(other) => anyhow::bail!("不支持的搜索引擎: {other}（可选: text/semantic/hybrid）"),
                 None => cfg.search.default_engine.clone(),
             };
             let results = repo_wiki::execute_search(&config, &query, top_k, &engine_type)?;
@@ -161,14 +163,10 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Commands::InstallToOpencode => {
-            let mut oc = repo_wiki::config::opencode::OpenCodeConfig::new()?;
-            oc.install_plugin()?;
-            println!("✅ repo-wiki 插件已安装到 OpenCode");
+            commands::install("opencode")?;
         }
         Commands::UninstallFromOpencode => {
-            let mut oc = repo_wiki::config::opencode::OpenCodeConfig::new()?;
-            oc.uninstall_plugin()?;
-            println!("✅ repo-wiki 插件已从 OpenCode 卸载");
+            commands::uninstall(false)?;
         }
     }
 

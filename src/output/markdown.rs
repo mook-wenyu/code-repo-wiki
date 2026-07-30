@@ -3,6 +3,7 @@ use std::path::Path;
 use anyhow::Result;
 
 use crate::model::{DocumentKind, KnowledgeCard, WikiDocument};
+use crate::output::crossref::render_cite_link;
 
 /// 渲染 WikiDocument 为 Markdown 字符串
 pub fn render_wiki_page(doc: &WikiDocument) -> String {
@@ -28,8 +29,8 @@ pub fn render_wiki_page(doc: &WikiDocument) -> String {
                 _ => &reference.relation,
             };
             output.push_str(&format!(
-                "- [{}]({}) — {}\n",
-                reference.target_title, reference.target_path, rel
+                "- {} — {}\n",
+                render_cite_link(&reference.target_title, &reference.target_path), rel
             ));
         }
     }

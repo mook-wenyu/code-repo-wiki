@@ -75,7 +75,7 @@ impl CSharpProcessor {
                             line_start: node.start_position().row + 1,
                             line_end: node.end_position().row + 1,
                             doc_comment: None,
-                            signature: sig,
+                            signature: sig, summary: None,
                         });
                     }
                 }
@@ -87,7 +87,7 @@ impl CSharpProcessor {
                             name: name.to_string(), kind: "function".to_string(),
                             line_start: node.start_position().row + 1,
                             line_end: node.end_position().row + 1,
-                            doc_comment: None, signature: sig,
+                            doc_comment: None, signature: sig, summary: None,
                         });
                     }
                 }
@@ -97,7 +97,7 @@ impl CSharpProcessor {
                             name: name.to_string(), kind: "property".to_string(),
                             line_start: node.start_position().row + 1,
                             line_end: node.end_position().row + 1,
-                            doc_comment: None, signature: None,
+                            doc_comment: None, signature: None, summary: None,
                         });
                     }
                 }
@@ -119,7 +119,7 @@ impl CSharpProcessor {
                                         name: name.to_string(), kind: "variable".to_string(),
                                         line_start: child.start_position().row + 1,
                                         line_end: child.end_position().row + 1,
-                                        doc_comment: None, signature: None,
+                                        doc_comment: None, signature: None, summary: None,
                                     });
                                 }
                             }
@@ -133,7 +133,7 @@ impl CSharpProcessor {
                             name: name.to_string(), kind: "mod".to_string(),
                             line_start: node.start_position().row + 1,
                             line_end: node.end_position().row + 1,
-                            doc_comment: None, signature: None,
+                            doc_comment: None, signature: None, summary: None,
                         });
                     }
                 }
@@ -195,7 +195,7 @@ impl CSharpProcessor {
                     entities.push(Entity {
                         name: name.to_string(), kind: "mod".into(),
                         line_start: line_no, line_end: line_no,
-                        doc_comment: None, signature: None,
+                        doc_comment: None, signature: None, summary: None,
                     });
                 }
                 continue;
@@ -220,7 +220,7 @@ impl CSharpProcessor {
                         entities.push(Entity {
                             name: name.to_string(), kind: kind.to_string(),
                             line_start: line_no, line_end: line_no,
-                            doc_comment: None, signature: Some(t.to_string()),
+                            doc_comment: None, signature: Some(t.to_string()), summary: None,
                         });
                         break;
                     }
@@ -241,11 +241,11 @@ impl CSharpProcessor {
                         if name.chars().next().map(|c| c.is_alphabetic() || c == '_').unwrap_or(false)
                             && !["class", "struct", "interface", "enum", "namespace", "using", "if", "while", "for", "foreach", "switch", "return"].contains(&name)
                         {
-                            entities.push(Entity {
-                                name: name.to_string(), kind: "function".into(),
-                                line_start: line_no, line_end: line_no,
-                                doc_comment: None, signature: Some(t.to_string()),
-                            });
+                        entities.push(Entity {
+                            name: name.to_string(), kind: "function".into(),
+                            line_start: line_no, line_end: line_no,
+                            doc_comment: None, signature: Some(t.to_string()), summary: None,
+                        });
                         }
                     }
                 }
@@ -264,7 +264,7 @@ impl CSharpProcessor {
                         entities.push(Entity {
                             name: name.to_string(), kind: "property".into(),
                             line_start: line_no, line_end: line_no,
-                            doc_comment: None, signature: Some(t.to_string()),
+                            doc_comment: None, signature: Some(t.to_string()), summary: None,
                         });
                     }
                 }
@@ -283,12 +283,14 @@ impl LanguageProcessor for CSharpProcessor {
             return Ok(FileInsight {
                 path: path.to_path_buf(), language: "C#".into(),
                 entities: vec![], imports: vec![], doc_comments: vec![],
+                source: source.to_string(),
             });
         }
         let (entities, imports) = Self::walk(source);
         Ok(FileInsight {
             path: path.to_path_buf(), language: "C#".into(),
             entities, imports, doc_comments: vec![],
+            source: source.to_string(),
         })
     }
 }

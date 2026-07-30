@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use petgraph::algo::tarjan_scc;
 use petgraph::visit::{EdgeRef, IntoEdgeReferences};
 
 use crate::model::{EdgeKind, KnowledgeGraph, NodeId};
@@ -59,7 +60,28 @@ pub fn render_module_dependency_graph(graph: &KnowledgeGraph) -> String {
         output.push_str(&edge);
     }
 
+    // 标注参与循环依赖的模块节点
+    let cycle_module_names = collect_cycle_modules(graph);
+    for name in &node_names {
+        if cycle_module_names.contains(name) {
+            output.push_str(&format!(
+                "    style {} fill:#ffcccc,stroke:#ff0000\n",
+                sanitize_id(name)
+            ));
+        }
+    }
+
     output
+}
+
+/// 收集参与循环依赖的模块名称集合
+fn collect_cycle_modules(graph: &KnowledgeGraph) -> HashSet<String> {
+    let sccs = tarjan_scc(&graph.graph);
+    sccs.iter()
+        .filter(|scc| scc.len() > 1)
+        .flat_map(|scc| scc.iter().map(|&n| module_name(graph.graph[n].module_path.as_slice())))
+        .filter(|m| !m.is_empty())
+        .collect()
 }
 
 /// 为单个模块生成内部实体关系图

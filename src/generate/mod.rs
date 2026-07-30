@@ -14,7 +14,7 @@ use crate::ingest::parser::FileInsight;
 use crate::model::{KnowledgeCard, KnowledgeGraph, WikiDocument};
 
 use self::card::CardGenerator;
-use self::llm::{AnthropicProvider, OpenAiProvider, Provider};
+use self::llm::{AnthropicProvider, LlmProvider, Message, OpenAiProvider, Provider};
 use self::wiki::WikiGenerator;
 
 /// 生成流水线的输出
@@ -61,7 +61,7 @@ pub async fn run_generation(
     let start = Instant::now();
 
     // 1. AST 感知分块
-    let chunks = if graph.modules.is_empty() {
+    let mut chunks = if graph.modules.is_empty() {
         tracing::warn!("未检测到模块聚类，回退到文件级分块");
         insights
             .iter()
@@ -74,6 +74,20 @@ pub async fn run_generation(
 
     // 2. 创建 LLM Provider
     let provider = create_provider(config)?;
+
+    // 2.5 Level 0 实体摘要：为每个实体生成摘要（跳过已有摘要的实体）
+    for chunk in &mut chunks {
+        for entity in &mut chunk.entities {
+            if entity.summary.is_none() {
+                let prompt = crate::generate::prompt::entity_summary_prompt(entity, "zh");
+                let messages = vec![Message::user(prompt)];
+                match provider.complete(&messages).await {
+                    Ok(summary) => entity.summary = Some(summary.trim().to_string()),
+                    Err(e) => tracing::warn!("生成实体摘要失败: {}", e),
+                }
+            }
+        }
+    }
 
     // 3. 并行生成 Knowledge Card
     let card_gen = CardGenerator::new(&provider, config.llm.max_concurrent);

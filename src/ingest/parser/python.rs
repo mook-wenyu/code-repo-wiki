@@ -39,7 +39,7 @@ impl PythonProcessor {
                             name: name.to_string(), kind: "class".to_string(),
                             line_start: node.start_position().row + 1,
                             line_end: node.end_position().row + 1,
-                            doc_comment: None, signature: None,
+                            doc_comment: None, signature: None, summary: None,
                         });
                     }
                 }
@@ -51,7 +51,7 @@ impl PythonProcessor {
                             name: name.to_string(), kind: "function".to_string(),
                             line_start: node.start_position().row + 1,
                             line_end: node.end_position().row + 1,
-                            doc_comment: None, signature: sig,
+                            doc_comment: None, signature: sig, summary: None,
                         });
                     }
                 }
@@ -116,9 +116,9 @@ impl PythonProcessor {
             let line_no = i + 1; let t = line.trim();
             if let Some(rest) = t.strip_prefix("import ") { imports.push(ImportStmt { source: rest.to_string(), alias: None, line: line_no }); }
             else if let Some(rest) = t.strip_prefix("from ") { imports.push(ImportStmt { source: rest.to_string(), alias: None, line: line_no }); }
-            else if let Some(name) = t.strip_prefix("class ").and_then(|s| s.split(&['(', ':', ' '][..]).next()) { entities.push(Entity { name: name.to_string(), kind: "class".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: None }); }
-            else if let Some(name) = t.strip_prefix("def ").and_then(|s| s.split(&['(', ':', ' '][..]).next()) { entities.push(Entity { name: name.to_string(), kind: "function".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: Some(t.to_string()) }); }
-            else if let Some(name) = t.strip_prefix("async def ").and_then(|s| s.split(&['(', ':', ' '][..]).next()) { entities.push(Entity { name: name.to_string(), kind: "function".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: Some(t.to_string()) }); }
+            else if let Some(name) = t.strip_prefix("class ").and_then(|s| s.split(&['(', ':', ' '][..]).next()) { entities.push(Entity { name: name.to_string(), kind: "class".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: None, summary: None }); }
+            else if let Some(name) = t.strip_prefix("def ").and_then(|s| s.split(&['(', ':', ' '][..]).next()) { entities.push(Entity { name: name.to_string(), kind: "function".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: Some(t.to_string()), summary: None }); }
+            else if let Some(name) = t.strip_prefix("async def ").and_then(|s| s.split(&['(', ':', ' '][..]).next()) { entities.push(Entity { name: name.to_string(), kind: "function".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: Some(t.to_string()), summary: None }); }
         }
         (entities, imports)
     }
@@ -130,10 +130,10 @@ impl LanguageProcessor for PythonProcessor {
 
     fn parse(&self, source: &str, path: &Path) -> Result<FileInsight> {
         if source.is_empty() {
-            return Ok(FileInsight { path: path.to_path_buf(), language: "Python".into(), entities: vec![], imports: vec![], doc_comments: vec![] });
+            return Ok(FileInsight { path: path.to_path_buf(), language: "Python".into(), entities: vec![], imports: vec![], doc_comments: vec![], source: source.to_string() });
         }
         let (entities, imports) = Self::walk(source);
-        Ok(FileInsight { path: path.to_path_buf(), language: "Python".into(), entities, imports, doc_comments: vec![] })
+        Ok(FileInsight { path: path.to_path_buf(), language: "Python".into(), entities, imports, doc_comments: vec![], source: source.to_string() })
     }
 }
 

@@ -37,9 +37,11 @@ pub fn detect_modules(graph: &KnowledgeGraph) -> Result<Vec<ModuleCluster>> {
                         line_end: 5,
                         doc_comment: None,
                         signature: Some("fn main()".into()),
+                        summary: None,
                     }],
                     imports: vec![],
                     doc_comments: vec![],
+                    source: String::new(),
                 },
                 FileInsight {
                     path: PathBuf::from("src/lib.rs"),
@@ -51,6 +53,7 @@ pub fn detect_modules(graph: &KnowledgeGraph) -> Result<Vec<ModuleCluster>> {
                         line_end: 3,
                         doc_comment: None,
                         signature: Some("fn add(a: i32, b: i32) -> i32".into()),
+                        summary: None,
                     }],
                     imports: vec![ImportStmt {
                         source: "crate::main".into(),
@@ -58,6 +61,7 @@ pub fn detect_modules(graph: &KnowledgeGraph) -> Result<Vec<ModuleCluster>> {
                         line: 1,
                     }],
                     doc_comments: vec![],
+                    source: String::new(),
                 },
             ];
 

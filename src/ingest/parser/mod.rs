@@ -4,6 +4,7 @@ mod python;
 mod go;
 mod javascript;
 mod csharp;
+mod java;
 
 use std::path::{Path, PathBuf};
 use anyhow::Result;
@@ -16,6 +17,8 @@ pub struct FileInsight {
     pub entities: Vec<Entity>,
     pub imports: Vec<ImportStmt>,
     pub doc_comments: Vec<String>,
+    /// 文件的源代码文本，用于避免搜索索引构建时重复读盘
+    pub source: String,
 }
 
 /// 代码实体（struct / fn / trait / impl / enum / type / const / 等）
@@ -30,6 +33,7 @@ pub struct Entity {
     pub line_end: usize,
     pub doc_comment: Option<String>,
     pub signature: Option<String>,
+    pub summary: Option<String>,
 }
 
 /// 导入语句
@@ -67,6 +71,7 @@ impl ParserRegistry {
         reg.register(Box::new(go::GoProcessor::new().unwrap()));
         reg.register(Box::new(javascript::JavaScriptProcessor::new().unwrap()));
         reg.register(Box::new(csharp::CSharpProcessor::new().unwrap()));
+        reg.register(Box::new(java::JavaProcessor::new().unwrap()));
         reg
     }
 
@@ -99,5 +104,3 @@ impl Default for ParserRegistry {
         Self::new()
     }
 }
-
-

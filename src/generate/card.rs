@@ -168,6 +168,7 @@ mod tests {
             line_end: 30,
             doc_comment: Some("配置管理".into()),
             signature: None,
+            summary: None,
         };
         let insight = FileInsight {
             path: PathBuf::from("src/config.rs"),
@@ -179,6 +180,7 @@ mod tests {
                 line: 1,
             }],
             doc_comments: vec![],
+            source: String::new(),
         };
         chunk_by_file(&insight)
     }

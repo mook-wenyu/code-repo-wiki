@@ -164,6 +164,7 @@ mod tests {
             line_end: 10,
             doc_comment: None,
             signature: None,
+            summary: None,
         }
     }
 
@@ -174,6 +175,7 @@ mod tests {
             entities,
             imports: Vec::new(),
             doc_comments: Vec::new(),
+            source: String::new(),
         }
     }
 

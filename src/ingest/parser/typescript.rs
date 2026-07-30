@@ -44,7 +44,7 @@ impl TypeScriptProcessor {
                             name: name.to_string(), kind: kind.to_string(),
                             line_start: node.start_position().row + 1,
                             line_end: node.end_position().row + 1,
-                            doc_comment: None, signature: None,
+                            doc_comment: None, signature: None, summary: None,
                         });
                     }
                 }
@@ -56,7 +56,7 @@ impl TypeScriptProcessor {
                             name: name.to_string(), kind: "function".to_string(),
                             line_start: node.start_position().row + 1,
                             line_end: node.end_position().row + 1,
-                            doc_comment: None, signature: sig,
+                            doc_comment: None, signature: sig, summary: None,
                         });
                     }
                 }
@@ -67,7 +67,7 @@ impl TypeScriptProcessor {
                             name: name.to_string(), kind: "type".to_string(),
                             line_start: node.start_position().row + 1,
                             line_end: node.end_position().row + 1,
-                            doc_comment: None, signature: None,
+                            doc_comment: None, signature: None, summary: None,
                         });
                     }
                 }
@@ -78,7 +78,7 @@ impl TypeScriptProcessor {
                             name: name.to_string(), kind: "variable".to_string(),
                             line_start: node.start_position().row + 1,
                             line_end: node.end_position().row + 1,
-                            doc_comment: None, signature: None,
+                            doc_comment: None, signature: None, summary: None,
                         });
                     }
                 }
@@ -117,11 +117,11 @@ impl TypeScriptProcessor {
             }
             let core = t.strip_prefix("export ").or_else(|| t.strip_prefix("export default ")).or_else(|| t.strip_prefix("export async ")).unwrap_or(t);
             if let Some(name) = core.strip_prefix("class ").and_then(|s| s.split(&['{', ' ', '<', '(', ';'][..]).next()).map(|s| s.trim()) {
-                entities.push(Entity { name: name.to_string(), kind: "class".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: None });
+                entities.push(Entity { name: name.to_string(), kind: "class".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: None, summary: None });
             } else if let Some(name) = core.strip_prefix("interface ").and_then(|s| s.split(&['{', ' ', '<', ';'][..]).next()).map(|s| s.trim()) {
-                entities.push(Entity { name: name.to_string(), kind: "interface".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: None });
+                entities.push(Entity { name: name.to_string(), kind: "interface".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: None, summary: None });
             } else if let Some(name) = core.strip_prefix("function ").and_then(|s| s.split(&['(', ' ', '<', '{', ';'][..]).next()).map(|s| s.trim()) {
-                entities.push(Entity { name: name.to_string(), kind: "function".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: Some(t.to_string()) });
+                entities.push(Entity { name: name.to_string(), kind: "function".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: Some(t.to_string()), summary: None });
             }
         }
         (entities, imports)
@@ -134,10 +134,10 @@ impl LanguageProcessor for TypeScriptProcessor {
 
     fn parse(&self, source: &str, path: &Path) -> Result<FileInsight> {
         if source.is_empty() {
-            return Ok(FileInsight { path: path.to_path_buf(), language: "TypeScript".into(), entities: vec![], imports: vec![], doc_comments: vec![] });
+            return Ok(FileInsight { path: path.to_path_buf(), language: "TypeScript".into(), entities: vec![], imports: vec![], doc_comments: vec![], source: source.to_string() });
         }
         let (entities, imports) = Self::walk(source, &self.ts_lang);
-        Ok(FileInsight { path: path.to_path_buf(), language: "TypeScript".into(), entities, imports, doc_comments: vec![] })
+        Ok(FileInsight { path: path.to_path_buf(), language: "TypeScript".into(), entities, imports, doc_comments: vec![], source: source.to_string() })
     }
 }
 

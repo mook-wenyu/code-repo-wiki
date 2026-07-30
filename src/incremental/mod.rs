@@ -59,7 +59,7 @@ pub fn run_incremental_update(
 fn run_git_diff_incremental(
     insights: &[FileInsight],
     graph: &KnowledgeGraph,
-    _config: &WikiConfig,
+    config: &WikiConfig,
     state_dir: &Path,
 ) -> Result<(Vec<std::path::PathBuf>, Vec<String>)> {
     // 1. 分析 Git diff
@@ -96,7 +96,7 @@ fn run_git_diff_incremental(
         .collect();
 
     // 3. 在知识图谱上传播变更影响
-    let affected_modules = propagate_impact(&all_changed, graph);
+    let affected_modules = propagate_impact(&all_changed, graph, config.incremental.max_depth);
 
     // 4. 保存新的状态
     if let Ok(new_state) = GenerationState::from_insights(insights, &diff_result.to_commit) && let Err(e) = new_state.save(state_dir) {
@@ -111,7 +111,7 @@ fn run_git_diff_incremental(
 fn run_file_watch_incremental(
     insights: &[FileInsight],
     graph: &KnowledgeGraph,
-    _config: &WikiConfig,
+    config: &WikiConfig,
     state_dir: &Path,
 ) -> Result<(Vec<std::path::PathBuf>, Vec<String>)> {
     // 重新加载状态，比较文件指纹
@@ -130,7 +130,7 @@ fn run_file_watch_incremental(
     }
 
     // BFS 传播影响
-    let affected_modules = propagate_impact(&changed_files, graph);
+    let affected_modules = propagate_impact(&changed_files, graph, config.incremental.max_depth);
 
     // 保存新状态
     if let Ok(new_state) = GenerationState::from_insights(insights, "file-watch") && let Err(e) = new_state.save(state_dir) {
