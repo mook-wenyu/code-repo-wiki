@@ -1,0 +1,29 @@
+[wiki]
+template = "architecture"
+language = "zh"
+
+[scope]
+include = [
+    "src/**",
+    "lib/**",
+]
+exclude = [
+    "**/test/**",
+    "**/vendor/**",
+    "target/**",
+    "**/node_modules/**",
+]
+
+[llm]
+provider = "openai"
+model = "gpt-4o"
+api_key_env = "OPENAI_API_KEY"
+max_concurrent = 4
+
+[output]
+dir = ".repo-wiki"
+format = "markdown"
+
+[incremental]
+enabled = true
+strategy = "git-diff"

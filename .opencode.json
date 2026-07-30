@@ -1,0 +1,9 @@
+{
+  "plugins": [
+    {
+      "name": "repo-wiki",
+      "path": ".opencode/plugins/repo-wiki.ts",
+      "enabled": true
+    }
+  ]
+}
