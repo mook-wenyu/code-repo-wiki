@@ -58,11 +58,10 @@ impl RustProcessor {
                         Self::parse_use_stmt(text, node.start_position().row + 1, &mut imports);
                     }
                 }
-                "mod_item" => {
-                    if node.child_by_field_name("body").is_none() {
+                "mod_item"
+                    if node.child_by_field_name("body").is_none() => {
                         Self::record_entity(node, bytes, "mod", &mut entities, None);
                     }
-                }
                 _ => {}
             }
 
@@ -117,8 +116,7 @@ impl RustProcessor {
             if line >= entity.line_start { break; }
             if entity.line_start - line <= 3 && (collected.is_empty() || line == collected.last().map(|&(l, _)| l).unwrap_or(0) + 1) {
                 collected.push((line, text.clone()));
-            } else if line < entity.line_start - 3 { collected.clear(); }
-            else if !collected.is_empty() && line != collected.last().map(|&(l, _)| l).unwrap_or(0) + 1 { collected.clear(); }
+            } else if line < entity.line_start - 3 || (!collected.is_empty() && line != collected.last().map(|&(l, _)| l).unwrap_or(0) + 1) { collected.clear(); }
         }
         if !collected.is_empty() {
             entity.doc_comment = Some(collected.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>().join("\n"));

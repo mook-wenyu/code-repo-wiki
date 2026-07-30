@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// 全局配置
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WikiConfig {
     #[serde(default)]
     pub wiki: WikiSection,
@@ -15,19 +15,8 @@ pub struct WikiConfig {
     pub output: OutputSection,
     #[serde(default)]
     pub incremental: IncrementalSection,
-}
-
-impl Default for WikiConfig {
-    fn default() -> Self {
-        Self {
-            wiki: WikiSection::default(),
-            scope: ScopeSection::default(),
-            llm: LlmSection::default(),
-            embed: EmbedSection::default(),
-            output: OutputSection::default(),
-            incremental: IncrementalSection::default(),
-        }
-    }
+    #[serde(default)]
+    pub search: SearchSection,
 }
 
 /// Wiki 基本配置
@@ -139,16 +128,11 @@ pub enum OutputFormat {
 }
 
 /// 嵌入模型提供商类型
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum EmbedProviderType {
+    #[default]
     #[serde(rename = "openai")]
     OpenAI,
-}
-
-impl Default for EmbedProviderType {
-    fn default() -> Self {
-        Self::OpenAI
-    }
 }
 
 /// 嵌入模型配置
@@ -180,6 +164,44 @@ impl Default for EmbedSection {
             dimension: None,
         }
     }
+}
+
+/// 搜索引擎配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchSection {
+    /// 是否在 generate 后自动构建搜索索引
+    pub enabled: bool,
+    /// 索引存储目录（相对于 output.dir）
+    pub index_dir: String,
+    /// 默认搜索引擎
+    pub default_engine: SearchEngineType,
+    /// 默认返回结果数
+    pub default_top_k: usize,
+}
+
+impl Default for SearchSection {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            index_dir: ".search".to_string(),
+            default_engine: SearchEngineType::Text,
+            default_top_k: 10,
+        }
+    }
+}
+
+/// 搜索引擎类型
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SearchEngineType {
+    /// BM25 全文搜索
+    #[serde(rename = "text")]
+    Text,
+    /// 向量语义搜索
+    #[serde(rename = "semantic")]
+    Semantic,
+    /// RRF 混合排序
+    #[serde(rename = "hybrid")]
+    Hybrid,
 }
 
 /// 增量更新配置

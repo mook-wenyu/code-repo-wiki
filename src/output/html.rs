@@ -86,14 +86,13 @@ blockquote { border-left: 4px solid #ddd; margin: 0; padding: 0 16px; color: #66
     if !graph.modules.is_empty() {
         let mut mermaid_lines = vec!["graph TD".to_string()];
         for module in &graph.modules {
-            for _dep in &module.node_ids {
+            if let Some(_dep) = module.node_ids.first() {
                 // ponytail: 简化为模块级节点，不展开到每个实体
                 mermaid_lines.push(format!(
                     "    {}[\"{}\"]",
                     module.name.replace(|c: char| !c.is_alphanumeric(), "_"),
                     escape_html(&module.name)
                 ));
-                break;
             }
         }
         let mermaid_code = mermaid_lines.join("\n");
@@ -235,12 +234,13 @@ mod tests {
     use crate::config::schema::{WikiConfig, OutputSection, OutputFormat};
 
     fn test_config() -> WikiConfig {
-        let mut config = WikiConfig::default();
-        config.output = OutputSection {
-            dir: ".repo-wiki".to_string(),
-            format: OutputFormat::Markdown,
-        };
-        config
+        WikiConfig {
+            output: OutputSection {
+                dir: ".repo-wiki".to_string(),
+                format: OutputFormat::Markdown,
+            },
+            ..Default::default()
+        }
     }
 
     #[test]

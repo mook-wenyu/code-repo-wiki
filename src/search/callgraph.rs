@@ -15,12 +15,10 @@ impl<'a> CallGraph<'a> {
     pub fn callee_of(&self, name: &str) -> Vec<NodeId> {
         let mut callees = Vec::new();
         for n in self.graph.graph.node_indices() {
-            if let Some(w) = self.graph.graph.node_weight(n) {
-                if w.name == name {
-                    for e in self.graph.graph.edges(n) {
-                        if e.weight().kind == EdgeKind::Calls {
-                            callees.push(e.target());
-                        }
+            if let Some(w) = self.graph.graph.node_weight(n) && w.name == name {
+                for e in self.graph.graph.edges(n) {
+                    if e.weight().kind == EdgeKind::Calls {
+                        callees.push(e.target());
                     }
                 }
             }
@@ -32,12 +30,10 @@ impl<'a> CallGraph<'a> {
     pub fn caller_of(&self, name: &str) -> Vec<NodeId> {
         let mut callers = Vec::new();
         for n in self.graph.graph.node_indices() {
-            if let Some(w) = self.graph.graph.node_weight(n) {
-                if w.name == name {
-                    for e in self.graph.graph.edges_directed(n, petgraph::Direction::Incoming) {
-                        if e.weight().kind == EdgeKind::Calls {
-                            callers.push(e.source());
-                        }
+            if let Some(w) = self.graph.graph.node_weight(n) && w.name == name {
+                for e in self.graph.graph.edges_directed(n, petgraph::Direction::Incoming) {
+                    if e.weight().kind == EdgeKind::Calls {
+                        callers.push(e.source());
                     }
                 }
             }

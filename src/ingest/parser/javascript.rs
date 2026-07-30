@@ -142,11 +142,11 @@ impl JavaScriptProcessor {
             }
 
             // 导出（重导出部分）
-            if let Some(rest) = t.strip_prefix("export ") {
-                if let Some(from_pos) = rest.find(" from ") {
-                    let src = rest[from_pos + 6..].trim().trim_matches(&['"', '\'', ';'][..]);
-                    imports.push(ImportStmt { source: src.to_string(), alias: None, line: line_no });
-                }
+            if let Some(rest) = t.strip_prefix("export ")
+                && let Some(from_pos) = rest.find(" from ")
+            {
+                let src = rest[from_pos + 6..].trim().trim_matches(&['"', '\'', ';'][..]);
+                imports.push(ImportStmt { source: src.to_string(), alias: None, line: line_no });
             }
 
             // 去掉 export 前缀后匹配实体

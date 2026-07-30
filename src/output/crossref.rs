@@ -17,6 +17,12 @@ pub struct CrossRefIndex {
     links: Vec<Reference>,
 }
 
+impl Default for CrossRefIndex {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CrossRefIndex {
     /// 创建空索引
     pub fn new() -> Self {

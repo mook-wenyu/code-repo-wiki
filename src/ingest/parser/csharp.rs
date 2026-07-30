@@ -207,22 +207,22 @@ impl CSharpProcessor {
                     let name = rest.strip_prefix(prefix)
                         .and_then(|s| s.split(&['{', ' ', ':', '<', ';', '(', '}'][..]).next())
                         .map(|s| s.trim());
-                    if let Some(name) = name {
-                        if !name.is_empty() && name.chars().next().map(|c| c.is_alphabetic() || c == '_').unwrap_or(false) {
-                            let kind = match *prefix {
-                                "class " | "record " => "class",
-                                "struct " => "struct",
-                                "interface " => "interface",
-                                "enum " => "enum",
-                                _ => "class",
-                            };
-                            entities.push(Entity {
-                                name: name.to_string(), kind: kind.to_string(),
-                                line_start: line_no, line_end: line_no,
-                                doc_comment: None, signature: Some(t.to_string()),
-                            });
-                            break;
-                        }
+                    if let Some(name) = name
+                        && !name.is_empty() && name.chars().next().map(|c| c.is_alphabetic() || c == '_').unwrap_or(false)
+                    {
+                        let kind = match *prefix {
+                            "class " | "record " => "class",
+                            "struct " => "struct",
+                            "interface " => "interface",
+                            "enum " => "enum",
+                            _ => "class",
+                        };
+                        entities.push(Entity {
+                            name: name.to_string(), kind: kind.to_string(),
+                            line_start: line_no, line_end: line_no,
+                            doc_comment: None, signature: Some(t.to_string()),
+                        });
+                        break;
                     }
                 }
             }
@@ -252,22 +252,20 @@ impl CSharpProcessor {
             }
 
             // 属性声明：type Name { get; set; }
-            if !entities.iter().any(|e| e.line_start == line_no) {
-                if t.contains("{") && !t.contains("(") {
-                    let tokens: Vec<&str> = t.split_whitespace().collect();
-                    if tokens.len() >= 2 {
-                        let name = tokens.iter()
-                            .position(|s| s.contains('{'))
-                            .and_then(|pos| tokens.get(pos - 1))
-                            .map(|s| s.trim())
-                            .filter(|s| s.chars().next().map(|c| c.is_alphabetic() || c == '_').unwrap_or(false));
-                        if let Some(name) = name {
-                            entities.push(Entity {
-                                name: name.to_string(), kind: "property".into(),
-                                line_start: line_no, line_end: line_no,
-                                doc_comment: None, signature: Some(t.to_string()),
-                            });
-                        }
+            if !entities.iter().any(|e| e.line_start == line_no) && t.contains("{") && !t.contains("(") {
+                let tokens: Vec<&str> = t.split_whitespace().collect();
+                if tokens.len() >= 2 {
+                    let name = tokens.iter()
+                        .position(|s| s.contains('{'))
+                        .and_then(|pos| tokens.get(pos - 1))
+                        .map(|s| s.trim())
+                        .filter(|s| s.chars().next().map(|c| c.is_alphabetic() || c == '_').unwrap_or(false));
+                    if let Some(name) = name {
+                        entities.push(Entity {
+                            name: name.to_string(), kind: "property".into(),
+                            line_start: line_no, line_end: line_no,
+                            doc_comment: None, signature: Some(t.to_string()),
+                        });
                     }
                 }
             }

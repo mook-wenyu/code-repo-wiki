@@ -65,7 +65,7 @@ impl FileWatcher {
             .include
             .iter()
             .filter_map(|p| {
-                if let Some(ext) = p.split('.').last() {
+                if let Some(ext) = p.split('.').next_back() {
                     if ext.contains('*') { None } else { Some(ext.to_string()) }
                 } else {
                     None
@@ -103,10 +103,8 @@ impl FileWatcher {
                         paths.push(p.clone());
                     }
                     // 判断整条 event 的 kind
-                    if let Some(ek) = notify_event_to_change_kind(&ev.kind) {
-                        if ek != ChangeKind::Modified {
-                            kind = ek;
-                        }
+                    if let Some(ek) = notify_event_to_change_kind(&ev.kind) && ek != ChangeKind::Modified {
+                        kind = ek;
                     }
                 }
 

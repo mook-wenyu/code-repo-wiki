@@ -99,10 +99,8 @@ fn run_git_diff_incremental(
     let affected_modules = propagate_impact(&all_changed, graph);
 
     // 4. 保存新的状态
-    if let Ok(new_state) = GenerationState::from_insights(insights, &diff_result.to_commit) {
-        if let Err(e) = new_state.save(&state_dir) {
-            tracing::warn!("保存生成状态失败: {}", e);
-        }
+    if let Ok(new_state) = GenerationState::from_insights(insights, &diff_result.to_commit) && let Err(e) = new_state.save(state_dir) {
+        tracing::warn!("保存生成状态失败: {}", e);
     }
 
     tracing::info!("增量更新分析完成: {} 个模块受影响", affected_modules.len());
@@ -135,10 +133,8 @@ fn run_file_watch_incremental(
     let affected_modules = propagate_impact(&changed_files, graph);
 
     // 保存新状态
-    if let Ok(new_state) = GenerationState::from_insights(insights, "file-watch") {
-        if let Err(e) = new_state.save(state_dir) {
-            tracing::warn!("保存生成状态失败: {}", e);
-        }
+    if let Ok(new_state) = GenerationState::from_insights(insights, "file-watch") && let Err(e) = new_state.save(state_dir) {
+        tracing::warn!("保存生成状态失败: {}", e);
     }
 
     tracing::info!("FileWatch 增量分析完成: {} 个模块受影响", affected_modules.len());

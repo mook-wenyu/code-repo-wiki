@@ -5,3 +5,4 @@ pub mod semantic;
 pub mod hybrid;
 pub mod ast_chunker;
 pub mod agent;
+pub mod store;

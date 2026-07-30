@@ -1,30 +1,31 @@
-import type { Plugin } from "@opencode-ai/plugin";
+import type { PluginInput } from "@opencode-ai/plugin";
+import { execa } from "execa";
 
 /**
  * repo-wiki OpenCode 插件
- * 
+ *
  * 提供：
- * - 2 个 Agent 工具（wiki_query, generate_wiki）
+ * - 4 个 Agent 工具（wiki_search, wiki_query, wiki_generate, module_info）
+ * - /wiki Slash 命令（generate, update, status, export）
  * - 自动调用 Rust CLI 核心引擎
  * - 从 .repo-wiki/ 读取现有卡片和 Wiki 数据
  */
-export const RepoWikiPlugin: Plugin = async ({ project, client }) => {
+export const RepoWikiPlugin = async ({ project, client, directory }: PluginInput) => {
 
     /** 调用 repo-wiki CLI 并返回结构化输出 */
     async function runCli(args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
-        const { execSync } = await import("child_process");
         try {
-            const result = execSync(`repo-wiki ${args.join(" ")}`, {
-                cwd: project.rootPath,
-                encoding: "utf-8",
+            const { stdout, stderr, exitCode } = await execa("repo-wiki", args, {
+                cwd: directory,
                 maxBuffer: 10 * 1024 * 1024,
+                reject: false,
             });
-            return { stdout: result.toString(), stderr: "", code: 0 };
+            return { stdout: stdout ?? "", stderr: stderr ?? "", code: exitCode ?? 0 };
         } catch (err: any) {
             return {
                 stdout: err.stdout?.toString() || "",
                 stderr: err.stderr?.toString() || err.message || "",
-                code: err.status ?? 1,
+                code: err.exitCode ?? 1,
             };
         }
     }
@@ -33,7 +34,7 @@ export const RepoWikiPlugin: Plugin = async ({ project, client }) => {
     async function readExistingCards(): Promise<any[]> {
         const { readFileSync, existsSync, readdirSync } = await import("fs");
         const { join } = await import("path");
-        const cardsDir = join(project.rootPath, ".repo-wiki", "cards");
+        const cardsDir = join(directory, ".repo-wiki", "cards");
         if (!existsSync(cardsDir)) return [];
 
         try {
@@ -52,18 +53,50 @@ export const RepoWikiPlugin: Plugin = async ({ project, client }) => {
     return {
         tools: [
             {
+                name: "wiki_search",
+                description: "搜索代码实体（函数、结构体、类等），基于 BM25 全文检索返回匹配结果",
+                args: {
+                    query: { type: "string", description: "搜索关键词" },
+                    top_k: { type: "number", description: "返回结果数量（默认 10）" },
+                },
+                execute: async (args: any) => {
+                    const query = (args.query as string) || "";
+                    if (!query) return "请提供搜索关键词";
+                    const topK = (args.top_k as number) || 10;
+
+                    const result = await runCli([
+                        "search", "-q", JSON.stringify(query),
+                        "-k", String(topK),
+                        "--json",
+                        "--config", ".repo-wiki/config.toml",
+                    ]);
+
+                    if (result.code === 0 && result.stdout.trim()) {
+                        try {
+                            const hits = JSON.parse(result.stdout);
+                            if (hits.length === 0) return "未找到匹配结果";
+                            return hits.map((h: any, i: number) =>
+                                `${i + 1}. **${h.name}** (${h.kind}) - ${h.file || "-"}\n` +
+                                `   签名: ${h.signature || "-"}\n` +
+                                `   分数: ${h.score?.toFixed(2)}`
+                            ).join("\n\n");
+                        } catch {
+                            return result.stdout;
+                        }
+                    }
+                    return `搜索失败: ${result.stderr || "索引不存在，请先运行 generate"}`;
+                },
+            },
+            {
                 name: "wiki_query",
                 description: "查询项目 Wiki 知识，返回 Knowledge Card 或 Wiki 页面内容",
                 args: {
                     query: { type: "string", description: "搜索关键词或模块名称" },
                 },
-                execute: async (args) => {
+                execute: async (args: any) => {
                     const query = (args.query as string) || "";
-                    if (!query) {
-                        return "请提供搜索关键词";
-                    }
+                    if (!query) return "请提供搜索关键词";
 
-                    // 先尝试读取本地已有卡片
                     const cards = await readExistingCards();
                     const matched = cards.filter(c =>
                         c.name.toLowerCase().includes(query.toLowerCase())
@@ -73,35 +106,83 @@ export const RepoWikiPlugin: Plugin = async ({ project, client }) => {
                         return matched.map(c => `## ${c.name}\n\n${c.content.slice(0, 2000)}`).join("\n\n---\n\n");
                     }
 
-                    // 无匹配时调用 CLI
-                    const result = await runCli(["status", "--config", ".repo-wiki/config.toml"]);
-                    if (result.code === 0) {
-                        return `Wiki 状态: ${result.stdout}`;
+                    const result = await runCli([
+                        "search", "-q", JSON.stringify(query),
+                        "--json", "--config", ".repo-wiki/config.toml",
+                    ]);
+                    if (result.code === 0 && result.stdout.trim()) {
+                        return `搜索结果:\n${result.stdout.slice(0, 3000)}`;
                     }
-                    return `查询失败: ${result.stderr}`;
+                    return `未找到与 "${query}" 相关的知识`;
                 },
             },
             {
-                name: "generate_wiki",
-                description: "生成或更新项目 Wiki 文档（全量生成）",
+                name: "wiki_generate",
+                description: "生成或更新项目 Wiki 文档",
                 args: {
-                    incremental: {
-                        type: "boolean",
-                        description: "是否使用增量更新模式（默认 true，只更新变更部分）",
-                    },
+                    output: { type: "string", description: "输出目录（默认 .repo-wiki）" },
                 },
-                execute: async (args) => {
-                    const incremental = args.incremental !== false;
-                    const cmd = incremental ? "update" : "generate";
-                    // 调用 CLI 时通过环境变量传递进度回调
-                    const result = await runCli([cmd, "--config", ".repo-wiki/config.toml"]);
-                    if (result.code === 0) {
-                        const cards = await readExistingCards();
-                        return `Wiki 生成完成！\n\n已生成 ${cards.length} 个 Knowledge Card\n\n可以在 .repo-wiki/wiki/ 目录查看生成的 Wiki 文档。`;
-                    }
-                    return `Wiki 生成失败:\n${result.stderr}`;
+                execute: async (args: any) => {
+                    (client as any)?.sendProgress?.({ stage: "scanning", progress: 0 });
+                    const output = (args.output as string) || "";
+                    const { stdout, stderr } = await execa("repo-wiki", ["generate", "-o", ".repo-wiki", output], {
+                        cwd: directory,
+                    });
+                    (client as any)?.sendProgress?.({ stage: "complete", progress: 100 });
+                    return stdout || `生成完成。${stderr ? "警告: " + stderr : ""}`;
+                },
+            },
+            {
+                name: "module_info",
+                description: "获取项目中某个模块的结构化信息",
+                args: { module: { type: "string", description: "模块路径" } },
+                execute: async (args: any) => {
+                    const modulePath = String(args.module || "");
+                    await runCli(["generate"]);
+                    const cards = await readExistingCards();
+                    const matched = cards.filter(c => c.name?.includes(modulePath));
+                    if (matched.length === 0) return `未找到模块 "${modulePath}" 的信息`;
+                    return matched.map(c => `## ${c.name}\n\n${c.content}`).join("\n\n---\n\n");
                 },
             },
         ],
+        commands: [{
+            name: "wiki",
+            description: "Wiki 生成与管理命令",
+            subcommands: [
+                {
+                    name: "generate",
+                    description: "全量生成项目 Wiki",
+                    execute: async () => {
+                        const result = await runCli(["generate"]);
+                        return result.code === 0 ? "Wiki 全量生成完成" : "生成失败: " + result.stderr;
+                    },
+                },
+                {
+                    name: "update",
+                    description: "增量更新 Wiki",
+                    execute: async () => {
+                        const result = await runCli(["update"]);
+                        return result.code === 0 ? "Wiki 增量更新完成" : "更新失败: " + result.stderr;
+                    },
+                },
+                {
+                    name: "status",
+                    description: "查看 Wiki 状态",
+                    execute: async () => {
+                        const result = await runCli(["status"]);
+                        return result.code === 0 ? result.stdout : "查看状态失败: " + result.stderr;
+                    },
+                },
+                {
+                    name: "export",
+                    description: "导出 Wiki",
+                    execute: async () => {
+                        const result = await runCli(["export"]);
+                        return result.code === 0 ? result.stdout || "导出完成" : "导出失败: " + result.stderr;
+                    },
+                },
+            ],
+        }],
     };
 };

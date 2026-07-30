@@ -43,6 +43,10 @@ impl Message {
 pub trait LlmProvider: Send + Sync {
     fn model_name(&self) -> &str;
     async fn complete(&self, messages: &[Message]) -> Result<String>;
+    async fn complete_stream(&self, messages: &[Message]) -> Result<Vec<String>> {
+        let _ = messages;
+        Err(anyhow::anyhow!("streaming not supported"))
+    }
     /// 返回已完成的 LLM 调用次数
     fn call_count(&self) -> usize {
         0
@@ -72,6 +76,14 @@ impl LlmProvider for Provider {
             Provider::OpenAi(p) => p.complete(messages).await,
             Provider::Anthropic(p) => p.complete(messages).await,
             Provider::Mock(p) => p.complete(messages).await,
+        }
+    }
+
+    async fn complete_stream(&self, messages: &[Message]) -> Result<Vec<String>> {
+        match self {
+            Provider::OpenAi(p) => p.complete_stream(messages).await,
+            Provider::Anthropic(p) => p.complete_stream(messages).await,
+            Provider::Mock(p) => p.complete_stream(messages).await,
         }
     }
 
@@ -371,6 +383,12 @@ impl MockProvider {
         Self {
             call_count: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+}
+
+impl Default for MockProvider {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

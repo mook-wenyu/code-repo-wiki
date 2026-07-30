@@ -27,3 +27,9 @@ format = "markdown"
 [incremental]
 enabled = true
 strategy = "git-diff"
+
+[search]
+enabled = true
+index_dir = ".search"
+default_engine = "text"
+default_top_k = 10

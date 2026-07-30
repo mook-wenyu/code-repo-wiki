@@ -1,5 +1,6 @@
 use crate::generate::chunk::Chunk;
 use crate::generate::llm::Message;
+use crate::ingest::parser::Entity;
 use crate::model::{KnowledgeGraph, ModuleCluster};
 
 /// 生成模块摘要的系统 prompt
@@ -214,4 +215,23 @@ pub fn wiki_page_prompt(chunk: &Chunk, module_summary: &str, language: &str) -> 
         Message::system(wiki_page_system_prompt(language)),
         Message::user(wiki_page_user_prompt(chunk, module_summary)),
     ]
+}
+
+/// 生成单个实体摘要的 prompt
+pub fn entity_summary_prompt(entity: &Entity, language: &str) -> String {
+    format!(
+        "系统指令：你是一个代码分析专家。请为以下代码实体生成一段简短的技术摘要。\n\n\
+         实体信息：\n\
+         - 类型：{}\n\
+         - 名称：{}\n\
+         - 签名：{}\n\
+         - 文档注释：{}\n\
+         \n\
+         请用 {} 语言回复。",
+        entity.kind,
+        entity.name,
+        entity.signature.as_deref().unwrap_or("无"),
+        entity.doc_comment.as_deref().unwrap_or("无"),
+        language
+    )
 }

@@ -40,25 +40,39 @@ pub fn render_all(
             .iter()
             .filter(|c| doc.module_path.iter().any(|p| c.module_name.contains(p)))
             .collect();
-        write_document(doc, &doc_cards, &output_dir)?;
+        write_document(doc, &doc_cards, output_dir)?;
     }
 
-    // 2. 写入 Knowledge Card（YAML frontmatter 格式）
-    let cards_content = cards
-        .iter()
-        .map(|c| markdown::render_knowledge_card(c))
-        .collect::<Vec<_>>()
-        .join("\n---\n");
-    let cards_index = output_dir.join("cards").join("_index.md");
-    std::fs::write(&cards_index, cards_content)?;
+    // 2. 生成 overview.md（第一个文档作为概览）
+    if let Some(first) = documents.first() {
+        let overview_content = format!("# 项目概览\n\n{}", first.content);
+        std::fs::write(wiki_dir.join("overview.md"), overview_content)?;
+    }
 
-    // 3. 生成目录页
+    // 3. 写入 Knowledge Card 索引（JSON 格式）
+    let cards_index_json = serde_json::json!({
+        "version": "1.0",
+        "generated_at": chrono::Utc::now().to_rfc3339(),
+        "cards": cards.iter().map(|c| {
+            serde_json::json!({
+                "name": c.module_name.replace("::", "_"),
+                "title": c.module_name,
+                "path": format!("cards/{}.md", c.module_name.replace("::", "_")),
+            })
+        }).collect::<Vec<_>>(),
+    });
+    let cards_index = output_dir.join("cards").join("_index.json");
+    std::fs::write(&cards_index, serde_json::to_string_pretty(&cards_index_json)?)?;
+
+    // 4. 生成目录页
     let toc = markdown::render_table_of_contents(documents);
     std::fs::write(output_dir.join("_toc.md"), toc)?;
 
-    // 4. 生成 Mermaid 依赖图
+    // 5. 生成 Mermaid 依赖图
+    let diagrams_dir = assets_dir.join("diagrams");
+    std::fs::create_dir_all(&diagrams_dir)?;
     let mermaid_content = mermaid::render_module_dependency_graph(graph);
-    std::fs::write(assets_dir.join("module-deps.mermaid"), mermaid_content)?;
+    std::fs::write(diagrams_dir.join("module-deps.mermaid"), mermaid_content)?;
 
     // 5. 生成交叉引用索引
     let crossref = crossref::CrossRefIndex::build(documents);

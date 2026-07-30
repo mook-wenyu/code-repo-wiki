@@ -93,7 +93,7 @@ fn parse_card_response(response: &str, chunk: &Chunk) -> Result<KnowledgeCard> {
     let json_str = extract_json(response);
 
     let parsed: serde_json::Value =
-        serde_json::from_str(&json_str).map_err(|e| anyhow::anyhow!("解析卡片 JSON 失败: {}", e))?;
+        serde_json::from_str(json_str).map_err(|e| anyhow::anyhow!("解析卡片 JSON 失败: {}", e))?;
 
     let summary = parsed["summary"].as_str().unwrap_or("").to_string();
 

@@ -137,12 +137,16 @@ pub fn write_document(doc: &WikiDocument, cards: &[&KnowledgeCard], output_dir: 
     std::fs::create_dir_all(&wiki_dir)?;
 
     // Wiki 页面
-    let wiki_file_name = if doc.module_path.is_empty() {
-        format!("{}.md", doc.title)
+    let wiki_path = if doc.kind == DocumentKind::ArchitectureOverview {
+        wiki_dir.join("architecture.md")
     } else {
-        format!("{}.md", doc.module_path.join("_"))
+        let wiki_file_name = if doc.module_path.is_empty() {
+            format!("{}.md", doc.title)
+        } else {
+            format!("{}.md", doc.module_path.join("_"))
+        };
+        wiki_dir.join(&wiki_file_name)
     };
-    let wiki_path = wiki_dir.join(&wiki_file_name);
     let content = render_wiki_page(doc);
     std::fs::write(&wiki_path, content)?;
 

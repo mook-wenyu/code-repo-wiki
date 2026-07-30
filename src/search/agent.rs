@@ -31,10 +31,8 @@ impl SearchAgent {
             if !text_results.is_empty() {
                 all.push(hybrid::text_results_to_hits(text_results));
             }
-            if let Some(ref sem) = self.semantic {
-                if let Ok(sem_results) = sem.search(query, top_k * 2) {
-                    all.push(hybrid::semantic_results_to_hits(sem_results));
-                }
+            if let Some(ref sem) = self.semantic && let Ok(sem_results) = sem.search(query, top_k * 2) {
+                all.push(hybrid::semantic_results_to_hits(sem_results));
             }
             return rrf_merge(&all, top_k, 60.0);
         }
@@ -48,23 +46,21 @@ impl SearchAgent {
             Err(_) => return Vec::new(),
         };
         let mut results = Vec::new();
-        if let Ok(Some(m)) = q.find_definition(source, symbol) {
-            if let Some(text) = m.captures.get("name") {
-                results.push(SearchHit {
-                    node: CodeNode {
-                        id: crate::model::NodeId::new(0),
-                        kind: crate::model::NodeKind::Function,
-                        name: symbol.to_string(),
-                        file_path: None,
-                        line_range: Some((m.start_line, m.end_line)),
-                        doc_comment: None,
-                        signature: Some(text.clone()),
-                        module_path: vec![],
-                    },
-                    score: 100.0,
-                    source: "ast".into(),
-                });
-            }
+        if let Ok(Some(m)) = q.find_definition(source, symbol) && let Some(text) = m.captures.get("name") {
+            results.push(SearchHit {
+                node: CodeNode {
+                    id: crate::model::NodeId::new(0),
+                    kind: crate::model::NodeKind::Function,
+                    name: symbol.to_string(),
+                    file_path: None,
+                    line_range: Some((m.start_line, m.end_line)),
+                    doc_comment: None,
+                    signature: Some(text.clone()),
+                    module_path: vec![],
+                },
+                score: 100.0,
+                source: "ast".into(),
+            });
         }
         results
     }
@@ -77,13 +73,19 @@ mod tests {
     use super::*;
     use crate::model::{NodeKind, NodeId};
 
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static AGENT_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn unique_db_path(prefix: &str) -> std::path::PathBuf {
+        let id = AGENT_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let mut p = std::env::temp_dir();
+        p.push(format!("{}_{}_{}.db", prefix, std::process::id(), id));
+        let _ = std::fs::remove_file(&p);
+        p
+    }
+
     fn make_text_engine() -> TextEngine {
-        let path = {
-            let mut p = std::env::temp_dir();
-            p.push(format!("agent_test_{}", std::process::id()));
-            let _ = std::fs::remove_file(&p);
-            p
-        };
+        let path = unique_db_path("agent_text");
         let mut t = TextEngine::open(&path).unwrap();
         let _ = t.index(&CodeNode {
             id: NodeId::new(0), kind: NodeKind::Function,
@@ -100,12 +102,7 @@ mod tests {
     }
 
     fn make_text_empty() -> TextEngine {
-        let path = {
-            let mut p = std::env::temp_dir();
-            p.push(format!("agent_test_empty_{}", std::process::id()));
-            let _ = std::fs::remove_file(&p);
-            p
-        };
+        let path = unique_db_path("agent_empty");
         TextEngine::open(&path).unwrap()
     }
 

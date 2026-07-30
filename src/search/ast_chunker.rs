@@ -105,16 +105,14 @@ fn collect_nested(node: &tree_sitter::Node, source: &str) -> Vec<AstChunk> {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             let kind = child.kind();
-            if kind == "block" || kind == "body" || kind == "declaration_list" {
-                if let Ok(text) = child.utf8_text(bytes) {
-                    children.push(AstChunk {
-                        source: text.to_string(),
-                        path: vec!["block".into()],
-                        symbol: None,
-                        span: (child.start_byte(), child.end_byte()),
-                        children: Vec::new(),
-                    });
-                }
+            if (kind == "block" || kind == "body" || kind == "declaration_list") && let Ok(text) = child.utf8_text(bytes) {
+                children.push(AstChunk {
+                    source: text.to_string(),
+                    path: vec!["block".into()],
+                    symbol: None,
+                    span: (child.start_byte(), child.end_byte()),
+                    children: Vec::new(),
+                });
             }
         }
     }
@@ -151,13 +149,13 @@ mod tests {
     fn test_chunk_python() {
         let source = "def hello(): pass\nclass World: pass";
         let chunks = chunk_by_ast(source, "python");
-        assert!(chunks.len() >= 1);
+        assert!(!chunks.is_empty());
     }
 
     #[test]
     fn test_chunk_no_definitions() {
         let source = "let x = 1;";
         let chunks = chunk_by_ast(source, "rust");
-        assert!(chunks.len() >= 1);
+        assert!(!chunks.is_empty());
     }
 }

@@ -42,12 +42,11 @@ impl Chunk {
 pub fn build_node_to_file_map(graph: &KnowledgeGraph) -> HashMap<NodeIndex, PathBuf> {
     let mut map = HashMap::new();
     for n in graph.graph.node_indices() {
-        if let Some(w) = graph.graph.node_weight(n) {
-            if w.kind == NodeKind::File {
-                if let Some(ref fp) = w.file_path {
-                    map.insert(n, PathBuf::from(fp));
-                }
-            }
+        if let Some(w) = graph.graph.node_weight(n)
+            && w.kind == NodeKind::File
+            && let Some(ref fp) = w.file_path
+        {
+            map.insert(n, PathBuf::from(fp));
         }
     }
     map

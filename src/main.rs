@@ -50,6 +50,28 @@ enum Commands {
         #[arg(short, long, default_value = ".repo-wiki/config.toml")]
         config: PathBuf,
     },
+    /// 搜索代码实体
+    Search {
+        /// 搜索关键词
+        #[arg(short, long)]
+        query: String,
+        /// 返回结果数量
+        #[arg(short = 'k', long, default_value = "10")]
+        top_k: usize,
+        /// 配置文件路径
+        #[arg(short, long, default_value = ".repo-wiki/config.toml")]
+        config: PathBuf,
+        /// 以 JSON 格式输出
+        #[arg(long)]
+        json: bool,
+        /// 搜索引擎选择: text / semantic / hybrid（默认取配置文件中的 default_engine）
+        #[arg(short, long)]
+        engine: Option<String>,
+    },
+    /// 将 repo-wiki 注册为 OpenCode 插件
+    InstallToOpencode,
+    /// 从 OpenCode 卸载 repo-wiki 插件
+    UninstallFromOpencode,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -97,6 +119,56 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Watch { config } => {
             repo_wiki::run_watch(&config)?;
+        }
+        Commands::Search { query, top_k, config, json, engine } => {
+            // 解析引擎类型：优先用 CLI 参数，否则取配置文件中的 default_engine
+            let cfg = repo_wiki::config::load_config(&config)?;
+            let engine_type = match engine.as_deref() {
+                Some("text") => repo_wiki::config::schema::SearchEngineType::Text,
+                Some("semantic") => repo_wiki::config::schema::SearchEngineType::Semantic,
+                Some("hybrid") => repo_wiki::config::schema::SearchEngineType::Hybrid,
+                Some(other) => anyhow::bail!("不支持的搜索引擎: {}（可选: text/semantic/hybrid）", other),
+                None => cfg.search.default_engine.clone(),
+            };
+            let results = repo_wiki::execute_search(&config, &query, top_k, &engine_type)?;
+            if json {
+                // JSON 格式输出（供 OpenCode 插件解析）
+                let json_results: Vec<serde_json::Value> = results.iter().map(|hit| {
+                    serde_json::json!({
+                        "name": hit.node.name,
+                        "kind": hit.node.kind.as_str(),
+                        "score": hit.score,
+                        "file": hit.node.file_path,
+                        "lines": hit.node.line_range,
+                        "signature": hit.node.signature,
+                        "source": hit.source,
+                    })
+                }).collect();
+                println!("{}", serde_json::to_string_pretty(&json_results)?);
+            } else {
+                // 表格格式输出（人类可读）
+                if results.is_empty() {
+                    println!("未找到匹配结果");
+                } else {
+                    println!("{:<4} {:<30} {:<12} {:<8} 文件", "#", "名称", "类型", "分数");
+                    println!("{}", "-".repeat(80));
+                    for (i, hit) in results.iter().enumerate() {
+                        let file = hit.node.file_path.as_deref().unwrap_or("-");
+                        println!("{:<4} {:<30} {:<12} {:<8.2} {}",
+                            i + 1, hit.node.name, hit.node.kind.as_str(), hit.score, file);
+                    }
+                }
+            }
+        }
+        Commands::InstallToOpencode => {
+            let mut oc = repo_wiki::config::opencode::OpenCodeConfig::new()?;
+            oc.install_plugin()?;
+            println!("✅ repo-wiki 插件已安装到 OpenCode");
+        }
+        Commands::UninstallFromOpencode => {
+            let mut oc = repo_wiki::config::opencode::OpenCodeConfig::new()?;
+            oc.uninstall_plugin()?;
+            println!("✅ repo-wiki 插件已从 OpenCode 卸载");
         }
     }
 

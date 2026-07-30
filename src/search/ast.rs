@@ -57,27 +57,20 @@ impl AstQuery {
         let mut cursor = tree.walk();
         'outer: loop {
             let node = cursor.node();
-            if def_types.contains(&node.kind()) {
-                // 检查 name field 是否匹配
-                if let Some(name_node) = node.child_by_field_name("name") {
-                    if let Ok(name) = name_node.utf8_text(bytes) {
-                        if name == symbol {
-                            let mut captures = HashMap::new();
-                            let mut capture_lines = HashMap::new();
-                            if let Ok(text) = node.utf8_text(bytes) {
-                                captures.insert("name".to_string(), text.to_string());
-                            }
-                            capture_lines.insert("name".to_string(), name_node.start_position().row + 1);
-                            result = Some(QueryMatch {
-                                captures,
-                                capture_lines,
-                                start_line: node.start_position().row + 1,
-                                end_line: node.end_position().row + 1,
-                            });
-                            break 'outer;
-                        }
-                    }
+            if def_types.contains(&node.kind()) && let Some(name_node) = node.child_by_field_name("name") && let Ok(name) = name_node.utf8_text(bytes) && name == symbol {
+                let mut captures = HashMap::new();
+                let mut capture_lines = HashMap::new();
+                if let Ok(text) = node.utf8_text(bytes) {
+                    captures.insert("name".to_string(), text.to_string());
                 }
+                capture_lines.insert("name".to_string(), name_node.start_position().row + 1);
+                result = Some(QueryMatch {
+                    captures,
+                    capture_lines,
+                    start_line: node.start_position().row + 1,
+                    end_line: node.end_position().row + 1,
+                });
+                break 'outer;
             }
 
             if cursor.goto_first_child() { continue; }
@@ -109,12 +102,8 @@ impl AstQuery {
         let mut cursor = tree.walk();
         'walk: loop {
             let node = cursor.node();
-            if def_types.contains(&node.kind()) {
-                if let Some(name_node) = node.child_by_field_name("name") {
-                    if let Ok(name) = name_node.utf8_text(bytes) {
-                        defs.push(name.to_string());
-                    }
-                }
+            if def_types.contains(&node.kind()) && let Some(name_node) = node.child_by_field_name("name") && let Ok(name) = name_node.utf8_text(bytes) {
+                defs.push(name.to_string());
             }
 
             if cursor.goto_first_child() { continue; }

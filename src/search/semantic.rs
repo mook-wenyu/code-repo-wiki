@@ -1,57 +1,30 @@
+//! 语义搜索引擎——SQLite 持久化向量存储
+//!
+//! 向量数据存储在 SQLite BLOB 列中，搜索时加载到内存执行余弦相似度计算。
+//! 支持并发读取（WAL 模式）。
+
 use std::path::Path;
 use std::sync::Arc;
 use anyhow::{Context, Result};
 
 use crate::model::CodeNode;
 use crate::generate::embed::EmbeddingEngine;
+use super::store::SearchStore;
 
-/// 语义搜索引擎——bincode 持久化向量存储
+/// 语义搜索引擎
 ///
-/// 向量数据通过 bincode 序列化到磁盘文件，进程重启后自动加载。
-/// 搜索在内存中执行余弦相似度计算。
+/// 内部委托 SearchStore（SQLite）完成向量持久化，
+/// 搜索时从 SQLite 加载所有向量到内存，执行余弦相似度排序。
 pub struct SemanticEngine {
-    entries: Vec<(CodeNode, Vec<f32>)>,
+    store: SearchStore,
     embedder: Arc<EmbeddingEngine>,
-    persist_path: Option<std::path::PathBuf>,
 }
 
 impl SemanticEngine {
     /// 打开或创建持久化向量搜索数据库。
     pub fn open(path: impl AsRef<Path>, embedder: Arc<EmbeddingEngine>) -> Result<Self> {
-        let persist_path = path.as_ref().to_path_buf();
-        if persist_path.exists() {
-            let data = std::fs::read(&persist_path)
-                .context("读取持久化向量文件失败")?;
-            let persisted: PersistedVectors = bincode::deserialize(&data)
-                .context("反序列化持久化向量失败")?;
-            return Ok(Self {
-                entries: persisted.entries,
-                embedder,
-                persist_path: Some(persist_path),
-            });
-        }
-        Ok(Self {
-            entries: Vec::new(),
-            embedder,
-            persist_path: Some(persist_path),
-        })
-    }
-
-    /// 纯内存模式（不持久化）
-    pub fn new_in_memory(embedder: Arc<EmbeddingEngine>) -> Self {
-        Self { entries: Vec::new(), embedder, persist_path: None }
-    }
-
-    /// 持久化到文件
-    fn save(&self) -> Result<()> {
-        if let Some(ref path) = self.persist_path {
-            let data = PersistedVectors { entries: self.entries.clone() };
-            let bytes = bincode::serialize(&data)
-                .context("序列化持久化向量失败")?;
-            std::fs::write(path, &bytes)
-                .context("写入持久化向量文件失败")?;
-        }
-        Ok(())
+        let store = SearchStore::open(path)?;
+        Ok(Self { store, embedder })
     }
 
     /// 索引一个实体：生成 embedding 并持久化。
@@ -65,47 +38,77 @@ impl SemanticEngine {
             .context("创建 tokio runtime 失败")?;
         let vector = rt.block_on(self.embedder.embed(&text))
             .context("生成 embedding 失败")?;
-        self.entries.push((node.clone(), vector));
-        self.save()?;
-        Ok(())
+        self.store.insert_vectors_batch(&[(node.clone(), vector)])
+    }
+
+    /// 批量索引多个实体：一次性生成所有 embedding 并持久化。
+    ///
+    /// 内部调用 `EmbeddingEngine::embed_batch` 批量获取向量，
+    /// 避免逐条创建 tokio Runtime 的开销。
+    pub fn index_batch(&mut self, items: &[(CodeNode, String)]) -> Result<()> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        // 组装批量嵌入文本
+        let texts: Vec<String> = items.iter().map(|(node, source)| {
+            format!(
+                "{} {:?} {} {}",
+                node.name, node.kind,
+                node.signature.as_deref().unwrap_or(""), source
+            )
+        }).collect();
+
+        // 一次性获取所有向量
+        let rt = tokio::runtime::Runtime::new()
+            .context("创建 tokio runtime 失败")?;
+        let vectors = rt.block_on(self.embedder.embed_batch(&texts))
+            .context("批量生成 embedding 失败")?;
+
+        // 组装 (node, vector) 对并写入 SQLite
+        let pairs: Vec<(CodeNode, Vec<f32>)> = items.iter()
+            .zip(vectors)
+            .map(|((node, _), vector)| (node.clone(), vector))
+            .collect();
+        self.store.insert_vectors_batch(&pairs)
     }
 
     /// 搜索最相似的 k 个实体。
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<(CodeNode, f32)>> {
-        if self.entries.is_empty() {
+        let all_vectors = self.store.load_all_vectors()?;
+        if all_vectors.is_empty() {
             return Ok(Vec::new());
         }
+
         let rt = tokio::runtime::Runtime::new()
             .context("创建 tokio runtime 失败")?;
         let q_vec = rt.block_on(self.embedder.embed(query))?;
 
-        let mut scores: Vec<(usize, f32)> = self.entries.iter().enumerate()
+        let mut scores: Vec<(usize, f32)> = all_vectors.iter().enumerate()
             .map(|(i, (_, v))| (i, EmbeddingEngine::cosine_similarity(&q_vec, v)))
             .collect();
         scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         let results = scores.into_iter()
             .filter(|(_, s)| *s > 0.3)
             .take(limit)
-            .map(|(i, s)| (self.entries[i].0.clone(), s))
+            .map(|(i, s)| (all_vectors[i].0.clone(), s))
             .collect();
         Ok(results)
     }
 
-    /// 清空所有向量数据（同时删除持久化文件）
-    pub fn clear(&mut self) -> Result<()> {
-        self.entries.clear();
-        if let Some(ref path) = self.persist_path {
-            let _ = std::fs::remove_file(path);
-        }
-        Ok(())
+    /// 删除指定文件路径关联的所有向量条目。
+    pub fn remove_by_file(&mut self, file_path: &str) -> Result<usize> {
+        self.store.delete_vectors_by_file(file_path)
     }
 
-    pub fn entry_count(&self) -> usize { self.entries.len() }
-}
+    /// 清空所有向量数据。
+    pub fn clear(&mut self) -> Result<()> {
+        self.store.clear_vectors()
+    }
 
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
-struct PersistedVectors {
-    entries: Vec<(CodeNode, Vec<f32>)>,
+    /// 当前向量条目数。
+    pub fn entry_count(&self) -> usize {
+        self.store.vector_count().unwrap_or(0)
+    }
 }
 
 #[cfg(test)]
@@ -127,22 +130,25 @@ mod tests {
         Arc::new(EmbeddingEngine::new(&config).unwrap())
     }
 
-    fn tmp_path() -> std::path::PathBuf {
+    fn tmp_path(label: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEM_COUNTER: AtomicU64 = AtomicU64::new(0);
+        let id = SEM_COUNTER.fetch_add(1, Ordering::Relaxed);
         let mut p = std::env::temp_dir();
-        p.push(format!("semantic_engine_test_{}.bin", std::process::id()));
+        p.push(format!("semantic_fts_{}_{}.db", label, id));
         let _ = std::fs::remove_file(&p);
         p
     }
 
     #[test]
     fn test_semantic_new() {
-        let engine = SemanticEngine::open(tmp_path(), mock_embedder()).unwrap();
+        let engine = SemanticEngine::open(tmp_path("new"), mock_embedder()).unwrap();
         assert_eq!(engine.entry_count(), 0);
     }
 
     #[test]
     fn test_search_empty() {
-        let engine = SemanticEngine::open(tmp_path(), mock_embedder()).unwrap();
+        let engine = SemanticEngine::open(tmp_path("empty"), mock_embedder()).unwrap();
         assert!(engine.search("test", 10).unwrap().is_empty());
     }
 }

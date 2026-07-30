@@ -5,6 +5,23 @@ use ignore::WalkBuilder;
 
 use crate::config::schema::ScopeSection;
 
+const BINARY_EXTENSIONS: &[&str] = &[
+    ".exe", ".dll", ".bin", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg",
+    ".pdf", ".ttf", ".woff", ".woff2", ".eot", ".zip", ".tar", ".gz", ".7z",
+    ".rar", ".mp3", ".mp4", ".avi", ".mov", ".wasm", ".o", ".obj", ".lib",
+    ".a", ".so", ".dylib", ".pyc", ".class",
+];
+
+fn is_binary_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| {
+            let ext = format!(".{}", ext.to_lowercase());
+            BINARY_EXTENSIONS.contains(&ext.as_str())
+        })
+        .unwrap_or(false)
+}
+
 /// 文件系统遍历器，支持 .gitignore 和 glob 模式过滤
 pub struct Scanner {
     root: PathBuf,
@@ -49,7 +66,7 @@ impl Scanner {
 
             let included = self.include.is_empty() || self.include.iter().any(|p| p.matches(&rel_str));
             let excluded = self.exclude.iter().any(|p| p.matches(&rel_str));
-            if included && !excluded {
+            if included && !excluded && !is_binary_extension(path) {
                 files.push(path.to_path_buf());
             }
         }

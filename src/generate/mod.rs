@@ -65,7 +65,7 @@ pub async fn run_generation(
         tracing::warn!("未检测到模块聚类，回退到文件级分块");
         insights
             .iter()
-            .map(|f| chunk::chunk_by_file(f))
+            .map(chunk::chunk_by_file)
             .collect::<Vec<_>>()
     } else {
         chunk::chunk_by_module(insights, &graph.modules, graph)
@@ -162,7 +162,7 @@ pub async fn run_generation_filtered(
     let chunks: Vec<_> = if graph.modules.is_empty() {
         changed_insights
             .iter()
-            .map(|f| chunk::chunk_by_file(f))
+            .map(chunk::chunk_by_file)
             .collect()
     } else {
         // 按模块重新组织变更文件，保持模块上下文

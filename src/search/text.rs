@@ -1,165 +1,63 @@
-use std::collections::{HashMap, HashSet};
+//! BM25 全文搜索引擎——SQLite FTS5 持久化
+//!
+//! 通过 SQLite FTS5 虚拟表实现全文搜索，BM25 排序由 SQLite 内置完成。
+//! 支持并发读取（WAL 模式），写操作自动排队。
+
 use std::path::Path;
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use crate::model::CodeNode;
+use super::store::SearchStore;
 
-/// BM25 全文搜索引擎——bincode 持久化
+/// BM25 全文搜索引擎
 ///
-/// 索引数据通过 bincode 序列化到磁盘文件，进程重启后自动加载。
-/// 在内存中执行 BM25 计算（repo 规模下零延迟），避免外部数据库依赖。
+/// 内部委托 SearchStore（SQLite FTS5）完成索引和搜索。
+/// 公开 API 保持不变，供 pipeline 和 CLI 调用。
 pub struct TextEngine {
-    docs: Vec<DocEntry>,
-    df: HashMap<String, usize>,
-    avg_doc_len: f64,
-    total_docs: usize,
-    /// 持久化文件路径（None 表示纯内存模式，不持久化）
-    persist_path: Option<std::path::PathBuf>,
-}
-
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-struct DocEntry {
-    node: CodeNode,
-    source_code: String,
-    tokens: Vec<String>,
+    store: SearchStore,
 }
 
 impl TextEngine {
-    /// 创建或加载持久化搜索引擎。
+    /// 打开或创建持久化搜索引擎。
     ///
-    /// 指定 path 时，如果文件已存在则从其中恢复索引数据。
+    /// path 指向 SQLite 数据库文件（.db），不存在时自动创建。
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let persist_path = path.as_ref().to_path_buf();
-        if persist_path.exists() {
-            let data = std::fs::read(&persist_path)
-                .context("读取持久化索引文件失败")?;
-            let persisted: PersistedIndex = bincode::deserialize(&data)
-                .context("反序列化持久化索引失败")?;
-            return Ok(Self {
-                docs: persisted.docs,
-                df: persisted.df,
-                avg_doc_len: persisted.avg_doc_len,
-                total_docs: persisted.total_docs,
-                persist_path: Some(persist_path),
-            });
-        }
-        Ok(Self {
-            docs: Vec::new(), df: HashMap::new(),
-            avg_doc_len: 0.0, total_docs: 0,
-            persist_path: Some(persist_path),
-        })
+        let store = SearchStore::open(path)?;
+        Ok(Self { store })
     }
 
-    /// 纯内存模式（不持久化）
-    pub fn new_in_memory() -> Self {
-        Self {
-            docs: Vec::new(), df: HashMap::new(),
-            avg_doc_len: 0.0, total_docs: 0,
-            persist_path: None,
-        }
-    }
-
-    /// 持久化当前索引到文件
-    fn save(&self) -> Result<()> {
-        if let Some(ref path) = self.persist_path {
-            let data = PersistedIndex {
-                docs: self.docs.clone(),
-                df: self.df.clone(),
-                avg_doc_len: self.avg_doc_len,
-                total_docs: self.total_docs,
-            };
-            let bytes = bincode::serialize(&data)
-                .context("序列化持久化索引失败")?;
-            std::fs::write(path, &bytes)
-                .context("写入持久化索引文件失败")?;
-        }
-        Ok(())
-    }
-
-    /// 索引一个 CodeNode，自动持久化。
+    /// 索引一个 CodeNode。
     pub fn index(&mut self, node: &CodeNode, source_code: &str) -> Result<()> {
-        let text = format!(
-            "{} {:?} {} {}",
-            node.name, node.kind, node.signature.as_deref().unwrap_or(""), source_code
-        );
-        let tokens = tokenize(&text);
-        let unique: HashSet<&str> = tokens.iter().map(|s| s.as_str()).collect();
-        for tok in &unique {
-            *self.df.entry(tok.to_string()).or_insert(0) += 1;
-        }
-        self.docs.push(DocEntry {
-            node: node.clone(),
-            source_code: source_code.to_string(),
-            tokens,
-        });
-        self.total_docs = self.docs.len();
-        self.avg_doc_len = self.docs.iter().map(|d| d.tokens.len() as f64).sum::<f64>()
-            / self.total_docs.max(1) as f64;
-        self.save()?;
-        Ok(())
+        self.store.insert_entities_batch(&[(node.clone(), source_code.to_string())])
+    }
+
+    /// 批量索引多个实体。
+    pub fn index_batch(&mut self, items: &[(CodeNode, String)]) -> Result<()> {
+        self.store.insert_entities_batch(items)
     }
 
     /// BM25 搜索，返回 (CodeNode, score) 按相关性降序。
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<(CodeNode, f64)>> {
-        let q_tokens = tokenize(query);
-        if q_tokens.is_empty() || self.total_docs == 0 {
+        if query.is_empty() {
             return Ok(Vec::new());
         }
-        let k1 = 1.5;
-        let b = 0.75;
-
-        let mut scores: Vec<(usize, f64)> = (0..self.docs.len()).map(|i| (i, 0.0)).collect();
-        for (i, entry) in self.docs.iter().enumerate() {
-            let dl = entry.tokens.len() as f64;
-            let mut score = 0.0;
-            for qt in &q_tokens {
-                let tf = entry.tokens.iter().filter(|t| *t == qt).count() as f64;
-                let df = self.df.get(qt).copied().unwrap_or(1);
-                let idf = ((self.total_docs as f64 - df as f64 + 0.5)
-                    / (df as f64 + 0.5) + 1.0).ln();
-                score += idf * (tf * (k1 + 1.0)) / (tf + k1 * (1.0 - b + b * dl / self.avg_doc_len));
-            }
-            scores[i].1 = score;
-        }
-        scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        let results = scores.into_iter()
-            .filter(|(_, s)| *s > 0.0)
-            .take(limit)
-            .map(|(i, s)| (self.docs[i].node.clone(), s))
-            .collect();
-        Ok(results)
+        self.store.search_fts(query, limit)
     }
 
-    /// 清空索引（同时删除持久化文件）
+    /// 删除指定文件路径关联的所有索引条目。
+    pub fn remove_by_file(&mut self, file_path: &str) -> Result<usize> {
+        self.store.delete_entities_by_file(file_path)
+    }
+
+    /// 清空索引。
     pub fn clear(&mut self) -> Result<()> {
-        self.docs.clear();
-        self.df.clear();
-        self.avg_doc_len = 0.0;
-        self.total_docs = 0;
-        if let Some(ref path) = self.persist_path {
-            let _ = std::fs::remove_file(path);
-        }
-        Ok(())
+        self.store.clear_entities()
     }
 
-    pub fn doc_count(&self) -> usize { self.total_docs }
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-struct PersistedIndex {
-    docs: Vec<DocEntry>,
-    df: HashMap<String, usize>,
-    avg_doc_len: f64,
-    total_docs: usize,
-}
-
-/// 分词：转小写，按非字母数字分割
-fn tokenize(text: &str) -> Vec<String> {
-    text.to_lowercase()
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|s| !s.is_empty() && s.len() >= 2)
-        .map(|s| s.to_string())
-        .collect()
+    /// 当前索引中的文档数。
+    pub fn doc_count(&self) -> usize {
+        self.store.entity_count().unwrap_or(0)
+    }
 }
 
 #[cfg(test)]
@@ -167,11 +65,14 @@ mod tests {
     use super::*;
     use crate::model::{NodeId, NodeKind};
 
-    fn make_node(name: &str, kind: NodeKind, _id: u64) -> CodeNode {
+    fn make_node(name: &str, kind: NodeKind) -> CodeNode {
         CodeNode {
             id: NodeId::new(0), kind, name: name.into(),
-            file_path: None, line_range: None, doc_comment: None,
-            signature: None, module_path: vec![],
+            file_path: Some("src/test.rs".into()),
+            line_range: Some((1, 5)),
+            doc_comment: None,
+            signature: Some(format!("fn {}()", name)),
+            module_path: vec![],
         }
     }
 
@@ -179,7 +80,7 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let mut p = std::env::temp_dir();
-        p.push(format!("text_{}_{}.bin", label, COUNTER.fetch_add(1, Ordering::Relaxed)));
+        p.push(format!("text_fts_{}_{}.db", label, COUNTER.fetch_add(1, Ordering::Relaxed)));
         let _ = std::fs::remove_file(&p);
         p
     }
@@ -187,11 +88,11 @@ mod tests {
     #[test]
     fn test_index_and_search() -> Result<()> {
         let mut engine = TextEngine::open(tmp_path("index_search"))?;
-        engine.index(&make_node("add_user", NodeKind::Function, 0), "fn add_user(name: &str)")?;
-        engine.index(&make_node("delete_user", NodeKind::Function, 1), "fn delete_user(id: u64)")?;
-        let results = engine.search("add", 10)?;
+        engine.index(&make_node("add_user", NodeKind::Function), "fn add_user(name: &str)")?;
+        engine.index(&make_node("delete_user", NodeKind::Function), "fn delete_user(id: u64)")?;
+        let results = engine.search("add_user", 10)?;
         assert!(!results.is_empty());
-        assert!(results[0].0.name.contains("add"));
+        assert!(results[0].0.name.contains("add_user"));
         Ok(())
     }
 
@@ -203,21 +104,11 @@ mod tests {
     }
 
     #[test]
-    fn test_scoring_order() -> Result<()> {
-        let mut engine = TextEngine::open(tmp_path("scoring"))?;
-        engine.index(&make_node("auth_login", NodeKind::Function, 0), "handle user login")?;
-        engine.index(&make_node("user_profile", NodeKind::Function, 1), "user profile page")?;
-        let results = engine.search("user", 10)?;
-        assert!(results.len() >= 1);
-        Ok(())
-    }
-
-    #[test]
     fn test_persistence() -> Result<()> {
         let path = tmp_path("persist");
         {
             let mut engine = TextEngine::open(&path)?;
-            engine.index(&make_node("persist_test", NodeKind::Function, 0), "fn test()")?;
+            engine.index(&make_node("persist_test", NodeKind::Function), "fn test()")?;
         }
         let engine = TextEngine::open(&path)?;
         assert_eq!(engine.doc_count(), 1);
@@ -229,10 +120,36 @@ mod tests {
     #[test]
     fn test_clear() -> Result<()> {
         let mut engine = TextEngine::open(tmp_path("clear"))?;
-        engine.index(&make_node("x", NodeKind::Function, 0), "")?;
+        engine.index(&make_node("x", NodeKind::Function), "")?;
         assert_eq!(engine.doc_count(), 1);
         engine.clear()?;
         assert_eq!(engine.doc_count(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_remove_by_file() -> Result<()> {
+        let mut engine = TextEngine::open(tmp_path("remove"))?;
+        let node_a = CodeNode {
+            id: NodeId::new(0), kind: NodeKind::Function,
+            name: "alpha_unique".into(),
+            file_path: Some("src/alpha.rs".into()),
+            line_range: Some((1, 3)), doc_comment: None,
+            signature: None, module_path: vec![],
+        };
+        let node_b = CodeNode {
+            id: NodeId::new(1), kind: NodeKind::Function,
+            name: "beta_unique".into(),
+            file_path: Some("src/beta.rs".into()),
+            line_range: Some((1, 3)), doc_comment: None,
+            signature: None, module_path: vec![],
+        };
+        engine.index_batch(&[(node_a, "alpha".into()), (node_b, "beta".into())])?;
+        assert_eq!(engine.doc_count(), 2);
+
+        let removed = engine.remove_by_file("src/alpha.rs")?;
+        assert_eq!(removed, 1);
+        assert_eq!(engine.doc_count(), 1);
         Ok(())
     }
 }

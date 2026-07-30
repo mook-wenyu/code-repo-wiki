@@ -72,7 +72,7 @@ pub fn propagate_impact(changed_files: &[PathBuf], graph: &KnowledgeGraph) -> Ve
                 }
 
                 let kind = &graph.graph[edge.id()].kind;
-                if kind != &EdgeKind::Imports && kind != &EdgeKind::DependsOn {
+                if !matches!(kind, EdgeKind::Imports | EdgeKind::DependsOn | EdgeKind::Calls) {
                     continue;
                 }
 

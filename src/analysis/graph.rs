@@ -120,6 +120,12 @@ pub fn build(insights: &[FileInsight]) -> Result<KnowledgeGraph> {
     }
 
     kg.graph = g.clone();
+
+    let cycles = kg.detect_cycles();
+    if !cycles.is_empty() {
+        warn!("检测到 {} 个循环依赖: {:?}", cycles.len(), cycles);
+    }
+
     Ok(kg)
 }
 
@@ -194,8 +200,8 @@ fn collect_node_names(g: &petgraph::stable_graph::StableDiGraph<CodeNode, CodeEd
         if let Some(w) = g.node_weight(n) {
             name_map.entry(w.name.clone()).or_default().push(n);
             path_map.insert(w.module_path.clone(), n);
+                    }
         }
-    }
     (name_map, path_map)
 }
 
@@ -259,22 +265,22 @@ fn build_impl_edges(
     let (name_map, _) = collect_node_names(g);
 
     for (entity, eid) in entities {
-        if let Some(trait_name) = parse_impl_target(&entity.kind, &entity.name) {
-            if let Some(trait_ids) = name_map.get(&trait_name) {
-                for &trait_id in trait_ids {
-                    g.add_edge(
-                        *eid,
-                        trait_id,
-                        CodeEdge {
-                            id: EdgeIndex::new(g.edge_count()),
-                            kind: EdgeKind::Implements,
-                            source: *eid,
-                            target: trait_id,
-                            weight: 1.0,
-                            location: None,
-                        },
-                    );
-                }
+        if let Some(trait_name) = parse_impl_target(&entity.kind, &entity.name)
+            && let Some(trait_ids) = name_map.get(&trait_name)
+        {
+            for &trait_id in trait_ids {
+                g.add_edge(
+                    *eid,
+                    trait_id,
+                    CodeEdge {
+                        id: EdgeIndex::new(g.edge_count()),
+                        kind: EdgeKind::Implements,
+                        source: *eid,
+                        target: trait_id,
+                        weight: 1.0,
+                        location: None,
+                    },
+                );
             }
         }
     }
@@ -328,7 +334,7 @@ fn build_call_edges(
             while let Some(pos) = haystack[search_start..].find(&pattern) {
                 let abs_pos = search_start + pos;
                 let word_boundary = abs_pos == 0
-                    || !haystack.as_bytes().get(abs_pos - 1).map_or(false, |c| c.is_ascii_alphanumeric() || *c == b'_');
+                    || !haystack.as_bytes().get(abs_pos - 1).is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_');
                 if word_boundary {
                     for &callee_id in callee_ids {
                         if callee_id == *eid {
@@ -357,10 +363,21 @@ fn build_call_edges(
     }
 }
 
+impl KnowledgeGraph {
+    pub fn detect_cycles(&self) -> Vec<Vec<String>> {
+        petgraph::algo::tarjan_scc(&self.graph)
+            .into_iter()
+            .filter(|scc| scc.len() > 1)
+            .map(|scc| scc.iter().map(|&n| self.graph[n].name.clone()).collect())
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ingest::parser::{Entity, FileInsight, ImportStmt};
+    use crate::model::KnowledgeGraph;
     use std::path::PathBuf;
 
     #[test]
@@ -446,4 +463,54 @@ mod tests {
         assert!(has_import);
     }
 
+    #[test]
+    fn test_detect_cycles_empty() {
+        let kg = KnowledgeGraph::default();
+        assert!(kg.detect_cycles().is_empty());
+    }
+
+    #[test]
+    fn test_detect_cycles_with_cycle() {
+        let mut kg = KnowledgeGraph::default();
+        let a = kg.graph.add_node(CodeNode {
+            id: NodeId::new(0),
+            kind: NodeKind::Function,
+            name: "func_a".into(),
+            file_path: None,
+            line_range: None,
+            doc_comment: None,
+            signature: None,
+            module_path: vec![],
+        });
+        let b = kg.graph.add_node(CodeNode {
+            id: NodeId::new(1),
+            kind: NodeKind::Function,
+            name: "func_b".into(),
+            file_path: None,
+            line_range: None,
+            doc_comment: None,
+            signature: None,
+            module_path: vec![],
+        });
+        kg.graph.add_edge(a, b, CodeEdge {
+            id: EdgeIndex::new(0),
+            kind: EdgeKind::Calls,
+            source: a,
+            target: b,
+            weight: 1.0,
+            location: None,
+        });
+        kg.graph.add_edge(b, a, CodeEdge {
+            id: EdgeIndex::new(1),
+            kind: EdgeKind::Calls,
+            source: b,
+            target: a,
+            weight: 1.0,
+            location: None,
+        });
+        let cycles = kg.detect_cycles();
+        assert_eq!(cycles.len(), 1);
+        assert!(cycles[0].contains(&"func_a".to_string()));
+        assert!(cycles[0].contains(&"func_b".to_string()));
+    }
 }
