@@ -16,8 +16,8 @@ pub struct SearchAgent {
 }
 
 impl SearchAgent {
-    pub fn new(text: TextEngine, semantic: Option<SemanticEngine>) -> Self {
-        Self { text, semantic, rrf_k: 60.0 }
+    pub fn new(text: TextEngine, semantic: Option<SemanticEngine>, rrf_k: f64) -> Self {
+        Self { text, semantic, rrf_k }
     }
 
     /// 执行分层搜索。auto_backtrack 控制是否自动回退到语义引擎。
@@ -113,7 +113,7 @@ mod tests {
 
     #[test]
     fn test_agent_text_search() {
-        let agent = SearchAgent::new(make_text_engine(), None);
+        let agent = SearchAgent::new(make_text_engine(), None, 60.0);
         let results = agent.search("add", 5, false);
         assert!(!results.is_empty());
         assert!(results[0].node.name.contains("add"));
@@ -121,7 +121,7 @@ mod tests {
 
     #[test]
     fn test_agent_ast_search() {
-        let agent = SearchAgent::new(make_text_empty(), None);
+        let agent = SearchAgent::new(make_text_empty(), None, 60.0);
         let results = agent.search_ast("fn test_fn() {}", "test_fn", "rust");
         assert!(!results.is_empty());
         assert_eq!(results[0].source, "ast");
@@ -129,14 +129,14 @@ mod tests {
 
     #[test]
     fn test_agent_empty_text() {
-        let agent = SearchAgent::new(make_text_empty(), None);
+        let agent = SearchAgent::new(make_text_empty(), None, 60.0);
         let results = agent.search("anything", 5, false);
         assert!(results.is_empty());
     }
 
     #[test]
     fn test_agent_auto_backtrack_no_semantic() {
-        let agent = SearchAgent::new(make_text_engine(), None);
+        let agent = SearchAgent::new(make_text_engine(), None, 60.0);
         let results = agent.search("zzzz_not_found", 5, true);
         assert!(results.is_empty());
     }

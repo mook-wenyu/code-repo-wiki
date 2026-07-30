@@ -21,16 +21,24 @@ pub fn install(agent: &str) -> Result<()> {
         println!("✓ 默认配置已创建: .repo-wiki/config.toml");
     }
 
-    // 3. 安装 git post-commit hook
+    // 3. 安装 git hooks
     let hooks_dir = project_root.join(".git").join("hooks");
+    let hook_content = "#!/bin/sh\n# repo-wiki: auto-update wiki on commit\ncd \"$(git rev-parse --show-toplevel)\"\nrepo-wiki update --quiet 2>/dev/null || true\n";
     if hooks_dir.exists() {
         let post_commit = hooks_dir.join("post-commit");
         if !post_commit.exists() {
-            let hook_content = "#!/bin/sh\n# repo-wiki: auto-update wiki on commit\ncd \"$(git rev-parse --show-toplevel)\"\nrepo-wiki update --quiet 2>/dev/null || true\n";
             std::fs::write(&post_commit, hook_content)?;
             #[cfg(unix)]
             std::fs::set_permissions(&post_commit, std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
             println!("✓ git post-commit hook 已安装");
+        }
+
+        let post_merge = hooks_dir.join("post-merge");
+        if !post_merge.exists() {
+            std::fs::write(&post_merge, hook_content)?;
+            #[cfg(unix)]
+            std::fs::set_permissions(&post_merge, std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
+            println!("✓ git post-merge hook 已安装");
         }
     }
 

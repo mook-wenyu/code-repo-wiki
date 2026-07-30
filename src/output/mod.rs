@@ -26,30 +26,41 @@ pub fn render_all(
     config: &WikiConfig,
 ) -> Result<()> {
     let output_dir = Path::new(&config.output.dir);
-    let wiki_dir = output_dir.join("wiki");
-    let cards_dir = output_dir.join("cards");
     let assets_dir = output_dir.join("assets");
+    let languages = if config.wiki.expand_languages.is_empty() {
+        vec![config.wiki.language.clone()]
+    } else {
+        let mut langs = vec![config.wiki.language.clone()];
+        langs.extend(config.wiki.expand_languages.iter().cloned());
+        langs
+    };
 
-    std::fs::create_dir_all(&wiki_dir)?;
-    std::fs::create_dir_all(&cards_dir)?;
+    // 按语言创建目录
+    for lang in &languages {
+        std::fs::create_dir_all(output_dir.join("wiki").join(lang))?;
+        std::fs::create_dir_all(output_dir.join("cards").join(lang))?;
+    }
     std::fs::create_dir_all(&assets_dir)?;
 
-    // 1. 写入 Wiki 页面
-    for doc in documents {
-        let doc_cards: Vec<&KnowledgeCard> = cards
-            .iter()
-            .filter(|c| doc.module_path.iter().any(|p| c.module_name.contains(p)))
-            .collect();
-        write_document(doc, &doc_cards, output_dir)?;
+    // 1. 写入 Wiki 页面（每种语言独立目录）
+    for lang in &languages {
+        for doc in documents {
+            let doc_cards: Vec<&KnowledgeCard> = cards
+                .iter()
+                .filter(|c| doc.module_path.iter().any(|p| c.module_name.contains(p)))
+                .collect();
+            write_document(doc, &doc_cards, output_dir, lang)?;
+        }
     }
 
-    // 2. 生成 overview.md（第一个文档作为概览）
+    // 2. 生成 overview.md（第一个文档作为概览，写入主语言目录）
     if let Some(first) = documents.first() {
         let overview_content = format!("# 项目概览\n\n{}", first.content);
-        std::fs::write(wiki_dir.join("overview.md"), overview_content)?;
+        std::fs::write(output_dir.join("wiki").join(&languages[0]).join("overview.md"), overview_content)?;
     }
 
-    // 3. 写入 Knowledge Card 索引（JSON 格式）
+    // 3. 写入 Knowledge Card 索引（JSON 格式，写入主语言目录）
+    let primary_lang = &languages[0];
     let cards_index_json = serde_json::json!({
         "version": "1.0",
         "generated_at": chrono::Utc::now().to_rfc3339(),
@@ -57,11 +68,11 @@ pub fn render_all(
             serde_json::json!({
                 "name": c.module_name.replace("::", "_"),
                 "title": c.module_name,
-                "path": format!("cards/{}.md", c.module_name.replace("::", "_")),
+                "path": format!("cards/{}/{}.md", primary_lang, c.module_name.replace("::", "_")),
             })
         }).collect::<Vec<_>>(),
     });
-    let cards_index = output_dir.join("cards").join("_index.json");
+    let cards_index = output_dir.join("cards").join(primary_lang).join("_index.json");
     std::fs::write(&cards_index, serde_json::to_string_pretty(&cards_index_json)?)?;
 
     // 4. 生成目录页

@@ -46,7 +46,7 @@ pub fn propagate_impact(changed_files: &[PathBuf], graph: &KnowledgeGraph, max_d
         // 起始节点本身也标记为受影响
         let start_node = &graph.graph[start];
         if !start_node.module_path.is_empty() {
-            affected.insert(start_node.module_path[0].clone());
+            affected.insert(start_node.module_path.join("::"));
         }
 
         while let Some((current, depth)) = queue.pop_front() {
@@ -77,7 +77,7 @@ pub fn propagate_impact(changed_files: &[PathBuf], graph: &KnowledgeGraph, max_d
 
                 let neighbor_node = &graph.graph[neighbor];
                 if !neighbor_node.module_path.is_empty() {
-                    affected.insert(neighbor_node.module_path[0].clone());
+                    affected.insert(neighbor_node.module_path.join("::"));
                 }
 
                 visited.insert(neighbor);

@@ -18,6 +18,9 @@ pub struct GenerationState {
     pub module_fingerprints: HashMap<String, String>,
     /// 生成时间（ISO 8601）
     pub generated_at: String,
+    /// 已生成文档路径 → SHA256 指纹（用于检测人工修改）
+    #[serde(default)]
+    pub doc_fingerprints: HashMap<String, String>,
 }
 
 impl GenerationState {
@@ -66,6 +69,7 @@ impl GenerationState {
             last_commit_hash: Some(commit_hash.to_string()),
             file_fingerprints,
             module_fingerprints: HashMap::new(),
+            doc_fingerprints: HashMap::new(),
             generated_at: chrono::Utc::now().to_rfc3339(),
         })
     }
@@ -80,6 +84,24 @@ impl GenerationState {
         file.read_to_end(&mut buffer)
             .with_context(|| format!("读取文件失败: {}", path.display()))?;
         Ok(sha256_hex(&buffer))
+    }
+
+    /// 记录所有已生成文档的 SHA256 指纹
+    pub fn record_doc_fingerprints(docs: &[crate::model::WikiDocument], output_dir: &Path) -> Result<HashMap<String, String>> {
+        let mut fps = HashMap::new();
+        for doc in docs {
+            let file_name = if doc.module_path.is_empty() {
+                format!("{}.md", doc.title)
+            } else {
+                format!("{}.md", doc.module_path.join("_"))
+            };
+            let doc_path = output_dir.join("wiki").join(&file_name);
+            if doc_path.exists() {
+                let fp = Self::compute_file_fingerprint(&doc_path)?;
+                fps.insert(doc_path.to_string_lossy().to_string(), fp);
+            }
+        }
+        Ok(fps)
     }
 
     /// 检查文件是否已变更
@@ -135,6 +157,7 @@ mod tests {
                 m
             },
             module_fingerprints: HashMap::new(),
+            doc_fingerprints: HashMap::new(),
             generated_at: "2025-01-01T00:00:00Z".into(),
         };
 
@@ -169,6 +192,7 @@ mod tests {
                 m
             },
             module_fingerprints: HashMap::new(),
+            doc_fingerprints: HashMap::new(),
             generated_at: String::new(),
         };
 
@@ -187,6 +211,7 @@ mod tests {
             last_commit_hash: None,
             file_fingerprints: HashMap::new(),
             module_fingerprints: HashMap::new(),
+            doc_fingerprints: HashMap::new(),
             generated_at: String::new(),
         };
 

@@ -17,6 +17,8 @@ pub struct WikiConfig {
     pub incremental: IncrementalSection,
     #[serde(default)]
     pub search: SearchSection,
+    #[serde(default)]
+    pub plan: PlanConfig,
 }
 
 /// Wiki 基本配置
@@ -24,6 +26,8 @@ pub struct WikiConfig {
 pub struct WikiSection {
     pub template: WikiTemplate,
     pub language: String,
+    #[serde(default)]
+    pub expand_languages: Vec<String>,
 }
 
 impl Default for WikiSection {
@@ -31,6 +35,7 @@ impl Default for WikiSection {
         Self {
             template: WikiTemplate::Architecture,
             language: "zh".to_string(),
+            expand_languages: Vec::new(),
         }
     }
 }
@@ -239,3 +244,19 @@ pub enum IncrementalStrategy {
     #[serde(rename = "file-watch")]
     FileWatch,
 }
+
+/// wiki_plan.yaml 前置干预配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanConfig {
+    pub enabled: bool,
+    #[serde(default = "default_plan_path")]
+    pub path: String,
+}
+
+impl Default for PlanConfig {
+    fn default() -> Self {
+        Self { enabled: false, path: "wiki_plan.yaml".to_string() }
+    }
+}
+
+fn default_plan_path() -> String { "wiki_plan.yaml".to_string() }

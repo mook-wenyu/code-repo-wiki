@@ -12,19 +12,12 @@ use crate::model::{EntitySummary, KnowledgeCard};
 ///
 /// 通过 LLM 为每个代码模块生成结构化的 Knowledge Card，
 /// 供 AI Agent 快速理解模块职责和关键实体。
-pub struct CardGenerator<'a, P: LlmProvider> {
-    provider: &'a P,
-    call_count: AtomicUsize,
-    semaphore: tokio::sync::Semaphore,
-    /// 输出语言（用于 prompt 模板）
-    language: String,
-}
+PUB STRUCT REPLACED
 
 impl<'a, P: LlmProvider> CardGenerator<'a, P> {
     /// 使用指定的 LLM Provider 创建 CardGenerator
     ///
     /// max_concurrent 控制并行 LLM 调用的最大并发数（0 表示不限制）。
-    /// language 指定生成内容的语言。
     pub fn new(provider: &'a P, max_concurrent: usize, language: String) -> Self {
         let max = if max_concurrent == 0 { usize::MAX } else { max_concurrent };
         Self {
@@ -49,7 +42,6 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
             anyhow::bail!("空块，跳过生成");
         }
 
-        // 获取并发许可（无限并发时 Semaphore::new(usize::MAX) 永不会阻塞）
         let _permit = self.semaphore.acquire().await.map_err(|_| {
             anyhow::anyhow!("信号量已关闭")
         })?;
@@ -191,7 +183,7 @@ mod tests {
 
     #[test]
     fn test_extract_json() {
-        let input = "```json\n{\"summary\": \"test\"}\n```";
+        let input = "`json\n{\"summary\": \"test\"}\n`";
         assert_eq!(extract_json(input), "{\"summary\": \"test\"}");
 
         let input = "{\"summary\": \"test\"}";
@@ -219,3 +211,4 @@ mod tests {
         assert!(card.key_entities.is_empty());
     }
 }
+

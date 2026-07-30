@@ -70,16 +70,24 @@ pub async fn run_generation(
     } else {
         chunk::chunk_by_module(insights, &graph.modules, graph)
     };
-    tracing::info!("分块完成: {} 个块", chunks.len());
+    tracing::info!("生成进度: 30% - 分块完成，共 {} 个块", chunks.len());
 
     // 2. 创建 LLM Provider
     let provider = create_provider(config)?;
+
+    // 2.3 检查 wiki_plan.yaml 全局 notes（仅记录日志，实际注入在 prompt 层）
+    if config.plan.enabled
+        && let Ok(Some(plan)) = crate::config::plan::load_plan(std::path::Path::new(&config.output.dir))
+        && let Some(ref notes) = plan.notes
+    {
+        tracing::info!("wiki_plan 全局 notes 已加载（将注入 prompt）: {}", notes);
+    }
 
     // 2.5 Level 0 实体摘要：为每个实体生成摘要（跳过已有摘要的实体）
     for chunk in &mut chunks {
         for entity in &mut chunk.entities {
             if entity.summary.is_none() {
-                let prompt = crate::generate::prompt::entity_summary_prompt(entity, "zh");
+                let prompt = crate::generate::prompt::entity_summary_prompt(entity, &config.wiki.language);
                 let messages = vec![Message::user(prompt)];
                 match provider.complete(&messages).await {
                     Ok(summary) => entity.summary = Some(summary.trim().to_string()),
@@ -90,11 +98,11 @@ pub async fn run_generation(
     }
 
     // 3. 并行生成 Knowledge Card
-    let card_gen = CardGenerator::new(&provider, config.llm.max_concurrent);
+    let card_gen = CardGenerator::new(&provider, config.llm.max_concurrent, config.wiki.language.clone());
     let cards = card_gen
         .generate_all_cards(&chunks)
         .await?;
-    tracing::info!("Knowledge Card 生成完成: {} 个", cards.len());
+    tracing::info!("生成进度: 60% - 知识卡片生成完成，共 {} 个卡片", cards.len());
 
     // 4. 串行生成 Wiki 页面
     let wiki_gen = WikiGenerator::new(&provider);
@@ -110,7 +118,7 @@ pub async fn run_generation(
             Err(e) => tracing::warn!("跳过模块 {:?} 的 Wiki 页面生成: {}", chunk.module_path, e),
         }
     }
-    tracing::info!("Wiki 页面生成完成: {} 个", documents.len());
+    tracing::info!("生成进度: 90% - Wiki 页面生成完成，共 {} 个页面", documents.len());
 
     // 5. 生成架构概览页面
     if !cards.is_empty() {
@@ -188,7 +196,7 @@ pub async fn run_generation_filtered(
     let provider = create_provider(config)?;
 
     // 3. 并行生成 Knowledge Card（仅变更块）
-    let card_gen = CardGenerator::new(&provider, config.llm.max_concurrent);
+    let card_gen = CardGenerator::new(&provider, config.llm.max_concurrent, config.wiki.language.clone());
     let cards = card_gen
         .generate_all_cards(&chunks)
         .await?;

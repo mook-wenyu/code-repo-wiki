@@ -3,9 +3,10 @@
 //! 向量数据存储在 SQLite BLOB 列中，搜索时加载到内存执行余弦相似度计算。
 //! 支持并发读取（WAL 模式）。
 
-use std::path::Path;
 use std::sync::Arc;
+use std::path::Path;
 use anyhow::{Context, Result};
+use tokio::runtime::Runtime;
 
 use crate::model::CodeNode;
 use crate::generate::embed::EmbeddingEngine;
@@ -18,13 +19,14 @@ use super::store::SearchStore;
 pub struct SemanticEngine {
     store: SearchStore,
     embedder: Arc<EmbeddingEngine>,
+    rt: Arc<Runtime>,
 }
 
 impl SemanticEngine {
     /// 打开或创建持久化向量搜索数据库。
-    pub fn open(path: impl AsRef<Path>, embedder: Arc<EmbeddingEngine>) -> Result<Self> {
+    pub fn open(path: impl AsRef<Path>, embedder: Arc<EmbeddingEngine>, rt: Arc<Runtime>) -> Result<Self> {
         let store = SearchStore::open(path)?;
-        Ok(Self { store, embedder })
+        Ok(Self { store, embedder, rt })
     }
 
     /// 索引一个实体：生成 embedding 并持久化。
@@ -34,9 +36,7 @@ impl SemanticEngine {
             node.name, node.kind,
             node.signature.as_deref().unwrap_or(""), source_code
         );
-        let rt = tokio::runtime::Runtime::new()
-            .context("创建 tokio runtime 失败")?;
-        let vector = rt.block_on(self.embedder.embed(&text))
+        let vector = self.rt.block_on(self.embedder.embed(&text))
             .context("生成 embedding 失败")?;
         self.store.insert_vectors_batch(&[(node.clone(), vector)])
     }
@@ -59,9 +59,7 @@ impl SemanticEngine {
         }).collect();
 
         // 一次性获取所有向量
-        let rt = tokio::runtime::Runtime::new()
-            .context("创建 tokio runtime 失败")?;
-        let vectors = rt.block_on(self.embedder.embed_batch(&texts))
+        let vectors = self.rt.block_on(self.embedder.embed_batch(&texts))
             .context("批量生成 embedding 失败")?;
 
         // 组装 (node, vector) 对并写入 SQLite
@@ -79,9 +77,7 @@ impl SemanticEngine {
             return Ok(Vec::new());
         }
 
-        let rt = tokio::runtime::Runtime::new()
-            .context("创建 tokio runtime 失败")?;
-        let q_vec = rt.block_on(self.embedder.embed(query))?;
+        let q_vec = self.rt.block_on(self.embedder.embed(query))?;
 
         let mut scores: Vec<(usize, f32)> = all_vectors.iter().enumerate()
             .map(|(i, (_, v))| (i, EmbeddingEngine::cosine_similarity(&q_vec, v)))
@@ -115,6 +111,11 @@ impl SemanticEngine {
 mod tests {
     use super::*;
     use crate::config::schema::EmbedSection;
+    use tokio::runtime::Runtime;
+
+    fn test_runtime() -> Arc<Runtime> {
+        Arc::new(Runtime::new().unwrap())
+    }
 
     fn mock_embedder() -> Arc<EmbeddingEngine> {
         let config = EmbedSection {
@@ -142,13 +143,13 @@ mod tests {
 
     #[test]
     fn test_semantic_new() {
-        let engine = SemanticEngine::open(tmp_path("new"), mock_embedder()).unwrap();
+        let engine = SemanticEngine::open(tmp_path("new"), mock_embedder(), test_runtime()).unwrap();
         assert_eq!(engine.entry_count(), 0);
     }
 
     #[test]
     fn test_search_empty() {
-        let engine = SemanticEngine::open(tmp_path("empty"), mock_embedder()).unwrap();
+        let engine = SemanticEngine::open(tmp_path("empty"), mock_embedder(), test_runtime()).unwrap();
         assert!(engine.search("test", 10).unwrap().is_empty());
     }
 }

@@ -75,11 +75,15 @@ pub fn run_pipeline(config_path: &Path) -> anyhow::Result<AnalysisResult> {
         tracing::warn!("搜索索引构建失败（不影响主流程）: {}", e);
     }
 
-    // Phase 6: 保存增量状态
+    // Phase 6: 保存增量状态（含文档指纹用于人工修改保护）
     if config.incremental.enabled {
         let head_hash = incremental::diff::get_head_commit_hash().unwrap_or_default();
-        if let Ok(state) = incremental::state::GenerationState::from_insights(&file_insights, &head_hash) {
-            let state_dir = std::path::Path::new(&config.output.dir).join(".state");
+        if let Ok(mut state) = incremental::state::GenerationState::from_insights(&file_insights, &head_hash) {
+            let output_dir = std::path::Path::new(&config.output.dir);
+            if let Ok(doc_fps) = incremental::state::GenerationState::record_doc_fingerprints(&gen_output.documents, output_dir) {
+                state.doc_fingerprints = doc_fps;
+            }
+            let state_dir = output_dir.join(".state");
             let _ = state.save(&state_dir);
         }
     }
@@ -237,7 +241,7 @@ fn build_search_index(
         match generate::embed::EmbeddingEngine::new(&config.embed) {
             Ok(embedder) => {
                 let embedder = std::sync::Arc::new(embedder);
-                let mut semantic_engine = search::semantic::SemanticEngine::open(&semantic_path, embedder)?;
+                let mut semantic_engine = search::semantic::SemanticEngine::open(&semantic_path, embedder, get_global_runtime().clone())?;
                 semantic_engine.index_batch(&items)?;
                 tracing::info!("语义索引构建完成: {} 个实体已向量化", items.len());
             }
@@ -303,7 +307,7 @@ fn update_search_index_incremental(
         let semantic_path = index_dir.join("semantic_index.db");
             if semantic_path.exists() && let Ok(embedder) = generate::embed::EmbeddingEngine::new(&config.embed) {
                 let embedder = std::sync::Arc::new(embedder);
-                if let Ok(mut semantic_engine) = search::semantic::SemanticEngine::open(&semantic_path, embedder) {
+                if let Ok(mut semantic_engine) = search::semantic::SemanticEngine::open(&semantic_path, embedder, get_global_runtime().clone()) {
                     for file in changed_files {
                         let _ = semantic_engine.remove_by_file(&file.to_string_lossy());
                     }
@@ -316,15 +320,11 @@ fn update_search_index_incremental(
     Ok(())
 }
 
-/// 构建文件路径 → 文件源码的查找表
-fn build_source_map(file_insights: &[ingest::parser::FileInsight]) -> std::collections::HashMap<String, String> {
-    let mut map = std::collections::HashMap::new();
-    for insight in file_insights {
-        if let Ok(source) = std::fs::read_to_string(&insight.path) {
-            map.insert(insight.path.to_string_lossy().to_string(), source);
-        }
-    }
-    map
+/// 构建文件路径 → 文件源码的查找表（直接使用 FileInsight.source 避免重复 I/O）
+fn build_source_map(insights: &[ingest::parser::FileInsight]) -> std::collections::HashMap<String, String> {
+    insights.iter()
+        .map(|i| (i.path.to_string_lossy().to_string(), i.source.clone()))
+        .collect()
 }
 
 /// 从源码中提取实体对应的代码片段
@@ -366,6 +366,9 @@ pub fn execute_search(
     top_k: usize,
     engine_type: &config::schema::SearchEngineType,
 ) -> anyhow::Result<Vec<search::hybrid::SearchHit>> {
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
     let config = config::load_config(config_path)?;
     let index_dir = search_index_dir(&config);
     let text_path = index_dir.join("text_index.db");
@@ -386,34 +389,19 @@ pub fn execute_search(
             }
             let embedder = generate::embed::EmbeddingEngine::new(&config.embed)?;
             let embedder = std::sync::Arc::new(embedder);
-            let semantic_engine = search::semantic::SemanticEngine::open(&semantic_path, embedder)?;
+            let semantic_engine = search::semantic::SemanticEngine::open(&semantic_path, embedder, get_global_runtime().clone())?;
             let results = semantic_engine.search(query, top_k)?;
             Ok(search::hybrid::semantic_results_to_hits(results))
         }
         config::schema::SearchEngineType::Hybrid => {
-            let mut all_results: Vec<Vec<search::hybrid::SearchHit>> = Vec::new();
-
-            // 文本引擎结果
-            if text_path.exists() {
-                let text_engine = search::text::TextEngine::open(&text_path)?;
-                if let Ok(results) = text_engine.search(query, top_k * 2) {
-                    all_results.push(search::hybrid::text_results_to_hits(results));
-                }
-            }
-
-            // 语义引擎结果
-            if semantic_path.exists() && config.embed.enabled && let Ok(embedder) = generate::embed::EmbeddingEngine::new(&config.embed) {
-                let embedder = std::sync::Arc::new(embedder);
-                if let Ok(semantic_engine) = search::semantic::SemanticEngine::open(&semantic_path, embedder) && let Ok(results) = semantic_engine.search(query, top_k * 2) {
-                    all_results.push(search::hybrid::semantic_results_to_hits(results));
-                }
-            }
-
-            if all_results.is_empty() {
-                anyhow::bail!("搜索索引不存在，请先运行 `repo-wiki generate` 构建索引");
-            }
-
-            Ok(search::hybrid::rrf_merge(&all_results, top_k, config.search.rrf_k as f64))
+            let text_engine = search::text::TextEngine::open(&text_path)?;
+            let semantic_engine = if semantic_path.exists() && config.embed.enabled {
+                generate::embed::EmbeddingEngine::new(&config.embed)
+                    .ok()
+                    .and_then(|e| search::semantic::SemanticEngine::open(&semantic_path, Arc::new(e), get_global_runtime().clone()).ok())
+            } else { None };
+            let agent = search::agent::SearchAgent::new(text_engine, semantic_engine, config.search.rrf_k as f64);
+            Ok(agent.search(query, top_k, true))
         }
     }
 }

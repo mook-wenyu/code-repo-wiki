@@ -68,17 +68,16 @@ impl JavaProcessor {
                     let mut cur = node.walk();
                     if cur.goto_first_child() {
                         loop {
-                            if cur.node().kind() == "variable_declarator" {
-                                if let Some(name) = cur.node().child_by_field_name("name")
+                            if cur.node().kind() == "variable_declarator"
+                                && let Some(name) = cur.node().child_by_field_name("name")
                                     .and_then(|n| n.utf8_text(bytes).ok())
-                                {
-                                    entities.push(Entity {
-                                        name: name.to_string(), kind: "variable".to_string(),
-                                        line_start: node.start_position().row + 1,
-                                        line_end: node.end_position().row + 1,
-                                        doc_comment: None, signature: None, summary: None,
-                                    });
-                                }
+                            {
+                                entities.push(Entity {
+                                    name: name.to_string(), kind: "variable".to_string(),
+                                    line_start: node.start_position().row + 1,
+                                    line_end: node.end_position().row + 1,
+                                    doc_comment: None, signature: None, summary: None,
+                                });
                             }
                             if !cur.goto_next_sibling() { break; }
                         }

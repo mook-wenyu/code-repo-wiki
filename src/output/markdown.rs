@@ -133,9 +133,11 @@ pub fn render_table_of_contents(documents: &[WikiDocument]) -> String {
 ///
 /// 将 WikiDocument 渲染后写入 `{output_dir}/wiki/{module_path}.md`，
 /// 关联的 Knowledge Card 写入 `{output_dir}/cards/{module_name}.md`。
-pub fn write_document(doc: &WikiDocument, cards: &[&KnowledgeCard], output_dir: &Path) -> Result<()> {
-    let wiki_dir = output_dir.join("wiki");
+pub fn write_document(doc: &WikiDocument, cards: &[&KnowledgeCard], output_dir: &Path, language: &str) -> Result<()> {
+    let wiki_dir = output_dir.join("wiki").join(language);
+    let cards_dir = output_dir.join("cards").join(language);
     std::fs::create_dir_all(&wiki_dir)?;
+    std::fs::create_dir_all(&cards_dir)?;
 
     // Wiki 页面
     let wiki_path = if doc.kind == DocumentKind::ArchitectureOverview {
@@ -153,8 +155,6 @@ pub fn write_document(doc: &WikiDocument, cards: &[&KnowledgeCard], output_dir: 
 
     // 关联的 Knowledge Card
     for card in cards {
-        let cards_dir = output_dir.join("cards");
-        std::fs::create_dir_all(&cards_dir)?;
         let card_path = cards_dir.join(format!("{}.md", card.module_name.replace("::", "_")));
         let card_content = render_knowledge_card(card);
         std::fs::write(&card_path, card_content)?;
@@ -254,10 +254,10 @@ mod tests {
         let dir = std::env::temp_dir().join("repo-wiki-test-markdown");
         let _ = std::fs::remove_dir_all(&dir);
 
-        write_document(&doc, &[&card], &dir).unwrap();
+        write_document(&doc, &[&card], &dir, "zh").unwrap();
 
-        assert!(dir.join("wiki").join("crate_testmodule.md").exists());
-        assert!(dir.join("cards").join("crate_test_module.md").exists());
+        assert!(dir.join("wiki").join("zh").join("crate_testmodule.md").exists());
+        assert!(dir.join("cards").join("zh").join("crate_test_module.md").exists());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

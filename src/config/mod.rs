@@ -1,4 +1,5 @@
 pub mod opencode;
+pub mod plan;
 pub mod schema;
 
 use std::path::Path;
@@ -15,6 +16,13 @@ pub fn load_config(path: &Path) -> Result<schema::WikiConfig> {
     let config: schema::WikiConfig = toml::from_str(&content)
         .with_context(|| format!("解析配置文件失败: {}", path.display()))?;
     validate_config(&config)?;
+    if config.plan.enabled {
+        match plan::load_plan(Path::new(&config.output.dir)) {
+            Ok(Some(_plan)) => tracing::info!("wiki_plan.yaml 已加载"),
+            Ok(None) => tracing::debug!("未找到 wiki_plan.yaml"),
+            Err(e) => tracing::warn!("wiki_plan.yaml 加载失败: {}", e),
+        }
+    }
     Ok(config)
 }
 
