@@ -1,12 +1,19 @@
 use crate::model::CodeNode;
+use serde::Serialize;
 
 /// 搜索结果条目
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SearchHit {
     pub node: CodeNode,
     pub score: f64,
     /// 来源引擎: "text", "semantic", "hybrid"
     pub source: String,
+    /// 调用者名称列表（调用链补全填充，默认空）
+    #[serde(default)]
+    pub callers: Vec<String>,
+    /// 被调用者名称列表（调用链补全填充，默认空）
+    #[serde(default)]
+    pub callees: Vec<String>,
 }
 
 /// RRF 混合排序：将多引擎结果按 Reciprocal Rank Fusion 合并
@@ -24,6 +31,7 @@ pub fn rrf_merge(results: &[Vec<SearchHit>], top_k: usize, k: f64) -> Vec<Search
     let mut merged: Vec<SearchHit> = scores.into_iter()
         .map(|(_name, (score, node))| SearchHit {
             node, score, source: "hybrid".into(),
+            callers: vec![], callees: vec![],
         })
         .collect();
     merged.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
@@ -35,6 +43,7 @@ pub fn rrf_merge(results: &[Vec<SearchHit>], top_k: usize, k: f64) -> Vec<Search
 pub fn text_results_to_hits(results: Vec<(CodeNode, f64)>) -> Vec<SearchHit> {
     results.into_iter().map(|(node, score)| SearchHit {
         node, score, source: "text".into(),
+        callers: vec![], callees: vec![],
     }).collect()
 }
 
@@ -42,6 +51,7 @@ pub fn text_results_to_hits(results: Vec<(CodeNode, f64)>) -> Vec<SearchHit> {
 pub fn semantic_results_to_hits(results: Vec<(CodeNode, f32)>) -> Vec<SearchHit> {
     results.into_iter().map(|(node, score)| SearchHit {
         node, score: score as f64, source: "semantic".into(),
+        callers: vec![], callees: vec![],
     }).collect()
 }
 
@@ -61,8 +71,8 @@ mod tests {
     #[test]
     fn test_rrf_merge_single_source() {
         let hits = vec![
-            SearchHit { node: make_node("foo"), score: 1.0, source: "text".into() },
-            SearchHit { node: make_node("bar"), score: 0.5, source: "text".into() },
+            SearchHit { node: make_node("foo"), score: 1.0, source: "text".into(), callers: vec![], callees: vec![] },
+            SearchHit { node: make_node("bar"), score: 0.5, source: "text".into(), callers: vec![], callees: vec![] },
         ];
         let result = rrf_merge(&[hits], 5, 60.0);
         assert_eq!(result.len(), 2);
@@ -72,10 +82,10 @@ mod tests {
     #[test]
     fn test_rrf_merge_dedup() {
         let t = vec![
-            SearchHit { node: make_node("foo"), score: 1.0, source: "text".into() },
+            SearchHit { node: make_node("foo"), score: 1.0, source: "text".into(), callers: vec![], callees: vec![] },
         ];
         let s = vec![
-            SearchHit { node: make_node("foo"), score: 0.9, source: "semantic".into() },
+            SearchHit { node: make_node("foo"), score: 0.9, source: "semantic".into(), callers: vec![], callees: vec![] },
         ];
         let result = rrf_merge(&[t, s], 5, 60.0);
         assert_eq!(result.len(), 1);

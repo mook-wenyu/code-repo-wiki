@@ -348,6 +348,7 @@ mod tests {
             coding_spec: None,
             tech_stack: vec![],
             architecture: None,
+            pending_manual_edits: vec![],
         };
 
         let fps = GenerationState::record_doc_fingerprints(&[doc], &[card], &dir, &["zh".into()]).unwrap();
@@ -374,6 +375,7 @@ mod tests {
             coding_spec: None,
             tech_stack: vec![],
             architecture: None,
+            pending_manual_edits: vec![],
         };
         let fps2 = GenerationState::record_doc_fingerprints(&[], &[missing_card], &dir, &["zh".into()]).unwrap();
         assert!(fps2.is_empty(), "文件不存在时不应记录指纹");

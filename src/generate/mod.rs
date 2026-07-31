@@ -46,6 +46,10 @@ pub fn create_provider(config: &WikiConfig) -> Result<Provider> {
         crate::config::schema::LlmProviderType::Custom => {
             Ok(Provider::OpenAi(OpenAiProvider::new(&config.llm)?))
         }
+        crate::config::schema::LlmProviderType::Mock => {
+            // 本地模拟：测试/CI/无 API Key 场景，返回固定文本
+            Ok(Provider::Mock(crate::generate::llm::MockProvider::new()))
+        }
     }
 }
 
@@ -291,12 +295,12 @@ fn filter_by_whitelist(
         .collect()
 }
 
-/// 生成与具体模块无关的全局文档（架构概览 + 数据库 Schema），追加到 `documents`
+/// 生成与具体模块无关的全局文档（架构概览 + 项目概览 + 数据库 Schema），追加到 `documents`
 ///
 /// 全量与增量两条生成路径共用，避免复制相同的调用逻辑（DRY）。
-/// 这两类文档反映全仓库状态：架构概览基于完整 KnowledgeGraph 的模块列表，
+/// 这三类文档反映全仓库状态：架构概览与项目概览基于完整 KnowledgeGraph 的模块列表，
 /// Schema 文档基于全量 .sql 文件，与"本次变更了哪些模块"无关，
-/// 因此增量路径也必须重新生成，否则增量输出会比全量输出缺少这两类页面。
+/// 因此增量路径也必须重新生成，否则增量输出会比全量输出缺少这三类页面。
 async fn generate_global_documents(
     wiki_gen: &WikiGenerator<'_, Provider>,
     provider: &Provider,
@@ -306,9 +310,13 @@ async fn generate_global_documents(
     cards: &[KnowledgeCard],
     documents: &mut Vec<WikiDocument>,
 ) -> Result<()> {
-    // 架构概览：没有卡片（本次没有模块被生成）时跳过，避免对空仓库发无意义的 LLM 调用
+    // 文档类型决策：DocumentKind 是纯枚举（无 architecture 等可复用字段），
+    // 且 output::wiki_page_path 按 kind 特判文件名（架构概览→architecture.md，
+    // 项目概览→overview.md），因此新增 ProjectOverview 变体而非复用
+    // ArchitectureOverview——复用会把概览写进 architecture.md，路径语义错位。
+    // 架构概览与项目概览：没有卡片（本次没有模块被生成）时跳过，避免对空仓库发无意义的 LLM 调用
     if !cards.is_empty() {
-        // generate_architecture 需要一个 GenerationOutput 快照（内部只用 cards 构建引用列表）
+        // generate_architecture / generate_overview 需要 GenerationOutput 快照（内部只用 cards 构建引用列表）
         let output_snapshot = GenerationOutput {
             cards: cards.to_vec(),
             documents: documents.clone(),
@@ -320,6 +328,13 @@ async fn generate_global_documents(
         {
             Ok(arch) => documents.push(arch),
             Err(e) => tracing::warn!("架构概览生成跳过: {}", e),
+        }
+        match wiki_gen
+            .generate_overview(&output_snapshot, graph, config)
+            .await
+        {
+            Ok(overview) => documents.push(overview),
+            Err(e) => tracing::warn!("项目概览生成跳过: {}", e),
         }
     }
 

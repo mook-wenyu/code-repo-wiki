@@ -5,10 +5,10 @@ use anyhow::Result;
 use crate::config::plan::ResolvedPlan;
 use crate::config::schema::WikiConfig;
 use crate::generate::chunk::Chunk;
-use crate::generate::llm::LlmProvider;
+use crate::generate::llm::{LlmProvider, Message};
 use crate::generate::prompt;
 use crate::generate::GenerationOutput;
-use crate::model::{DocumentKind, KnowledgeGraph, Reference, WikiDocument};
+use crate::model::{DocumentKind, EdgeKind, KnowledgeGraph, NodeId, Reference, WikiDocument};
 
 /// Wiki 页面生成器
 ///
@@ -112,6 +112,109 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
             fingerprint: None,
         })
     }
+
+    /// 生成项目概览页面
+    ///
+    /// 与 generate_architecture 同签名同风格：基于完整 KnowledgeGraph 的
+    /// 模块列表与模块间依赖摘要，生成全仓库概览（技术栈/目录结构/核心模块）。
+    pub async fn generate_overview(
+        &self,
+        output: &GenerationOutput,
+        graph: &KnowledgeGraph,
+        config: &WikiConfig,
+    ) -> Result<WikiDocument> {
+        self.call_count.fetch_add(1, Ordering::Relaxed);
+
+        let messages = vec![Message::user(overview_prompt(graph, config))];
+        let content = self.provider.complete(&messages).await?;
+        let now = chrono::Utc::now().to_rfc3339();
+
+        Ok(WikiDocument {
+            title: "项目概览".into(),
+            kind: DocumentKind::ProjectOverview,
+            content,
+            language: config.wiki.language.clone(),
+            module_path: vec![],
+            references: output
+                .cards
+                .iter()
+                .map(|c| Reference {
+                    target_title: c.module_name.clone(),
+                    target_path: format!(
+                        "wiki/{}/{}.md",
+                        config.wiki.language,
+                        c.module_name.replace("::", "/")
+                    ),
+                    relation: "module".into(),
+                })
+                .collect(),
+            last_updated: now,
+            fingerprint: None,
+        })
+    }
+}
+
+/// 生成项目概览的 prompt（单条 user 消息，模板风格与 architecture_overview_prompt 一致）
+///
+/// 输入 = 模块列表 + 模块间依赖摘要（按 (源模块, 目标模块) 聚合非结构边），
+/// 输出 = 项目概览，含技术栈 / 目录结构 / 核心模块三节。
+fn overview_prompt(graph: &KnowledgeGraph, config: &WikiConfig) -> String {
+    let mut parts = Vec::new();
+
+    parts.push(format!(
+        "你是一个资深软件架构师，负责为整个项目生成人类可读的项目概览文档。\n\n\
+         请基于下面的模块聚类信息和模块间依赖摘要，输出以下结构：\n\n\
+         # 项目概览\n\n\
+         ## 技术栈\n根据模块名称与依赖关系推断项目使用的技术栈。\n\n\
+         ## 目录结构\n根据模块划分描述仓库的目录结构。\n\n\
+         ## 核心模块\n列出核心模块及其职责。\n\n\
+         请用 {} 语言输出。保留 Markdown 格式。",
+        config.wiki.language
+    ));
+
+    parts.push("## 模块列表".to_string());
+    for module in &graph.modules {
+        let desc = module.description.as_deref().unwrap_or("");
+        parts.push(format!(
+            "- {} (节点数: {}{})",
+            module.name,
+            module.node_ids.len(),
+            if desc.is_empty() {
+                String::new()
+            } else {
+                format!(", 职责: {}", desc)
+            }
+        ));
+    }
+
+    // 模块间依赖摘要：建立 节点→模块 映射后，按模块对聚合非 Contains 边
+    let mut module_of: std::collections::HashMap<NodeId, &str> = Default::default();
+    for module in &graph.modules {
+        for nid in &module.node_ids {
+            module_of.insert(*nid, module.name.as_str());
+        }
+    }
+    let mut deps: std::collections::BTreeMap<(String, String), usize> = Default::default();
+    for edge in graph.graph.edge_weights() {
+        if edge.kind == EdgeKind::Contains {
+            continue;
+        }
+        let (Some(src), Some(dst)) = (module_of.get(&edge.source), module_of.get(&edge.target))
+        else {
+            continue;
+        };
+        *deps.entry((src.to_string(), dst.to_string())).or_default() += 1;
+    }
+    if deps.is_empty() {
+        parts.push("\n## 模块间依赖\n（图中未检测到模块间依赖边）".to_string());
+    } else {
+        parts.push("\n## 模块间依赖".to_string());
+        for ((src, dst), count) in deps {
+            parts.push(format!("- {} → {} ({} 条边)", src, dst, count));
+        }
+    }
+
+    parts.join("\n")
 }
 
 /// 从 Chunk 构建交叉引用

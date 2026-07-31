@@ -108,6 +108,10 @@ pub enum LlmProviderType {
     Anthropic,
     #[serde(rename = "custom")]
     Custom,
+    /// 本地模拟 Provider（测试/CI/无 API Key 演示），
+    /// 返回固定文本，不发起任何网络请求。
+    #[serde(rename = "mock")]
+    Mock,
 }
 
 /// 输出配置

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use petgraph::visit::{EdgeRef, IntoEdgeReferences};
 use crate::model::{EdgeKind, KnowledgeGraph, NodeId};
 
@@ -50,6 +51,19 @@ impl<'a> CallGraph<'a> {
             }
         }
         edges
+    }
+
+    /// 构建符号名 → (调用者列表, 被调用者列表) 预计算表。
+    /// 一次性遍历所有 Calls 边，避免查询时重复扫描全图。
+    pub fn build_call_index(&self) -> HashMap<String, (Vec<String>, Vec<String>)> {
+        let mut index: HashMap<String, (Vec<String>, Vec<String>)> = HashMap::new();
+        for (src, dst) in self.all_call_edges() {
+            if let (Some(s), Some(d)) = (self.graph.graph.node_weight(src), self.graph.graph.node_weight(dst)) {
+                index.entry(d.name.clone()).or_default().0.push(s.name.clone());
+                index.entry(s.name.clone()).or_default().1.push(d.name.clone());
+            }
+        }
+        index
     }
 }
 

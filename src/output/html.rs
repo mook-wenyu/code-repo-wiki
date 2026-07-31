@@ -161,6 +161,15 @@ blockquote { border-left: 4px solid #ddd; margin: 0; padding: 0 16px; color: #66
             ));
         }
 
+        // 人工修改待同步（与 markdown 渲染对应，仅非空时输出）
+        if !card.pending_manual_edits.is_empty() {
+            body.push_str("<h2>人工修改待同步</h2>\n<ul>\n");
+            for note in &card.pending_manual_edits {
+                body.push_str(&format!("  <li>{}</li>\n", escape_html(note)));
+            }
+            body.push_str("</ul>\n");
+        }
+
         let html = wrap_html(&card.module_name, &body);
         let file_name = sanitize_filename(&card.module_name);
         let path = cards_dir.join(format!("{}.html", file_name));
@@ -332,6 +341,7 @@ mod tests {
             coding_spec: None,
             tech_stack: vec![],
             architecture: None,
+            pending_manual_edits: vec!["人工修改待同步: wiki/zh/核心模块.md 内容摘要: 手动改".into()],
         };
 
         let graph = KnowledgeGraph {
@@ -355,6 +365,10 @@ mod tests {
 
         let index = std::fs::read_to_string(dir.join("index.html"))?;
         assert!(index.contains("测试模块"), "目录页应该包含文档标题");
+
+        let card_html = std::fs::read_to_string(dir.join("cards").join("核心模块.html"))?;
+        assert!(card_html.contains("人工修改待同步"), "卡片 HTML 应包含人工修改待同步节");
+        assert!(card_html.contains("手动改"), "卡片 HTML 应包含记录内容");
 
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())

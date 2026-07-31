@@ -6,7 +6,7 @@ import { execa } from "execa";
  *
  * 提供：
  * - 4 个 Agent 工具（wiki_search, wiki_query, wiki_generate, module_info）
- * - /wiki Slash 命令（generate, update, status, export）
+ * - /wiki Slash 命令（generate, update, sync, status, export）
  * - 自动调用 Rust CLI 核心引擎
  * - 从 .repo-wiki/ 读取现有卡片和 Wiki 数据
  */
@@ -31,8 +31,7 @@ export const RepoWikiPlugin = async ({ project, client, directory }: PluginInput
     }
 
     /** 从 .repo-wiki/cards/ 读取 Knowledge Card */
-    async function readExistingCards(): Promise<any[]> {
-        const { readFileSync, existsSync, readdirSync } = await import("fs");
+    async function readExistingCards(): Promise<any[]> {        const { readFileSync, existsSync, readdirSync } = await import("fs");
         const { join } = await import("path");
         const cardsDir = join(directory, ".repo-wiki", "cards");
         if (!existsSync(cardsDir)) return [];
@@ -48,6 +47,26 @@ export const RepoWikiPlugin = async ({ project, client, directory }: PluginInput
         } catch {
             return [];
         }
+    }
+
+    /**
+     * 从 /knowledge 参数中提取 `--reference 路径1,路径2` 标志（可出现在任意位置），
+     * 返回参考文件列表与剩余参数（指令文本）。
+     */
+    function extractReferences(args: string[]): { refs: string[]; rest: string[] } {
+        const refs: string[] = [];
+        const rest: string[] = [];
+        for (let i = 0; i < args.length; i++) {
+            if (args[i] === "--reference") {
+                for (const r of (args[++i] ?? "").split(",")) {
+                    const t = r.trim();
+                    if (t) refs.push(t);
+                }
+            } else {
+                rest.push(args[i]);
+            }
+        }
+        return { refs, rest };
     }
 
     return {
@@ -176,6 +195,14 @@ export const RepoWikiPlugin = async ({ project, client, directory }: PluginInput
                     },
                 },
                 {
+                    name: "sync",
+                    description: "以 Git 工作区内容为准同步 Wiki（不触发 LLM 重生成）",
+                    execute: async () => {
+                        const result = await runCli(["sync"]);
+                        return result.code === 0 ? "Wiki 同步完成" : "同步失败: " + result.stderr;
+                    },
+                },
+                {
                     name: "status",
                     description: "查看 Wiki 状态",
                     execute: async () => {
@@ -211,12 +238,15 @@ export const RepoWikiPlugin = async ({ project, client, directory }: PluginInput
                 },
                 {
                     name: "modify",
-                    description: "按指令修改已有卡片",
+                    description: "按指令修改已有卡片（可选 --reference 逗号分隔参考文件）",
                     execute: async (args: string) => {
-                        const [module, ...rest] = (args || "").trim().split(/\s+/);
-                        if (!module || rest.length === 0) return "用法: /knowledge modify <模块名> <指令文本>";
-                        const instruction = rest.join(" ");
-                        const result = await runCli(["card", "modify", module, "--instruction", instruction, "--config", ".repo-wiki/config.toml"]);
+                        const { refs, rest } = extractReferences((args || "").trim().split(/\s+/));
+                        const [module, ...instructionParts] = rest;
+                        if (!module || instructionParts.length === 0) return "用法: /knowledge modify <模块名> <指令文本> [--reference 文件1,文件2]";
+                        const instruction = instructionParts.join(" ");
+                        const cliArgs = ["card", "modify", module, "--instruction", instruction, "--config", ".repo-wiki/config.toml"];
+                        if (refs.length > 0) cliArgs.push("--reference", refs.join(","));
+                        const result = await runCli(cliArgs);
                         return result.code === 0
                             ? (result.stdout || `卡片 ${module} 修改完成`)
                             : "修改失败: " + result.stderr;
@@ -224,12 +254,15 @@ export const RepoWikiPlugin = async ({ project, client, directory }: PluginInput
                 },
                 {
                     name: "supplement",
-                    description: "在已有卡片上追加内容",
+                    description: "在已有卡片上追加内容（可选 --reference 逗号分隔参考文件）",
                     execute: async (args: string) => {
-                        const [module, ...rest] = (args || "").trim().split(/\s+/);
-                        if (!module || rest.length === 0) return "用法: /knowledge supplement <模块名> <指令文本>";
-                        const instruction = rest.join(" ");
-                        const result = await runCli(["card", "supplement", module, "--instruction", instruction, "--config", ".repo-wiki/config.toml"]);
+                        const { refs, rest } = extractReferences((args || "").trim().split(/\s+/));
+                        const [module, ...instructionParts] = rest;
+                        if (!module || instructionParts.length === 0) return "用法: /knowledge supplement <模块名> <指令文本> [--reference 文件1,文件2]";
+                        const instruction = instructionParts.join(" ");
+                        const cliArgs = ["card", "supplement", module, "--instruction", instruction, "--config", ".repo-wiki/config.toml"];
+                        if (refs.length > 0) cliArgs.push("--reference", refs.join(","));
+                        const result = await runCli(cliArgs);
                         return result.code === 0
                             ? (result.stdout || `卡片 ${module} 补充完成`)
                             : "补充失败: " + result.stderr;
@@ -237,12 +270,15 @@ export const RepoWikiPlugin = async ({ project, client, directory }: PluginInput
                 },
                 {
                     name: "rewrite",
-                    description: "忽略现有内容全量重写卡片",
+                    description: "忽略现有内容全量重写卡片（可选 --reference 逗号分隔参考文件）",
                     execute: async (args: string) => {
-                        const [module, ...rest] = (args || "").trim().split(/\s+/);
-                        if (!module || rest.length === 0) return "用法: /knowledge rewrite <模块名> <指令文本>";
-                        const instruction = rest.join(" ");
-                        const result = await runCli(["card", "rewrite", module, "--instruction", instruction, "--config", ".repo-wiki/config.toml"]);
+                        const { refs, rest } = extractReferences((args || "").trim().split(/\s+/));
+                        const [module, ...instructionParts] = rest;
+                        if (!module || instructionParts.length === 0) return "用法: /knowledge rewrite <模块名> <指令文本> [--reference 文件1,文件2]";
+                        const instruction = instructionParts.join(" ");
+                        const cliArgs = ["card", "rewrite", module, "--instruction", instruction, "--config", ".repo-wiki/config.toml"];
+                        if (refs.length > 0) cliArgs.push("--reference", refs.join(","));
+                        const result = await runCli(cliArgs);
                         return result.code === 0
                             ? (result.stdout || `卡片 ${module} 重写完成`)
                             : "重写失败: " + result.stderr;

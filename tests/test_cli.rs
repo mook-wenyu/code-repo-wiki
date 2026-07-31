@@ -270,3 +270,82 @@ fn test_card_cli_commands() {
 
     let _ = std::fs::remove_dir_all(&work_dir);
 }
+
+/// card modify --reference：路径不存在时显式报错（非 0 退出码且不改动卡片）；
+/// 路径存在时成功执行并更新卡片
+#[test]
+fn test_card_reference_validation() {
+    let work_dir = prepare_repo("card_ref");
+
+    let out = run_bin(&work_dir, &["generate", "--config", "config.toml"], &[]);
+    assert!(
+        out.status.success(),
+        "generate 应成功，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let cards_dir = work_dir.join("wiki").join("cards").join("zh");
+    let card_file = std::fs::read_dir(&cards_dir)
+        .unwrap_or_else(|e| panic!("卡片目录应存在 {}: {}", cards_dir.display(), e))
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|x| x == "md"))
+        .expect("generate 后应有卡片文件");
+    let module = card_file
+        .file_stem()
+        .unwrap()
+        .to_string_lossy()
+        .replace('_', "::");
+    let before = std::fs::read_to_string(&card_file).unwrap();
+
+    // 1. reference 指向不存在文件 → 非 0 退出码且报错（read_references 读取失败即失败）
+    let out = run_bin(
+        &work_dir,
+        &[
+            "card", "modify", &module,
+            "--instruction", "补充总结",
+            "--reference", "missing.md",
+            "--config", "config.toml",
+        ],
+        &[],
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !out.status.success(),
+        "reference 不存在时应显式失败，输出: {combined}"
+    );
+    assert!(
+        combined.contains("os error 2"),
+        "报错应包含缺失文件错误，实际: {combined}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&card_file).unwrap(),
+        before,
+        "失败路径不应改动卡片"
+    );
+
+    // 2. reference 指向存在文件 → 成功且卡片更新
+    std::fs::write(work_dir.join("refs.md"), "参考材料：新增设计约束").unwrap();
+    let out = run_bin(
+        &work_dir,
+        &[
+            "card", "modify", &module,
+            "--instruction", "补充总结",
+            "--reference", "refs.md",
+            "--config", "config.toml",
+        ],
+        &[],
+    );
+    assert!(
+        out.status.success(),
+        "reference 存在时应成功，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let after = std::fs::read_to_string(&card_file).unwrap();
+    assert_ne!(before, after, "reference 存在时卡片应被更新");
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}

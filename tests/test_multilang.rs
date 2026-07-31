@@ -66,6 +66,7 @@ fn test_write_document_language_param() {
         coding_spec: None,
         tech_stack: vec![],
         architecture: None,
+        pending_manual_edits: vec![],
     };
     let dir = std::env::temp_dir().join(format!("repo_wiki_test_multilang_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -130,6 +131,10 @@ fn test_render_all_multi_lang_dirs() {
     assert!(dir.join("wiki").join("en").join("core.md").exists());
     assert!(dir.join("cards").join("zh").exists());
     assert!(dir.join("cards").join("en").exists());
+
+    // api.md 内容与语言无关，只写主语言一份（en 是 expand_languages 扩展语言）
+    assert!(dir.join("wiki").join("zh").join("api.md").exists());
+    assert!(!dir.join("wiki").join("en").join("api.md").exists());
 
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -61,6 +61,8 @@ pub(crate) fn card_page_path(output_dir: &Path, lang: &str, module: &str) -> Pat
 pub(crate) fn wiki_page_path(output_dir: &Path, lang: &str, doc: &WikiDocument) -> PathBuf {
     if doc.kind == crate::model::DocumentKind::ArchitectureOverview {
         output_dir.join("wiki").join(lang).join("architecture.md")
+    } else if doc.kind == crate::model::DocumentKind::ProjectOverview {
+        output_dir.join("wiki").join(lang).join("overview.md")
     } else {
         output_dir.join("wiki").join(lang).join(markdown::wiki_file_name(doc))
     }
@@ -77,9 +79,10 @@ pub(crate) fn module_page_file_name(module: &str) -> String {
 /// 渲染所有文档到输出目录
 ///
 /// 1. 创建输出目录结构（主语言 + 扩展语言）
-/// 2. 按文档自身语言渲染并写入 Wiki 页面（多语言独立生成，不再按语言循环复制）
+/// 2. 按文档自身语言渲染并写入 Wiki 页面（多语言独立生成，不再按语言循环复制；
+///    项目概览与架构概览由生成层产出，经 wiki_page_path 特判写 overview.md / architecture.md）
 /// 3. 渲染并写入 Knowledge Card
-/// 4. 生成目录页与概览页（主语言）
+/// 4. 生成 API 参考页（只写主语言）与目录页
 /// 5. 生成 Mermaid 关系图
 ///
 /// `protected` 为人工修改保护集（路径字符串），命中路径跳过写盘，
@@ -125,23 +128,19 @@ pub fn render_all(
         write_document(doc, &doc_cards, output_dir, &doc.language)?;
     }
 
-    // 1.5 写入 API 参考页（按模块分组的实体清单，每种语言独立目录；命中保护集跳过写盘）
+    // 1.5 写入 API 参考页（按模块分组的实体清单；内容与语言无关，只写主语言一份；
+    // 命中保护集跳过写盘。指纹记录按同一规则：state.rs 对未落盘的 en/api.md 不记指纹）
+    let primary_lang = &config.wiki.language;
     for lang in &languages {
+        if lang != primary_lang {
+            continue;
+        }
         let api_path = api_doc_path(output_dir, lang);
         if protected.contains(&api_path.to_string_lossy().to_string()) {
             continue;
         }
         let api_doc = markdown::render_api_reference(graph);
         std::fs::write(api_path, api_doc.content)?;
-    }
-
-    // 2. 生成 overview.md（第一个文档作为概览，写入主语言目录；命中保护集跳过写盘）
-    if let Some(first) = documents.first() {
-        let overview_path = overview_doc_path(output_dir, &languages[0]);
-        if !protected.contains(&overview_path.to_string_lossy().to_string()) {
-            let overview_content = format!("# 项目概览\n\n{}", first.content);
-            std::fs::write(overview_path, overview_content)?;
-        }
     }
 
     // 3. 写入 Knowledge Card 索引（JSON 格式，写入主语言目录）
@@ -234,6 +233,7 @@ mod tests {
             coding_spec: None,
             tech_stack: vec![],
             architecture: None,
+            pending_manual_edits: vec![],
         }
     }
 
@@ -254,6 +254,15 @@ mod tests {
         assert_eq!(
             wiki_page_path(Path::new("out"), "zh", &arch),
             Path::new("out").join("wiki").join("zh").join("architecture.md")
+        );
+        // ProjectOverview 特判写 overview.md
+        let overview = WikiDocument {
+            kind: DocumentKind::ProjectOverview,
+            ..make_doc("zh")
+        };
+        assert_eq!(
+            wiki_page_path(Path::new("out"), "zh", &overview),
+            Path::new("out").join("wiki").join("zh").join("overview.md")
         );
         // 卡片命名：module.replace("::","_")，与 card.rs 的 card_path 一致
         assert_eq!(

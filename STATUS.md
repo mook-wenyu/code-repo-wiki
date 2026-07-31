@@ -2,26 +2,28 @@
 
 ## 一、架构健康度
 - 当前模块总数：13（config/model/ingest/analysis/generate/output/incremental/search/commands + generate/schema + plan + lib.rs + main.rs）
-- 违规跨模块调用：无（output::wiki_languages 委托 generate::collect_languages，依赖方向 output → generate，无环；incremental → output 路径辅助函数为既有方向的延续）
-- 测试覆盖率：cargo test 191 通过（156 unit + 5 integration + 1 progress + 1 output_override + 3 snapshot + 3 cli + 4 multilang + 11 plan + 7 protected），0 失败；另有 5 项 bench 基准可运行（cargo test --bench bench_search）
-- 代码量：约 9,400 行 / 56 .rs 文件
-- clippy --all-targets -- -D warnings：0 警告；cargo check --all-targets：0 错误 0 警告
+- 违规跨模块调用：无
+- 测试覆盖率：cargo check --all-targets 0 错误 0 警告；cargo clippy --all-targets -- -D warnings 0 警告；cargo test 202 通过 0 失败（159 lib + 43 集成/文档）
+- 代码量：约 9,700 行 / 55 .rs 文件（ast_chunker.rs 已删除）
 
 ## 二、本次变更影响范围
-- 修改的功能：FileWatch 策略删除事件追踪——watch 模式下删除事件驱动删除清理；监听目录/过滤与 config 一致；消除 FileWatcher 死代码
-  1. watch.rs 重写：删除 FileWatcher/FileChangeEvent/ChangeKind/notify_event_to_change_kind 死代码；run_watch_loop 签名改为 (root, config, on_change(Vec<PathBuf>))，事件路径过滤+去重后传回调；新增 collect_include_exts / should_report / watch_root_from_scope 辅助函数
-  2. run_incremental_update 与 run_file_watch_incremental 新增 watch_paths 参数：外部事件路径并入 changed_files（去重，取并集），删除路径原样保留供下游清理
-  3. run_incremental_pipeline 新增 watch_paths 参数透传；run_watch 传 current_dir 作监听根（与 scan_and_parse 扫描根一致）
-  4. 一致性修复：watch_root_from_scope 空 include 从"报错"改为"监听项目根"——与 scanner 空 include=全量匹配语义对齐；纯 glob（**/*.rs）行为用测试固化
-- 摸到的文件：src/incremental/watch.rs（重写+一致性修复）、src/incremental/mod.rs、src/lib.rs、src/main.rs
-- 是否改变了接口/契约：是（run_watch_loop / run_incremental_update / run_incremental_pipeline 签名均新增参数，内部函数与 CLI 调用点已同步；CLI 对外命令不变）
+- 修改的功能：Qoder 对等计划全部实现——搜索层收敛、overview 独立生成、api.md 主语言、三更新路径、插件补全、端到端测试
+- Phase 0.1/0.2：删除零消费的 ast_chunker.rs；CallGraph 接入 SearchAgent（call_index 预计算表，SearchHit 新增 callers/callees 字段，lib.rs 无需配合）
+- Phase 0.3/0.4：DocumentKind 新增 ProjectOverview 变体 + overview_prompt 独立 LLM 生成（全量/增量共用 generate_global_documents），output 删除占位拼接，overview 走 write_document（指纹/保护/多语言自然覆盖）；api.md 只写主语言
+- Phase 1.1：WatchEvent{paths,kind} 显式事件类型，run_incremental_pipeline 新增 change_kind 参数，Deleted 直入 cleanup_deleted_outputs
+- Phase 1.2：新 CLI 子命令 sync（commands.rs sync_from_git：指纹不存在→记录、不匹配→更新、受保护→跳过，不触发 LLM）
+- Phase 1.3：KnowledgeCard.pending_manual_edits 字段 + lib.rs inject_manual_edits（定位卡片记录路径+摘要）+ prompt 注入"人工修改待同步"节 + markdown/html 渲染
+- Phase 2：插件 /knowledge 4 子命令支持 --reference 转发（extractReferences helper，不存在文件 CLI 显式报错）；/wiki 新增 sync 子命令
+- Phase 3.1：tests/test_e2e.rs 端到端测试（generate 产物 → 增量只重写受影响页 → Deleted 清理）；config 新增 LlmProviderType::Mock（serde "mock"）供无网络测试/CI 使用
+- 摸到的文件：src/search/{ast_chunker(删),mod,agent,hybrid,callgraph}.rs、src/model/document.rs、src/generate/{wiki,mod,card,prompt}.rs、src/output/{mod,markdown,html}.rs、src/incremental/{watch,mod,state}.rs、src/lib.rs、src/commands.rs、src/main.rs、src/config/schema.rs、.opencode/plugins/repo-wiki.ts、tests/{test_e2e(新),test_overview(新),test_git_sync(新),test_multilang,test_protected_files,test_cli}.rs
+- 是否改变了接口/契约：run_incremental_pipeline 新增 watch_paths/change_kind 参数；SearchHit 新增 callers/callees（serde default 向后兼容）；KnowledgeCard 新增 pending_manual_edits；LlmProviderType 新增 mock 变体；卡片 markdown 可选节
 
 ## 三、已知风险点（由AI诚实自曝）
-- watch 监听根取 scope.include[0] 的 glob 通配前目录（"src/**" → "src"）；纯 glob（"**/*.rs"）或空 include 监听项目根，靠扩展名过滤兜底，监听范围比扫描略宽
-- 事件路径与指纹路径形态可能不一致（notify 返回绝对路径 vs insights 相对路径），下游 propagate_impact/清理按子串/存在性匹配，容忍形态差异但模块归属可能更宽
-- 删除文件的模块名从路径派生（与 A1 相同的信息极限），watch 模式删除的页面清理沿用该规则
-- watch 循环本身是阻塞循环，无自动化测试覆盖（以辅助函数单测代替）
+- 全量/增量管道路径（generate_all_cards）的 LLM 输入注入未闭环：CardGenerator 不访问输出目录，管道路径记录注入靠 lib.rs inject_manual_edits 生成后完成；单卡重生成路径（CLI card）闭环完整
+- extract_pending_manual_edits 纯文本节解析依赖渲染层固定格式
+- inject_manual_edits 的 stem 匹配：模块名含下划线时（src::foo_bar vs src::foo::bar 均成 src_foo_bar）可能串卡片，属现有命名规则固有限制
+- 工作树有大量未提交改动（多轮会话累积），提交前需协调
 
 ## 四、下次最该做的事（AI建议）
-1. 提交本次累积变更（FileWatch 删除追踪 + 一致性修复 + 191 测试），将已入库的 config.toml 残留从 git 历史中清除
-2. 计划 1785403231502 全部实现项已完成并通过独立验证（17/17 项三态对账：全已实现且有测试覆盖）
+1. 若需管道路径的 LLM 输入闭环：给 CardGenerator 注入输出目录，生成前从旧卡片恢复 pending 记录（需改 generate/mod.rs 与 lib.rs）
+2. 多轮未提交改动协调提交（git status 当前 ~25 个变更文件）

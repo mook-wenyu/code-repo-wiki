@@ -171,6 +171,15 @@ pub fn render_knowledge_card(card: &KnowledgeCard) -> String {
         output.push('\n');
     }
 
+    // 人工修改待同步（增量管道注入的记录，仅非空时渲染避免空节）
+    if !card.pending_manual_edits.is_empty() {
+        output.push_str("## 人工修改待同步\n\n");
+        for note in &card.pending_manual_edits {
+            output.push_str(&format!("- {}\n", note));
+        }
+        output.push('\n');
+    }
+
     output
 }
 
@@ -192,6 +201,7 @@ pub fn render_table_of_contents(documents: &[WikiDocument]) -> String {
         let kind = match doc.kind {
             DocumentKind::WikiPage => "模块文档",
             DocumentKind::ArchitectureOverview => "架构概览",
+            DocumentKind::ProjectOverview => "项目概览",
             DocumentKind::TableOfContents => "目录",
             DocumentKind::KnowledgeCard => "知识卡片",
             DocumentKind::ModuleDoc => "模块文档",
@@ -201,11 +211,12 @@ pub fn render_table_of_contents(documents: &[WikiDocument]) -> String {
         // 链接的文件名必须与 write_document 的落盘命名保持一致，否则 TOC 就是断链：
         // 1. 所有文档都写在 wiki/{doc.language}/ 语言目录下，链接必须带语言前缀；
         // 2. 架构概览固定写为 architecture.md（见 write_document），不能走 module_path 派生；
-        // 3. 其余文档用 wiki_file_name（模块路径或标题派生，覆盖 Database Schema 等无模块路径文档）。
-        let file = if doc.kind == DocumentKind::ArchitectureOverview {
-            "architecture.md".to_string()
-        } else {
-            wiki_file_name(doc)
+        // 3. 项目概览固定写为 overview.md，与 wiki_page_path 特判保持一致；
+        // 4. 其余文档用 wiki_file_name（模块路径或标题派生，覆盖 Database Schema 等无模块路径文档）。
+        let file = match doc.kind {
+            DocumentKind::ArchitectureOverview => "architecture.md".to_string(),
+            DocumentKind::ProjectOverview => "overview.md".to_string(),
+            _ => wiki_file_name(doc),
         };
         output.push_str(&format!(
             "- [{}](wiki/{}/{}) `[{}]` — {}\n",
@@ -310,6 +321,7 @@ mod tests {
             coding_spec: Some("遵循 rustfmt".into()),
             tech_stack: vec!["serde".into()],
             architecture: Some("分层".into()),
+            pending_manual_edits: vec!["人工修改待同步: wiki/zh/src_config.md 内容摘要: 手动改".into()],
         };
 
         let output = render_knowledge_card(&card);
@@ -328,6 +340,29 @@ mod tests {
         assert!(output.contains("遵循 rustfmt"));
         assert!(output.contains("## 架构说明"));
         assert!(output.contains("分层"));
+        assert!(output.contains("## 人工修改待同步"));
+        assert!(output.contains("内容摘要: 手动改"));
+    }
+
+    #[test]
+    fn test_render_knowledge_card_skips_empty_pending_edits() {
+        let card = KnowledgeCard {
+            module_name: "crate::config".into(),
+            module_type: "module".into(),
+            summary: "配置管理模块".into(),
+            key_entities: vec![],
+            dependencies: vec![],
+            dependents: vec![],
+            design_patterns: vec![],
+            todo_notes: vec![],
+            related_files: vec![],
+            coding_spec: None,
+            tech_stack: vec![],
+            architecture: None,
+            pending_manual_edits: vec![],
+        };
+        let output = render_knowledge_card(&card);
+        assert!(!output.contains("人工修改待同步"), "无记录时不应渲染空节");
     }
 
     #[test]
@@ -418,6 +453,7 @@ mod tests {
             coding_spec: None,
             tech_stack: vec![],
             architecture: None,
+            pending_manual_edits: vec![],
         };
 
         let dir = std::env::temp_dir().join("repo-wiki-test-markdown");

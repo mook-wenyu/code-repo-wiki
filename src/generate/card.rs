@@ -88,7 +88,13 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
     ///
     /// 跳过空块。LLM 调用失败时返回错误。
     /// 通过 Semaphore 控制并发（acquire → complete → release）。
-    pub async fn generate_card(&self, chunk: &Chunk) -> Result<KnowledgeCard> {
+    /// pending_manual_edits 为旧卡片上的人工修改记录：注入 LLM 输入，
+    /// 且解析后回填新卡片（该字段由增量管道维护，LLM 不会输出，回填保证不丢）。
+    pub async fn generate_card(
+        &self,
+        chunk: &Chunk,
+        pending_manual_edits: &[String],
+    ) -> Result<KnowledgeCard> {
         if chunk.is_empty() {
             anyhow::bail!("空块，跳过生成");
         }
@@ -100,15 +106,26 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
 
         self.call_count.fetch_add(1, Ordering::Relaxed);
 
-        let messages = prompt::knowledge_card_prompt(chunk, &self.language, self.plan.as_ref());
+        let messages = prompt::knowledge_card_prompt(
+            chunk,
+            &self.language,
+            self.plan.as_ref(),
+            pending_manual_edits,
+        );
         let response = self.provider.complete(&messages).await?;
 
-        parse_card_response(&response, chunk)
+        let mut card = parse_card_response(&response, chunk)?;
+        if !pending_manual_edits.is_empty() {
+            card.pending_manual_edits = pending_manual_edits.to_vec();
+        }
+        Ok(card)
     }
 
     /// 并行生成所有模块的 Knowledge Card
     ///
     /// 使用 join_all + Semaphore 实现可控并发。失败的卡片会被跳过（不中断整体流程）。
+    /// 人工修改记录不在此层注入：全量/增量管道路径由 lib.rs 的 inject_manual_edits
+    /// 在生成后统一写入卡片内存；单卡重生成（generate_module_card）才从磁盘恢复记录。
     pub async fn generate_all_cards(
         &self,
         chunks: &[Chunk],
@@ -116,7 +133,7 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
         let mut handles = Vec::with_capacity(chunks.len());
 
         for chunk in chunks {
-            handles.push(self.generate_card(chunk));
+            handles.push(self.generate_card(chunk, &[]));
         }
 
         let results = join_all(handles).await;
@@ -189,9 +206,29 @@ fn write_card_atomic(config: &WikiConfig, module: &str, content: &str) -> Result
     Ok(())
 }
 
+/// 从卡片 markdown 中提取"人工修改待同步"节内容（无该节时返回空）
+///
+/// 节内格式为 "- 记录" 列表行；遇到其他 "## " 标题即结束。
+/// 用于单卡重生成（generate_module_card）时恢复旧卡片上的记录作为 LLM 输入。
+fn extract_pending_manual_edits(content: &str) -> Vec<String> {
+    let mut items = Vec::new();
+    let mut in_section = false;
+    for line in content.lines() {
+        if line.starts_with("## ") {
+            in_section = line == "## 人工修改待同步";
+            continue;
+        }
+        if in_section && let Some(item) = line.strip_prefix("- ") {
+            items.push(item.to_string());
+        }
+    }
+    items
+}
+
 /// 为单个模块重新生成卡片：全量扫描分块 → 定位模块 chunk → LLM 生成 → 写回
 ///
 /// 仅写主语言目录的卡片文件（与其他语言目录由全量 generate 统一刷新）。
+/// 旧卡片上的"人工修改待同步"记录会被恢复为本次 LLM 输入，并保留在新卡片中。
 pub async fn generate_module_card(provider: &Provider, config: &WikiConfig, module: &str) -> Result<()> {
     let insights = crate::ingest::scan_and_parse(config)?;
     let graph = crate::analysis::build_graph(&insights)?;
@@ -204,9 +241,14 @@ pub async fn generate_module_card(provider: &Provider, config: &WikiConfig, modu
             "未找到模块 {module} 对应的代码分块，请检查模块名或先运行 `repo-wiki generate` 全量生成"
         ))?;
 
+    // 从旧卡片恢复人工修改记录（卡片不存在或尚无该节时为空）
+    let pending = read_card(config, module)?
+        .map(|content| extract_pending_manual_edits(&content))
+        .unwrap_or_default();
+
     let plan = crate::config::plan::resolve_plan(config)?;
     let generator = CardGenerator::new(provider, 1, config.wiki.language.clone(), plan);
-    let card = generator.generate_card(&chunk).await?;
+    let card = generator.generate_card(&chunk, &pending).await?;
     let content = crate::output::markdown::render_knowledge_card(&card);
 
     write_card_atomic(config, module, &content)?;
@@ -316,6 +358,7 @@ fn parse_card_response(response: &str, chunk: &Chunk) -> Result<KnowledgeCard> {
         coding_spec,
         tech_stack,
         architecture,
+        pending_manual_edits: Vec::new(),
     })
 }
 
@@ -458,5 +501,30 @@ mod tests {
     fn test_extract_markdown_strips_codeblock() {
         assert_eq!(extract_markdown("```markdown\n# 标题\n```"), "# 标题");
         assert_eq!(extract_markdown("# 标题"), "# 标题");
+    }
+
+    #[test]
+    fn test_extract_pending_manual_edits() {
+        let content = "# src::test\n\n## 摘要\n旧内容\n\n## 人工修改待同步\n\n- 人工修改待同步: a.md 内容摘要: 1\n- 人工修改待同步: b.md 内容摘要: 2\n\n## 待办事项\n\n- [ ] x\n";
+        let items = extract_pending_manual_edits(content);
+        assert_eq!(items.len(), 2, "应提取节内两条记录");
+        assert!(items[0].contains("a.md"));
+        assert!(items[1].contains("b.md"));
+        // 无该节 → 空
+        assert!(extract_pending_manual_edits("# t\n\n## 摘要\nx").is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_generate_card_keeps_pending_manual_edits() {
+        let chunk = make_test_chunk();
+        let provider = Provider::Mock(MockProvider::new());
+        let generator = CardGenerator::new(&provider, 1, "zh".into(), None);
+        // 带记录：LLM 输入注入且生成后回填（渲染不丢）
+        let pending = vec!["人工修改待同步: wiki/zh/src_config.md 内容摘要: 用户改的".into()];
+        let card = generator.generate_card(&chunk, &pending).await.unwrap();
+        assert_eq!(card.pending_manual_edits, pending);
+        // 无记录：不回填
+        let card = generator.generate_card(&chunk, &[]).await.unwrap();
+        assert!(card.pending_manual_edits.is_empty());
     }
 }

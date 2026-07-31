@@ -1,0 +1,4806 @@
+{
+  "schema_version": "1.2.0",
+  "workspaceRoot": "D:\\RustProjects\\repo-wiki",
+  "nodes": {
+    "D:/RustProjects/repo-wiki/.opencode/plugins/repo-wiki.ts": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\.opencode\\plugins\\repo-wiki.ts",
+      "moduleName": ".opencode/plugins/repo-wiki.ts",
+      "exports": [
+        "RepoWikiPlugin",
+        "runCli",
+        "readExistingCards",
+        "cardsDir",
+        "files",
+        "cards",
+        "content",
+        "extractReferences",
+        "refs",
+        "rest",
+        "i",
+        "t",
+        "query",
+        "topK",
+        "result",
+        "hits",
+        "query",
+        "cards",
+        "matched",
+        "result",
+        "output",
+        "cliArgs",
+        "child",
+        "evt",
+        "modulePath",
+        "cards",
+        "matched",
+        "result",
+        "result",
+        "result",
+        "result",
+        "result",
+        "result",
+        "instruction",
+        "cliArgs",
+        "result",
+        "instruction",
+        "cliArgs",
+        "result",
+        "instruction",
+        "cliArgs",
+        "result"
+      ],
+      "exportLines": {
+        "RepoWikiPlugin": 13,
+        "runCli": 16,
+        "readExistingCards": 34,
+        "cardsDir": 36,
+        "files": 40,
+        "cards": 170,
+        "content": 43,
+        "extractReferences": 56,
+        "refs": 57,
+        "rest": 58,
+        "i": 59,
+        "t": 62,
+        "query": 116,
+        "topK": 84,
+        "result": 281,
+        "hits": 95,
+        "matched": 171,
+        "output": 145,
+        "cliArgs": 279,
+        "child": 148,
+        "evt": 153,
+        "modulePath": 169,
+        "instruction": 278
+      },
+      "exportRanges": {
+        "RepoWikiPlugin": {
+          "startLine": 13,
+          "endLine": 290
+        },
+        "runCli": {
+          "startLine": 16,
+          "endLine": 31
+        },
+        "readExistingCards": {
+          "startLine": 34,
+          "endLine": 50
+        },
+        "cardsDir": {
+          "startLine": 36,
+          "endLine": 36
+        },
+        "files": {
+          "startLine": 40,
+          "endLine": 40
+        },
+        "cards": {
+          "startLine": 170,
+          "endLine": 170
+        },
+        "content": {
+          "startLine": 43,
+          "endLine": 43
+        },
+        "extractReferences": {
+          "startLine": 56,
+          "endLine": 70
+        },
+        "refs": {
+          "startLine": 57,
+          "endLine": 57
+        },
+        "rest": {
+          "startLine": 58,
+          "endLine": 58
+        },
+        "i": {
+          "startLine": 59,
+          "endLine": 59
+        },
+        "t": {
+          "startLine": 62,
+          "endLine": 62
+        },
+        "query": {
+          "startLine": 116,
+          "endLine": 116
+        },
+        "topK": {
+          "startLine": 84,
+          "endLine": 84
+        },
+        "result": {
+          "startLine": 281,
+          "endLine": 281
+        },
+        "hits": {
+          "startLine": 95,
+          "endLine": 95
+        },
+        "matched": {
+          "startLine": 171,
+          "endLine": 171
+        },
+        "output": {
+          "startLine": 145,
+          "endLine": 145
+        },
+        "cliArgs": {
+          "startLine": 279,
+          "endLine": 279
+        },
+        "child": {
+          "startLine": 148,
+          "endLine": 148
+        },
+        "evt": {
+          "startLine": 153,
+          "endLine": 153
+        },
+        "modulePath": {
+          "startLine": 169,
+          "endLine": 169
+        },
+        "instruction": {
+          "startLine": 278,
+          "endLine": 278
+        }
+      },
+      "imports": [
+        "@opencode-ai/plugin",
+        "execa"
+      ],
+      "language": "typescript",
+      "mtime": "2026-07-31T12:48:48.735Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": ".opencode",
+        "routes": [],
+        "dataOperations": [
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 78,
+            "evidence": "query: { type: \"string\", description: \"搜索关键词\" },"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 82,
+            "evidence": "const query = (args.query as string) || \"\";"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 83,
+            "evidence": "if (!query) return \"请提供搜索关键词\";"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 87,
+            "evidence": "\"search\", \"-q\", JSON.stringify(query),"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 113,
+            "evidence": "query: { type: \"string\", description: \"搜索关键词或模块名称\" },"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 116,
+            "evidence": "const query = (args.query as string) || \"\";"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 117,
+            "evidence": "if (!query) return \"请提供搜索关键词\";"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 121,
+            "evidence": "c.name.toLowerCase().includes(query.toLowerCase())"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 129,
+            "evidence": "\"search\", \"-q\", JSON.stringify(query),"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 135,
+            "evidence": "return `未找到与 \"${query}\" 相关的知识`;"
+          },
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 190,
+            "evidence": "name: \"update\","
+          },
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 193,
+            "evidence": "const result = await runCli([\"update\"]);"
+          }
+        ],
+        "security": [
+          {
+            "kind": "input_validation",
+            "line": 95,
+            "evidence": "const hits = JSON.parse(result.stdout);",
+            "confidence": "high"
+          },
+          {
+            "kind": "input_validation",
+            "line": 153,
+            "evidence": "const evt = JSON.parse(line);",
+            "confidence": "high"
+          }
+        ],
+        "conventions": [],
+        "findings": [
+          {
+            "code": "multiple_writes_without_detected_transaction",
+            "severity": "low",
+            "message": "Multiple write/delete operations were detected without a transaction fact.",
+            "line": 190
+          }
+        ]
+      }
+    },
+    "D:/RustProjects/repo-wiki/benches/bench_search.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\benches\\bench_search.rs",
+      "moduleName": "benches/bench_search.rs",
+      "exports": [],
+      "imports": [
+        "std::path",
+        "std::sync",
+        "std::time",
+        "repo_wiki::config::schema",
+        "repo_wiki::ingest::parser",
+        "repo_wiki::generate::chunk"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T10:42:57.551Z",
+      "ontology": {
+        "roles": [
+          "service_module"
+        ],
+        "packageBoundary": "benches",
+        "routes": [],
+        "dataOperations": [],
+        "security": [],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/analysis/graph.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\analysis\\graph.rs",
+      "moduleName": "src/analysis/graph.rs",
+      "exports": [
+        "build"
+      ],
+      "exportLines": {
+        "build": 12
+      },
+      "exportRanges": {
+        "build": {
+          "startLine": 12,
+          "endLine": 130
+        }
+      },
+      "imports": [
+        "std::collections",
+        "std::path",
+        "anyhow",
+        "petgraph::graph",
+        "tracing",
+        "crate::ingest::parser",
+        "crate::model",
+        "super",
+        "crate::ingest::parser",
+        "crate::model",
+        "std::path"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-30T19:49:59.376Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/analysis",
+        "routes": [],
+        "dataOperations": [
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 167,
+            "evidence": "cache.insert(prefix, id);"
+          },
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 202,
+            "evidence": "path_map.insert(w.module_path.clone(), n);"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 242,
+            "evidence": "if g.edges_connecting(*eid, *target_id).count() == 0 {"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 343,
+            "evidence": "if g.edges_connecting(*eid, callee_id).count() == 0 {"
+          }
+        ],
+        "security": [],
+        "conventions": [],
+        "findings": [
+          {
+            "code": "multiple_writes_without_detected_transaction",
+            "severity": "low",
+            "message": "Multiple write/delete operations were detected without a transaction fact.",
+            "line": 167
+          }
+        ]
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/analysis/mod.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\analysis\\mod.rs",
+      "moduleName": "src/analysis/mod.rs",
+      "exports": [
+        "graph",
+        "module",
+        "build_graph",
+        "detect_modules"
+      ],
+      "exportLines": {
+        "graph": 1,
+        "module": 2,
+        "build_graph": 11,
+        "detect_modules": 16
+      },
+      "exportRanges": {
+        "graph": {
+          "startLine": 1,
+          "endLine": 1
+        },
+        "module": {
+          "startLine": 2,
+          "endLine": 2
+        },
+        "build_graph": {
+          "startLine": 11,
+          "endLine": 13
+        },
+        "detect_modules": {
+          "startLine": 16,
+          "endLine": 19
+        }
+      },
+      "imports": [
+        "anyhow",
+        "crate::ingest::parser",
+        "crate::model",
+        "super",
+        "crate::ingest::parser",
+        "std::path"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-30T19:49:56.981Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/analysis",
+        "routes": [],
+        "dataOperations": [],
+        "security": [],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/analysis/module.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\analysis\\module.rs",
+      "moduleName": "src/analysis/module.rs",
+      "exports": [
+        "ModuleDetector"
+      ],
+      "exportLines": {
+        "ModuleDetector": 9
+      },
+      "exportRanges": {
+        "ModuleDetector": {
+          "startLine": 9,
+          "endLine": 11
+        }
+      },
+      "imports": [
+        "std::collections",
+        "petgraph::visit",
+        "crate::model",
+        "std::path",
+        "std::path",
+        "super"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-30T11:37:53.301Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/analysis",
+        "routes": [],
+        "dataOperations": [
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 72,
+            "evidence": "assigned.insert(n);"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 218,
+            "evidence": ".count()"
+          }
+        ],
+        "security": [],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/commands.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\commands.rs",
+      "moduleName": "src/commands.rs",
+      "exports": [
+        "sync_from_git",
+        "install",
+        "uninstall"
+      ],
+      "exportLines": {
+        "sync_from_git": 16,
+        "install": 70,
+        "uninstall": 116
+      },
+      "exportRanges": {
+        "sync_from_git": {
+          "startLine": 16,
+          "endLine": 50
+        },
+        "install": {
+          "startLine": 70,
+          "endLine": 113
+        },
+        "uninstall": {
+          "startLine": 116,
+          "endLine": 146
+        }
+      },
+      "imports": [
+        "anyhow",
+        "std::collections",
+        "std::path",
+        "crate::incremental::state"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T13:15:14.536Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src",
+        "routes": [],
+        "dataOperations": [
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 40,
+            "evidence": "state.doc_fingerprints.insert(path_str, fp);"
+          },
+          {
+            "operation": "write",
+            "access": "unknown",
+            "line": 47,
+            "evidence": "state.save(&state_dir)?;"
+          },
+          {
+            "operation": "transaction",
+            "access": "sql",
+            "line": 92,
+            "evidence": "let hook_content = \"#!/bin/sh\\n# repo-wiki: auto-update wiki on commit\\ncd \\\"$(git rev-parse --show-toplevel)\\\"\\nrepo-wiki update --quiet 2>/dev/null || true\\n\""
+          },
+          {
+            "operation": "transaction",
+            "access": "database",
+            "line": 94,
+            "evidence": "let post_commit = hooks_dir.join(\"post-commit\");"
+          },
+          {
+            "operation": "transaction",
+            "access": "database",
+            "line": 99,
+            "evidence": "println!(\"✓ git post-commit hook 已安装\");"
+          },
+          {
+            "operation": "transaction",
+            "access": "database",
+            "line": 133,
+            "evidence": "for hook_name in &[\"post-commit\", \"post-merge\"] {"
+          }
+        ],
+        "security": [],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/config/mod.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\config\\mod.rs",
+      "moduleName": "src/config/mod.rs",
+      "exports": [
+        "opencode",
+        "plan",
+        "schema",
+        "load_config",
+        "create_default_config"
+      ],
+      "exportLines": {
+        "opencode": 1,
+        "plan": 2,
+        "schema": 3,
+        "load_config": 10,
+        "create_default_config": 30
+      },
+      "exportRanges": {
+        "opencode": {
+          "startLine": 1,
+          "endLine": 1
+        },
+        "plan": {
+          "startLine": 2,
+          "endLine": 2
+        },
+        "schema": {
+          "startLine": 3,
+          "endLine": 3
+        },
+        "load_config": {
+          "startLine": 10,
+          "endLine": 27
+        },
+        "create_default_config": {
+          "startLine": 30,
+          "endLine": 38
+        }
+      },
+      "imports": [
+        "std::path",
+        "anyhow",
+        "super"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T09:27:37.774Z",
+      "ontology": {
+        "roles": [
+          "config"
+        ],
+        "packageBoundary": "src/config",
+        "routes": [],
+        "dataOperations": [],
+        "security": [
+          {
+            "kind": "input_validation",
+            "line": 18,
+            "evidence": "validate_config(&config)?;",
+            "confidence": "high"
+          },
+          {
+            "kind": "input_validation",
+            "line": 41,
+            "evidence": "fn validate_config(config: &schema::WikiConfig) -> Result<()> {",
+            "confidence": "high"
+          },
+          {
+            "kind": "input_validation",
+            "line": 72,
+            "evidence": "assert!(validate_config(&config).is_err());",
+            "confidence": "high"
+          },
+          {
+            "kind": "input_validation",
+            "line": 79,
+            "evidence": "assert!(validate_config(&config).is_err());",
+            "confidence": "high"
+          }
+        ],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/config/opencode.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\config\\opencode.rs",
+      "moduleName": "src/config/opencode.rs",
+      "exports": [
+        "OpenCodeConfig"
+      ],
+      "exportLines": {
+        "OpenCodeConfig": 14
+      },
+      "exportRanges": {
+        "OpenCodeConfig": {
+          "startLine": 14,
+          "endLine": 17
+        }
+      },
+      "imports": [
+        "std::path",
+        "anyhow",
+        "super",
+        "std::sync::atomic"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-30T10:52:17.793Z",
+      "ontology": {
+        "roles": [
+          "config"
+        ],
+        "packageBoundary": "src/config",
+        "routes": [],
+        "dataOperations": [],
+        "security": [],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/config/plan.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\config\\plan.rs",
+      "moduleName": "src/config/plan.rs",
+      "exports": [
+        "WikiPlan",
+        "PlanKnowledgeCard",
+        "PlanSection",
+        "PlanTemplateType",
+        "PlanDocument",
+        "load_plan",
+        "ResolvedPlan",
+        "resolve_plan"
+      ],
+      "exportLines": {
+        "WikiPlan": 15,
+        "PlanKnowledgeCard": 35,
+        "PlanSection": 41,
+        "PlanTemplateType": 52,
+        "PlanDocument": 63,
+        "load_plan": 85,
+        "ResolvedPlan": 109,
+        "resolve_plan": 127
+      },
+      "exportRanges": {
+        "WikiPlan": {
+          "startLine": 15,
+          "endLine": 31
+        },
+        "PlanKnowledgeCard": {
+          "startLine": 35,
+          "endLine": 37
+        },
+        "PlanSection": {
+          "startLine": 41,
+          "endLine": 48
+        },
+        "PlanTemplateType": {
+          "startLine": 52,
+          "endLine": 59
+        },
+        "PlanDocument": {
+          "startLine": 63,
+          "endLine": 79
+        },
+        "load_plan": {
+          "startLine": 85,
+          "endLine": 102
+        },
+        "ResolvedPlan": {
+          "startLine": 109,
+          "endLine": 120
+        },
+        "resolve_plan": {
+          "startLine": 127,
+          "endLine": 146
+        }
+      },
+      "imports": [
+        "anyhow",
+        "serde"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T09:27:37.775Z",
+      "ontology": {
+        "roles": [
+          "config"
+        ],
+        "packageBoundary": "src/config",
+        "routes": [],
+        "dataOperations": [],
+        "security": [],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/config/schema.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\config\\schema.rs",
+      "moduleName": "src/config/schema.rs",
+      "exports": [
+        "WikiConfig",
+        "WikiSection",
+        "WikiTemplate",
+        "ScopeSection",
+        "LlmSection",
+        "LlmProviderType",
+        "OutputSection",
+        "OutputFormat",
+        "EmbedProviderType",
+        "EmbedSection",
+        "SearchSection",
+        "SearchEngineType",
+        "IncrementalSection",
+        "IncrementalStrategy",
+        "PlanConfig"
+      ],
+      "exportLines": {
+        "WikiConfig": 5,
+        "WikiSection": 26,
+        "WikiTemplate": 45,
+        "ScopeSection": 52,
+        "LlmSection": 73,
+        "LlmProviderType": 104,
+        "OutputSection": 119,
+        "OutputFormat": 134,
+        "EmbedProviderType": 141,
+        "EmbedSection": 149,
+        "SearchSection": 182,
+        "SearchEngineType": 210,
+        "IncrementalSection": 226,
+        "IncrementalStrategy": 245,
+        "PlanConfig": 254
+      },
+      "exportRanges": {
+        "WikiConfig": {
+          "startLine": 5,
+          "endLine": 22
+        },
+        "WikiSection": {
+          "startLine": 26,
+          "endLine": 31
+        },
+        "WikiTemplate": {
+          "startLine": 45,
+          "endLine": 48
+        },
+        "ScopeSection": {
+          "startLine": 52,
+          "endLine": 55
+        },
+        "LlmSection": {
+          "startLine": 73,
+          "endLine": 86
+        },
+        "LlmProviderType": {
+          "startLine": 104,
+          "endLine": 115
+        },
+        "OutputSection": {
+          "startLine": 119,
+          "endLine": 122
+        },
+        "OutputFormat": {
+          "startLine": 134,
+          "endLine": 137
+        },
+        "EmbedProviderType": {
+          "startLine": 141,
+          "endLine": 145
+        },
+        "EmbedSection": {
+          "startLine": 149,
+          "endLine": 161
+        },
+        "SearchSection": {
+          "startLine": 182,
+          "endLine": 194
+        },
+        "SearchEngineType": {
+          "startLine": 210,
+          "endLine": 220
+        },
+        "IncrementalSection": {
+          "startLine": 226,
+          "endLine": 232
+        },
+        "IncrementalStrategy": {
+          "startLine": 245,
+          "endLine": 250
+        },
+        "PlanConfig": {
+          "startLine": 254,
+          "endLine": 258
+        }
+      },
+      "imports": [
+        "serde"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T13:35:18.940Z",
+      "ontology": {
+        "roles": [
+          "config"
+        ],
+        "packageBoundary": "src/config",
+        "routes": [],
+        "dataOperations": [],
+        "security": [
+          {
+            "kind": "secret_handling",
+            "line": 78,
+            "evidence": "pub api_key: Option<String>,",
+            "confidence": "low"
+          },
+          {
+            "kind": "secret_handling",
+            "line": 94,
+            "evidence": "api_key: None,",
+            "confidence": "low"
+          },
+          {
+            "kind": "secret_handling",
+            "line": 155,
+            "evidence": "pub api_key: Option<String>,",
+            "confidence": "low"
+          },
+          {
+            "kind": "secret_handling",
+            "line": 170,
+            "evidence": "api_key: None,",
+            "confidence": "low"
+          }
+        ],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/generate/card.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\generate\\card.rs",
+      "moduleName": "src/generate/card.rs",
+      "exports": [
+        "CardAction",
+        "CardEditMode",
+        "CardGenerator",
+        "read_card",
+        "generate_module_card",
+        "edit_card"
+      ],
+      "exportLines": {
+        "CardAction": 15,
+        "CardEditMode": 27,
+        "CardGenerator": 50,
+        "read_card": 165,
+        "generate_module_card": 232,
+        "edit_card": 260
+      },
+      "exportRanges": {
+        "CardAction": {
+          "startLine": 15,
+          "endLine": 24
+        },
+        "CardEditMode": {
+          "startLine": 27,
+          "endLine": 34
+        },
+        "CardGenerator": {
+          "startLine": 50,
+          "endLine": 58
+        },
+        "read_card": {
+          "startLine": 165,
+          "endLine": 172
+        },
+        "generate_module_card": {
+          "startLine": 232,
+          "endLine": 257
+        },
+        "edit_card": {
+          "startLine": 260,
+          "endLine": 288
+        }
+      },
+      "imports": [
+        "std::path",
+        "std::sync::atomic",
+        "anyhow",
+        "futures::future",
+        "crate::config::plan",
+        "crate::config::schema",
+        "crate::generate::chunk",
+        "crate::generate::llm",
+        "crate::generate",
+        "crate::model",
+        "super",
+        "crate::generate::chunk",
+        "crate::generate::llm",
+        "crate::ingest::parser",
+        "std::path"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T13:27:45.748Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/generate",
+        "routes": [],
+        "dataOperations": [],
+        "security": [],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/generate/chunk.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\generate\\chunk.rs",
+      "moduleName": "src/generate/chunk.rs",
+      "exports": [
+        "Chunk",
+        "build_node_to_file_map",
+        "chunk_by_module",
+        "chunk_by_file"
+      ],
+      "exportLines": {
+        "Chunk": 14,
+        "build_node_to_file_map": 42,
+        "chunk_by_module": 60,
+        "chunk_by_file": 132
+      },
+      "exportRanges": {
+        "Chunk": {
+          "startLine": 14,
+          "endLine": 25
+        },
+        "build_node_to_file_map": {
+          "startLine": 42,
+          "endLine": 53
+        },
+        "chunk_by_module": {
+          "startLine": 60,
+          "endLine": 129
+        },
+        "chunk_by_file": {
+          "startLine": 132,
+          "endLine": 154
+        }
+      },
+      "imports": [
+        "std::collections",
+        "std::path",
+        "petgraph::stable_graph",
+        "petgraph::visit",
+        "crate::ingest::parser",
+        "crate::model",
+        "super",
+        "crate::ingest::parser",
+        "crate::model"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T10:00:01.687Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/generate",
+        "routes": [],
+        "dataOperations": [
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 49,
+            "evidence": "map.insert(n, PathBuf::from(fp));"
+          }
+        ],
+        "security": [],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/generate/embed.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\generate\\embed.rs",
+      "moduleName": "src/generate/embed.rs",
+      "exports": [
+        "EmbeddingEngine"
+      ],
+      "exportLines": {
+        "EmbeddingEngine": 10
+      },
+      "exportRanges": {
+        "EmbeddingEngine": {
+          "startLine": 10,
+          "endLine": 14
+        }
+      },
+      "imports": [
+        "std::sync::atomic",
+        "anyhow",
+        "crate::config::schema",
+        "super"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-30T11:25:28.324Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/generate",
+        "routes": [],
+        "dataOperations": [],
+        "security": [
+          {
+            "kind": "secret_handling",
+            "line": 35,
+            "evidence": ".api_key",
+            "confidence": "low"
+          },
+          {
+            "kind": "secret_handling",
+            "line": 39,
+            "evidence": "\"Embedding API Key 未设置（api_key 为空且环境变量 {} 未定义）\",",
+            "confidence": "low"
+          },
+          {
+            "kind": "secret_handling",
+            "line": 56,
+            "evidence": "let api_key = self.resolve_api_key()?;",
+            "confidence": "low"
+          },
+          {
+            "kind": "secret_handling",
+            "line": 70,
+            "evidence": ".bearer_auth(&api_key)",
+            "confidence": "low"
+          }
+        ],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/generate/llm.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\generate\\llm.rs",
+      "moduleName": "src/generate/llm.rs",
+      "exports": [
+        "Message",
+        "LlmProvider",
+        "Provider",
+        "OpenAiProvider",
+        "AnthropicProvider",
+        "MockProvider"
+      ],
+      "exportLines": {
+        "Message": 11,
+        "LlmProvider": 44,
+        "Provider": 60,
+        "OpenAiProvider": 101,
+        "AnthropicProvider": 294,
+        "MockProvider": 501
+      },
+      "exportRanges": {
+        "Message": {
+          "startLine": 11,
+          "endLine": 14
+        },
+        "LlmProvider": {
+          "startLine": 44,
+          "endLine": 55
+        },
+        "Provider": {
+          "startLine": 60,
+          "endLine": 64
+        },
+        "OpenAiProvider": {
+          "startLine": 101,
+          "endLine": 110
+        },
+        "AnthropicProvider": {
+          "startLine": 294,
+          "endLine": 302
+        },
+        "MockProvider": {
+          "startLine": 501,
+          "endLine": 503
+        }
+      },
+      "imports": [
+        "std::time",
+        "anyhow",
+        "futures",
+        "reqwest",
+        "crate::config::schema",
+        "super"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-30T19:23:10.198Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/generate",
+        "routes": [],
+        "dataOperations": [],
+        "security": [
+          {
+            "kind": "secret_handling",
+            "line": 103,
+            "evidence": "api_key: String,",
+            "confidence": "low"
+          },
+          {
+            "kind": "secret_handling",
+            "line": 117,
+            "evidence": "let api_key = config.api_key.clone()",
+            "confidence": "low"
+          },
+          {
+            "kind": "secret_handling",
+            "line": 119,
+            "evidence": ".with_context(|| format!(\"LLM API Key 未设置（api_key 为空且环境变量 {} 未定义）\", config.api_key_env))?;",
+            "confidence": "low"
+          },
+          {
+            "kind": "secret_handling",
+            "line": 132,
+            "evidence": "api_key,",
+            "confidence": "low"
+          },
+          {
+            "kind": "secret_handling",
+            "line": 171,
+            "evidence": ".bearer_auth(&self.api_key)",
+            "confidence": "low"
+          },
+          {
+            "kind": "secret_handling",
+            "line": 239,
+            "evidence": ".bearer_auth(&self.api_key)",
+            "confidence": "low"
+          },
+          {
+            "kind": "secret_handling",
+            "line": 296,
+            "evidence": "api_key: String,",
+            "confidence": "low"
+          },
+          {
+            "kind": "secret_handling",
+            "line": 309,
+            "evidence": "let api_key = config.api_key.clone()",
+            "confidence": "low"
+          },
+          {
+            "kind": "secret_handling",
+            "line": 311,
+            "evidence": ".with_context(|| format!(\"Anthropic API Key 未设置（api_key 为空且环境变量 {} 未定义）\", config.api_key_env))?;",
+            "confidence": "low"
+          },
+          {
+            "kind": "secret_handling",
+            "line": 320,
+            "evidence": "api_key,",
+            "confidence": "low"
+          },
+          {
+            "kind": "secret_handling",
+            "line": 377,
+            "evidence": ".header(\"x-api-key\", &self.api_key)",
+            "confidence": "low"
+          },
+          {
+            "kind": "secret_handling",
+            "line": 457,
+            "evidence": ".header(\"x-api-key\", &self.api_key)",
+            "confidence": "low"
+          }
+        ],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/generate/mod.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\generate\\mod.rs",
+      "moduleName": "src/generate/mod.rs",
+      "exports": [
+        "card",
+        "chunk",
+        "embed",
+        "llm",
+        "prompt",
+        "schema",
+        "wiki",
+        "GenerationOutput",
+        "GenerationStats",
+        "create_provider",
+        "collect_languages",
+        "run_generation",
+        "run_generation_filtered"
+      ],
+      "exportLines": {
+        "card": 1,
+        "chunk": 2,
+        "embed": 3,
+        "llm": 4,
+        "prompt": 5,
+        "schema": 6,
+        "wiki": 7,
+        "GenerationOutput": 23,
+        "GenerationStats": 31,
+        "create_provider": 38,
+        "collect_languages": 59,
+        "run_generation": 71,
+        "run_generation_filtered": 173
+      },
+      "exportRanges": {
+        "card": {
+          "startLine": 1,
+          "endLine": 1
+        },
+        "chunk": {
+          "startLine": 2,
+          "endLine": 2
+        },
+        "embed": {
+          "startLine": 3,
+          "endLine": 3
+        },
+        "llm": {
+          "startLine": 4,
+          "endLine": 4
+        },
+        "prompt": {
+          "startLine": 5,
+          "endLine": 5
+        },
+        "schema": {
+          "startLine": 6,
+          "endLine": 6
+        },
+        "wiki": {
+          "startLine": 7,
+          "endLine": 7
+        },
+        "GenerationOutput": {
+          "startLine": 23,
+          "endLine": 27
+        },
+        "GenerationStats": {
+          "startLine": 31,
+          "endLine": 35
+        },
+        "create_provider": {
+          "startLine": 38,
+          "endLine": 54
+        },
+        "collect_languages": {
+          "startLine": 59,
+          "endLine": 63
+        },
+        "run_generation": {
+          "startLine": 71,
+          "endLine": 167
+        },
+        "run_generation_filtered": {
+          "startLine": 173,
+          "endLine": 275
+        }
+      },
+      "imports": [
+        "std::time",
+        "anyhow",
+        "crate::config::plan",
+        "crate::config::schema",
+        "crate::ingest::parser",
+        "crate::model",
+        "self::card",
+        "self::llm",
+        "self::wiki",
+        "super",
+        "crate::config::plan",
+        "crate::config::schema",
+        "crate::model"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T13:35:27.927Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/generate",
+        "routes": [],
+        "dataOperations": [],
+        "security": [],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/generate/prompt.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\generate\\prompt.rs",
+      "moduleName": "src/generate/prompt.rs",
+      "exports": [
+        "module_summary_prompt",
+        "architecture_overview_prompt",
+        "knowledge_card_prompt",
+        "edit_card_prompt",
+        "wiki_page_prompt",
+        "schema_doc_system_prompt",
+        "schema_doc_prompt",
+        "entity_summary_prompt"
+      ],
+      "exportLines": {
+        "module_summary_prompt": 80,
+        "architecture_overview_prompt": 146,
+        "knowledge_card_prompt": 191,
+        "edit_card_prompt": 227,
+        "wiki_page_prompt": 359,
+        "schema_doc_system_prompt": 407,
+        "schema_doc_prompt": 432,
+        "entity_summary_prompt": 448
+      },
+      "exportRanges": {
+        "module_summary_prompt": {
+          "startLine": 80,
+          "endLine": 91
+        },
+        "architecture_overview_prompt": {
+          "startLine": 146,
+          "endLine": 158
+        },
+        "knowledge_card_prompt": {
+          "startLine": 191,
+          "endLine": 217
+        },
+        "edit_card_prompt": {
+          "startLine": 227,
+          "endLine": 272
+        },
+        "wiki_page_prompt": {
+          "startLine": 359,
+          "endLine": 402
+        },
+        "schema_doc_system_prompt": {
+          "startLine": 407,
+          "endLine": 427
+        },
+        "schema_doc_prompt": {
+          "startLine": 432,
+          "endLine": 445
+        },
+        "entity_summary_prompt": {
+          "startLine": 448,
+          "endLine": 470
+        }
+      },
+      "imports": [
+        "crate::config::plan",
+        "crate::generate::chunk",
+        "crate::generate::llm",
+        "crate::ingest::parser",
+        "crate::model",
+        "super",
+        "crate::config::plan"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T13:25:46.139Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/generate",
+        "routes": [],
+        "dataOperations": [],
+        "security": [],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/generate/schema.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\generate\\schema.rs",
+      "moduleName": "src/generate/schema.rs",
+      "exports": [
+        "extract_create_table_blocks",
+        "collect_sql_files",
+        "generate_schema_documents"
+      ],
+      "exportLines": {
+        "extract_create_table_blocks": 20,
+        "collect_sql_files": 42,
+        "generate_schema_documents": 55
+      },
+      "exportRanges": {
+        "extract_create_table_blocks": {
+          "startLine": 20,
+          "endLine": 39
+        },
+        "collect_sql_files": {
+          "startLine": 42,
+          "endLine": 50
+        },
+        "generate_schema_documents": {
+          "startLine": 55,
+          "endLine": 86
+        }
+      },
+      "imports": [
+        "std::path",
+        "anyhow",
+        "crate::config::plan",
+        "crate::config::schema",
+        "crate::generate::llm",
+        "crate::generate",
+        "crate::model",
+        "super",
+        "crate::generate::llm"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T09:25:10.026Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/generate",
+        "routes": [],
+        "dataOperations": [
+          {
+            "operation": "write",
+            "access": "unknown",
+            "line": 154,
+            "evidence": "let sql = \"create table foo (\\n  id int\\n);\\n\";"
+          },
+          {
+            "operation": "write",
+            "access": "unknown",
+            "line": 157,
+            "evidence": "assert!(blocks[0].starts_with(\"create table foo\"));"
+          }
+        ],
+        "security": [],
+        "conventions": [],
+        "findings": [
+          {
+            "code": "multiple_writes_without_detected_transaction",
+            "severity": "low",
+            "message": "Multiple write/delete operations were detected without a transaction fact.",
+            "line": 154
+          }
+        ]
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/generate/wiki.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\generate\\wiki.rs",
+      "moduleName": "src/generate/wiki.rs",
+      "exports": [
+        "WikiGenerator"
+      ],
+      "exportLines": {
+        "WikiGenerator": 17
+      },
+      "exportRanges": {
+        "WikiGenerator": {
+          "startLine": 17,
+          "endLine": 22
+        }
+      },
+      "imports": [
+        "std::sync::atomic",
+        "anyhow",
+        "crate::config::plan",
+        "crate::config::schema",
+        "crate::generate::chunk",
+        "crate::generate::llm",
+        "crate::generate",
+        "crate::generate",
+        "crate::model",
+        "super",
+        "crate::generate::chunk",
+        "crate::generate::llm",
+        "crate::ingest::parser",
+        "std::path",
+        "crate::config::plan"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T12:35:21.062Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/generate",
+        "routes": [],
+        "dataOperations": [
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 194,
+            "evidence": "module_of.insert(*nid, module.name.as_str());"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 212,
+            "evidence": "for ((src, dst), count) in deps {"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 213,
+            "evidence": "parts.push(format!(\"- {} → {} ({} 条边)\", src, dst, count));"
+          }
+        ],
+        "security": [],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/incremental/diff.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\incremental\\diff.rs",
+      "moduleName": "src/incremental/diff.rs",
+      "exports": [
+        "GitDiffResult",
+        "analyze_git_diff",
+        "get_head_commit_hash"
+      ],
+      "exportLines": {
+        "GitDiffResult": 7,
+        "analyze_git_diff": 31,
+        "get_head_commit_hash": 123
+      },
+      "exportRanges": {
+        "GitDiffResult": {
+          "startLine": 7,
+          "endLine": 24
+        },
+        "analyze_git_diff": {
+          "startLine": 31,
+          "endLine": 120
+        },
+        "get_head_commit_hash": {
+          "startLine": 123,
+          "endLine": 128
+        }
+      },
+      "imports": [
+        "std::path",
+        "anyhow",
+        "super"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T09:27:37.780Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/incremental",
+        "routes": [],
+        "dataOperations": [
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 51,
+            "evidence": "} else if head_commit.parents().count() > 0 {"
+          },
+          {
+            "operation": "transaction",
+            "access": "database",
+            "line": 63,
+            "evidence": "tracing::warn!(\"无法解析 commit {}: {}，退化为空 diff\", from_commit, e);"
+          },
+          {
+            "operation": "transaction",
+            "access": "database",
+            "line": 198,
+            "evidence": "repo.commit(Some(\"HEAD\"), &sig, &sig, message, &tree, &[&parent]).unwrap()"
+          },
+          {
+            "operation": "transaction",
+            "access": "database",
+            "line": 200,
+            "evidence": "None => repo.commit(Some(\"HEAD\"), &sig, &sig, message, &tree, &[]).unwrap(),"
+          }
+        ],
+        "security": [],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/incremental/impact.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\incremental\\impact.rs",
+      "moduleName": "src/incremental/impact.rs",
+      "exports": [
+        "propagate_impact"
+      ],
+      "exportLines": {
+        "propagate_impact": 12
+      },
+      "exportRanges": {
+        "propagate_impact": {
+          "startLine": 12,
+          "endLine": 92
+        }
+      },
+      "imports": [
+        "std::collections",
+        "std::path",
+        "petgraph::visit",
+        "crate::model",
+        "super",
+        "petgraph::stable_graph",
+        "crate::model"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-30T21:14:20.438Z",
+      "ontology": {
+        "roles": [
+          "data_module"
+        ],
+        "packageBoundary": "src/incremental",
+        "routes": [],
+        "dataOperations": [
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 44,
+            "evidence": "visited.insert(start);"
+          },
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 49,
+            "evidence": "affected.insert(start_node.module_path.join(\"::\"));"
+          },
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 80,
+            "evidence": "affected.insert(neighbor_node.module_path.join(\"::\"));"
+          },
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 83,
+            "evidence": "visited.insert(neighbor);"
+          }
+        ],
+        "security": [],
+        "conventions": [],
+        "findings": [
+          {
+            "code": "multiple_writes_without_detected_transaction",
+            "severity": "low",
+            "message": "Multiple write/delete operations were detected without a transaction fact.",
+            "line": 44
+          }
+        ]
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/incremental/mod.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\incremental\\mod.rs",
+      "moduleName": "src/incremental/mod.rs",
+      "exports": [
+        "diff",
+        "impact",
+        "state",
+        "watch",
+        "IncrementalResult",
+        "run_incremental_update"
+      ],
+      "exportLines": {
+        "diff": 1,
+        "impact": 2,
+        "state": 3,
+        "watch": 4,
+        "IncrementalResult": 23,
+        "run_incremental_update": 40
+      },
+      "exportRanges": {
+        "diff": {
+          "startLine": 1,
+          "endLine": 1
+        },
+        "impact": {
+          "startLine": 2,
+          "endLine": 2
+        },
+        "state": {
+          "startLine": 3,
+          "endLine": 3
+        },
+        "watch": {
+          "startLine": 4,
+          "endLine": 4
+        },
+        "IncrementalResult": {
+          "startLine": 23,
+          "endLine": 28
+        },
+        "run_incremental_update": {
+          "startLine": 40,
+          "endLine": 63
+        }
+      },
+      "imports": [
+        "std::path",
+        "anyhow",
+        "crate::config::schema",
+        "crate::ingest::parser",
+        "crate::model",
+        "self::diff",
+        "self::impact",
+        "self::state",
+        "crate::config::schema",
+        "super",
+        "crate::config::schema"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T11:31:51.824Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/incremental",
+        "routes": [],
+        "dataOperations": [
+          {
+            "operation": "write",
+            "access": "unknown",
+            "line": 146,
+            "evidence": "if let Ok(new_state) = GenerationState::from_insights(insights, &diff_result.to_commit) && let Err(e) = new_state.save(state_dir) {"
+          },
+          {
+            "operation": "write",
+            "access": "unknown",
+            "line": 191,
+            "evidence": "if let Ok(new_state) = GenerationState::from_insights(insights, \"file-watch\") && let Err(e) = new_state.save(state_dir) {"
+          },
+          {
+            "operation": "transaction",
+            "access": "database",
+            "line": 264,
+            "evidence": "repo.commit(Some(\"HEAD\"), &sig, &sig, \"init\", &tree, &[]).unwrap();"
+          },
+          {
+            "operation": "transaction",
+            "access": "database",
+            "line": 274,
+            "evidence": "repo.commit(Some(\"HEAD\"), &sig, &sig, \"big\", &tree, &[&repo.head().unwrap().peel_to_commit().unwrap()]).unwrap();"
+          },
+          {
+            "operation": "transaction",
+            "access": "database",
+            "line": 310,
+            "evidence": "repo.commit(Some(\"HEAD\"), &sig, &sig, \"init\", &tree, &[]).unwrap();"
+          },
+          {
+            "operation": "delete",
+            "access": "sql",
+            "line": 319,
+            "evidence": "repo.commit(Some(\"HEAD\"), &sig, &sig, \"delete\", &tree, &[&repo.head().unwrap().peel_to_commit().unwrap()]).unwrap();"
+          },
+          {
+            "operation": "write",
+            "access": "unknown",
+            "line": 353,
+            "evidence": "state.save(&state_dir).unwrap();"
+          },
+          {
+            "operation": "write",
+            "access": "unknown",
+            "line": 385,
+            "evidence": "state.save(&state_dir).unwrap();"
+          }
+        ],
+        "security": [],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/incremental/state.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\incremental\\state.rs",
+      "moduleName": "src/incremental/state.rs",
+      "exports": [
+        "GenerationState"
+      ],
+      "exportLines": {
+        "GenerationState": 12
+      },
+      "exportRanges": {
+        "GenerationState": {
+          "startLine": 12,
+          "endLine": 27
+        }
+      },
+      "imports": [
+        "std::collections",
+        "std::io",
+        "std::path",
+        "anyhow",
+        "sha2",
+        "super",
+        "std::path"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T13:17:27.528Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/incremental",
+        "routes": [],
+        "dataOperations": [
+          {
+            "operation": "write",
+            "access": "unknown",
+            "line": 42,
+            "evidence": "pub fn save(&self, state_dir: &Path) -> Result<()> {"
+          },
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 63,
+            "evidence": "file_fingerprints.insert(path_str, fp);"
+          },
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 92,
+            "evidence": "module_fingerprints.insert(module, sha256_hex(names.join(\",\").as_bytes()));"
+          },
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 140,
+            "evidence": "fps.insert(doc_path.to_string_lossy().to_string(), fp);"
+          },
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 149,
+            "evidence": "fps.insert(api_path.to_string_lossy().to_string(), fp);"
+          },
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 156,
+            "evidence": "fps.insert(overview_path.to_string_lossy().to_string(), fp);"
+          },
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 162,
+            "evidence": "fps.insert(toc_path.to_string_lossy().to_string(), fp);"
+          },
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 171,
+            "evidence": "fps.insert(card_path.to_string_lossy().to_string(), fp);"
+          },
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 213,
+            "evidence": "hasher.update(data);"
+          },
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 243,
+            "evidence": "m.insert(\"src/main.rs\".into(), \"deadbeef\".into());"
+          },
+          {
+            "operation": "write",
+            "access": "unknown",
+            "line": 252,
+            "evidence": "state.save(&dir).unwrap();"
+          },
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 276,
+            "evidence": "m.insert("
+          }
+        ],
+        "security": [],
+        "conventions": [],
+        "findings": [
+          {
+            "code": "multiple_writes_without_detected_transaction",
+            "severity": "low",
+            "message": "Multiple write/delete operations were detected without a transaction fact.",
+            "line": 42
+          }
+        ]
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/incremental/watch.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\incremental\\watch.rs",
+      "moduleName": "src/incremental/watch.rs",
+      "exports": [
+        "ChangeKind",
+        "WatchEvent",
+        "run_watch_loop"
+      ],
+      "exportLines": {
+        "ChangeKind": 18,
+        "WatchEvent": 29,
+        "run_watch_loop": 41
+      },
+      "exportRanges": {
+        "ChangeKind": {
+          "startLine": 18,
+          "endLine": 25
+        },
+        "WatchEvent": {
+          "startLine": 29,
+          "endLine": 32
+        },
+        "run_watch_loop": {
+          "startLine": 41,
+          "endLine": 87
+        }
+      },
+      "imports": [
+        "std::path",
+        "std::sync",
+        "std::time",
+        "anyhow",
+        "notify",
+        "notify_debouncer_full",
+        "crate::config::schema",
+        "super",
+        "notify::event",
+        "notify",
+        "notify::event",
+        "notify"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T13:15:49.079Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/incremental",
+        "routes": [],
+        "dataOperations": [],
+        "security": [],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/ingest/mod.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\ingest\\mod.rs",
+      "moduleName": "src/ingest/mod.rs",
+      "exports": [
+        "scanner",
+        "parser",
+        "scan_and_parse"
+      ],
+      "exportLines": {
+        "scanner": 1,
+        "parser": 2,
+        "scan_and_parse": 12
+      },
+      "exportRanges": {
+        "scanner": {
+          "startLine": 1,
+          "endLine": 1
+        },
+        "parser": {
+          "startLine": 2,
+          "endLine": 2
+        },
+        "scan_and_parse": {
+          "startLine": 12,
+          "endLine": 42
+        }
+      },
+      "imports": [
+        "anyhow",
+        "crate::config::schema",
+        "parser"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-30T18:57:21.374Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/ingest",
+        "routes": [],
+        "dataOperations": [],
+        "security": [],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/ingest/parser/csharp.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\ingest\\parser\\csharp.rs",
+      "moduleName": "src/ingest/parser/csharp.rs",
+      "exports": [
+        "CSharpProcessor"
+      ],
+      "exportLines": {
+        "CSharpProcessor": 11
+      },
+      "exportRanges": {
+        "CSharpProcessor": {
+          "startLine": 11,
+          "endLine": 11
+        }
+      },
+      "imports": [
+        "std::path",
+        "anyhow",
+        "tree_sitter",
+        "super",
+        "super"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-30T19:41:00.533Z",
+      "ontology": {
+        "roles": [
+          "schema"
+        ],
+        "packageBoundary": "src/ingest",
+        "routes": [],
+        "dataOperations": [],
+        "security": [
+          {
+            "kind": "input_validation",
+            "line": 48,
+            "evidence": "let tree = match parser.parse(source, None) {",
+            "confidence": "high"
+          },
+          {
+            "kind": "input_validation",
+            "line": 315,
+            "evidence": "let result = proc.parse(source, Path::new(\"test.cs\")).unwrap();",
+            "confidence": "high"
+          },
+          {
+            "kind": "input_validation",
+            "line": 336,
+            "evidence": "let result = proc.parse(source, Path::new(\"test.cs\")).unwrap();",
+            "confidence": "high"
+          }
+        ],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/ingest/parser/go.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\ingest\\parser\\go.rs",
+      "moduleName": "src/ingest/parser/go.rs",
+      "exports": [
+        "GoProcessor"
+      ],
+      "exportLines": {
+        "GoProcessor": 7
+      },
+      "exportRanges": {
+        "GoProcessor": {
+          "startLine": 7,
+          "endLine": 7
+        }
+      },
+      "imports": [
+        "std::path",
+        "anyhow",
+        "tree_sitter",
+        "super",
+        "super"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-30T19:40:55.015Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/ingest",
+        "routes": [],
+        "dataOperations": [],
+        "security": [
+          {
+            "kind": "input_validation",
+            "line": 24,
+            "evidence": "let tree = match parser.parse(source, None) {",
+            "confidence": "high"
+          },
+          {
+            "kind": "input_validation",
+            "line": 147,
+            "evidence": "let result = proc.parse(source, Path::new(\"test.go\")).unwrap();",
+            "confidence": "high"
+          }
+        ],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/ingest/parser/java.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\ingest\\parser\\java.rs",
+      "moduleName": "src/ingest/parser/java.rs",
+      "exports": [
+        "JavaProcessor"
+      ],
+      "exportLines": {
+        "JavaProcessor": 7
+      },
+      "exportRanges": {
+        "JavaProcessor": {
+          "startLine": 7,
+          "endLine": 7
+        }
+      },
+      "imports": [
+        "std::path",
+        "anyhow",
+        "tree_sitter",
+        "super",
+        "super"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-30T21:14:26.140Z",
+      "ontology": {
+        "roles": [
+          "schema"
+        ],
+        "packageBoundary": "src/ingest",
+        "routes": [],
+        "dataOperations": [
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 184,
+            "evidence": "private int count;"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 196,
+            "evidence": "assert!(result.entities.iter().any(|e| e.name == \"count\" && e.kind == \"variable\"));"
+          }
+        ],
+        "security": [
+          {
+            "kind": "input_validation",
+            "line": 24,
+            "evidence": "let tree = match parser.parse(source, None) {",
+            "confidence": "high"
+          },
+          {
+            "kind": "input_validation",
+            "line": 192,
+            "evidence": "let result = proc.parse(source, Path::new(\"Test.java\")).unwrap();",
+            "confidence": "high"
+          }
+        ],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/ingest/parser/javascript.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\ingest\\parser\\javascript.rs",
+      "moduleName": "src/ingest/parser/javascript.rs",
+      "exports": [
+        "JavaScriptProcessor"
+      ],
+      "exportLines": {
+        "JavaScriptProcessor": 11
+      },
+      "exportRanges": {
+        "JavaScriptProcessor": {
+          "startLine": 11,
+          "endLine": 11
+        }
+      },
+      "imports": [
+        "std::path",
+        "anyhow",
+        "tree_sitter",
+        "super",
+        "super"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-30T19:40:58.396Z",
+      "ontology": {
+        "roles": [
+          "service_module"
+        ],
+        "packageBoundary": "src/ingest",
+        "routes": [],
+        "dataOperations": [],
+        "security": [
+          {
+            "kind": "input_validation",
+            "line": 41,
+            "evidence": "let tree = match parser.parse(source, None) {",
+            "confidence": "high"
+          },
+          {
+            "kind": "input_validation",
+            "line": 232,
+            "evidence": "let result = proc.parse(source, Path::new(\"test.js\")).unwrap();",
+            "confidence": "high"
+          },
+          {
+            "kind": "input_validation",
+            "line": 251,
+            "evidence": "let result = proc.parse(source, Path::new(\"test.js\")).unwrap();",
+            "confidence": "high"
+          },
+          {
+            "kind": "input_validation",
+            "line": 265,
+            "evidence": "let result = proc.parse(source, Path::new(\"test.js\")).unwrap();",
+            "confidence": "high"
+          }
+        ],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/ingest/parser/mod.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\ingest\\parser\\mod.rs",
+      "moduleName": "src/ingest/parser/mod.rs",
+      "exports": [
+        "FileInsight",
+        "Entity",
+        "ImportStmt",
+        "LanguageProcessor",
+        "ParserRegistry"
+      ],
+      "exportLines": {
+        "FileInsight": 14,
+        "Entity": 26,
+        "ImportStmt": 41,
+        "LanguageProcessor": 53,
+        "ParserRegistry": 60
+      },
+      "exportRanges": {
+        "FileInsight": {
+          "startLine": 14,
+          "endLine": 22
+        },
+        "Entity": {
+          "startLine": 26,
+          "endLine": 37
+        },
+        "ImportStmt": {
+          "startLine": 41,
+          "endLine": 48
+        },
+        "LanguageProcessor": {
+          "startLine": 53,
+          "endLine": 57
+        },
+        "ParserRegistry": {
+          "startLine": 60,
+          "endLine": 62
+        }
+      },
+      "imports": [
+        "std::path",
+        "anyhow"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-30T19:39:13.205Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/ingest",
+        "routes": [],
+        "dataOperations": [],
+        "security": [],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/ingest/parser/python.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\ingest\\parser\\python.rs",
+      "moduleName": "src/ingest/parser/python.rs",
+      "exports": [
+        "PythonProcessor"
+      ],
+      "exportLines": {
+        "PythonProcessor": 7
+      },
+      "exportRanges": {
+        "PythonProcessor": {
+          "startLine": 7,
+          "endLine": 7
+        }
+      },
+      "imports": [
+        "std::path",
+        "anyhow",
+        "tree_sitter",
+        "super",
+        "super"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-30T19:40:55.009Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/ingest",
+        "routes": [],
+        "dataOperations": [],
+        "security": [
+          {
+            "kind": "input_validation",
+            "line": 24,
+            "evidence": "let tree = match parser.parse(source, None) {",
+            "confidence": "high"
+          },
+          {
+            "kind": "input_validation",
+            "line": 156,
+            "evidence": "let result = proc.parse(source, Path::new(\"test.py\")).unwrap();",
+            "confidence": "high"
+          }
+        ],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/ingest/parser/rust.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\ingest\\parser\\rust.rs",
+      "moduleName": "src/ingest/parser/rust.rs",
+      "exports": [
+        "RustProcessor"
+      ],
+      "exportLines": {
+        "RustProcessor": 7
+      },
+      "exportRanges": {
+        "RustProcessor": {
+          "startLine": 7,
+          "endLine": 7
+        }
+      },
+      "imports": [
+        "std::path",
+        "anyhow",
+        "tree_sitter",
+        "super",
+        "super"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-30T19:40:50.430Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/ingest",
+        "routes": [],
+        "dataOperations": [],
+        "security": [
+          {
+            "kind": "input_validation",
+            "line": 24,
+            "evidence": "let tree = match parser.parse(source, None) {",
+            "confidence": "high"
+          },
+          {
+            "kind": "input_validation",
+            "line": 181,
+            "evidence": "let result = proc.parse(source, Path::new(\"test.rs\")).unwrap();",
+            "confidence": "high"
+          }
+        ],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/ingest/parser/typescript.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\ingest\\parser\\typescript.rs",
+      "moduleName": "src/ingest/parser/typescript.rs",
+      "exports": [
+        "TypeScriptProcessor"
+      ],
+      "exportLines": {
+        "TypeScriptProcessor": 7
+      },
+      "exportRanges": {
+        "TypeScriptProcessor": {
+          "startLine": 7,
+          "endLine": 9
+        }
+      },
+      "imports": [
+        "std::path",
+        "anyhow",
+        "tree_sitter",
+        "super",
+        "super"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-30T19:40:52.750Z",
+      "ontology": {
+        "roles": [
+          "schema"
+        ],
+        "packageBoundary": "src/ingest",
+        "routes": [],
+        "dataOperations": [],
+        "security": [
+          {
+            "kind": "input_validation",
+            "line": 28,
+            "evidence": "let tree = match parser.parse(source, None) {",
+            "confidence": "high"
+          },
+          {
+            "kind": "input_validation",
+            "line": 155,
+            "evidence": "let result = proc.parse(source, Path::new(\"test.ts\")).unwrap();",
+            "confidence": "high"
+          }
+        ],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/ingest/scanner.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\ingest\\scanner.rs",
+      "moduleName": "src/ingest/scanner.rs",
+      "exports": [
+        "Scanner"
+      ],
+      "exportLines": {
+        "Scanner": 29
+      },
+      "exportRanges": {
+        "Scanner": {
+          "startLine": 29,
+          "endLine": 33
+        }
+      },
+      "imports": [
+        "std::path",
+        "anyhow",
+        "glob",
+        "ignore",
+        "crate::config::schema",
+        "super"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T09:27:37.781Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/ingest",
+        "routes": [],
+        "dataOperations": [],
+        "security": [],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/lib.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\lib.rs",
+      "moduleName": "src/lib.rs",
+      "exports": [
+        "config",
+        "model",
+        "ingest",
+        "analysis",
+        "generate",
+        "output",
+        "incremental",
+        "search",
+        "commands",
+        "AnalysisResult",
+        "AnalysisStats",
+        "ProgressEvent",
+        "run_pipeline",
+        "run_pipeline_with_progress",
+        "run_card_command",
+        "run_incremental_pipeline",
+        "cleanup_deleted_outputs",
+        "inject_manual_edits",
+        "run_watch",
+        "execute_search"
+      ],
+      "exportLines": {
+        "config": 1,
+        "model": 2,
+        "ingest": 3,
+        "analysis": 4,
+        "generate": 5,
+        "output": 6,
+        "incremental": 7,
+        "search": 8,
+        "commands": 9,
+        "AnalysisResult": 19,
+        "AnalysisStats": 28,
+        "ProgressEvent": 118,
+        "run_pipeline": 130,
+        "run_pipeline_with_progress": 138,
+        "run_card_command": 210,
+        "run_incremental_pipeline": 259,
+        "cleanup_deleted_outputs": 381,
+        "inject_manual_edits": 413,
+        "run_watch": 436,
+        "execute_search": 634
+      },
+      "exportRanges": {
+        "config": {
+          "startLine": 1,
+          "endLine": 1
+        },
+        "model": {
+          "startLine": 2,
+          "endLine": 2
+        },
+        "ingest": {
+          "startLine": 3,
+          "endLine": 3
+        },
+        "analysis": {
+          "startLine": 4,
+          "endLine": 4
+        },
+        "generate": {
+          "startLine": 5,
+          "endLine": 5
+        },
+        "output": {
+          "startLine": 6,
+          "endLine": 6
+        },
+        "incremental": {
+          "startLine": 7,
+          "endLine": 7
+        },
+        "search": {
+          "startLine": 8,
+          "endLine": 8
+        },
+        "commands": {
+          "startLine": 9,
+          "endLine": 9
+        },
+        "AnalysisResult": {
+          "startLine": 19,
+          "endLine": 24
+        },
+        "AnalysisStats": {
+          "startLine": 28,
+          "endLine": 35
+        },
+        "ProgressEvent": {
+          "startLine": 118,
+          "endLine": 123
+        },
+        "run_pipeline": {
+          "startLine": 130,
+          "endLine": 132
+        },
+        "run_pipeline_with_progress": {
+          "startLine": 138,
+          "endLine": 207
+        },
+        "run_card_command": {
+          "startLine": 210,
+          "endLine": 248
+        },
+        "run_incremental_pipeline": {
+          "startLine": 259,
+          "endLine": 354
+        },
+        "cleanup_deleted_outputs": {
+          "startLine": 381,
+          "endLine": 402
+        },
+        "inject_manual_edits": {
+          "startLine": 413,
+          "endLine": 433
+        },
+        "run_watch": {
+          "startLine": 436,
+          "endLine": 465
+        },
+        "execute_search": {
+          "startLine": 634,
+          "endLine": 678
+        }
+      },
+      "imports": [
+        "std::path",
+        "std::sync",
+        "tokio::runtime",
+        "anyhow",
+        "super",
+        "crate::config::schema",
+        "std::path"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T13:02:39.519Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src",
+        "routes": [],
+        "dataOperations": [
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 82,
+            "evidence": "protected.insert(p);"
+          },
+          {
+            "operation": "write",
+            "access": "unknown",
+            "line": 112,
+            "evidence": "let _ = state.save(&state_dir);"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 160,
+            "evidence": "files_parsed: file_insights.iter().filter(|f| !f.entities.is_empty()).count(),"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 341,
+            "evidence": "files_parsed: file_insights.iter().filter(|f| !f.entities.is_empty()).count(),"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 636,
+            "evidence": "query: &str,"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 640,
+            "evidence": "if query.trim().is_empty() {"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 654,
+            "evidence": "let results = text_engine.search(query, top_k)?;"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 664,
+            "evidence": "let results = semantic_engine.search(query, top_k)?;"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 675,
+            "evidence": "Ok(agent.search(query, top_k, true))"
+          },
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 776,
+            "evidence": "state.doc_fingerprints.insert("
+          },
+          {
+            "operation": "write",
+            "access": "unknown",
+            "line": 780,
+            "evidence": "state.save(&state_dir).unwrap();"
+          }
+        ],
+        "security": [],
+        "conventions": [],
+        "findings": [
+          {
+            "code": "multiple_writes_without_detected_transaction",
+            "severity": "low",
+            "message": "Multiple write/delete operations were detected without a transaction fact.",
+            "line": 82
+          }
+        ]
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/main.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\main.rs",
+      "moduleName": "src/main.rs",
+      "exports": [],
+      "imports": [
+        "std::path",
+        "clap",
+        "repo_wiki::generate"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T13:19:04.755Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src",
+        "routes": [],
+        "dataOperations": [
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 75,
+            "evidence": "query: String,"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 219,
+            "evidence": "Commands::Search { query, top_k, config, json, engine } => {"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 229,
+            "evidence": "let results = repo_wiki::execute_search(&config, &query, top_k, &engine_type)?;"
+          }
+        ],
+        "security": [],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/model/document.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\model\\document.rs",
+      "moduleName": "src/model/document.rs",
+      "exports": [
+        "DocumentKind",
+        "WikiDocument",
+        "Reference",
+        "KnowledgeCard",
+        "EntitySummary"
+      ],
+      "exportLines": {
+        "DocumentKind": 5,
+        "WikiDocument": 30,
+        "Reference": 47,
+        "KnowledgeCard": 55,
+        "EntitySummary": 84
+      },
+      "exportRanges": {
+        "DocumentKind": {
+          "startLine": 5,
+          "endLine": 26
+        },
+        "WikiDocument": {
+          "startLine": 30,
+          "endLine": 43
+        },
+        "Reference": {
+          "startLine": 47,
+          "endLine": 51
+        },
+        "KnowledgeCard": {
+          "startLine": 55,
+          "endLine": 80
+        },
+        "EntitySummary": {
+          "startLine": 84,
+          "endLine": 89
+        }
+      },
+      "imports": [
+        "serde"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T13:16:27.640Z",
+      "ontology": {
+        "roles": [
+          "data_module"
+        ],
+        "packageBoundary": "src/model",
+        "routes": [],
+        "dataOperations": [],
+        "security": [],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/model/edge.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\model\\edge.rs",
+      "moduleName": "src/model/edge.rs",
+      "exports": [
+        "CodeEdge",
+        "EdgeKind"
+      ],
+      "exportLines": {
+        "CodeEdge": 11,
+        "EdgeKind": 24
+      },
+      "exportRanges": {
+        "CodeEdge": {
+          "startLine": 11,
+          "endLine": 20
+        },
+        "EdgeKind": {
+          "startLine": 24,
+          "endLine": 39
+        }
+      },
+      "imports": [
+        "petgraph::stable_graph",
+        "serde",
+        "super::node"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-30T11:21:22.195Z",
+      "ontology": {
+        "roles": [
+          "data_module",
+          "schema"
+        ],
+        "packageBoundary": "src/model",
+        "routes": [],
+        "dataOperations": [],
+        "security": [],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/model/mod.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\model\\mod.rs",
+      "moduleName": "src/model/mod.rs",
+      "exports": [
+        "node",
+        "edge",
+        "document",
+        "KnowledgeGraph",
+        "ModuleCluster"
+      ],
+      "exportLines": {
+        "node": 1,
+        "edge": 2,
+        "document": 3,
+        "KnowledgeGraph": 14,
+        "ModuleCluster": 22
+      },
+      "exportRanges": {
+        "node": {
+          "startLine": 1,
+          "endLine": 1
+        },
+        "edge": {
+          "startLine": 2,
+          "endLine": 2
+        },
+        "document": {
+          "startLine": 3,
+          "endLine": 3
+        },
+        "KnowledgeGraph": {
+          "startLine": 14,
+          "endLine": 18
+        },
+        "ModuleCluster": {
+          "startLine": 22,
+          "endLine": 28
+        }
+      },
+      "imports": [
+        "petgraph::stable_graph",
+        "serde"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-30T18:57:21.378Z",
+      "ontology": {
+        "roles": [
+          "data_module"
+        ],
+        "packageBoundary": "src/model",
+        "routes": [],
+        "dataOperations": [],
+        "security": [],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/model/node.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\model\\node.rs",
+      "moduleName": "src/model/node.rs",
+      "exports": [
+        "CodeNode",
+        "NodeKind"
+      ],
+      "exportLines": {
+        "CodeNode": 9,
+        "NodeKind": 30
+      },
+      "exportRanges": {
+        "CodeNode": {
+          "startLine": 9,
+          "endLine": 26
+        },
+        "NodeKind": {
+          "startLine": 30,
+          "endLine": 59
+        }
+      },
+      "imports": [
+        "petgraph::stable_graph",
+        "serde"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-30T09:23:07.770Z",
+      "ontology": {
+        "roles": [
+          "data_module",
+          "schema"
+        ],
+        "packageBoundary": "src/model",
+        "routes": [],
+        "dataOperations": [],
+        "security": [],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/output/crossref.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\output\\crossref.rs",
+      "moduleName": "src/output/crossref.rs",
+      "exports": [
+        "BrokenLink",
+        "CrossRefIndex",
+        "render_cite_link"
+      ],
+      "exportLines": {
+        "BrokenLink": 7,
+        "CrossRefIndex": 16,
+        "render_cite_link": 95
+      },
+      "exportRanges": {
+        "BrokenLink": {
+          "startLine": 7,
+          "endLine": 11
+        },
+        "CrossRefIndex": {
+          "startLine": 16,
+          "endLine": 18
+        },
+        "render_cite_link": {
+          "startLine": 95,
+          "endLine": 97
+        }
+      },
+      "imports": [
+        "std::collections",
+        "crate::model",
+        "super",
+        "crate::model"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T09:27:37.786Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/output",
+        "routes": [],
+        "dataOperations": [],
+        "security": [
+          {
+            "kind": "input_validation",
+            "line": 63,
+            "evidence": "pub fn validate(&self, documents: &[WikiDocument]) -> Vec<BrokenLink> {",
+            "confidence": "high"
+          },
+          {
+            "kind": "input_validation",
+            "line": 146,
+            "evidence": "let broken = index.validate(&docs);",
+            "confidence": "high"
+          },
+          {
+            "kind": "input_validation",
+            "line": 159,
+            "evidence": "let broken = index.validate(&docs);",
+            "confidence": "high"
+          }
+        ],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/output/html.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\output\\html.rs",
+      "moduleName": "src/output/html.rs",
+      "exports": [
+        "export_html"
+      ],
+      "exportLines": {
+        "export_html": 17
+      },
+      "exportRanges": {
+        "export_html": {
+          "startLine": 17,
+          "endLine": 180
+        }
+      },
+      "imports": [
+        "std::path",
+        "anyhow",
+        "pulldown_cmark",
+        "crate::config::schema",
+        "crate::model",
+        "super",
+        "crate::model",
+        "crate::config::schema"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T13:28:35.519Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/output",
+        "routes": [],
+        "dataOperations": [],
+        "security": [
+          {
+            "kind": "sanitization",
+            "line": 267,
+            "evidence": "let html = wrap_html(\"<script>alert('xss')</script>\", \"<p>body</p>\");",
+            "confidence": "medium"
+          }
+        ],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/output/markdown.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\output\\markdown.rs",
+      "moduleName": "src/output/markdown.rs",
+      "exports": [
+        "render_wiki_page",
+        "render_api_reference",
+        "render_knowledge_card",
+        "render_table_of_contents",
+        "wiki_file_name",
+        "write_document"
+      ],
+      "exportLines": {
+        "render_wiki_page": 9,
+        "render_api_reference": 45,
+        "render_knowledge_card": 99,
+        "render_table_of_contents": 187,
+        "wiki_file_name": 234,
+        "write_document": 248
+      },
+      "exportRanges": {
+        "render_wiki_page": {
+          "startLine": 9,
+          "endLine": 39
+        },
+        "render_api_reference": {
+          "startLine": 45,
+          "endLine": 96
+        },
+        "render_knowledge_card": {
+          "startLine": 99,
+          "endLine": 184
+        },
+        "render_table_of_contents": {
+          "startLine": 187,
+          "endLine": 228
+        },
+        "wiki_file_name": {
+          "startLine": 234,
+          "endLine": 240
+        },
+        "write_document": {
+          "startLine": 248,
+          "endLine": 267
+        }
+      },
+      "imports": [
+        "std::path",
+        "anyhow",
+        "crate::model",
+        "crate::output::crossref",
+        "super",
+        "crate::model",
+        "crate::model"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T13:28:04.718Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/output",
+        "routes": [],
+        "dataOperations": [],
+        "security": [],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/output/mermaid.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\output\\mermaid.rs",
+      "moduleName": "src/output/mermaid.rs",
+      "exports": [
+        "render_module_dependency_graph",
+        "render_entity_graph",
+        "render_module_call_graph",
+        "render_cycle_diagram"
+      ],
+      "exportLines": {
+        "render_module_dependency_graph": 11,
+        "render_entity_graph": 88,
+        "render_module_call_graph": 133,
+        "render_cycle_diagram": 174
+      },
+      "exportRanges": {
+        "render_module_dependency_graph": {
+          "startLine": 11,
+          "endLine": 75
+        },
+        "render_entity_graph": {
+          "startLine": 88,
+          "endLine": 126
+        },
+        "render_module_call_graph": {
+          "startLine": 133,
+          "endLine": 171
+        },
+        "render_cycle_diagram": {
+          "startLine": 174,
+          "endLine": 205
+        }
+      },
+      "imports": [
+        "std::collections",
+        "petgraph::algo",
+        "petgraph::visit",
+        "crate::model",
+        "super",
+        "petgraph::stable_graph",
+        "crate::model"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T09:27:37.788Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/output",
+        "routes": [],
+        "dataOperations": [
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 38,
+            "evidence": "node_names.insert(source_module.clone());"
+          },
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 39,
+            "evidence": "node_names.insert(target_module.clone());"
+          },
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 138,
+            "evidence": "node_module.insert(*nid, module.name.clone());"
+          },
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 161,
+            "evidence": "modules.insert(src.clone());"
+          },
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 162,
+            "evidence": "modules.insert(tgt.clone());"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 167,
+            "evidence": "for ((src, tgt), count) in &edge_counts {"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 168,
+            "evidence": "output.push_str(&format!(\"    {} -->|{}| {}\\n\", sanitize_id(src), count, sanitize_id(tgt)));"
+          }
+        ],
+        "security": [],
+        "conventions": [],
+        "findings": [
+          {
+            "code": "multiple_writes_without_detected_transaction",
+            "severity": "low",
+            "message": "Multiple write/delete operations were detected without a transaction fact.",
+            "line": 38
+          }
+        ]
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/output/mod.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\output\\mod.rs",
+      "moduleName": "src/output/mod.rs",
+      "exports": [
+        "crossref",
+        "markdown",
+        "mermaid",
+        "html",
+        "wiki_languages",
+        "api_doc_path",
+        "overview_doc_path",
+        "toc_doc_path",
+        "card_file_stem",
+        "card_page_path",
+        "wiki_page_path",
+        "module_page_file_name",
+        "render_all"
+      ],
+      "exportLines": {
+        "crossref": 1,
+        "markdown": 2,
+        "mermaid": 3,
+        "html": 4,
+        "wiki_languages": 16,
+        "api_doc_path": 24,
+        "overview_doc_path": 29,
+        "toc_doc_path": 34,
+        "card_file_stem": 41,
+        "card_page_path": 49,
+        "wiki_page_path": 61,
+        "module_page_file_name": 75,
+        "render_all": 90
+      },
+      "exportRanges": {
+        "crossref": {
+          "startLine": 1,
+          "endLine": 1
+        },
+        "markdown": {
+          "startLine": 2,
+          "endLine": 2
+        },
+        "mermaid": {
+          "startLine": 3,
+          "endLine": 3
+        },
+        "html": {
+          "startLine": 4,
+          "endLine": 4
+        },
+        "wiki_languages": {
+          "startLine": 16,
+          "endLine": 18
+        },
+        "api_doc_path": {
+          "startLine": 24,
+          "endLine": 26
+        },
+        "overview_doc_path": {
+          "startLine": 29,
+          "endLine": 31
+        },
+        "toc_doc_path": {
+          "startLine": 34,
+          "endLine": 36
+        },
+        "card_file_stem": {
+          "startLine": 41,
+          "endLine": 43
+        },
+        "card_page_path": {
+          "startLine": 49,
+          "endLine": 54
+        },
+        "wiki_page_path": {
+          "startLine": 61,
+          "endLine": 69
+        },
+        "module_page_file_name": {
+          "startLine": 75,
+          "endLine": 77
+        },
+        "render_all": {
+          "startLine": 90,
+          "endLine": 202
+        }
+      },
+      "imports": [
+        "std::path",
+        "anyhow",
+        "crate::config::schema",
+        "crate::model",
+        "self::markdown",
+        "super",
+        "crate::model"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T13:17:27.528Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/output",
+        "routes": [],
+        "dataOperations": [],
+        "security": [
+          {
+            "kind": "input_validation",
+            "line": 181,
+            "evidence": "let broken = crossref.validate(documents);",
+            "confidence": "high"
+          }
+        ],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/search/agent.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\search\\agent.rs",
+      "moduleName": "src/search/agent.rs",
+      "exports": [
+        "SearchAgent"
+      ],
+      "exportLines": {
+        "SearchAgent": 17
+      },
+      "exportRanges": {
+        "SearchAgent": {
+          "startLine": 17,
+          "endLine": 23
+        }
+      },
+      "imports": [
+        "std::collections",
+        "crate::model",
+        "super::text",
+        "super::semantic",
+        "super::ast",
+        "super::hybrid",
+        "super",
+        "crate::model",
+        "std::sync::atomic",
+        "crate::model",
+        "crate::search::callgraph",
+        "petgraph::stable_graph"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T12:42:38.207Z",
+      "ontology": {
+        "roles": [
+          "schema"
+        ],
+        "packageBoundary": "src/search",
+        "routes": [],
+        "dataOperations": [
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 37,
+            "evidence": "pub fn search(&self, query: &str, top_k: usize, auto_backtrack: bool) -> Vec<SearchHit> {"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 39,
+            "evidence": "let text_results = match self.text.search(query, top_k) {"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 48,
+            "evidence": "if let Some(ref sem) = self.semantic && let Ok(sem_results) = sem.search(query, top_k * 2) {"
+          }
+        ],
+        "security": [],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/search/ast.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\search\\ast.rs",
+      "moduleName": "src/search/ast.rs",
+      "exports": [
+        "AstQuery",
+        "QueryMatch",
+        "get_language"
+      ],
+      "exportLines": {
+        "AstQuery": 8,
+        "QueryMatch": 15,
+        "get_language": 123
+      },
+      "exportRanges": {
+        "AstQuery": {
+          "startLine": 8,
+          "endLine": 11
+        },
+        "QueryMatch": {
+          "startLine": 15,
+          "endLine": 24
+        },
+        "get_language": {
+          "startLine": 123,
+          "endLine": 133
+        }
+      },
+      "imports": [
+        "std::collections",
+        "tree_sitter",
+        "anyhow",
+        "super"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-30T18:11:40.810Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/search",
+        "routes": [],
+        "dataOperations": [
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 64,
+            "evidence": "captures.insert(\"name\".to_string(), text.to_string());"
+          },
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 66,
+            "evidence": "capture_lines.insert(\"name\".to_string(), name_node.start_position().row + 1);"
+          }
+        ],
+        "security": [
+          {
+            "kind": "input_validation",
+            "line": 40,
+            "evidence": "let tree = self.parser.parse(source, None)",
+            "confidence": "high"
+          },
+          {
+            "kind": "input_validation",
+            "line": 88,
+            "evidence": "let tree = self.parser.parse(source, None)",
+            "confidence": "high"
+          }
+        ],
+        "conventions": [],
+        "findings": [
+          {
+            "code": "multiple_writes_without_detected_transaction",
+            "severity": "low",
+            "message": "Multiple write/delete operations were detected without a transaction fact.",
+            "line": 64
+          }
+        ]
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/search/callgraph.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\search\\callgraph.rs",
+      "moduleName": "src/search/callgraph.rs",
+      "exports": [
+        "CallGraph"
+      ],
+      "exportLines": {
+        "CallGraph": 6
+      },
+      "exportRanges": {
+        "CallGraph": {
+          "startLine": 6,
+          "endLine": 8
+        }
+      },
+      "imports": [
+        "std::collections",
+        "petgraph::visit",
+        "crate::model",
+        "super",
+        "crate::model",
+        "petgraph::stable_graph"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T12:27:59.451Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/search",
+        "routes": [],
+        "dataOperations": [],
+        "security": [],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/search/hybrid.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\search\\hybrid.rs",
+      "moduleName": "src/search/hybrid.rs",
+      "exports": [
+        "SearchHit",
+        "rrf_merge",
+        "text_results_to_hits",
+        "semantic_results_to_hits"
+      ],
+      "exportLines": {
+        "SearchHit": 6,
+        "rrf_merge": 20,
+        "text_results_to_hits": 43,
+        "semantic_results_to_hits": 51
+      },
+      "exportRanges": {
+        "SearchHit": {
+          "startLine": 6,
+          "endLine": 17
+        },
+        "rrf_merge": {
+          "startLine": 20,
+          "endLine": 40
+        },
+        "text_results_to_hits": {
+          "startLine": 43,
+          "endLine": 48
+        },
+        "semantic_results_to_hits": {
+          "startLine": 51,
+          "endLine": 56
+        }
+      },
+      "imports": [
+        "crate::model",
+        "serde",
+        "std::collections",
+        "super",
+        "crate::model"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T12:27:46.947Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/search",
+        "routes": [],
+        "dataOperations": [],
+        "security": [],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/search/mod.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\search\\mod.rs",
+      "moduleName": "src/search/mod.rs",
+      "exports": [
+        "ast",
+        "callgraph",
+        "text",
+        "semantic",
+        "hybrid",
+        "agent",
+        "store"
+      ],
+      "exportLines": {
+        "ast": 1,
+        "callgraph": 2,
+        "text": 3,
+        "semantic": 4,
+        "hybrid": 5,
+        "agent": 6,
+        "store": 7
+      },
+      "exportRanges": {
+        "ast": {
+          "startLine": 1,
+          "endLine": 1
+        },
+        "callgraph": {
+          "startLine": 2,
+          "endLine": 2
+        },
+        "text": {
+          "startLine": 3,
+          "endLine": 3
+        },
+        "semantic": {
+          "startLine": 4,
+          "endLine": 4
+        },
+        "hybrid": {
+          "startLine": 5,
+          "endLine": 5
+        },
+        "agent": {
+          "startLine": 6,
+          "endLine": 6
+        },
+        "store": {
+          "startLine": 7,
+          "endLine": 7
+        }
+      },
+      "imports": [],
+      "language": "rust",
+      "mtime": "2026-07-31T12:27:34.240Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/search",
+        "routes": [],
+        "dataOperations": [],
+        "security": [],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/search/semantic.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\search\\semantic.rs",
+      "moduleName": "src/search/semantic.rs",
+      "exports": [
+        "SemanticEngine"
+      ],
+      "exportLines": {
+        "SemanticEngine": 19
+      },
+      "exportRanges": {
+        "SemanticEngine": {
+          "startLine": 19,
+          "endLine": 23
+        }
+      },
+      "imports": [
+        "std::sync",
+        "std::path",
+        "anyhow",
+        "tokio::runtime",
+        "crate::model",
+        "crate::generate::embed",
+        "super::store",
+        "super",
+        "crate::config::schema",
+        "tokio::runtime",
+        "std::sync::atomic"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-30T21:13:58.891Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/search",
+        "routes": [],
+        "dataOperations": [
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 74,
+            "evidence": "pub fn search(&self, query: &str, limit: usize) -> Result<Vec<(CodeNode, f32)>> {"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 80,
+            "evidence": "let q_vec = self.rt.block_on(self.embedder.embed(query))?;"
+          }
+        ],
+        "security": [
+          {
+            "kind": "secret_handling",
+            "line": 125,
+            "evidence": "api_key: Some(\"test-key\".into()),",
+            "confidence": "low"
+          }
+        ],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/search/store.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\search\\store.rs",
+      "moduleName": "src/search/store.rs",
+      "exports": [
+        "SearchStore"
+      ],
+      "exportLines": {
+        "SearchStore": 21
+      },
+      "exportRanges": {
+        "SearchStore": {
+          "startLine": 21,
+          "endLine": 23
+        }
+      },
+      "imports": [
+        "std::path",
+        "anyhow",
+        "rusqlite",
+        "crate::model",
+        "super",
+        "crate::model"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-30T18:11:40.814Z",
+      "ontology": {
+        "roles": [
+          "data_module"
+        ],
+        "packageBoundary": "src/search",
+        "routes": [],
+        "dataOperations": [
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 91,
+            "evidence": "pub fn search_fts(&self, query: &str, limit: usize) -> Result<Vec<(CodeNode, f64)>> {"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 104,
+            "evidence": "let rows = stmt.query_map(rusqlite::params![query], |row| {"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 123,
+            "evidence": "let count = self.conn.execute("
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 127,
+            "evidence": "Ok(count)"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 132,
+            "evidence": "let count: usize = self.conn.query_row("
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 137,
+            "evidence": "Ok(count)"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 192,
+            "evidence": "let count = self.conn.execute("
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 196,
+            "evidence": "Ok(count)"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 201,
+            "evidence": "let count: usize = self.conn.query_row("
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 206,
+            "evidence": "Ok(count)"
+          }
+        ],
+        "security": [],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/src/search/text.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\src\\search\\text.rs",
+      "moduleName": "src/search/text.rs",
+      "exports": [
+        "TextEngine"
+      ],
+      "exportLines": {
+        "TextEngine": 16
+      },
+      "exportRanges": {
+        "TextEngine": {
+          "startLine": 16,
+          "endLine": 18
+        }
+      },
+      "imports": [
+        "std::path",
+        "anyhow",
+        "crate::model",
+        "super::store",
+        "super",
+        "crate::model",
+        "std::sync::atomic"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-30T18:11:40.814Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": "src/search",
+        "routes": [],
+        "dataOperations": [
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 40,
+            "evidence": "pub fn search(&self, query: &str, limit: usize) -> Result<Vec<(CodeNode, f64)>> {"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 41,
+            "evidence": "if query.is_empty() {"
+          },
+          {
+            "operation": "read",
+            "access": "unknown",
+            "line": 44,
+            "evidence": "self.store.search_fts(query, limit)"
+          },
+          {
+            "operation": "delete",
+            "access": "unknown",
+            "line": 132,
+            "evidence": "let mut engine = TextEngine::open(tmp_path(\"remove\"))?;"
+          }
+        ],
+        "security": [],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/tests/fixtures/sample-repo/src/auth.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\tests\\fixtures\\sample-repo\\src\\auth.rs",
+      "moduleName": "tests/fixtures/sample-repo/src/auth.rs",
+      "exports": [
+        "User",
+        "Role",
+        "Authenticator",
+        "authenticate",
+        "generate_token"
+      ],
+      "exportLines": {
+        "User": 2,
+        "Role": 8,
+        "Authenticator": 14,
+        "authenticate": 19,
+        "generate_token": 31
+      },
+      "exportRanges": {
+        "User": {
+          "startLine": 2,
+          "endLine": 5
+        },
+        "Role": {
+          "startLine": 8,
+          "endLine": 11
+        },
+        "Authenticator": {
+          "startLine": 14,
+          "endLine": 16
+        },
+        "authenticate": {
+          "startLine": 19,
+          "endLine": 28
+        },
+        "generate_token": {
+          "startLine": 31,
+          "endLine": 33
+        }
+      },
+      "imports": [],
+      "language": "rust",
+      "mtime": "2026-07-30T18:11:40.829Z",
+      "ontology": {
+        "roles": [
+          "test_file"
+        ],
+        "packageBoundary": "tests/fixtures",
+        "routes": [],
+        "dataOperations": [],
+        "security": [
+          {
+            "kind": "secret_handling",
+            "line": 15,
+            "evidence": "fn verify(&self, token: &str) -> bool;",
+            "confidence": "low"
+          },
+          {
+            "kind": "secret_handling",
+            "line": 19,
+            "evidence": "pub fn authenticate(username: &str, password: &str) -> Option<User> {",
+            "confidence": "low"
+          },
+          {
+            "kind": "secret_handling",
+            "line": 20,
+            "evidence": "if username == \"admin\" && password == \"secret\" {",
+            "confidence": "low"
+          },
+          {
+            "kind": "secret_handling",
+            "line": 32,
+            "evidence": "format!(\"token-{}-admin\", user.name)",
+            "confidence": "low"
+          }
+        ],
+        "conventions": [
+          {
+            "name": "test_file_naming",
+            "evidence": "auth.rs matches test/spec naming"
+          }
+        ],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/tests/fixtures/sample-repo/src/main.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\tests\\fixtures\\sample-repo\\src\\main.rs",
+      "moduleName": "tests/fixtures/sample-repo/src/main.rs",
+      "exports": [],
+      "imports": [],
+      "language": "rust",
+      "mtime": "2026-07-30T18:11:40.829Z",
+      "ontology": {
+        "roles": [
+          "test_file"
+        ],
+        "packageBoundary": "tests/fixtures",
+        "routes": [],
+        "dataOperations": [],
+        "security": [
+          {
+            "kind": "secret_handling",
+            "line": 6,
+            "evidence": "let user = auth::authenticate(\"admin\", \"secret\");",
+            "confidence": "low"
+          }
+        ],
+        "conventions": [
+          {
+            "name": "test_file_naming",
+            "evidence": "main.rs matches test/spec naming"
+          }
+        ],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/tests/fixtures/sample-repo/src/storage.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\tests\\fixtures\\sample-repo\\src\\storage.rs",
+      "moduleName": "tests/fixtures/sample-repo/src/storage.rs",
+      "exports": [
+        "SessionStore",
+        "save_session",
+        "load_session"
+      ],
+      "exportLines": {
+        "SessionStore": 4,
+        "save_session": 21,
+        "load_session": 26
+      },
+      "exportRanges": {
+        "SessionStore": {
+          "startLine": 4,
+          "endLine": 6
+        },
+        "save_session": {
+          "startLine": 21,
+          "endLine": 23
+        },
+        "load_session": {
+          "startLine": 26,
+          "endLine": 29
+        }
+      },
+      "imports": [
+        "std::collections"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-30T18:11:40.829Z",
+      "ontology": {
+        "roles": [
+          "test_file"
+        ],
+        "packageBoundary": "tests/fixtures",
+        "routes": [],
+        "dataOperations": [
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 15,
+            "evidence": "pub fn insert(&mut self, key: String, value: String) {"
+          },
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 16,
+            "evidence": "self.sessions.insert(key, value);"
+          }
+        ],
+        "security": [],
+        "conventions": [
+          {
+            "name": "test_file_naming",
+            "evidence": "storage.rs matches test/spec naming"
+          }
+        ],
+        "findings": [
+          {
+            "code": "multiple_writes_without_detected_transaction",
+            "severity": "low",
+            "message": "Multiple write/delete operations were detected without a transaction fact.",
+            "line": 15
+          }
+        ]
+      }
+    },
+    "D:/RustProjects/repo-wiki/tests/integration_test.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\tests\\integration_test.rs",
+      "moduleName": "tests/integration_test.rs",
+      "exports": [],
+      "imports": [
+        "std::path",
+        "repo_wiki::config::schema",
+        "repo_wiki::ingest::parser",
+        "repo_wiki::ingest::scanner",
+        "repo_wiki::search::text"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-30T19:49:59.376Z",
+      "ontology": {
+        "roles": [
+          "test_file"
+        ],
+        "packageBoundary": "tests/integration_test.rs",
+        "routes": [],
+        "dataOperations": [],
+        "security": [],
+        "conventions": [
+          {
+            "name": "test_file_naming",
+            "evidence": "integration_test.rs matches test/spec naming"
+          }
+        ],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/tests/output_override_test.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\tests\\output_override_test.rs",
+      "moduleName": "tests/output_override_test.rs",
+      "exports": [],
+      "imports": [
+        "std::path",
+        "std::sync",
+        "std::sync::atomic",
+        "std::io"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T10:43:08.881Z",
+      "ontology": {
+        "roles": [
+          "test_file"
+        ],
+        "packageBoundary": "tests/output_override_test.rs",
+        "routes": [],
+        "dataOperations": [],
+        "security": [],
+        "conventions": [
+          {
+            "name": "test_file_naming",
+            "evidence": "output_override_test.rs matches test/spec naming"
+          }
+        ],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/tests/progress_test.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\tests\\progress_test.rs",
+      "moduleName": "tests/progress_test.rs",
+      "exports": [],
+      "imports": [
+        "std::path",
+        "std::sync",
+        "std::sync::atomic",
+        "std::io"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T11:03:38.668Z",
+      "ontology": {
+        "roles": [
+          "test_file"
+        ],
+        "packageBoundary": "tests/progress_test.rs",
+        "routes": [],
+        "dataOperations": [],
+        "security": [],
+        "conventions": [
+          {
+            "name": "test_file_naming",
+            "evidence": "progress_test.rs matches test/spec naming"
+          }
+        ],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/tests/snapshot_test.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\tests\\snapshot_test.rs",
+      "moduleName": "tests/snapshot_test.rs",
+      "exports": [],
+      "imports": [
+        "repo_wiki::model"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-30T17:49:36.377Z",
+      "ontology": {
+        "roles": [
+          "test_file"
+        ],
+        "packageBoundary": "tests/snapshot_test.rs",
+        "routes": [],
+        "dataOperations": [],
+        "security": [],
+        "conventions": [
+          {
+            "name": "test_file_naming",
+            "evidence": "snapshot_test.rs matches test/spec naming"
+          }
+        ],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/tests/test_cli.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\tests\\test_cli.rs",
+      "moduleName": "tests/test_cli.rs",
+      "exports": [],
+      "imports": [
+        "std::path",
+        "std::process",
+        "std::sync::atomic",
+        "std::io"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T12:49:41.308Z",
+      "ontology": {
+        "roles": [
+          "test_file"
+        ],
+        "packageBoundary": "tests/test_cli.rs",
+        "routes": [],
+        "dataOperations": [],
+        "security": [],
+        "conventions": [
+          {
+            "name": "test_file_naming",
+            "evidence": "test_cli.rs matches test/spec naming"
+          }
+        ],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/tests/test_e2e.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\tests\\test_e2e.rs",
+      "moduleName": "tests/test_e2e.rs",
+      "exports": [],
+      "imports": [
+        "std::path",
+        "repo_wiki::config::schema",
+        "repo_wiki::config::schema"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T13:39:37.154Z",
+      "ontology": {
+        "roles": [
+          "test_file"
+        ],
+        "packageBoundary": "tests/test_e2e.rs",
+        "routes": [],
+        "dataOperations": [],
+        "security": [],
+        "conventions": [
+          {
+            "name": "test_file_naming",
+            "evidence": "test_e2e.rs matches test/spec naming"
+          }
+        ],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/tests/test_git_sync.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\tests\\test_git_sync.rs",
+      "moduleName": "tests/test_git_sync.rs",
+      "exports": [],
+      "imports": [
+        "std::collections",
+        "std::path",
+        "repo_wiki::incremental::state"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T13:12:11.893Z",
+      "ontology": {
+        "roles": [
+          "test_file"
+        ],
+        "packageBoundary": "tests/test_git_sync.rs",
+        "routes": [],
+        "dataOperations": [
+          {
+            "operation": "write",
+            "access": "unknown",
+            "line": 27,
+            "evidence": "state.save(&dir.join(\".state\")).unwrap();"
+          },
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 37,
+            "evidence": "let (dir, path_str) = fixture(\"update\", \"生成时内容\");"
+          },
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 39,
+            "evidence": "fps.insert("
+          },
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 70,
+            "evidence": "fps.insert("
+          }
+        ],
+        "security": [],
+        "conventions": [
+          {
+            "name": "test_file_naming",
+            "evidence": "test_git_sync.rs matches test/spec naming"
+          }
+        ],
+        "findings": [
+          {
+            "code": "multiple_writes_without_detected_transaction",
+            "severity": "low",
+            "message": "Multiple write/delete operations were detected without a transaction fact.",
+            "line": 27
+          }
+        ]
+      }
+    },
+    "D:/RustProjects/repo-wiki/tests/test_multilang.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\tests\\test_multilang.rs",
+      "moduleName": "tests/test_multilang.rs",
+      "exports": [],
+      "imports": [
+        "repo_wiki::model",
+        "repo_wiki::model",
+        "repo_wiki::config::schema"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T13:19:19.145Z",
+      "ontology": {
+        "roles": [
+          "test_file"
+        ],
+        "packageBoundary": "tests/test_multilang.rs",
+        "routes": [],
+        "dataOperations": [],
+        "security": [],
+        "conventions": [
+          {
+            "name": "test_file_naming",
+            "evidence": "test_multilang.rs matches test/spec naming"
+          }
+        ],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/tests/test_overview.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\tests\\test_overview.rs",
+      "moduleName": "tests/test_overview.rs",
+      "exports": [],
+      "imports": [
+        "std::collections",
+        "repo_wiki::config::schema",
+        "repo_wiki::generate::llm",
+        "repo_wiki::generate::wiki",
+        "repo_wiki::generate",
+        "repo_wiki::incremental::state",
+        "repo_wiki::model",
+        "repo_wiki::output"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T12:36:47.383Z",
+      "ontology": {
+        "roles": [
+          "test_file"
+        ],
+        "packageBoundary": "tests/test_overview.rs",
+        "routes": [],
+        "dataOperations": [],
+        "security": [],
+        "conventions": [
+          {
+            "name": "test_file_naming",
+            "evidence": "test_overview.rs matches test/spec naming"
+          }
+        ],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/tests/test_plan.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\tests\\test_plan.rs",
+      "moduleName": "tests/test_plan.rs",
+      "exports": [],
+      "imports": [
+        "std::path",
+        "std::sync",
+        "repo_wiki::config::schema"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T09:27:37.791Z",
+      "ontology": {
+        "roles": [
+          "test_file"
+        ],
+        "packageBoundary": "tests/test_plan.rs",
+        "routes": [],
+        "dataOperations": [],
+        "security": [],
+        "conventions": [
+          {
+            "name": "test_file_naming",
+            "evidence": "test_plan.rs matches test/spec naming"
+          }
+        ],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/tests/test_protected_files.rs": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\tests\\test_protected_files.rs",
+      "moduleName": "tests/test_protected_files.rs",
+      "exports": [],
+      "imports": [
+        "std::collections",
+        "repo_wiki::incremental::state",
+        "repo_wiki::model",
+        "repo_wiki::incremental::state",
+        "repo_wiki::incremental::state",
+        "repo_wiki::incremental::state",
+        "repo_wiki::config::schema",
+        "repo_wiki::model",
+        "repo_wiki::config::schema",
+        "repo_wiki::incremental::state",
+        "repo_wiki::model",
+        "repo_wiki::config::schema",
+        "repo_wiki::incremental::state",
+        "repo_wiki::model",
+        "repo_wiki::model"
+      ],
+      "language": "rust",
+      "mtime": "2026-07-31T13:28:45.807Z",
+      "ontology": {
+        "roles": [
+          "data_module",
+          "test_file"
+        ],
+        "packageBoundary": "tests/test_protected_files.rs",
+        "routes": [],
+        "dataOperations": [
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 71,
+            "evidence": "fps.insert(file_path.to_string_lossy().to_string(), original_fp);"
+          },
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 107,
+            "evidence": "doc_fps.insert("
+          },
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 113,
+            "evidence": "doc_fps.insert(missing, \"deadbeef\".into());"
+          }
+        ],
+        "security": [],
+        "conventions": [
+          {
+            "name": "test_file_naming",
+            "evidence": "test_protected_files.rs matches test/spec naming"
+          }
+        ],
+        "findings": [
+          {
+            "code": "multiple_writes_without_detected_transaction",
+            "severity": "low",
+            "message": "Multiple write/delete operations were detected without a transaction fact.",
+            "line": 71
+          }
+        ]
+      }
+    }
+  },
+  "edges": [
+    {
+      "source": "D:\\RustProjects\\repo-wiki\\src\\commands.rs",
+      "target": "D:\\RustProjects\\repo-wiki\\src\\incremental\\state.rs",
+      "importSpecifier": "crate::incremental::state",
+      "importType": "named",
+      "importedSymbols": [
+        "GenerationState"
+      ],
+      "usedSymbols": [
+        "GenerationState"
+      ]
+    },
+    {
+      "source": "D:\\RustProjects\\repo-wiki\\src\\generate\\mod.rs",
+      "target": "D:\\RustProjects\\repo-wiki\\src\\generate\\card.rs",
+      "importSpecifier": "self::card",
+      "importType": "named",
+      "importedSymbols": [
+        "CardGenerator"
+      ],
+      "usedSymbols": [
+        "CardGenerator"
+      ]
+    },
+    {
+      "source": "D:\\RustProjects\\repo-wiki\\src\\generate\\mod.rs",
+      "target": "D:\\RustProjects\\repo-wiki\\src\\generate\\llm.rs",
+      "importSpecifier": "self::llm",
+      "importType": "named",
+      "importedSymbols": [
+        "AnthropicProvider",
+        "LlmProvider",
+        "Message",
+        "OpenAiProvider",
+        "Provider"
+      ],
+      "usedSymbols": [
+        "AnthropicProvider",
+        "Message",
+        "OpenAiProvider",
+        "Provider"
+      ]
+    },
+    {
+      "source": "D:\\RustProjects\\repo-wiki\\src\\generate\\mod.rs",
+      "target": "D:\\RustProjects\\repo-wiki\\src\\generate\\wiki.rs",
+      "importSpecifier": "self::wiki",
+      "importType": "named",
+      "importedSymbols": [
+        "WikiGenerator"
+      ],
+      "usedSymbols": [
+        "WikiGenerator"
+      ]
+    },
+    {
+      "source": "D:\\RustProjects\\repo-wiki\\src\\incremental\\mod.rs",
+      "target": "D:\\RustProjects\\repo-wiki\\src\\incremental\\diff.rs",
+      "importSpecifier": "self::diff",
+      "importType": "named",
+      "importedSymbols": [
+        "analyze_git_diff"
+      ],
+      "usedSymbols": [
+        "analyze_git_diff"
+      ]
+    },
+    {
+      "source": "D:\\RustProjects\\repo-wiki\\src\\incremental\\mod.rs",
+      "target": "D:\\RustProjects\\repo-wiki\\src\\incremental\\impact.rs",
+      "importSpecifier": "self::impact",
+      "importType": "named",
+      "importedSymbols": [
+        "propagate_impact"
+      ],
+      "usedSymbols": [
+        "propagate_impact"
+      ]
+    },
+    {
+      "source": "D:\\RustProjects\\repo-wiki\\src\\incremental\\mod.rs",
+      "target": "D:\\RustProjects\\repo-wiki\\src\\incremental\\state.rs",
+      "importSpecifier": "self::state",
+      "importType": "named",
+      "importedSymbols": [
+        "GenerationState"
+      ],
+      "usedSymbols": [
+        "GenerationState"
+      ]
+    },
+    {
+      "source": "D:\\RustProjects\\repo-wiki\\src\\ingest\\parser\\csharp.rs",
+      "target": "D:\\RustProjects\\repo-wiki\\src\\ingest\\mod.rs",
+      "importSpecifier": "super",
+      "importType": "named",
+      "importedSymbols": [
+        "Entity",
+        "FileInsight",
+        "ImportStmt",
+        "LanguageProcessor"
+      ],
+      "usedSymbols": []
+    },
+    {
+      "source": "D:\\RustProjects\\repo-wiki\\src\\ingest\\parser\\go.rs",
+      "target": "D:\\RustProjects\\repo-wiki\\src\\ingest\\mod.rs",
+      "importSpecifier": "super",
+      "importType": "named",
+      "importedSymbols": [
+        "Entity",
+        "FileInsight",
+        "ImportStmt",
+        "LanguageProcessor"
+      ],
+      "usedSymbols": []
+    },
+    {
+      "source": "D:\\RustProjects\\repo-wiki\\src\\ingest\\parser\\java.rs",
+      "target": "D:\\RustProjects\\repo-wiki\\src\\ingest\\mod.rs",
+      "importSpecifier": "super",
+      "importType": "named",
+      "importedSymbols": [
+        "Entity",
+        "FileInsight",
+        "ImportStmt",
+        "LanguageProcessor"
+      ],
+      "usedSymbols": []
+    },
+    {
+      "source": "D:\\RustProjects\\repo-wiki\\src\\ingest\\parser\\javascript.rs",
+      "target": "D:\\RustProjects\\repo-wiki\\src\\ingest\\mod.rs",
+      "importSpecifier": "super",
+      "importType": "named",
+      "importedSymbols": [
+        "Entity",
+        "FileInsight",
+        "ImportStmt",
+        "LanguageProcessor"
+      ],
+      "usedSymbols": []
+    },
+    {
+      "source": "D:\\RustProjects\\repo-wiki\\src\\ingest\\parser\\python.rs",
+      "target": "D:\\RustProjects\\repo-wiki\\src\\ingest\\mod.rs",
+      "importSpecifier": "super",
+      "importType": "named",
+      "importedSymbols": [
+        "Entity",
+        "FileInsight",
+        "ImportStmt",
+        "LanguageProcessor"
+      ],
+      "usedSymbols": []
+    },
+    {
+      "source": "D:\\RustProjects\\repo-wiki\\src\\ingest\\parser\\rust.rs",
+      "target": "D:\\RustProjects\\repo-wiki\\src\\ingest\\mod.rs",
+      "importSpecifier": "super",
+      "importType": "named",
+      "importedSymbols": [
+        "Entity",
+        "FileInsight",
+        "ImportStmt",
+        "LanguageProcessor"
+      ],
+      "usedSymbols": []
+    },
+    {
+      "source": "D:\\RustProjects\\repo-wiki\\src\\ingest\\parser\\typescript.rs",
+      "target": "D:\\RustProjects\\repo-wiki\\src\\ingest\\mod.rs",
+      "importSpecifier": "super",
+      "importType": "named",
+      "importedSymbols": [
+        "Entity",
+        "FileInsight",
+        "ImportStmt",
+        "LanguageProcessor"
+      ],
+      "usedSymbols": []
+    },
+    {
+      "source": "D:\\RustProjects\\repo-wiki\\src\\lib.rs",
+      "target": "D:\\RustProjects\\repo-wiki\\src\\config\\schema.rs",
+      "importSpecifier": "crate::config::schema",
+      "importType": "named",
+      "importedSymbols": [
+        "WikiSection"
+      ],
+      "usedSymbols": []
+    },
+    {
+      "source": "D:\\RustProjects\\repo-wiki\\src\\output\\mod.rs",
+      "target": "D:\\RustProjects\\repo-wiki\\src\\output\\markdown.rs",
+      "importSpecifier": "self::markdown",
+      "importType": "named",
+      "importedSymbols": [
+        "write_document"
+      ],
+      "usedSymbols": [
+        "write_document"
+      ]
+    }
+  ],
+  "metadata": {
+    "generatedAt": "2026-07-31T14:09:18.873Z",
+    "generator": "repo-graph",
+    "nodeCount": 66,
+    "edgeCount": 16
+  },
+  "symbolEdges": [
+    {
+      "fromFile": "D:\\RustProjects\\repo-wiki\\src\\commands.rs",
+      "fromSymbol": "sync_from_git",
+      "toFile": "D:\\RustProjects\\repo-wiki\\src\\incremental\\state.rs",
+      "toSymbol": "GenerationState"
+    },
+    {
+      "fromFile": "D:\\RustProjects\\repo-wiki\\src\\generate\\mod.rs",
+      "fromSymbol": "create_provider",
+      "toFile": "D:\\RustProjects\\repo-wiki\\src\\generate\\llm.rs",
+      "toSymbol": "Provider"
+    },
+    {
+      "fromFile": "D:\\RustProjects\\repo-wiki\\src\\generate\\mod.rs",
+      "fromSymbol": "create_provider",
+      "toFile": "D:\\RustProjects\\repo-wiki\\src\\generate\\llm.rs",
+      "toSymbol": "OpenAiProvider"
+    },
+    {
+      "fromFile": "D:\\RustProjects\\repo-wiki\\src\\generate\\mod.rs",
+      "fromSymbol": "create_provider",
+      "toFile": "D:\\RustProjects\\repo-wiki\\src\\generate\\llm.rs",
+      "toSymbol": "AnthropicProvider"
+    },
+    {
+      "fromFile": "D:\\RustProjects\\repo-wiki\\src\\generate\\mod.rs",
+      "fromSymbol": "run_generation",
+      "toFile": "D:\\RustProjects\\repo-wiki\\src\\generate\\llm.rs",
+      "toSymbol": "Message"
+    },
+    {
+      "fromFile": "D:\\RustProjects\\repo-wiki\\src\\generate\\mod.rs",
+      "fromSymbol": "run_generation",
+      "toFile": "D:\\RustProjects\\repo-wiki\\src\\generate\\card.rs",
+      "toSymbol": "CardGenerator"
+    },
+    {
+      "fromFile": "D:\\RustProjects\\repo-wiki\\src\\generate\\mod.rs",
+      "fromSymbol": "run_generation",
+      "toFile": "D:\\RustProjects\\repo-wiki\\src\\generate\\wiki.rs",
+      "toSymbol": "WikiGenerator"
+    },
+    {
+      "fromFile": "D:\\RustProjects\\repo-wiki\\src\\generate\\mod.rs",
+      "fromSymbol": "run_generation_filtered",
+      "toFile": "D:\\RustProjects\\repo-wiki\\src\\generate\\card.rs",
+      "toSymbol": "CardGenerator"
+    },
+    {
+      "fromFile": "D:\\RustProjects\\repo-wiki\\src\\generate\\mod.rs",
+      "fromSymbol": "run_generation_filtered",
+      "toFile": "D:\\RustProjects\\repo-wiki\\src\\generate\\wiki.rs",
+      "toSymbol": "WikiGenerator"
+    },
+    {
+      "fromFile": "D:\\RustProjects\\repo-wiki\\src\\incremental\\mod.rs",
+      "fromSymbol": "run_git_diff_incremental",
+      "toFile": "D:\\RustProjects\\repo-wiki\\src\\incremental\\state.rs",
+      "toSymbol": "GenerationState"
+    },
+    {
+      "fromFile": "D:\\RustProjects\\repo-wiki\\src\\incremental\\mod.rs",
+      "fromSymbol": "run_git_diff_incremental",
+      "toFile": "D:\\RustProjects\\repo-wiki\\src\\incremental\\diff.rs",
+      "toSymbol": "analyze_git_diff"
+    },
+    {
+      "fromFile": "D:\\RustProjects\\repo-wiki\\src\\incremental\\mod.rs",
+      "fromSymbol": "run_git_diff_incremental",
+      "toFile": "D:\\RustProjects\\repo-wiki\\src\\incremental\\impact.rs",
+      "toSymbol": "propagate_impact"
+    },
+    {
+      "fromFile": "D:\\RustProjects\\repo-wiki\\src\\incremental\\mod.rs",
+      "fromSymbol": "run_file_watch_incremental",
+      "toFile": "D:\\RustProjects\\repo-wiki\\src\\incremental\\state.rs",
+      "toSymbol": "GenerationState"
+    },
+    {
+      "fromFile": "D:\\RustProjects\\repo-wiki\\src\\incremental\\mod.rs",
+      "fromSymbol": "run_file_watch_incremental",
+      "toFile": "D:\\RustProjects\\repo-wiki\\src\\incremental\\impact.rs",
+      "toSymbol": "propagate_impact"
+    },
+    {
+      "fromFile": "D:\\RustProjects\\repo-wiki\\src\\incremental\\mod.rs",
+      "fromSymbol": "tests",
+      "toFile": "D:\\RustProjects\\repo-wiki\\src\\incremental\\state.rs",
+      "toSymbol": "GenerationState"
+    },
+    {
+      "fromFile": "D:\\RustProjects\\repo-wiki\\src\\output\\mod.rs",
+      "fromSymbol": "render_all",
+      "toFile": "D:\\RustProjects\\repo-wiki\\src\\output\\markdown.rs",
+      "toSymbol": "write_document"
+    }
+  ],
+  "diagnostics": {
+    "extractionFailures": [],
+    "unresolvedImports": [],
+    "oversizedFiles": [],
+    "unsupportedFiles": [],
+    "binaryFiles": [],
+    "unreadableFiles": [],
+    "lowConfidenceEdgeCount": 0
+  }
+}

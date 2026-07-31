@@ -258,3 +258,69 @@ fn test_doc_fingerprint_path_matches_render_all() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// 人工修改反向同步：修改页面后 update，对应卡片出现修改记录
+/// （官方语义：人工修改的 .md 不被覆盖，且反向同步到对应知识卡片）
+#[test]
+fn test_manual_edit_recorded_in_card() {
+    use repo_wiki::model::KnowledgeCard;
+
+    let dir = std::env::temp_dir()
+        .join(format!("repo_wiki_test_manual_card_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("wiki").join("zh")).unwrap();
+
+    // 人工修改的页面（文件名主体与卡片 module.replace("::","_") 一致）
+    let page = dir.join("wiki").join("zh").join("src_testmodule.md");
+    std::fs::write(&page, "人工修改后的内容").unwrap();
+
+    let mut card = KnowledgeCard {
+        module_name: "src::testmodule".into(),
+        module_type: "module".into(),
+        summary: "摘要".into(),
+        key_entities: vec![],
+        dependencies: vec![],
+        dependents: vec![],
+        design_patterns: vec![],
+        todo_notes: vec![],
+        related_files: vec![],
+        coding_spec: None,
+        tech_stack: vec![],
+        architecture: None,
+        pending_manual_edits: vec![],
+    };
+
+    // 注入前：无记录时卡片渲染不含该节（避免空节）
+    let before = repo_wiki::output::markdown::render_knowledge_card(&card);
+    assert!(!before.contains("人工修改待同步"), "注入前不应渲染人工修改待同步节");
+
+    // 增量管道对检测到的人工修改调用反向同步注入
+    repo_wiki::inject_manual_edits(
+        std::slice::from_mut(&mut card),
+        &[page.to_string_lossy().to_string()],
+    );
+
+    assert_eq!(
+        card.pending_manual_edits.len(),
+        1,
+        "对应卡片应出现人工修改记录"
+    );
+    assert!(
+        card.pending_manual_edits[0].contains("src_testmodule.md"),
+        "记录应含修改页路径: {}",
+        card.pending_manual_edits[0]
+    );
+    assert!(
+        card.pending_manual_edits[0].contains("人工修改后的内容"),
+        "记录应含修改页内容摘要: {}",
+        card.pending_manual_edits[0]
+    );
+
+    // 渲染层：注入后的卡片 markdown 包含"人工修改待同步"节与记录
+    let rendered = repo_wiki::output::markdown::render_knowledge_card(&card);
+    assert!(rendered.contains("## 人工修改待同步"), "卡片渲染应包含人工修改待同步节");
+    assert!(rendered.contains("src_testmodule.md"), "卡片渲染应包含修改页路径");
+    assert!(rendered.contains("人工修改后的内容"), "卡片渲染应包含内容摘要");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

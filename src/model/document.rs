@@ -9,6 +9,12 @@ pub enum DocumentKind {
     WikiPage,
     /// 架构概览
     ArchitectureOverview,
+    /// 项目概览（overview.md，独立于模块页生成）
+    ///
+    /// 决策：DocumentKind 是纯枚举（无 architecture 等可复用字段），
+    /// 且 output::wiki_page_path 按 kind 特判文件名（架构概览→architecture.md），
+    /// 因此新增独立变体而非复用 ArchitectureOverview，避免概览写错文件名。
+    ProjectOverview,
     /// 目录
     TableOfContents,
     /// 模块文档
@@ -67,6 +73,10 @@ pub struct KnowledgeCard {
     /// 架构说明（LLM 生成的描述性字段）
     #[serde(default)]
     pub architecture: Option<String>,
+    /// 人工修改反向同步记录：被人工编辑的文档路径 + 内容摘要，
+    /// 下次生成时作为 LLM 输入提示（"有人工修改待同步"）
+    #[serde(default)]
+    pub pending_manual_edits: Vec<String>,
 }
 
 /// 实体摘要（用于 Knowledge Card）

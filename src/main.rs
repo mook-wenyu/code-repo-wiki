@@ -1,6 +1,4 @@
-use std::path::PathBuf;
-
-mod commands;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 
@@ -39,6 +37,12 @@ enum Commands {
         /// 清空人工修改保护集，强制覆盖所有文档（与 generate --force 语义一致）
         #[arg(long)]
         force: bool,
+    },
+    /// 同步产物目录内容到指纹库（Git 内容合入，不触发 LLM 生成）
+    Sync {
+        /// 配置文件路径
+        #[arg(short, long, default_value = ".repo-wiki/config.toml")]
+        config: PathBuf,
     },
     /// 查看当前 Wiki 状态
     Status {
@@ -179,13 +183,19 @@ fn main() -> anyhow::Result<()> {
             );
         }
         Commands::Update { config, output, force } => {
-            // update 命令无外部 watch 事件，watch_paths 传空
-            let result = repo_wiki::run_incremental_pipeline(&config, output.as_deref(), force, &[])?;
+            // update 命令无外部 watch 事件，watch_paths 传空、change_kind 传 None
+            let result = repo_wiki::run_incremental_pipeline(&config, output.as_deref(), force, &[], None)?;
             tracing::info!(
                 "增量更新完成: 扫描 {} 个文件, {} 个模块受影响",
                 result.stats.files_scanned,
                 result.stats.modules_detected
             );
+        }
+        Commands::Sync { config } => {
+            // sync = Git 内容 → 指纹库（不触发 LLM）；与 update = 代码变更 → 增量生成 边界分离
+            let cfg = repo_wiki::config::load_config(&config)?;
+            repo_wiki::commands::sync_from_git(Path::new(&cfg.output.dir))?;
+            tracing::info!("同步完成 (--config {})", config.display());
         }
         Commands::Status { config } => {
             let _cfg = repo_wiki::config::load_config(&config)?;
@@ -247,10 +257,10 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Commands::InstallToOpencode => {
-            commands::install("opencode")?;
+            repo_wiki::commands::install("opencode")?;
         }
         Commands::UninstallFromOpencode { force } => {
-            commands::uninstall(force)?;
+            repo_wiki::commands::uninstall(force)?;
         }
         Commands::Card { action } => {
             use repo_wiki::generate::card as card_cmd;

@@ -9,21 +9,39 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use notify::RecursiveMode;
-use notify_debouncer_full::{new_debouncer, DebounceEventResult};
+use notify_debouncer_full::{new_debouncer, DebouncedEvent, DebounceEventResult};
 
 use crate::config::schema::WikiConfig;
+
+/// 文件变更类型（由监听事件显式标记，下游无需以 exists() 推断删除）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangeKind {
+    /// 文件被创建
+    Created,
+    /// 文件内容/元数据被修改（含重命名，保守视为修改）
+    Modified,
+    /// 文件被删除
+    Deleted,
+}
+
+/// 一次防抖聚合产生的事件：同一 kind 的路径合并去重
+#[derive(Debug, Clone)]
+pub struct WatchEvent {
+    pub paths: Vec<PathBuf>,
+    pub kind: ChangeKind,
+}
 
 /// 启动文件监听并执行回调（阻塞版本）
 ///
 /// 监听根 = root 拼接 scope.include[0] 的目录部分（与扫描生成范围一致，
 /// include 是 glob 模式，取通配符之前的目录）。
 ///
-/// 边界：删除事件的路径已不存在于磁盘，回调内不能读取文件内容，
-/// 下游（cleanup_deleted_outputs）以 exists() 区分删除与修改。
+/// 边界：删除事件的路径已不存在于磁盘，回调内不能读取文件内容；
+/// 事件类型（ChangeKind）已显式携带，下游不再以 exists() 推断删除。
 pub fn run_watch_loop(
     root: &Path,
     config: &WikiConfig,
-    on_change: impl Fn(Vec<PathBuf>) + Send + 'static,
+    on_change: impl Fn(Vec<WatchEvent>) + Send + 'static,
 ) -> Result<()> {
     let include_exts = collect_include_exts(config);
 
@@ -51,18 +69,11 @@ pub fn run_watch_loop(
     for result in rx {
         match result {
             Ok(events) => {
-                // 聚合防抖窗口内的路径，过滤后去重；修改与删除事件同路径传递，
-                // 下游以 exists() 区分（删除路径已不在磁盘）
-                let mut paths: Vec<PathBuf> = Vec::new();
-                for debounced in events {
-                    for p in &debounced.event.paths {
-                        if should_report(p, &include_exts) && !paths.contains(p) {
-                            paths.push(p.clone());
-                        }
-                    }
-                }
-                if !paths.is_empty() {
-                    on_change(paths);
+                // 按 kind 分组聚合防抖窗口内的事件（同 kind 路径去重合并），
+                // 事件类型显式传递给下游，删除不再依赖 exists() 推断
+                let watch_events = aggregate_events(&events, &include_exts);
+                if !watch_events.is_empty() {
+                    on_change(watch_events);
                 }
             }
             Err(errors) => {
@@ -73,6 +84,44 @@ pub fn run_watch_loop(
         }
     }
     Ok(())
+}
+
+/// 将防抖窗口内的事件按 kind 分组聚合：每种 kind 至多产出一个
+/// `WatchEvent`，路径过滤后去重合并（保持输入顺序）。
+///
+/// Modify 与 Remove 混合的窗口产出两个独立事件，删除路径不与被
+/// 修改路径混在一起，下游可直入清理而无需 exists() 推断。
+fn aggregate_events(events: &[DebouncedEvent], include_exts: &[String]) -> Vec<WatchEvent> {
+    let mut out: Vec<WatchEvent> = Vec::new();
+    for debounced in events {
+        let kind = change_kind_of(&debounced.event.kind);
+        for p in &debounced.event.paths {
+            if !should_report(p, include_exts) {
+                continue;
+            }
+            match out.iter_mut().find(|e| e.kind == kind) {
+                // 该 kind 分组已存在且路径未记录 → 合并
+                Some(ev) if !ev.paths.contains(p) => ev.paths.push(p.clone()),
+                // 已记录过该路径（去重）
+                Some(_) => {}
+                // 首个该 kind 的事件
+                None => out.push(WatchEvent { paths: vec![p.clone()], kind }),
+            }
+        }
+    }
+    out
+}
+
+/// 将 notify 事件类型映射为业务变更类型
+///
+/// Access/Any/Other 等未知事件保守视为修改——宁可多一次增量更新，
+/// 也不让未知事件误触发删除清理。
+fn change_kind_of(kind: &notify::EventKind) -> ChangeKind {
+    match kind {
+        notify::EventKind::Create(_) => ChangeKind::Created,
+        notify::EventKind::Remove(_) => ChangeKind::Deleted,
+        _ => ChangeKind::Modified,
+    }
 }
 
 /// 从 scope.include[0] 派生监听根目录（glob 模式取通配符前的目录部分，
@@ -243,5 +292,56 @@ mod tests {
         assert!(!should_report(Path::new("/repo/target/main.rs"), &exts));
         assert!(!should_report(Path::new("/repo/src/main.js"), &exts));
         assert!(!should_report(Path::new("/repo/src/no_ext"), &exts));
+    }
+
+    /// 事件类型显式化：Modify 与 Remove 事件聚合后 kind 正确保留，
+    /// 删除路径不被修改路径"吸收"（下游可直入清理，无需 exists() 推断）
+    #[test]
+    fn test_watch_event_kind_preserved() {
+        use notify::event::{DataChange, ModifyKind, RemoveKind};
+        use notify::{Event, EventKind};
+
+        let mk = || {
+            let mut e = Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)));
+            e.paths = vec![PathBuf::from("src/a.rs")];
+            DebouncedEvent::new(e, std::time::Instant::now())
+        };
+        let mut removed = Event::new(EventKind::Remove(RemoveKind::File));
+        removed.paths = vec![PathBuf::from("src/b.rs")];
+        let events = vec![
+            mk(),
+            DebouncedEvent::new(removed, std::time::Instant::now()),
+        ];
+        let exts = vec!["rs".to_string()];
+        let aggregated = aggregate_events(&events, &exts);
+
+        assert_eq!(aggregated.len(), 2, "Modify 与 Remove 应各自聚合成独立事件");
+        let modified = aggregated
+            .iter()
+            .find(|e| e.kind == ChangeKind::Modified)
+            .expect("应存在 Modified 事件");
+        assert_eq!(modified.paths, vec![PathBuf::from("src/a.rs")]);
+        let deleted = aggregated
+            .iter()
+            .find(|e| e.kind == ChangeKind::Deleted)
+            .expect("应存在 Deleted 事件");
+        assert_eq!(deleted.paths, vec![PathBuf::from("src/b.rs")]);
+    }
+
+    /// 聚合去重：同一 kind 的重复路径只保留一份
+    #[test]
+    fn test_aggregate_events_dedups_same_kind_paths() {
+        use notify::event::{DataChange, ModifyKind};
+        use notify::{Event, EventKind};
+
+        let mk = || {
+            let mut e = Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)));
+            e.paths = vec![PathBuf::from("src/a.rs")];
+            DebouncedEvent::new(e, std::time::Instant::now())
+        };
+        let exts = vec!["rs".to_string()];
+        let aggregated = aggregate_events(&[mk(), mk()], &exts);
+        assert_eq!(aggregated.len(), 1);
+        assert_eq!(aggregated[0].paths, vec![PathBuf::from("src/a.rs")]);
     }
 }

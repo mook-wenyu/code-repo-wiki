@@ -185,10 +185,14 @@ Knowledge Card 是给 AI Agent 阅读的模块级结构化摘要。
 }
 
 /// 生成 Knowledge Card 的 prompt
+///
+/// pending_manual_edits 为旧卡片上"人工修改待同步"记录（非空时注入 user 消息，
+/// 要求 LLM 生成/更新卡片时考虑这些修改；记录本身由增量管道维护，不由 LLM 产出）。
 pub fn knowledge_card_prompt(
     chunk: &Chunk,
     language: &str,
     plan: Option<&ResolvedPlan>,
+    pending_manual_edits: &[String],
 ) -> Vec<Message> {
     let mut system = knowledge_card_system_prompt(language);
     append_plan_notes(&mut system, plan);
@@ -197,10 +201,19 @@ pub fn knowledge_card_prompt(
         system.push_str("\n\n");
         system.push_str(card_notes);
     }
-    vec![
-        Message::system(system),
-        Message::user(module_summary_user_prompt(chunk)),
-    ]
+    let mut user = module_summary_user_prompt(chunk);
+    // 人工修改待同步：只在存在记录时注入，避免空节污染输入
+    if !pending_manual_edits.is_empty() {
+        user.push_str("\n\n## 人工修改待同步\n\n");
+        user.push_str(
+            "以下页面被人工修改，与代码最新状态可能不一致。\
+             请结合这些修改生成卡片描述（如更新摘要、实体说明），但不要删除下述记录本身：\n",
+        );
+        for note in pending_manual_edits {
+            user.push_str(&format!("- {note}\n"));
+        }
+    }
+    vec![Message::system(system), Message::user(user)]
 }
 
 /// 生成卡片编辑/补充/重写指令的 prompt
@@ -531,8 +544,21 @@ mod tests {
     }
 
     #[test]
-    fn test_schema_doc_prompt_contains_path_and_blocks() {
-        let blocks = vec!["CREATE TABLE users (\n    id INTEGER\n);"];
+    fn test_knowledge_card_prompt_injects_pending_manual_edits() {
+        let chunk = make_test_chunk(&["src", "config"]);
+        // 存在记录：user 消息包含"人工修改待同步"节与记录内容
+        let pending = vec!["人工修改待同步: wiki/zh/src_config.md 内容摘要: 用户改的".into()];
+        let messages = knowledge_card_prompt(&chunk, "zh", None, &pending);
+        let user = &messages[1].content;
+        assert!(user.contains("## 人工修改待同步"));
+        assert!(user.contains("wiki/zh/src_config.md"));
+        // 无记录：不注入该节（避免空节）
+        let messages = knowledge_card_prompt(&chunk, "zh", None, &[]);
+        assert!(!messages[1].content.contains("人工修改待同步"));
+    }
+
+    #[test]
+    fn test_schema_doc_prompt_contains_path_and_blocks() {        let blocks = vec!["CREATE TABLE users (\n    id INTEGER\n);"];
         let messages = schema_doc_prompt(
             std::path::Path::new("db/migrations/001_init.sql"),
             &blocks,

@@ -1,0 +1,4 @@
+{"schema_version":1,"type":"injection_skip","reason":"headroom_budget","detail":{"headroomChars":-785434,"existingChars":1173312,"modelLimitChars":387878,"modelID":"deepseek-v4-flash"},"event_id":"400872f3-f329-4034-8da4-d2cda24638ea","timestamp":"2026-07-31T14:12:49.699Z"}
+{"schema_version":1,"type":"injection_skip","reason":"not_architect","agent":"historian","session_id":"ses_0477aad8fffeEnmcZENiEuv3e2","event_id":"b3682978-a974-49c6-8a06-fd673d54249e","timestamp":"2026-07-31T14:12:53.797Z"}
+{"schema_version":1,"type":"injection_skip","reason":"not_architect","agent":"build","session_id":"ses_047714ce9ffemNGaAnUJLHsJc7","event_id":"51c774f1-c8b8-46f5-836a-b157b561b55f","timestamp":"2026-07-31T14:23:08.051Z"}
+{"schema_version":1,"type":"injection_skip","reason":"not_architect","agent":"build","session_id":"ses_047714ce9ffemNGaAnUJLHsJc7","event_id":"19678d55-a261-48e8-be72-c213f1e47adb","timestamp":"2026-07-31T14:23:18.195Z"}

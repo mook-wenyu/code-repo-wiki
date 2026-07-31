@@ -6,6 +6,7 @@ pub mod generate;
 pub mod output;
 pub mod incremental;
 pub mod search;
+pub mod commands;
 
 use std::path::Path;
 
@@ -253,17 +254,27 @@ pub fn run_card_command(config_path: &Path, action: &generate::card::CardAction)
 /// 经由 load_protection 统一处理，force=false 保留保护语义）。
 /// `watch_paths` 为文件监听外部传入的事件路径（FileWatch 策略使用，
 /// 普通增量更新传 &[]）。
+/// `change_kind` 为监听事件携带的变更类型（普通增量更新传 None）；
+/// Deleted 事件直入删除清理路径，不再依赖下游对路径做 exists() 推断。
 pub fn run_incremental_pipeline(
     config_path: &Path,
     output: Option<&Path>,
     force: bool,
     watch_paths: &[std::path::PathBuf],
+    change_kind: Option<incremental::watch::ChangeKind>,
 ) -> anyhow::Result<AnalysisResult> {
     let config = load_config_with_output(config_path, output)?;
     let start = std::time::Instant::now();
 
     // 保护集必须在增量分析之前加载（增量分析内部会重写 state 文件）
-    let (protected, _old_state) = load_protection(&config, force);
+    let (protected, old_state) = load_protection(&config, force);
+
+    // Deleted 事件直入删除清理：watch 层已显式标记删除，直接清理
+    // 对应产物（wiki 页 + 卡片）。删除路径随后仍进入增量流程
+    // （FileWatch 策略并入 changed_files），驱动搜索索引清理与状态保存。
+    if change_kind == Some(incremental::watch::ChangeKind::Deleted) {
+        cleanup_deleted_outputs(&config, watch_paths);
+    }
 
     // Phase 1: 扫描
     let file_insights = ingest::scan_and_parse(&config)?;
@@ -295,9 +306,18 @@ pub fn run_incremental_pipeline(
     // Phase 3: 增量生成
     let rt = get_global_runtime();
     let changed_set: std::collections::HashSet<std::path::PathBuf> = inc_result.changed_files.iter().cloned().collect();
-    let gen_output = rt.block_on(
+    let mut gen_output = rt.block_on(
         generate::run_generation_filtered(&graph, &file_insights, &config, &changed_set)
     )?;
+
+    // Phase 3b: 人工修改反向同步——检测到的人工修改页写入对应卡片的
+    // pending_manual_edits（下次生成时作为 LLM 输入；受保护页面本身不被覆盖）
+    if let Some(state) = &old_state {
+        let modified = state.detect_manually_modified();
+        if !modified.is_empty() {
+            inject_manual_edits(&mut gen_output.cards, &modified);
+        }
+    }
 
     // Phase 4: 全量输出（保持索引一致）
     output::render_all(&gen_output.documents, &gen_output.cards, &graph, &config, &protected)?;
@@ -381,6 +401,37 @@ pub(crate) fn cleanup_deleted_outputs(
     }
 }
 
+/// 将人工修改的文档路径与内容摘要写入对应模块卡片的 `pending_manual_edits`
+///
+/// 官方语义："人工修改反向同步到对应知识卡片"——被人工编辑过的页面不
+/// 被自动更新覆盖，且修改被记录到卡片，下次生成时作为 LLM 输入提示。
+///
+/// 定位规则：文档文件名主体（如 `src_testmodule`）与卡片文件名主体
+/// （`module.replace("::","_")`，output::card_file_stem 同一来源）一致
+/// 即视为对应卡片；wiki 页与卡片两类人工修改均按此规则回写。
+/// 内容摘要取磁盘当前内容（人工修改版）前 200 字符。
+pub fn inject_manual_edits(cards: &mut [model::KnowledgeCard], modified_paths: &[String]) {
+    for path in modified_paths {
+        let Some(stem) = Path::new(path)
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+        else {
+            continue;
+        };
+        let summary = std::fs::read_to_string(path)
+            .map(|content| content.chars().take(200).collect::<String>())
+            .unwrap_or_default();
+        let note = format!("人工修改待同步: {path} 内容摘要: {summary}");
+        for card in cards.iter_mut() {
+            if output::card_file_stem(&card.module_name) == stem
+                && !card.pending_manual_edits.contains(&note)
+            {
+                card.pending_manual_edits.push(note.clone());
+            }
+        }
+    }
+}
+
 /// 启动文件监听模式
 pub fn run_watch(config_path: &Path) -> anyhow::Result<()> {
     let config = config::load_config(config_path)?;
@@ -391,13 +442,24 @@ pub fn run_watch(config_path: &Path) -> anyhow::Result<()> {
     let config_path = config_path.to_path_buf();
     // 监听根与 scan_and_parse 的扫描根保持一致（config 无项目根字段，均取当前目录）
     let root = std::env::current_dir()?;
-    incremental::watch::run_watch_loop(&root, &config, move |paths| {
-        tracing::info!("检测到 {} 个文件变更，触发增量更新...", paths.len());
-        // 事件路径（含删除路径）透传给增量流水线，删除清理由此触发
-        if let Err(e) = run_incremental_pipeline(&config_path, None, false, &paths) {
-            tracing::error!("增量更新失败: {}", e);
-        } else {
-            tracing::info!("增量更新完成");
+    incremental::watch::run_watch_loop(&root, &config, move |events| {
+        for event in events {
+            tracing::info!(
+                "检测到 {:?} {} 个文件变更，触发增量更新...",
+                event.kind,
+                event.paths.len()
+            );
+            // 事件类型显式传递：Deleted 直入删除清理（pipeline 内处理），
+            // 其余 kind 走常规增量更新
+            let change_kind = (event.kind == incremental::watch::ChangeKind::Deleted)
+                .then_some(event.kind);
+            if let Err(e) =
+                run_incremental_pipeline(&config_path, None, false, &event.paths, change_kind)
+            {
+                tracing::error!("增量更新失败: {}", e);
+            } else {
+                tracing::info!("增量更新完成");
+            }
         }
     })
 }
