@@ -198,12 +198,18 @@ pub fn render_table_of_contents(documents: &[WikiDocument]) -> String {
             DocumentKind::ApiReference => "API 参考",
             DocumentKind::DatabaseSchema => "数据库 Schema",
         };
+        // 链接的文件名必须与 write_document 的落盘命名保持一致，否则 TOC 就是断链：
+        // 1. 所有文档都写在 wiki/{doc.language}/ 语言目录下，链接必须带语言前缀；
+        // 2. 架构概览固定写为 architecture.md（见 write_document），不能走 module_path 派生；
+        // 3. 其余文档用 wiki_file_name（模块路径或标题派生，覆盖 Database Schema 等无模块路径文档）。
+        let file = if doc.kind == DocumentKind::ArchitectureOverview {
+            "architecture.md".to_string()
+        } else {
+            wiki_file_name(doc)
+        };
         output.push_str(&format!(
-            "- [{}](wiki/{}.md) `[{}]` — {}\n",
-            doc.title,
-            doc.module_path.join("_"),
-            kind,
-            module_path
+            "- [{}](wiki/{}/{}) `[{}]` — {}\n",
+            doc.title, doc.language, file, kind, module_path
         ));
     }
 
@@ -226,6 +232,8 @@ pub fn wiki_file_name(doc: &WikiDocument) -> String {
 ///
 /// 将 WikiDocument 渲染后写入 `{output_dir}/wiki/{language}/{module_path}.md`，
 /// 关联的 Knowledge Card 写入 `{output_dir}/cards/{language}/{module_name}.md`。
+/// 路径统一由 output::wiki_page_path / card_page_path 产出，与 render_all
+/// 的保护判定路径同一规则，保证命名不会漂移。
 pub fn write_document(doc: &WikiDocument, cards: &[&KnowledgeCard], output_dir: &Path, language: &str) -> Result<()> {
     let wiki_dir = output_dir.join("wiki").join(language);
     let cards_dir = output_dir.join("cards").join(language);
@@ -233,17 +241,13 @@ pub fn write_document(doc: &WikiDocument, cards: &[&KnowledgeCard], output_dir: 
     std::fs::create_dir_all(&cards_dir)?;
 
     // Wiki 页面
-    let wiki_path = if doc.kind == DocumentKind::ArchitectureOverview {
-        wiki_dir.join("architecture.md")
-    } else {
-        wiki_dir.join(wiki_file_name(doc))
-    };
+    let wiki_path = crate::output::wiki_page_path(output_dir, language, doc);
     let content = render_wiki_page(doc);
     std::fs::write(&wiki_path, content)?;
 
     // 关联的 Knowledge Card
     for card in cards {
-        let card_path = cards_dir.join(format!("{}.md", card.module_name.replace("::", "_")));
+        let card_path = crate::output::card_page_path(output_dir, language, &card.module_name);
         let card_content = render_knowledge_card(card);
         std::fs::write(&card_path, card_content)?;
     }
@@ -328,13 +332,28 @@ mod tests {
 
     #[test]
     fn test_render_table_of_contents() {
-        let docs = vec![make_test_doc("Config"), make_test_doc("Server")];
+        let mut docs = vec![make_test_doc("Config"), make_test_doc("Server")];
+        // 架构概览无模块路径，链接固定指向 architecture.md（与 write_document 命名一致）
+        docs.push(WikiDocument {
+            title: "架构概览".into(),
+            kind: DocumentKind::ArchitectureOverview,
+            content: String::new(),
+            language: "zh".into(),
+            module_path: vec![],
+            references: vec![],
+            last_updated: "2025-01-01T00:00:00Z".into(),
+            fingerprint: None,
+        });
         let output = render_table_of_contents(&docs);
 
         assert!(output.contains("# Wiki 文档目录"));
         assert!(output.contains("Config"));
         assert!(output.contains("Server"));
-        assert!(output.contains("2 个页面"));
+        assert!(output.contains("3 个页面"));
+        // 链接必须带语言目录前缀，与实际落盘路径 wiki/{lang}/{file}.md 一致
+        assert!(output.contains("](wiki/zh/crate_config.md)"));
+        assert!(output.contains("](wiki/zh/crate_server.md)"));
+        assert!(output.contains("](wiki/zh/architecture.md)"));
     }
 
     #[test]

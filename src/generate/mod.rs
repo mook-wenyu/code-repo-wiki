@@ -10,6 +10,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 
+use crate::config::plan::ResolvedPlan;
 use crate::config::schema::WikiConfig;
 use crate::ingest::parser::FileInsight;
 use crate::model::{KnowledgeCard, KnowledgeGraph, WikiDocument};
@@ -141,34 +142,11 @@ pub async fn run_generation(
     }
     tracing::info!("生成进度: 90% - Wiki 页面生成完成，共 {} 个页面", documents.len());
 
-    // 5. 生成架构概览页面
-    if !cards.is_empty() {
-        let output_snapshot = GenerationOutput {
-            cards: cards.clone(),
-            documents: documents.clone(),
-            generation_stats: GenerationStats::default(),
-        };
-        match wiki_gen
-            .generate_architecture(&output_snapshot, graph, config)
-            .await
-        {
-            Ok(arch) => documents.push(arch),
-            Err(e) => tracing::warn!("架构概览生成跳过: {}", e),
-        }
-    }
-
-    // 5.5 数据库 Schema 文档（无 .sql 文件时内部跳过 LLM）
-    match schema::generate_schema_documents(&provider, config, plan.as_ref()).await {
-        Ok(mut schema_docs) => documents.append(&mut schema_docs),
-        Err(e) => tracing::warn!("数据库 Schema 文档生成跳过: {}", e),
-    }
+    // 5. 生成全局文档（架构概览 + 数据库 Schema，全量/增量共用同一辅助函数）
+    generate_global_documents(&wiki_gen, &provider, graph, config, plan.as_ref(), &cards, &mut documents).await?;
 
     // 6. 按计划文档白名单过滤（严格只输出列出的页面）
-    if let Some(whitelist) = plan.as_ref().and_then(|p| p.whitelist.as_ref()) {
-        let allowed: std::collections::HashSet<&str> =
-            whitelist.iter().map(|d| d.title.as_str()).collect();
-        documents.retain(|d| allowed.contains(d.title.as_str()));
-    }
+    documents = filter_by_whitelist(documents, plan.as_ref());
 
     let elapsed = start.elapsed();
     let stats = GenerationStats {
@@ -268,12 +246,15 @@ pub async fn run_generation_filtered(
         }
     }
 
-    // 5. 按计划文档白名单过滤（严格只输出列出的页面）
-    if let Some(whitelist) = plan.as_ref().and_then(|p| p.whitelist.as_ref()) {
-        let allowed: std::collections::HashSet<&str> =
-            whitelist.iter().map(|d| d.title.as_str()).collect();
-        documents.retain(|d| allowed.contains(d.title.as_str()));
-    }
+    // 5. 生成全局文档（架构概览 + 数据库 Schema）
+    // 全局文档与"变更了哪些模块"无关：架构概览基于完整 KnowledgeGraph 的模块列表，
+    // Schema 文档基于全量 .sql 文件，都反映全仓库状态。
+    // 因此即使增量只改了 1 个模块，这两类文档也必须重新生成，否则增量输出
+    // 会比全量输出缺少页面，行为不一致。
+    generate_global_documents(&wiki_gen, &provider, graph, config, plan.as_ref(), &cards, &mut documents).await?;
+
+    // 6. 按计划文档白名单过滤（严格只输出列出的页面）
+    documents = filter_by_whitelist(documents, plan.as_ref());
 
     let elapsed = start.elapsed();
     let stats = GenerationStats {
@@ -289,10 +270,135 @@ pub async fn run_generation_filtered(
     })
 }
 
+/// 按计划文档白名单过滤输出文档
+///
+/// 全量与增量两条生成路径共用（DRY），避免复制过滤实现。
+/// 语义：白名单列出严格只输出的页面集合，未列出的文档丢弃；
+/// 白名单为 None 时原样返回（"全部生成"）。过滤发生在生成之后、
+/// 渲染之前，LLM 调用成本不受白名单影响（与 Qoder 语义一致）。
+fn filter_by_whitelist(
+    documents: Vec<WikiDocument>,
+    plan: Option<&ResolvedPlan>,
+) -> Vec<WikiDocument> {
+    let Some(whitelist) = plan.and_then(|p| p.whitelist.as_ref()) else {
+        return documents;
+    };
+    let allowed: std::collections::HashSet<&str> =
+        whitelist.iter().map(|d| d.title.as_str()).collect();
+    documents
+        .into_iter()
+        .filter(|d| allowed.contains(d.title.as_str()))
+        .collect()
+}
+
+/// 生成与具体模块无关的全局文档（架构概览 + 数据库 Schema），追加到 `documents`
+///
+/// 全量与增量两条生成路径共用，避免复制相同的调用逻辑（DRY）。
+/// 这两类文档反映全仓库状态：架构概览基于完整 KnowledgeGraph 的模块列表，
+/// Schema 文档基于全量 .sql 文件，与"本次变更了哪些模块"无关，
+/// 因此增量路径也必须重新生成，否则增量输出会比全量输出缺少这两类页面。
+async fn generate_global_documents(
+    wiki_gen: &WikiGenerator<'_, Provider>,
+    provider: &Provider,
+    graph: &KnowledgeGraph,
+    config: &WikiConfig,
+    plan: Option<&ResolvedPlan>,
+    cards: &[KnowledgeCard],
+    documents: &mut Vec<WikiDocument>,
+) -> Result<()> {
+    // 架构概览：没有卡片（本次没有模块被生成）时跳过，避免对空仓库发无意义的 LLM 调用
+    if !cards.is_empty() {
+        // generate_architecture 需要一个 GenerationOutput 快照（内部只用 cards 构建引用列表）
+        let output_snapshot = GenerationOutput {
+            cards: cards.to_vec(),
+            documents: documents.clone(),
+            generation_stats: GenerationStats::default(),
+        };
+        match wiki_gen
+            .generate_architecture(&output_snapshot, graph, config)
+            .await
+        {
+            Ok(arch) => documents.push(arch),
+            Err(e) => tracing::warn!("架构概览生成跳过: {}", e),
+        }
+    }
+
+    // 数据库 Schema 文档：无 .sql 文件时内部直接返回空列表，不调用 LLM
+    match schema::generate_schema_documents(provider, config, plan).await {
+        Ok(mut schema_docs) => documents.append(&mut schema_docs),
+        Err(e) => tracing::warn!("数据库 Schema 文档生成跳过: {}", e),
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::plan::PlanDocument;
     use crate::config::schema::WikiSection;
+    use crate::model::DocumentKind;
+
+    /// 构造指定标题的 WikiDocument（测试辅助，其余字段留空）
+    fn make_document(title: &str) -> WikiDocument {
+        WikiDocument {
+            title: title.into(),
+            kind: DocumentKind::WikiPage,
+            content: String::new(),
+            language: "zh".into(),
+            module_path: vec![],
+            references: vec![],
+            last_updated: String::new(),
+            fingerprint: None,
+        }
+    }
+
+    /// 构造只含白名单标题的 ResolvedPlan（测试辅助）
+    fn make_whitelist_plan(titles: &[&str]) -> ResolvedPlan {
+        ResolvedPlan {
+            whitelist: Some(
+                titles
+                    .iter()
+                    .map(|t| PlanDocument {
+                        title: (*t).into(),
+                        goal: String::new(),
+                        parent: None,
+                        include_patterns: vec![],
+                        exclude_patterns: vec![],
+                        hints: None,
+                    })
+                    .collect(),
+            ),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_whitelist_filters_documents() {
+        // 3 个文档 + 白名单 2 个 → 输出仅保留白名单内的 2 个，顺序不变
+        let documents = vec![
+            make_document("模块A"),
+            make_document("模块B"),
+            make_document("模块C"),
+        ];
+        let plan = make_whitelist_plan(&["模块A", "模块C"]);
+        let filtered = filter_by_whitelist(documents, Some(&plan));
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].title, "模块A");
+        assert_eq!(filtered[1].title, "模块C");
+    }
+
+    #[test]
+    fn test_whitelist_none_keeps_all_documents() {
+        // 白名单为 None（未配置或空白名单折叠）→ 全部文档保留
+        let documents = vec![
+            make_document("模块A"),
+            make_document("模块B"),
+            make_document("模块C"),
+        ];
+        let filtered = filter_by_whitelist(documents, None);
+        assert_eq!(filtered.len(), 3);
+    }
 
     #[test]
     fn test_collect_languages_default_single() {

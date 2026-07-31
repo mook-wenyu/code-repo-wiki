@@ -459,6 +459,63 @@ pub fn entity_summary_prompt(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::plan::PlanSection;
+
+    /// 构造指定模块路径的空 Chunk（测试辅助）
+    ///
+    /// 实体/导入/依赖留空即可，prompt 层测试只关心模块路径与 notes/sections 注入。
+    fn make_test_chunk(module_path: &[&str]) -> Chunk {
+        Chunk {
+            module_path: module_path.iter().map(|s| s.to_string()).collect(),
+            entities: vec![],
+            imports: vec![],
+            dependencies: vec![],
+            file_paths: vec![],
+        }
+    }
+
+    #[test]
+    fn test_plan_notes_injected_into_prompt() {
+        let chunk = make_test_chunk(&["src", "config", "plan"]);
+        // notes=Some：全局 notes 应追加到 system prompt 末尾，LLM 能看到计划指令
+        let plan = ResolvedPlan {
+            notes: Some("优先关注错误处理路径".into()),
+            ..Default::default()
+        };
+        let messages = module_summary_prompt(&chunk, "zh", Some(&plan));
+        assert!(messages[0].content.contains("优先关注错误处理路径"));
+        // notes=None：system prompt 不应包含 notes 内容（特性开关关闭时零注入）
+        let messages = module_summary_prompt(&chunk, "zh", None);
+        assert!(!messages[0].content.contains("优先关注错误处理路径"));
+    }
+
+    #[test]
+    fn test_api_ref_section_selects_api_template() {
+        // sections 指定 src/config/** 使用 api-ref 模板
+        let plan = ResolvedPlan {
+            sections: vec![PlanSection {
+                module_pattern: "src/config/**".into(),
+                template_type: PlanTemplateType::ApiRef,
+                notes: None,
+            }],
+            ..Default::default()
+        };
+        // 命中模块：system prompt 切换为 API 参考模板，
+        // 特征文本为标题"API 参考"、函数段与签名标注（args -> Ret 即参数/返回值信息）
+        let chunk = make_test_chunk(&["src", "config", "plan"]);
+        let messages = wiki_page_prompt(&chunk, "摘要", "zh", Some(&plan));
+        let system = &messages[0].content;
+        assert!(system.contains("API 参考"));
+        assert!(system.contains("## 函数"));
+        assert!(system.contains("-> Ret"));
+        // 未命中模块：回退默认叙述性模板，不应出现 API 参考特征文本
+        let chunk = make_test_chunk(&["src", "generate", "prompt"]);
+        let messages = wiki_page_prompt(&chunk, "摘要", "zh", Some(&plan));
+        let system = &messages[0].content;
+        assert!(system.contains("## 概述"));
+        assert!(!system.contains("API 参考"));
+        assert!(!system.contains("## 函数"));
+    }
 
     #[test]
     fn test_section_matches_both_separators() {

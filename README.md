@@ -162,6 +162,21 @@ enabled = true
 strategy = "git-diff"
 ```
 
+## 多语言输出
+
+配置 `[wiki] expand_languages` 可为扩展语言**独立生成** Wiki 页面（LLM 每种语言各生成一次，非翻译）：
+
+```toml
+[wiki]
+language = "zh"
+expand_languages = ["en"]  # 增加英文独立生成
+```
+
+- **独立生成而非翻译**：每种语言由 LLM 单独生成，LLM 调用成本与耗时随语言数量线性增长，扩展语言多意味着生成时间成倍增加
+- **卡片仅主语言生成一次**：KnowledgeCard 是给 Agent 读取的结构化数据，跨语言共享，只按主语言生成（存放于 `cards/{主语言}/`）
+- **输出结构**：`wiki/{lang}/{module}.md`、`wiki/{lang}/api.md` 每种语言各自生成；`overview.md` 仅写入主语言目录
+- **默认关闭**：`expand_languages` 默认为空数组，行为与单语言完全一致
+
 ## 搜索
 
 repo-wiki 提供三种搜索引擎：

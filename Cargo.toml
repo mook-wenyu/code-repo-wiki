@@ -35,3 +35,9 @@ chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
 hex = "0.4"
 serde_yaml = "0.9"
+
+# 基准目标：harness = true 使其以普通 #[test] 形式运行（cargo test --bench bench_search），
+# 而非需要 nightly 的 #[bench]；benches/ 目录默认不被 cargo test 编译，必须显式声明
+[[bench]]
+name = "bench_search"
+harness = true

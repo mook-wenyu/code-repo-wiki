@@ -1,8 +1,8 @@
 //! 搜索与流水线性能基准测试
 //!
-//! 运行: cargo test --test bench_search -- --nocapture
-//! (benches/ 目录的 #[test] 函数不会被默认 cargo test 编译,
-//!  需要通过 --test 指定或运行 cargo bench)
+//! 运行: cargo test --bench bench_search -- --nocapture
+//! (benches/ 目录默认不被 cargo test 编译；本文件在 Cargo.toml 中声明为
+//!  [[bench]] harness = true 目标，故可通过 --bench 指定运行，或直接 cargo bench)
 
 use std::path::Path;
 use std::sync::Mutex;

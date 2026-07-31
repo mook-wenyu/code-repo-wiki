@@ -47,7 +47,7 @@ fn test_record_doc_fingerprints() {
     };
 
     let languages = vec!["zh".to_string()];
-    let fps = GenerationState::record_doc_fingerprints(&[doc], &dir, &languages).unwrap();
+    let fps = GenerationState::record_doc_fingerprints(&[doc], &[], &dir, &languages).unwrap();
     assert!(fps.contains_key(&dir.join("wiki").join("zh").join("test.md").to_string_lossy().to_string()));
     assert_eq!(fps.len(), 1);
 
@@ -207,7 +207,7 @@ fn test_schema_doc_fingerprint_path_matches_render_all() {
     assert!(!dir.join("wiki").join("zh").join("Database Schema: src/db.rs.md").exists());
 
     let languages = vec!["zh".to_string()];
-    let fps = GenerationState::record_doc_fingerprints(&[doc], &dir, &languages).unwrap();
+    let fps = GenerationState::record_doc_fingerprints(&[doc], &[], &dir, &languages).unwrap();
     assert!(fps.contains_key(&written.to_string_lossy().to_string()));
     // 指纹必须与磁盘实际内容一致
     assert_eq!(
@@ -247,7 +247,7 @@ fn test_doc_fingerprint_path_matches_render_all() {
     repo_wiki::output::render_all(std::slice::from_ref(&doc), &[], &KnowledgeGraph::default(), &config, &std::collections::HashSet::new()).unwrap();
 
     let languages = vec!["zh".to_string()];
-    let fps = GenerationState::record_doc_fingerprints(&[doc], &dir, &languages).unwrap();
+    let fps = GenerationState::record_doc_fingerprints(&[doc], &[], &dir, &languages).unwrap();
     let written = dir.join("wiki").join("zh").join("bar.md");
     assert!(fps.contains_key(&written.to_string_lossy().to_string()));
     // 指纹必须与磁盘实际内容一致

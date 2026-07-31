@@ -36,6 +36,9 @@ enum Commands {
         /// 输出目录（覆盖配置文件中的 output.dir）
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// 清空人工修改保护集，强制覆盖所有文档（与 generate --force 语义一致）
+        #[arg(long)]
+        force: bool,
     },
     /// 查看当前 Wiki 状态
     Status {
@@ -175,8 +178,8 @@ fn main() -> anyhow::Result<()> {
                 result.stats.total_entities
             );
         }
-        Commands::Update { config, output } => {
-            let result = repo_wiki::run_incremental_pipeline(&config, output.as_deref(), false)?;
+        Commands::Update { config, output, force } => {
+            let result = repo_wiki::run_incremental_pipeline(&config, output.as_deref(), force)?;
             tracing::info!(
                 "增量更新完成: 扫描 {} 个文件, {} 个模块受影响",
                 result.stats.files_scanned,

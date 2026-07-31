@@ -110,12 +110,30 @@ fn run_git_diff_incremental(
     );
 
     // 2. 收集变更文件路径
-    let all_changed: Vec<std::path::PathBuf> = diff_result
+    // 除 added/modified 外，deleted 与 renamed 的旧路径也必须计入：
+    // 这些文件已不在磁盘上，下游（删除清理、搜索索引增量更新）依赖
+    // 变更集里的"不存在文件"来清除旧输出，否则被删文件的 wiki 页/卡片/索引残留。
+    // renamed 的新路径同样计入（git2 的 Renamed delta 不产生 Added delta），
+    // 保证新文件被重新生成。
+    let mut all_changed: Vec<std::path::PathBuf> = diff_result
         .added
         .iter()
         .chain(&diff_result.modified)
         .cloned()
         .collect();
+    for deleted in &diff_result.deleted {
+        if !all_changed.contains(deleted) {
+            all_changed.push(deleted.clone());
+        }
+    }
+    for (old, new) in &diff_result.renamed {
+        if !all_changed.contains(old) {
+            all_changed.push(old.clone());
+        }
+        if !all_changed.contains(new) {
+            all_changed.push(new.clone());
+        }
+    }
 
     // 3. 在知识图谱上传播变更影响
     let affected_modules = propagate_impact(&all_changed, graph, config.incremental.max_depth);
@@ -213,8 +231,7 @@ mod tests {
 
     /// 行数超限：回退全量
     #[test]
-    fn test_git_diff_incremental_line_limit_falls_back_full() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_test_line_limit_{}", std::process::id()));
+    fn test_git_diff_incremental_line_limit_falls_back_full() {        let dir = std::env::temp_dir().join(format!("repo_wiki_test_line_limit_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let repo = git2::Repository::init(&dir).unwrap();
         let mut cfg = repo.config().unwrap();
@@ -250,6 +267,55 @@ mod tests {
             run_git_diff_incremental(&insights, &graph, &config, &state_dir, &dir).unwrap();
         assert_eq!(changed.len(), 1);
         assert!(affected.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A1：删除文件后增量更新，被删路径必须进入 changed_files，
+    /// 下游删除清理（cleanup_deleted_outputs）才能命中并清除旧输出
+    #[test]
+    fn test_deleted_files_in_changed_set() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_test_deleted_changed_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = git2::Repository::init(&dir).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "test").unwrap();
+        cfg.set_str("user.email", "test@test.com").unwrap();
+
+        // 第一次提交：src/foo.rs 存在
+        let src = dir.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("foo.rs"), "fn foo() {}\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_all(["*"], git2::IndexAddOption::DEFAULT, None).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("test", "test@test.com").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+
+        // 第二次提交：删除 src/foo.rs（index.remove_path 后再提交）
+        std::fs::remove_file(src.join("foo.rs")).unwrap();
+        let mut index = repo.index().unwrap();
+        index.remove_path(Path::new("src/foo.rs")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "delete", &tree, &[&repo.head().unwrap().peel_to_commit().unwrap()]).unwrap();
+
+        // insights 只含现存文件（被删文件不在其中）
+        let insights: Vec<FileInsight> = Vec::new();
+        let graph = KnowledgeGraph::default();
+        let config = make_config();
+        let state_dir = dir.join(".state");
+
+        let (changed, _affected) =
+            run_git_diff_incremental(&insights, &graph, &config, &state_dir, &dir).unwrap();
+        assert!(
+            changed.iter().any(|p| p == Path::new("src/foo.rs")),
+            "被删文件路径应计入 changed_files（否则删除清理与索引清理永不触发）: {:?}",
+            changed
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

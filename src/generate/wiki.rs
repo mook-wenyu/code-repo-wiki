@@ -66,7 +66,7 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
             content,
             language: config.wiki.language.clone(),
             module_path: chunk.module_path.clone(),
-            references: build_references(chunk),
+            references: build_references(chunk, &config.wiki.language),
             last_updated: now,
             fingerprint: None,
         })
@@ -100,7 +100,11 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
                 .iter()
                 .map(|c| Reference {
                     target_title: c.module_name.clone(),
-                    target_path: format!("wiki/{}.md", c.module_name.replace("::", "/")),
+                    target_path: format!(
+                        "wiki/{}/{}.md",
+                        config.wiki.language,
+                        c.module_name.replace("::", "/")
+                    ),
                     relation: "module".into(),
                 })
                 .collect(),
@@ -111,13 +115,15 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
 }
 
 /// 从 Chunk 构建交叉引用
-fn build_references(chunk: &Chunk) -> Vec<Reference> {
+///
+/// * `language` — 目标语言目录名，链接指向 `wiki/{language}/` 下的页面
+fn build_references(chunk: &Chunk, language: &str) -> Vec<Reference> {
     chunk
         .dependencies
         .iter()
         .map(|dep| Reference {
             target_title: dep.clone(),
-            target_path: format!("wiki/{}.md", dep.replace("::", "/")),
+            target_path: format!("wiki/{language}/{}.md", dep.replace("::", "/")),
             relation: "depends_on".into(),
         })
         .collect()
@@ -185,9 +191,10 @@ mod tests {
             file_paths: vec![],
         };
 
-        let refs = build_references(&chunk);
+        let refs = build_references(&chunk, "zh");
         assert_eq!(refs.len(), 2);
         assert_eq!(refs[0].target_title, "tokio");
+        assert_eq!(refs[0].target_path, "wiki/zh/tokio.md");
     }
 
     fn make_hints_plan(title: &str) -> ResolvedPlan {

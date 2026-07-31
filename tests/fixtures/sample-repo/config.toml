@@ -4,13 +4,12 @@ include = ["**/*.rs"]
 exclude = []
 
 [output]
-dir = 'C:\Users\WenYu\AppData\Local\Temp\repo_wiki_progress_test_8020'
+dir = "wiki"
 format = "markdown"
 
 [llm]
 provider = "openai"
 model = "gpt-4o"
-base_url = "http://127.0.0.1:63594/v1"
 api_key = "mock"
 api_key_env = "OPENAI_API_KEY"
 max_concurrent = 1

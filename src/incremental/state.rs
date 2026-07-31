@@ -117,25 +117,58 @@ impl GenerationState {
     /// 记录所有已生成文档的 SHA256 指纹
     ///
     /// 路径与 render_all 实际写盘路径一致：`{output_dir}/wiki/{lang}/{file}.md`，
-    /// 文件名复用 output::markdown::wiki_file_name（ArchitectureOverview 特判写
+    /// 文件名复用 output::wiki_page_path（ArchitectureOverview 特判写
     /// architecture.md），languages 为主语言 + 扩展语言（与 output::wiki_languages 保持一致）。
+    /// 另补记三个全局文档（api.md / overview.md / _toc.md）的指纹，
+    /// 路径复用 output::api_doc_path / overview_doc_path / toc_doc_path，
+    /// 与 render_all 的保护判定路径同一规则产出。
+    /// 卡片同样计入指纹（路径 cards/{lang}/{module.replace("::","_")}.md，与
+    /// render_all 写盘路径一致），使人工编辑的卡片与 wiki 页一样被
+    /// detect_manually_modified 识别并纳入保护集，全量 generate 不再静默覆盖。
     pub fn record_doc_fingerprints(
         docs: &[crate::model::WikiDocument],
+        cards: &[crate::model::KnowledgeCard],
         output_dir: &Path,
         languages: &[String],
     ) -> Result<HashMap<String, String>> {
         let mut fps = HashMap::new();
         for lang in languages {
             for doc in docs {
-                let file_name = if doc.kind == crate::model::DocumentKind::ArchitectureOverview {
-                    "architecture.md".to_string()
-                } else {
-                    crate::output::markdown::wiki_file_name(doc)
-                };
-                let doc_path = output_dir.join("wiki").join(lang).join(&file_name);
+                let doc_path = crate::output::wiki_page_path(output_dir, lang, doc);
                 if doc_path.exists() {
                     let fp = Self::compute_file_fingerprint(&doc_path)?;
                     fps.insert(doc_path.to_string_lossy().to_string(), fp);
+                }
+            }
+        }
+        // 全局文档指纹：api.md（每种语言一份）、overview.md（仅主语言）、_toc.md（输出目录根）
+        for lang in languages {
+            let api_path = crate::output::api_doc_path(output_dir, lang);
+            if api_path.exists() {
+                let fp = Self::compute_file_fingerprint(&api_path)?;
+                fps.insert(api_path.to_string_lossy().to_string(), fp);
+            }
+        }
+        if let Some(primary) = languages.first() {
+            let overview_path = crate::output::overview_doc_path(output_dir, primary);
+            if overview_path.exists() {
+                let fp = Self::compute_file_fingerprint(&overview_path)?;
+                fps.insert(overview_path.to_string_lossy().to_string(), fp);
+            }
+        }
+        let toc_path = crate::output::toc_doc_path(output_dir);
+        if toc_path.exists() {
+            let fp = Self::compute_file_fingerprint(&toc_path)?;
+            fps.insert(toc_path.to_string_lossy().to_string(), fp);
+        }
+        // 卡片指纹：所有语言目录下已落盘的卡片都计入（卡片实际写盘语言
+        // 取决于关联文档的 doc.language，与 render_all 的写盘路径一致）
+        for lang in languages {
+            for card in cards {
+                let card_path = crate::output::card_page_path(output_dir, lang, &card.module_name);
+                if card_path.exists() {
+                    let fp = Self::compute_file_fingerprint(&card_path)?;
+                    fps.insert(card_path.to_string_lossy().to_string(), fp);
                 }
             }
         }
@@ -275,5 +308,76 @@ mod tests {
         let path = PathBuf::from("nonexistent.rs");
         // 新文件（不在指纹表中）应视为"已变更"
         assert!(state.is_file_changed(&path).unwrap());
+    }
+
+    /// A3：卡片指纹与 wiki 页指纹一起记录，人工编辑的卡片可被检测保护
+    #[test]
+    fn test_record_doc_fingerprints_includes_cards() {
+        let dir = std::env::temp_dir()
+            .join(format!("repo_wiki_test_card_fp_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // 预写 wiki 页与卡片（路径与 render_all 落盘一致）
+        let card_path = dir.join("cards").join("zh").join("src_testmodule.md");
+        std::fs::create_dir_all(card_path.parent().unwrap()).unwrap();
+        std::fs::write(&card_path, "卡片内容").unwrap();
+        let wiki_path = dir.join("wiki").join("zh").join("src_testmodule.md");
+        std::fs::create_dir_all(wiki_path.parent().unwrap()).unwrap();
+        std::fs::write(&wiki_path, "页面内容").unwrap();
+
+        let doc = crate::model::WikiDocument {
+            title: "TestModule".into(),
+            kind: crate::model::DocumentKind::WikiPage,
+            content: String::new(),
+            language: "zh".into(),
+            module_path: vec!["src".into(), "testmodule".into()],
+            references: vec![],
+            last_updated: String::new(),
+            fingerprint: None,
+        };
+        let card = crate::model::KnowledgeCard {
+            module_name: "src::testmodule".into(),
+            module_type: "module".into(),
+            summary: String::new(),
+            key_entities: vec![],
+            dependencies: vec![],
+            dependents: vec![],
+            design_patterns: vec![],
+            todo_notes: vec![],
+            related_files: vec![],
+            coding_spec: None,
+            tech_stack: vec![],
+            architecture: None,
+        };
+
+        let fps = GenerationState::record_doc_fingerprints(&[doc], &[card], &dir, &["zh".into()]).unwrap();
+        assert!(
+            fps.contains_key(&card_path.to_string_lossy().to_string()),
+            "已落盘的卡片应计入指纹（人工编辑后检测保护的前提）"
+        );
+        assert!(
+            fps.contains_key(&wiki_path.to_string_lossy().to_string()),
+            "wiki 页应计入指纹"
+        );
+
+        // 未落盘的卡片（文件不存在）不计指纹，避免无中生有的保护
+        let missing_card = crate::model::KnowledgeCard {
+            module_name: "src::missing".into(),
+            module_type: "module".into(),
+            summary: String::new(),
+            key_entities: vec![],
+            dependencies: vec![],
+            dependents: vec![],
+            design_patterns: vec![],
+            todo_notes: vec![],
+            related_files: vec![],
+            coding_spec: None,
+            tech_stack: vec![],
+            architecture: None,
+        };
+        let fps2 = GenerationState::record_doc_fingerprints(&[], &[missing_card], &dir, &["zh".into()]).unwrap();
+        assert!(fps2.is_empty(), "文件不存在时不应记录指纹");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -90,6 +90,7 @@ fn save_generation_state(
     config: &config::schema::WikiConfig,
     insights: &[ingest::parser::FileInsight],
     documents: &[model::WikiDocument],
+    cards: &[model::KnowledgeCard],
     protected: &std::collections::HashSet<String>,
     commit_hash: &str,
 ) {
@@ -101,6 +102,7 @@ fn save_generation_state(
         state.protected_docs = protected_docs;
         if let Ok(fps) = incremental::state::GenerationState::record_doc_fingerprints(
             documents,
+            cards,
             output_dir,
             &output::wiki_languages(config),
         ) {
@@ -186,7 +188,7 @@ pub fn run_pipeline_with_progress(
     // Phase 6: 保存增量状态（含文档指纹用于人工修改保护）
     if config.incremental.enabled {
         let head_hash = incremental::diff::get_head_commit_hash().unwrap_or_default();
-        save_generation_state(&config, &file_insights, &gen_output.documents, &protected, &head_hash);
+        save_generation_state(&config, &file_insights, &gen_output.documents, &gen_output.cards, &protected, &head_hash);
     }
 
     on_progress(ProgressEvent { stage: "done", percent: 100 });
@@ -247,7 +249,8 @@ pub fn run_card_command(config_path: &Path, action: &generate::card::CardAction)
 /// 运行增量更新流水线
 ///
 /// `output` 非空时覆盖配置文件中的 output.dir（对应 CLI 的 --output 参数）。
-/// `force` 为 true 时清空人工修改保护集（Update 命令当前固定传 false）。
+/// `force` 为 true 时清空人工修改保护集（与 run_pipeline 的 --force 语义一致，
+/// 经由 load_protection 统一处理，force=false 保留保护语义）。
 pub fn run_incremental_pipeline(config_path: &Path, output: Option<&Path>, force: bool) -> anyhow::Result<AnalysisResult> {
     let config = load_config_with_output(config_path, output)?;
     let start = std::time::Instant::now();
@@ -291,17 +294,8 @@ pub fn run_incremental_pipeline(config_path: &Path, output: Option<&Path>, force
     // Phase 4: 全量输出（保持索引一致）
     output::render_all(&gen_output.documents, &gen_output.cards, &graph, &config, &protected)?;
 
-    // Phase 4b: 清理已删除文件对应的输出文档
-    let output_dir = Path::new(&config.output.dir).join("wiki").join("modules");
-    for f in &inc_result.changed_files {
-        if !f.exists() {
-            let stem = f.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-            let wiki_path = output_dir.join(format!("{}.md", stem));
-            let card_path = Path::new(&config.output.dir).join("cards").join(format!("{}.md", stem));
-            let _ = std::fs::remove_file(&wiki_path);
-            let _ = std::fs::remove_file(&card_path);
-        }
-    }
+    // Phase 4b: 清理已删除文件对应的输出文档（wiki 页 + 卡片）
+    cleanup_deleted_outputs(&config, &inc_result.changed_files);
 
     // Phase 5: 增量更新搜索索引
     if config.search.enabled && let Err(e) = update_search_index_incremental(&graph, &file_insights, &config, &changed_set) {
@@ -311,7 +305,7 @@ pub fn run_incremental_pipeline(config_path: &Path, output: Option<&Path>, force
     // Phase 6: 保存最终状态（protected_docs 合并写回；doc_fingerprints 只记录实际写盘的文档）
     if config.incremental.enabled {
         let head_hash = incremental::diff::get_head_commit_hash().unwrap_or_default();
-        save_generation_state(&config, &file_insights, &gen_output.documents, &protected, &head_hash);
+        save_generation_state(&config, &file_insights, &gen_output.documents, &gen_output.cards, &protected, &head_hash);
     }
 
     let stats = AnalysisStats {
@@ -329,6 +323,54 @@ pub fn run_incremental_pipeline(config_path: &Path, output: Option<&Path>, force
         cards: gen_output.cards,
         stats,
     })
+}
+
+/// 从源码文件路径派生模块名（与 generate::chunk::chunk_by_file 同规则：
+/// 取目录的普通组件以 "::" 连接，不含文件名）
+///
+/// 删除清理时被删文件已不在新 graph/insights 中，无法还原其模块聚类归属，
+/// 只能按此确定性规则重建模块名；wiki 页文件名 = 模块名.replace("::","_")，
+/// 与 render_all 落盘（module_path.join("_")）完全一致。
+fn module_name_from_path(path: &Path) -> String {
+    path.parent()
+        .map(|p| {
+            p.components()
+                .filter(|c| matches!(c, std::path::Component::Normal(_)))
+                .map(|c| c.as_os_str().to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+                .join("::")
+        })
+        .unwrap_or_default()
+}
+
+/// 清理已删除源文件对应的旧输出（wiki 页 + 卡片）
+///
+/// 只清理"已不存在"的变更文件（deleted 与 renamed 旧路径由
+/// incremental::run_incremental_update 计入 changed_files）；
+/// wiki 页与卡片路径复用 output 层的统一命名规则，并遍历全部语言目录
+/// （主语言 + 扩展语言），与 render_all 的写盘规则一致。
+/// 现存文件、已保护文档的路径不在变更集内，不受影响。
+pub(crate) fn cleanup_deleted_outputs(
+    config: &config::schema::WikiConfig,
+    changed_files: &[std::path::PathBuf],
+) {
+    let output_dir = Path::new(&config.output.dir);
+    let languages = output::wiki_languages(config);
+    for f in changed_files {
+        if f.exists() {
+            continue;
+        }
+        let module = module_name_from_path(f);
+        if module.is_empty() {
+            continue;
+        }
+        let file_name = output::module_page_file_name(&module);
+        for lang in &languages {
+            // 被删文件的旧页面/旧卡片逐一尝试删除，失败静默（文件可能本就不存在）
+            let _ = std::fs::remove_file(output_dir.join("wiki").join(lang).join(&file_name));
+            let _ = std::fs::remove_file(output::card_page_path(output_dir, lang, &module));
+        }
+    }
 }
 
 /// 启动文件监听模式
@@ -559,5 +601,122 @@ pub fn execute_search(
             let agent = search::agent::SearchAgent::new(text_engine, semantic_engine, config.search.rrf_k as f64);
             Ok(agent.search(query, top_k, true))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::schema::WikiSection;
+    use std::path::PathBuf;
+
+    /// A1 集成测试：已删除源文件对应的 wiki 页与卡片在全部语言目录下被清理，
+    /// 现存文件的输出不受影响。
+    #[test]
+    fn test_cleanup_deleted_outputs_removes_all_languages() {
+        let dir = std::env::temp_dir()
+            .join(format!("repo_wiki_test_cleanup_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut config = crate::config::schema::WikiConfig::default();
+        config.output.dir = dir.to_string_lossy().into_owned();
+        // 双语言：主语言 zh + 扩展语言 en
+        config.wiki = WikiSection {
+            language: "zh".into(),
+            expand_languages: vec!["en".into()],
+            ..Default::default()
+        };
+
+        // 预置被删文件 src/foo.rs 的旧输出：模块 "src" → wiki 页 src.md、卡片 src.md
+        // （deleted 用仓库内相对路径构造，与 git diff 的路径形态一致）
+        let deleted = PathBuf::from("src/foo.rs");
+        for lang in ["zh", "en"] {
+            let wiki = dir.join("wiki").join(lang).join("src.md");
+            let card = dir.join("cards").join(lang).join("src.md");
+            std::fs::create_dir_all(wiki.parent().unwrap()).unwrap();
+            std::fs::create_dir_all(card.parent().unwrap()).unwrap();
+            std::fs::write(&wiki, "旧页面").unwrap();
+            std::fs::write(&card, "旧卡片").unwrap();
+        }
+
+        // 现存文件（绝对路径，存在于磁盘）不得被清理
+        let alive = dir.join("lib").join("util.rs");
+        std::fs::create_dir_all(alive.parent().unwrap()).unwrap();
+        std::fs::write(&alive, "存活").unwrap();
+        let alive_wiki = dir.join("wiki").join("zh").join("lib.md");
+        std::fs::create_dir_all(alive_wiki.parent().unwrap()).unwrap();
+        std::fs::write(&alive_wiki, "存活页面").unwrap();
+
+        cleanup_deleted_outputs(&config, &[deleted, alive]);
+
+        for lang in ["zh", "en"] {
+            assert!(
+                !dir.join("wiki").join(lang).join("src.md").exists(),
+                "已删文件的 wiki 页应被清理（{lang}）"
+            );
+            assert!(
+                !dir.join("cards").join(lang).join("src.md").exists(),
+                "已删文件的卡片应被清理（{lang}）"
+            );
+        }
+        assert!(dir.join("wiki").join("zh").join("lib.md").exists(), "现存文件的输出不应被清理");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A1 单测：模块名派生规则（与 chunk_by_file 一致，不含文件名）
+    #[test]
+    fn test_module_name_from_path_uses_directories() {
+        assert_eq!(module_name_from_path(Path::new("src/config.rs")), "src");
+        assert_eq!(module_name_from_path(Path::new("src/foo/bar.rs")), "src::foo");
+        // Windows 盘符不进入模块名（与 chunk_by_file 的 Normal 组件过滤一致）
+        assert_eq!(module_name_from_path(Path::new("C:/src/config.rs")), "src");
+        // 根目录文件无模块名
+        assert_eq!(module_name_from_path(Path::new("config.rs")), "");
+    }
+
+    /// A2：force=true 清空保护集（含旧 protected_docs 与人工修改检测），
+    /// force=false 保留保护语义 —— 与 run_pipeline 的 --force 行为一致
+    #[test]
+    fn test_load_protection_force_clears_protection() {
+        let dir = std::env::temp_dir()
+            .join(format!("repo_wiki_test_force_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut config = crate::config::schema::WikiConfig::default();
+        config.output.dir = dir.to_string_lossy().into_owned();
+
+        // 构造旧 state：一个"人工修改过"的文档（磁盘内容与指纹不匹配）
+        let state_dir = dir.join(".state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let doc_path = dir.join("wiki").join("zh").join("src.md");
+        std::fs::create_dir_all(doc_path.parent().unwrap()).unwrap();
+        std::fs::write(&doc_path, "人工修改后的内容").unwrap();
+        let mut state = incremental::state::GenerationState {
+            last_commit_hash: None,
+            file_fingerprints: std::collections::HashMap::new(),
+            module_fingerprints: std::collections::HashMap::new(),
+            doc_fingerprints: std::collections::HashMap::new(),
+            protected_docs: vec![],
+            generated_at: String::new(),
+        };
+        state.doc_fingerprints.insert(
+            doc_path.to_string_lossy().to_string(),
+            "与磁盘内容不同的指纹".into(),
+        );
+        state.save(&state_dir).unwrap();
+
+        // force=false：保护集包含检测出的人工修改（下次生成不覆盖）
+        let (protected, _) = load_protection(&config, false);
+        assert!(
+            protected.contains(&doc_path.to_string_lossy().to_string()),
+            "force=false 应保护人工修改的文档"
+        );
+
+        // force=true：保护集清空（render_all 将覆盖所有文档）
+        let (protected, _) = load_protection(&config, true);
+        assert!(protected.is_empty(), "force=true 应清空保护集");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

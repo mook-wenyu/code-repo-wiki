@@ -139,10 +139,7 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
 /// 卡片文件路径：cards/{主语言}/{module.replace("::","_")}.md（与 render_all 写盘规则一致）
 fn card_path(config: &WikiConfig, module: &str) -> PathBuf {
     let primary_lang = &crate::output::wiki_languages(config)[0];
-    Path::new(&config.output.dir)
-        .join("cards")
-        .join(primary_lang)
-        .join(format!("{}.md", module.replace("::", "_")))
+    crate::output::card_page_path(Path::new(&config.output.dir), primary_lang, module)
 }
 
 /// 读取现有卡片 markdown（按模块名定位 cards/{lang}/{module}.md）

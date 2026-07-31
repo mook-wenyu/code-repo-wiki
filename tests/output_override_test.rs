@@ -1,8 +1,9 @@
-//! run_pipeline_with_progress 进度事件测试
+//! -o/--output 覆盖 output.dir 的集成测试
 //!
-//! 将 fixtures/sample-repo 复制到唯一临时目录（避免污染 fixture 目录，
-//! 也避免与其他测试并发写 fixture 的 config.toml 冲突），LLM 指向本地
-//! mock server（返回固定 JSON 响应，生成调用成功且零重试延迟），验证回调事件序列。
+//! 将 fixtures/sample-repo 复制到唯一临时目录（避免与其他测试并发写 fixture 的
+//! config.toml 冲突），LLM 指向本地 mock server（返回固定 JSON 响应，
+//! 生成调用成功且零重试延迟）。断言 run_pipeline(cfg, Some(out_dir), false)
+//! 的输出落在 out_dir 下，而非配置默认的 .repo-wiki。
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -47,13 +48,15 @@ fn with_cwd<F: FnOnce()>(dir: &Path, f: F) {
 }
 
 #[test]
-fn test_pipeline_progress_events_monotonic_and_done() {
+fn test_output_override_writes_to_given_dir() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")
         .join("sample-repo");
-    let work_dir = unique_dir("progress_repo");
+    let work_dir = unique_dir("output_override_repo");
+    let out_dir = unique_dir("output_override_out");
     let _ = std::fs::remove_dir_all(&work_dir);
+    let _ = std::fs::remove_dir_all(&out_dir);
     copy_dir(&fixture, &work_dir);
 
     with_cwd(&work_dir, || {
@@ -79,15 +82,12 @@ fn test_pipeline_progress_events_monotonic_and_done() {
             }
         });
 
+        // 配置不写 [output] 段（默认 .repo-wiki），验证 --output 覆盖生效
         let config = format!(
             r#"
 [scope]
 include = ["**/*.rs"]
 exclude = []
-
-[output]
-dir = "wiki"
-format = "markdown"
 
 [llm]
 provider = "openai"
@@ -111,31 +111,17 @@ default_top_k = 10
         );
         std::fs::write("config.toml", config).unwrap();
 
-        let events: Mutex<Vec<repo_wiki::ProgressEvent>> = Mutex::new(Vec::new());
-        let result = repo_wiki::run_pipeline_with_progress(
-            Path::new("config.toml"),
-            None,
-            true,
-            &|evt| events.lock().unwrap().push(evt),
-        );
+        let result = repo_wiki::run_pipeline(Path::new("config.toml"), Some(&out_dir), false);
         assert!(result.is_ok(), "流水线应成功（LLM 失败被容错跳过）: {:?}", result.err());
 
-        let events = events.into_inner().unwrap();
-        // 事件序列非空且以 scanning 开始
-        assert!(!events.is_empty(), "应收到进度事件");
-        assert_eq!(events.first().unwrap().stage, "scanning");
-        // 百分比单调递增
-        for w in events.windows(2) {
-            assert!(
-                w[1].percent >= w[0].percent,
-                "事件百分比应单调递增: {} ({}%) -> {} ({}%)",
-                w[0].stage, w[0].percent, w[1].stage, w[1].percent
-            );
-        }
-        // 以 done=100 结束
-        assert_eq!(events.last().unwrap().stage, "done");
-        assert_eq!(events.last().unwrap().percent, 100);
+        // 输出落在覆盖目录下：wiki 页面目录（主语言 zh）+ 全局文档
+        assert!(out_dir.join("wiki").join("zh").is_dir(), "wiki 输出应落在覆盖目录下");
+        assert!(out_dir.join("wiki").join("zh").join("api.md").exists());
+        assert!(out_dir.join("_toc.md").exists());
+        // 覆盖后默认输出目录 .repo-wiki 不应被创建
+        assert!(!work_dir.join(".repo-wiki").exists(), "覆盖后不应写默认 .repo-wiki");
     });
 
     let _ = std::fs::remove_dir_all(&work_dir);
+    let _ = std::fs::remove_dir_all(&out_dir);
 }
