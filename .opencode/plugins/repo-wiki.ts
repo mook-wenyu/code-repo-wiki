@@ -125,7 +125,9 @@ export const RepoWikiPlugin = async ({ project, client, directory }: PluginInput
                 execute: async (args: any) => {
                     (client as any)?.sendProgress?.({ stage: "scanning", progress: 0 });
                     const output = (args.output as string) || "";
-                    const { stdout, stderr } = await execa("repo-wiki", ["generate", "-o", ".repo-wiki", output], {
+                    const cliArgs = ["generate", "--config", ".repo-wiki/config.toml"];
+                    if (output) cliArgs.push("-o", output);
+                    const { stdout, stderr } = await execa("repo-wiki", cliArgs, {
                         cwd: directory,
                     });
                     (client as any)?.sendProgress?.({ stage: "complete", progress: 100 });
@@ -138,7 +140,6 @@ export const RepoWikiPlugin = async ({ project, client, directory }: PluginInput
                 args: { module: { type: "string", description: "模块路径" } },
                 execute: async (args: any) => {
                     const modulePath = String(args.module || "");
-                    await runCli(["generate"]);
                     const cards = await readExistingCards();
                     const matched = cards.filter(c => c.name?.includes(modulePath));
                     if (matched.length === 0) return `未找到模块 "${modulePath}" 的信息`;
@@ -180,6 +181,44 @@ export const RepoWikiPlugin = async ({ project, client, directory }: PluginInput
                     execute: async () => {
                         const result = await runCli(["export"]);
                         return result.code === 0 ? result.stdout || "导出完成" : "导出失败: " + result.stderr;
+                    },
+                },
+            ],
+        },
+        {
+            name: "knowledge",
+            description: "知识卡片管理",
+            subcommands: [
+                {
+                    name: "generate",
+                    description: "新建知识卡片",
+                    execute: async () => {
+                        const cards = await readExistingCards();
+                        return `现有 ${cards.length} 张知识卡片。使用 /knowledge modify <模块名> <说明> 来补充。`;
+                    },
+                },
+                {
+                    name: "modify",
+                    description: "修改已有卡片",
+                    execute: async () => {
+                        const cards = await readExistingCards();
+                        return `现有 ${cards.length} 张卡片。使用 /knowledge rewrite <模块名> <指令> 来重写。`;
+                    },
+                },
+                {
+                    name: "supplement",
+                    description: "补充已有卡片",
+                    execute: async () => {
+                        const cards = await readExistingCards();
+                        return `现有 ${cards.length} 张卡片。使用 /knowledge modify <模块名> <说明> 来修改。`;
+                    },
+                },
+                {
+                    name: "rewrite",
+                    description: "全量重写卡片",
+                    execute: async () => {
+                        const cards = await readExistingCards();
+                        return `现有 ${cards.length} 张卡片。请在参数中指定模块路径和重写指令。`;
                     },
                 },
             ],

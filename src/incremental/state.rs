@@ -65,10 +65,34 @@ impl GenerationState {
             }
         }
 
+        // 计算模块指纹
+        let mut module_entities: HashMap<String, Vec<String>> = HashMap::new();
+        for insight in insights {
+            let module_path = insight
+                .path
+                .strip_prefix(
+                    std::env::current_dir()
+                        .ok()
+                        .as_deref()
+                        .unwrap_or(std::path::Path::new("")),
+                )
+                .unwrap_or(&insight.path)
+                .with_extension("")
+                .to_string_lossy()
+                .replace(std::path::MAIN_SEPARATOR, "::");
+            let names: Vec<String> = insight.entities.iter().map(|e| e.name.clone()).collect();
+            module_entities.entry(module_path).or_default().extend(names);
+        }
+        let mut module_fingerprints = HashMap::new();
+        for (module, mut names) in module_entities {
+            names.sort();
+            module_fingerprints.insert(module, sha256_hex(names.join(",").as_bytes()));
+        }
+
         Ok(Self {
             last_commit_hash: Some(commit_hash.to_string()),
             file_fingerprints,
-            module_fingerprints: HashMap::new(),
+            module_fingerprints,
             doc_fingerprints: HashMap::new(),
             generated_at: chrono::Utc::now().to_rfc3339(),
         })
