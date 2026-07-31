@@ -106,6 +106,7 @@ mod tests {
             title: title.into(),
             kind: DocumentKind::WikiPage,
             content: String::new(),
+            language: String::new(),
             module_path: vec![],
             references: refs,
             last_updated: String::new(),

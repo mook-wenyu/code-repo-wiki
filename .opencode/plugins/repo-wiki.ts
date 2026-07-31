@@ -123,14 +123,22 @@ export const RepoWikiPlugin = async ({ project, client, directory }: PluginInput
                     output: { type: "string", description: "输出目录（默认 .repo-wiki）" },
                 },
                 execute: async (args: any) => {
-                    (client as any)?.sendProgress?.({ stage: "scanning", progress: 0 });
                     const output = (args.output as string) || "";
-                    const cliArgs = ["generate", "--config", ".repo-wiki/config.toml"];
+                    const cliArgs = ["generate", "--config", ".repo-wiki/config.toml", "--progress-json"];
                     if (output) cliArgs.push("-o", output);
-                    const { stdout, stderr } = await execa("repo-wiki", cliArgs, {
-                        cwd: directory,
+                    const child = execa("repo-wiki", cliArgs, { cwd: directory });
+                    child.stdout?.on("data", (chunk: Buffer) => {
+                        for (const line of chunk.toString().split("\n")) {
+                            if (!line.startsWith('{"stage":')) continue;
+                            try {
+                                const evt = JSON.parse(line);
+                                (client as any)?.sendProgress?.({ stage: evt.stage, progress: evt.progress });
+                            } catch {
+                                // 半行/坏行忽略：展示层容错
+                            }
+                        }
                     });
-                    (client as any)?.sendProgress?.({ stage: "complete", progress: 100 });
+                    const { stdout, stderr } = await child;
                     return stdout || `生成完成。${stderr ? "警告: " + stderr : ""}`;
                 },
             },
@@ -191,34 +199,53 @@ export const RepoWikiPlugin = async ({ project, client, directory }: PluginInput
             subcommands: [
                 {
                     name: "generate",
-                    description: "新建知识卡片",
-                    execute: async () => {
-                        const cards = await readExistingCards();
-                        return `现有 ${cards.length} 张知识卡片。使用 /knowledge modify <模块名> <说明> 来补充。`;
+                    description: "为单个模块生成知识卡片",
+                    execute: async (args: string) => {
+                        const [module] = (args || "").trim().split(/\s+/);
+                        if (!module) return "用法: /knowledge generate <模块名>";
+                        const result = await runCli(["card", "generate", module, "--config", ".repo-wiki/config.toml"]);
+                        return result.code === 0
+                            ? (result.stdout || `卡片 ${module} 生成完成`)
+                            : "生成失败: " + result.stderr;
                     },
                 },
                 {
                     name: "modify",
-                    description: "修改已有卡片",
-                    execute: async () => {
-                        const cards = await readExistingCards();
-                        return `现有 ${cards.length} 张卡片。使用 /knowledge rewrite <模块名> <指令> 来重写。`;
+                    description: "按指令修改已有卡片",
+                    execute: async (args: string) => {
+                        const [module, ...rest] = (args || "").trim().split(/\s+/);
+                        if (!module || rest.length === 0) return "用法: /knowledge modify <模块名> <指令文本>";
+                        const instruction = rest.join(" ");
+                        const result = await runCli(["card", "modify", module, "--instruction", instruction, "--config", ".repo-wiki/config.toml"]);
+                        return result.code === 0
+                            ? (result.stdout || `卡片 ${module} 修改完成`)
+                            : "修改失败: " + result.stderr;
                     },
                 },
                 {
                     name: "supplement",
-                    description: "补充已有卡片",
-                    execute: async () => {
-                        const cards = await readExistingCards();
-                        return `现有 ${cards.length} 张卡片。使用 /knowledge modify <模块名> <说明> 来修改。`;
+                    description: "在已有卡片上追加内容",
+                    execute: async (args: string) => {
+                        const [module, ...rest] = (args || "").trim().split(/\s+/);
+                        if (!module || rest.length === 0) return "用法: /knowledge supplement <模块名> <指令文本>";
+                        const instruction = rest.join(" ");
+                        const result = await runCli(["card", "supplement", module, "--instruction", instruction, "--config", ".repo-wiki/config.toml"]);
+                        return result.code === 0
+                            ? (result.stdout || `卡片 ${module} 补充完成`)
+                            : "补充失败: " + result.stderr;
                     },
                 },
                 {
                     name: "rewrite",
-                    description: "全量重写卡片",
-                    execute: async () => {
-                        const cards = await readExistingCards();
-                        return `现有 ${cards.length} 张卡片。请在参数中指定模块路径和重写指令。`;
+                    description: "忽略现有内容全量重写卡片",
+                    execute: async (args: string) => {
+                        const [module, ...rest] = (args || "").trim().split(/\s+/);
+                        if (!module || rest.length === 0) return "用法: /knowledge rewrite <模块名> <指令文本>";
+                        const instruction = rest.join(" ");
+                        const result = await runCli(["card", "rewrite", module, "--instruction", instruction, "--config", ".repo-wiki/config.toml"]);
+                        return result.code === 0
+                            ? (result.stdout || `卡片 ${module} 重写完成`)
+                            : "重写失败: " + result.stderr;
                     },
                 },
             ],

@@ -21,12 +21,21 @@ enum Commands {
         /// 输出目录（覆盖配置文件中的 output.dir）
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// 清空人工修改保护集，强制覆盖所有文档
+        #[arg(long)]
+        force: bool,
+        /// 以 JSON 行输出流水线进度（供插件解析，如 {"stage":"scanning","progress":10}）
+        #[arg(long)]
+        progress_json: bool,
     },
     /// 增量更新 Wiki 文档
     Update {
         /// 配置文件路径
         #[arg(short, long, default_value = ".repo-wiki/config.toml")]
         config: PathBuf,
+        /// 输出目录（覆盖配置文件中的 output.dir）
+        #[arg(short, long)]
+        output: Option<PathBuf>,
     },
     /// 查看当前 Wiki 状态
     Status {
@@ -70,10 +79,74 @@ enum Commands {
         #[arg(short, long)]
         engine: Option<String>,
     },
+    /// 知识卡片操作（Qoder /knowledge 对等）
+    Card {
+        #[command(subcommand)]
+        action: CardAction,
+    },
     /// 将 repo-wiki 注册为 OpenCode 插件
     InstallToOpencode,
     /// 从 OpenCode 卸载 repo-wiki 插件
-    UninstallFromOpencode,
+    UninstallFromOpencode {
+        /// 跳过确认（卸载将移除集成配置）
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+/// 知识卡片操作子命令（业务动作定义在 lib 的 generate::card::CardAction）
+#[derive(Subcommand)]
+enum CardAction {
+    /// 为单个模块生成卡片（重新生成）
+    Generate {
+        /// 模块名（如 src::config）
+        module: String,
+        /// 配置文件路径
+        #[arg(long, default_value = ".repo-wiki/config.toml")]
+        config: PathBuf,
+    },
+    /// 按指令修改已有卡片
+    Modify {
+        /// 模块名（如 src::config）
+        module: String,
+        /// 修改指令
+        #[arg(long)]
+        instruction: String,
+        /// 参考文件路径（逗号分隔，可选）
+        #[arg(long, value_delimiter = ',')]
+        reference: Vec<PathBuf>,
+        /// 配置文件路径
+        #[arg(long, default_value = ".repo-wiki/config.toml")]
+        config: PathBuf,
+    },
+    /// 在已有卡片上追加内容
+    Supplement {
+        /// 模块名（如 src::config）
+        module: String,
+        /// 补充指令
+        #[arg(long)]
+        instruction: String,
+        /// 参考文件路径（逗号分隔，可选）
+        #[arg(long, value_delimiter = ',')]
+        reference: Vec<PathBuf>,
+        /// 配置文件路径
+        #[arg(long, default_value = ".repo-wiki/config.toml")]
+        config: PathBuf,
+    },
+    /// 忽略现有内容全量重写
+    Rewrite {
+        /// 模块名（如 src::config）
+        module: String,
+        /// 重写指令
+        #[arg(long)]
+        instruction: String,
+        /// 参考文件路径（逗号分隔，可选）
+        #[arg(long, value_delimiter = ',')]
+        reference: Vec<PathBuf>,
+        /// 配置文件路径
+        #[arg(long, default_value = ".repo-wiki/config.toml")]
+        config: PathBuf,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -87,16 +160,23 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Generate { config, output: _ } => {
-            let result = repo_wiki::run_pipeline(&config)?;
+        Commands::Generate { config, output, force, progress_json } => {
+            let result = if progress_json {
+                // JSONL 进度输出：插件 wiki_generate 流式解析
+                repo_wiki::run_pipeline_with_progress(&config, output.as_deref(), force, &|evt| {
+                    println!(r#"{{"stage":"{}","progress":{}}}"#, evt.stage, evt.percent);
+                })?
+            } else {
+                repo_wiki::run_pipeline(&config, output.as_deref(), force)?
+            };
             tracing::info!(
                 "生成完成: 扫描 {} 个文件, 发现 {} 个实体",
                 result.stats.files_scanned,
                 result.stats.total_entities
             );
         }
-        Commands::Update { config } => {
-            let result = repo_wiki::run_incremental_pipeline(&config)?;
+        Commands::Update { config, output } => {
+            let result = repo_wiki::run_incremental_pipeline(&config, output.as_deref(), false)?;
             tracing::info!(
                 "增量更新完成: 扫描 {} 个文件, {} 个模块受影响",
                 result.stats.files_scanned,
@@ -111,7 +191,7 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Export { config } => {
             let cfg = repo_wiki::config::load_config(&config)?;
-            let result = repo_wiki::run_pipeline(&config)?;
+            let result = repo_wiki::run_pipeline(&config, None, false)?;
             repo_wiki::output::html::export_html(&result.documents, &result.cards, &result.graph, &cfg)?;
             tracing::info!("HTML 导出完成 (--config {})", config.display());
         }
@@ -165,8 +245,30 @@ fn main() -> anyhow::Result<()> {
         Commands::InstallToOpencode => {
             commands::install("opencode")?;
         }
-        Commands::UninstallFromOpencode => {
-            commands::uninstall(false)?;
+        Commands::UninstallFromOpencode { force } => {
+            commands::uninstall(force)?;
+        }
+        Commands::Card { action } => {
+            use repo_wiki::generate::card as card_cmd;
+            // CLI 枚举转业务枚举（config 路径在匹配时提取，供 run_card_command 使用）
+            let (config, action) = match action {
+                CardAction::Generate { module, config } => {
+                    (config, card_cmd::CardAction::Generate { module })
+                }
+                CardAction::Modify { module, instruction, reference, config } => (
+                    config,
+                    card_cmd::CardAction::Modify { module, instruction, references: reference },
+                ),
+                CardAction::Supplement { module, instruction, reference, config } => (
+                    config,
+                    card_cmd::CardAction::Supplement { module, instruction, references: reference },
+                ),
+                CardAction::Rewrite { module, instruction, reference, config } => (
+                    config,
+                    card_cmd::CardAction::Rewrite { module, instruction, references: reference },
+                ),
+            };
+            repo_wiki::run_card_command(&config, &action)?;
         }
     }
 

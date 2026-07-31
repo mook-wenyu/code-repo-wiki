@@ -13,6 +13,10 @@ pub enum DocumentKind {
     TableOfContents,
     /// 模块文档
     ModuleDoc,
+    /// API 参考（按模块分组列出公开实体）
+    ApiReference,
+    /// 数据库 Schema 文档（基于 SQL 建表语句生成）
+    DatabaseSchema,
 }
 
 /// Wiki 文档
@@ -21,6 +25,8 @@ pub struct WikiDocument {
     pub title: String,
     pub kind: DocumentKind,
     pub content: String,
+    /// 文档语言（多语言独立生成时写入对应语言目录）
+    pub language: String,
     pub module_path: Vec<String>,
     /// 交叉引用链接
     pub references: Vec<Reference>,
@@ -49,6 +55,18 @@ pub struct KnowledgeCard {
     pub dependents: Vec<String>,
     pub design_patterns: Vec<String>,
     pub todo_notes: Vec<String>,
+    /// 关联的源文件路径（由 chunk 直接填充，不经过 LLM）
+    #[serde(default)]
+    pub related_files: Vec<String>,
+    /// 编码规范（LLM 生成的描述性字段）
+    #[serde(default)]
+    pub coding_spec: Option<String>,
+    /// 技术栈（LLM 生成的描述性字段）
+    #[serde(default)]
+    pub tech_stack: Vec<String>,
+    /// 架构说明（LLM 生成的描述性字段）
+    #[serde(default)]
+    pub architecture: Option<String>,
 }
 
 /// 实体摘要（用于 Knowledge Card）

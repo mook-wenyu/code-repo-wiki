@@ -3,6 +3,7 @@ pub mod chunk;
 pub mod embed;
 pub mod llm;
 pub mod prompt;
+pub mod schema;
 pub mod wiki;
 
 use std::time::Instant;
@@ -47,6 +48,15 @@ pub fn create_provider(config: &WikiConfig) -> Result<Provider> {
     }
 }
 
+/// 生效的语言列表（主语言 + 扩展语言）
+///
+/// Knowledge Card 只按主语言生成一次，Wiki 页面按本列表逐语言独立生成。
+pub fn collect_languages(config: &WikiConfig) -> Vec<String> {
+    let mut languages = vec![config.wiki.language.clone()];
+    languages.extend(config.wiki.expand_languages.iter().cloned());
+    languages
+}
+
 /// 运行完整的生成流水线
 ///
 /// 1. AST 感知分块（按模块分组）
@@ -75,19 +85,15 @@ pub async fn run_generation(
     // 2. 创建 LLM Provider
     let provider = create_provider(config)?;
 
-    // 2.3 检查 wiki_plan.yaml 全局 notes（仅记录日志，实际注入在 prompt 层）
-    if config.plan.enabled
-        && let Ok(Some(plan)) = crate::config::plan::load_plan(std::path::Path::new(&config.output.dir))
-        && let Some(ref notes) = plan.notes
-    {
-        tracing::info!("wiki_plan 全局 notes 已加载（将注入 prompt）: {}", notes);
-    }
+    // 2.3 解析 wiki_plan.yaml 生效计划（禁用或文件缺失 → None；坏文件中断）
+    let plan = crate::config::plan::resolve_plan(config)?;
 
     // 2.5 Level 0 实体摘要：为每个实体生成摘要（跳过已有摘要的实体）
     for chunk in &mut chunks {
         for entity in &mut chunk.entities {
             if entity.summary.is_none() {
-                let prompt = crate::generate::prompt::entity_summary_prompt(entity, &config.wiki.language);
+                let prompt =
+                    crate::generate::prompt::entity_summary_prompt(entity, &config.wiki.language, plan.as_ref());
                 let messages = vec![Message::user(prompt)];
                 match provider.complete(&messages).await {
                     Ok(summary) => entity.summary = Some(summary.trim().to_string()),
@@ -98,24 +104,39 @@ pub async fn run_generation(
     }
 
     // 3. 并行生成 Knowledge Card
-    let card_gen = CardGenerator::new(&provider, config.llm.max_concurrent, config.wiki.language.clone());
+    let card_gen = CardGenerator::new(
+        &provider,
+        config.llm.max_concurrent,
+        config.wiki.language.clone(),
+        plan.clone(),
+    );
     let cards = card_gen
         .generate_all_cards(&chunks)
         .await?;
     tracing::info!("生成进度: 60% - 知识卡片生成完成，共 {} 个卡片", cards.len());
 
-    // 4. 串行生成 Wiki 页面
-    let wiki_gen = WikiGenerator::new(&provider);
-    let mut documents = Vec::with_capacity(chunks.len());
+    // 4. 按语言独立生成 Wiki 页面（卡片仅主语言生成一次，各语言页面复用主语言卡片摘要）
+    let languages = collect_languages(config);
+    let wiki_gen = WikiGenerator::new(&provider, plan.clone());
+    let mut documents = Vec::with_capacity(chunks.len() * languages.len());
 
-    for (i, chunk) in chunks.iter().enumerate() {
-        let card_summary = cards.get(i).map(|c| c.summary.as_str()).unwrap_or("");
-        match wiki_gen
-            .generate_wiki_page(chunk, card_summary, config)
-            .await
-        {
-            Ok(doc) => documents.push(doc),
-            Err(e) => tracing::warn!("跳过模块 {:?} 的 Wiki 页面生成: {}", chunk.module_path, e),
+    for lang in &languages {
+        let mut lang_cfg = config.clone();
+        lang_cfg.wiki.language = lang.clone();
+        for (i, chunk) in chunks.iter().enumerate() {
+            let card_summary = cards.get(i).map(|c| c.summary.as_str()).unwrap_or("");
+            match wiki_gen
+                .generate_wiki_page(chunk, card_summary, &lang_cfg)
+                .await
+            {
+                Ok(doc) => documents.push(doc),
+                Err(e) => tracing::warn!(
+                    "跳过模块 {:?} 的 Wiki 页面生成 ({}): {}",
+                    chunk.module_path,
+                    lang,
+                    e
+                ),
+            }
         }
     }
     tracing::info!("生成进度: 90% - Wiki 页面生成完成，共 {} 个页面", documents.len());
@@ -134,6 +155,19 @@ pub async fn run_generation(
             Ok(arch) => documents.push(arch),
             Err(e) => tracing::warn!("架构概览生成跳过: {}", e),
         }
+    }
+
+    // 5.5 数据库 Schema 文档（无 .sql 文件时内部跳过 LLM）
+    match schema::generate_schema_documents(&provider, config, plan.as_ref()).await {
+        Ok(mut schema_docs) => documents.append(&mut schema_docs),
+        Err(e) => tracing::warn!("数据库 Schema 文档生成跳过: {}", e),
+    }
+
+    // 6. 按计划文档白名单过滤（严格只输出列出的页面）
+    if let Some(whitelist) = plan.as_ref().and_then(|p| p.whitelist.as_ref()) {
+        let allowed: std::collections::HashSet<&str> =
+            whitelist.iter().map(|d| d.title.as_str()).collect();
+        documents.retain(|d| allowed.contains(d.title.as_str()));
     }
 
     let elapsed = start.elapsed();
@@ -195,25 +229,50 @@ pub async fn run_generation_filtered(
     // 2. 创建 LLM Provider
     let provider = create_provider(config)?;
 
+    // 2.5 解析 wiki_plan.yaml 生效计划（禁用或文件缺失 → None；坏文件中断）
+    let plan = crate::config::plan::resolve_plan(config)?;
+
     // 3. 并行生成 Knowledge Card（仅变更块）
-    let card_gen = CardGenerator::new(&provider, config.llm.max_concurrent, config.wiki.language.clone());
+    let card_gen = CardGenerator::new(
+        &provider,
+        config.llm.max_concurrent,
+        config.wiki.language.clone(),
+        plan.clone(),
+    );
     let cards = card_gen
         .generate_all_cards(&chunks)
         .await?;
 
-    // 4. 串行生成 Wiki 页面（仅变更块）
-    let wiki_gen = WikiGenerator::new(&provider);
-    let mut documents = Vec::with_capacity(chunks.len());
+    // 4. 按语言独立生成 Wiki 页面（仅变更块；卡片仅主语言生成一次，各语言页面复用主语言卡片摘要）
+    let languages = collect_languages(config);
+    let wiki_gen = WikiGenerator::new(&provider, plan.clone());
+    let mut documents = Vec::with_capacity(chunks.len() * languages.len());
 
-    for (i, chunk) in chunks.iter().enumerate() {
-        let card_summary = cards.get(i).map(|c| c.summary.as_str()).unwrap_or("");
-        match wiki_gen
-            .generate_wiki_page(chunk, card_summary, config)
-            .await
-        {
-            Ok(doc) => documents.push(doc),
-            Err(e) => tracing::warn!("跳过变更模块 {:?} 的 Wiki 页面生成: {}", chunk.module_path, e),
+    for lang in &languages {
+        let mut lang_cfg = config.clone();
+        lang_cfg.wiki.language = lang.clone();
+        for (i, chunk) in chunks.iter().enumerate() {
+            let card_summary = cards.get(i).map(|c| c.summary.as_str()).unwrap_or("");
+            match wiki_gen
+                .generate_wiki_page(chunk, card_summary, &lang_cfg)
+                .await
+            {
+                Ok(doc) => documents.push(doc),
+                Err(e) => tracing::warn!(
+                    "跳过变更模块 {:?} 的 Wiki 页面生成 ({}): {}",
+                    chunk.module_path,
+                    lang,
+                    e
+                ),
+            }
         }
+    }
+
+    // 5. 按计划文档白名单过滤（严格只输出列出的页面）
+    if let Some(whitelist) = plan.as_ref().and_then(|p| p.whitelist.as_ref()) {
+        let allowed: std::collections::HashSet<&str> =
+            whitelist.iter().map(|d| d.title.as_str()).collect();
+        documents.retain(|d| allowed.contains(d.title.as_str()));
     }
 
     let elapsed = start.elapsed();
@@ -228,4 +287,29 @@ pub async fn run_generation_filtered(
         documents,
         generation_stats: stats,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::schema::WikiSection;
+
+    #[test]
+    fn test_collect_languages_default_single() {
+        let config = WikiConfig::default();
+        assert_eq!(collect_languages(&config), vec!["zh"]);
+    }
+
+    #[test]
+    fn test_collect_languages_with_expand() {
+        let config = WikiConfig {
+            wiki: WikiSection {
+                language: "zh".into(),
+                expand_languages: vec!["en".into(), "ja".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(collect_languages(&config), vec!["zh", "en", "ja"]);
+    }
 }

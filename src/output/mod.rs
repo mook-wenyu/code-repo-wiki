@@ -12,45 +12,66 @@ use crate::model::{KnowledgeCard, KnowledgeGraph, WikiDocument};
 
 use self::markdown::write_document;
 
+/// 生效的 wiki 语言列表（主语言 + 扩展语言），与生成层保持一致
+pub fn wiki_languages(config: &WikiConfig) -> Vec<String> {
+    crate::generate::collect_languages(config)
+}
+
 /// 渲染所有文档到输出目录
 ///
-/// 1. 创建输出目录结构
-/// 2. 渲染并写入 Wiki 页面
+/// 1. 创建输出目录结构（主语言 + 扩展语言）
+/// 2. 按文档自身语言渲染并写入 Wiki 页面（多语言独立生成，不再按语言循环复制）
 /// 3. 渲染并写入 Knowledge Card
-/// 4. 生成目录页
+/// 4. 生成目录页与概览页（主语言）
 /// 5. 生成 Mermaid 关系图
+///
+/// `protected` 为人工修改保护集（路径字符串），命中路径跳过写盘。
 pub fn render_all(
     documents: &[WikiDocument],
     cards: &[KnowledgeCard],
     graph: &KnowledgeGraph,
     config: &WikiConfig,
+    protected: &std::collections::HashSet<String>,
 ) -> Result<()> {
     let output_dir = Path::new(&config.output.dir);
     let assets_dir = output_dir.join("assets");
-    let languages = if config.wiki.expand_languages.is_empty() {
-        vec![config.wiki.language.clone()]
-    } else {
-        let mut langs = vec![config.wiki.language.clone()];
-        langs.extend(config.wiki.expand_languages.iter().cloned());
-        langs
-    };
+    let languages = wiki_languages(config);
 
-    // 按语言创建目录
+    // 按语言创建目录（扩展语言无文档时也保留空目录，保持目录结构稳定）
     for lang in &languages {
         std::fs::create_dir_all(output_dir.join("wiki").join(lang))?;
         std::fs::create_dir_all(output_dir.join("cards").join(lang))?;
     }
     std::fs::create_dir_all(&assets_dir)?;
 
-    // 1. 写入 Wiki 页面（每种语言独立目录）
-    for lang in &languages {
-        for doc in documents {
-            let doc_cards: Vec<&KnowledgeCard> = cards
-                .iter()
-                .filter(|c| doc.module_path.iter().any(|p| c.module_name.contains(p)))
-                .collect();
-            write_document(doc, &doc_cards, output_dir, lang)?;
+    // 1. 写入 Wiki 页面（按文档自身语言分组写入对应目录）
+    for doc in documents {
+        // 路径计算与 markdown::write_document 保持一致（人工修改保护判定依据）
+        let wiki_path = if doc.kind == crate::model::DocumentKind::ArchitectureOverview {
+            output_dir.join("wiki").join(&doc.language).join("architecture.md")
+        } else {
+            output_dir
+                .join("wiki")
+                .join(&doc.language)
+                .join(markdown::wiki_file_name(doc))
+        };
+        if protected.contains(&wiki_path.to_string_lossy().to_string()) {
+            continue;
         }
+        let doc_cards: Vec<&KnowledgeCard> = cards
+            .iter()
+            .filter(|c| doc.module_path.iter().any(|p| c.module_name.contains(p)))
+            .collect();
+        write_document(doc, &doc_cards, output_dir, &doc.language)?;
+    }
+
+    // 1.5 写入 API 参考页（按模块分组的实体清单，每种语言独立目录）
+    for lang in &languages {
+        let api_doc = markdown::render_api_reference(graph);
+        std::fs::write(
+            output_dir.join("wiki").join(lang).join("api.md"),
+            api_doc.content,
+        )?;
     }
 
     // 2. 生成 overview.md（第一个文档作为概览，写入主语言目录）
@@ -84,6 +105,10 @@ pub fn render_all(
     std::fs::create_dir_all(&diagrams_dir)?;
     let mermaid_content = mermaid::render_module_dependency_graph(graph);
     std::fs::write(diagrams_dir.join("module-deps.mermaid"), mermaid_content)?;
+
+    // 5.1 模块级调用关系图（Calls 边按模块聚合）
+    let call_graph_content = mermaid::render_module_call_graph(graph);
+    std::fs::write(diagrams_dir.join("call-graph.mermaid"), call_graph_content)?;
 
     // 5. 生成交叉引用索引
     let crossref = crossref::CrossRefIndex::build(documents);

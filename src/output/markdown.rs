@@ -2,7 +2,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use crate::model::{DocumentKind, KnowledgeCard, WikiDocument};
+use crate::model::{DocumentKind, KnowledgeCard, KnowledgeGraph, WikiDocument};
 use crate::output::crossref::render_cite_link;
 
 /// 渲染 WikiDocument 为 Markdown 字符串
@@ -38,6 +38,63 @@ pub fn render_wiki_page(doc: &WikiDocument) -> String {
     output
 }
 
+/// 渲染 API 参考页（按模块分组，每实体一行）
+///
+/// 输出 `签名 — 文档注释 — 文件:行` 格式，供 api-ref 模板的页面使用。
+/// 只收录代码实体节点，跳过 project/module/file 容器节点。
+pub fn render_api_reference(graph: &KnowledgeGraph) -> WikiDocument {
+    let mut lines = vec!["# API 参考".to_string(), String::new()];
+
+    for module in &graph.modules {
+        lines.push(format!("## {}", module.name));
+        lines.push(String::new());
+        for nid in &module.node_ids {
+            let Some(node) = graph.graph.node_weight(*nid) else {
+                continue;
+            };
+            // 容器节点没有 API 形态，跳过
+            if matches!(
+                node.kind,
+                crate::model::NodeKind::Project
+                    | crate::model::NodeKind::Module
+                    | crate::model::NodeKind::File
+            ) {
+                continue;
+            }
+            // 签名优先，缺失时退回实体名
+            let signature = node.signature.as_deref().unwrap_or(node.name.as_str());
+            // 文档注释多行时只取首行，保持一行一实体
+            let doc = node
+                .doc_comment
+                .as_deref()
+                .map(|d| d.lines().next().unwrap_or(""))
+                .unwrap_or("");
+            let mut line = format!("- `{}` — {}", signature, doc);
+            // 文件:行定位（无行号信息时省略）
+            if let Some(file) = node.file_path.as_deref() {
+                if let Some((start, _)) = node.line_range {
+                    line.push_str(&format!(" — {}:{}", file, start));
+                } else {
+                    line.push_str(&format!(" — {}", file));
+                }
+            }
+            lines.push(line);
+        }
+        lines.push(String::new());
+    }
+
+    WikiDocument {
+        title: "API 参考".into(),
+        kind: DocumentKind::ApiReference,
+        content: lines.join("\n"),
+        language: String::new(),
+        module_path: vec![],
+        references: vec![],
+        last_updated: chrono::Utc::now().to_rfc3339(),
+        fingerprint: None,
+    }
+}
+
 /// 渲染 KnowledgeCard 为 Markdown（YAML frontmatter 格式）
 pub fn render_knowledge_card(card: &KnowledgeCard) -> String {
     let mut output = String::new();
@@ -64,6 +121,9 @@ pub fn render_knowledge_card(card: &KnowledgeCard) -> String {
             card.design_patterns.join(", ")
         ));
     }
+    if !card.tech_stack.is_empty() {
+        output.push_str(&format!("tech_stack: [{}]\n", card.tech_stack.join(", ")));
+    }
     output.push_str("---\n");
 
     // 内容
@@ -81,6 +141,25 @@ pub fn render_knowledge_card(card: &KnowledgeCard) -> String {
             ));
         }
         output.push('\n');
+    }
+
+    // 相关文件（来自 chunk 源文件列表，非 LLM 输出）
+    if !card.related_files.is_empty() {
+        output.push_str("## 相关文件\n\n");
+        for f in &card.related_files {
+            output.push_str(&format!("- `{}`\n", f));
+        }
+        output.push('\n');
+    }
+
+    // 编码规范
+    if let Some(spec) = &card.coding_spec {
+        output.push_str(&format!("## 编码规范\n\n{}\n\n", spec));
+    }
+
+    // 架构说明
+    if let Some(arch) = &card.architecture {
+        output.push_str(&format!("## 架构说明\n\n{}\n\n", arch));
     }
 
     // 待办事项
@@ -116,6 +195,8 @@ pub fn render_table_of_contents(documents: &[WikiDocument]) -> String {
             DocumentKind::TableOfContents => "目录",
             DocumentKind::KnowledgeCard => "知识卡片",
             DocumentKind::ModuleDoc => "模块文档",
+            DocumentKind::ApiReference => "API 参考",
+            DocumentKind::DatabaseSchema => "数据库 Schema",
         };
         output.push_str(&format!(
             "- [{}](wiki/{}.md) `[{}]` — {}\n",
@@ -129,10 +210,22 @@ pub fn render_table_of_contents(documents: &[WikiDocument]) -> String {
     output
 }
 
+/// 计算 Wiki 页面文件名
+///
+/// module_path 为空时用标题，标题中的路径分隔符与 Windows 非法字符（/ \ :）
+/// 替换为 '-'，避免生成嵌套目录或写盘失败（如 Database Schema 文档标题含路径）。
+pub fn wiki_file_name(doc: &WikiDocument) -> String {
+    if doc.module_path.is_empty() {
+        format!("{}.md", doc.title.replace(['/', '\\', ':'], "-"))
+    } else {
+        format!("{}.md", doc.module_path.join("_"))
+    }
+}
+
 /// 写文件到磁盘
 ///
-/// 将 WikiDocument 渲染后写入 `{output_dir}/wiki/{module_path}.md`，
-/// 关联的 Knowledge Card 写入 `{output_dir}/cards/{module_name}.md`。
+/// 将 WikiDocument 渲染后写入 `{output_dir}/wiki/{language}/{module_path}.md`，
+/// 关联的 Knowledge Card 写入 `{output_dir}/cards/{language}/{module_name}.md`。
 pub fn write_document(doc: &WikiDocument, cards: &[&KnowledgeCard], output_dir: &Path, language: &str) -> Result<()> {
     let wiki_dir = output_dir.join("wiki").join(language);
     let cards_dir = output_dir.join("cards").join(language);
@@ -143,12 +236,7 @@ pub fn write_document(doc: &WikiDocument, cards: &[&KnowledgeCard], output_dir: 
     let wiki_path = if doc.kind == DocumentKind::ArchitectureOverview {
         wiki_dir.join("architecture.md")
     } else {
-        let wiki_file_name = if doc.module_path.is_empty() {
-            format!("{}.md", doc.title)
-        } else {
-            format!("{}.md", doc.module_path.join("_"))
-        };
-        wiki_dir.join(&wiki_file_name)
+        wiki_dir.join(wiki_file_name(doc))
     };
     let content = render_wiki_page(doc);
     std::fs::write(&wiki_path, content)?;
@@ -174,6 +262,7 @@ mod tests {
             title: title.into(),
             kind: DocumentKind::WikiPage,
             content: format!("## 概述\n\n这是 {} 的文档。\n\n## 核心实体\n\n- `Foo` — 核心结构体", title),
+            language: "zh".into(),
             module_path: vec!["crate".into(), title.to_lowercase()],
             references: vec![Reference {
                 target_title: "bar".into(),
@@ -213,6 +302,10 @@ mod tests {
             dependents: vec![],
             design_patterns: vec!["Builder".into()],
             todo_notes: vec!["增加环境变量支持".into()],
+            related_files: vec!["src/config.rs".into()],
+            coding_spec: Some("遵循 rustfmt".into()),
+            tech_stack: vec!["serde".into()],
+            architecture: Some("分层".into()),
         };
 
         let output = render_knowledge_card(&card);
@@ -220,10 +313,17 @@ mod tests {
         assert!(output.contains("module_name: crate::config"));
         assert!(output.contains("dependencies: [serde]"));
         assert!(output.contains("design_patterns: [Builder]"));
+        assert!(output.contains("tech_stack: [serde]"));
         assert!(output.contains("## 摘要"));
         assert!(output.contains("配置管理模块"));
         assert!(output.contains("`Config`"));
         assert!(output.contains("增加环境变量支持"));
+        assert!(output.contains("## 相关文件"));
+        assert!(output.contains("src/config.rs"));
+        assert!(output.contains("## 编码规范"));
+        assert!(output.contains("遵循 rustfmt"));
+        assert!(output.contains("## 架构说明"));
+        assert!(output.contains("分层"));
     }
 
     #[test]
@@ -238,6 +338,52 @@ mod tests {
     }
 
     #[test]
+    fn test_render_api_reference() {
+        // 构造含容器节点 + 实体的图
+        let mut g = petgraph::stable_graph::StableDiGraph::<
+            crate::model::CodeNode,
+            crate::model::CodeEdge,
+        >::new();
+        let file_id = g.add_node(crate::model::CodeNode {
+            id: petgraph::stable_graph::NodeIndex::new(0),
+            kind: crate::model::NodeKind::File,
+            name: "config.rs".into(),
+            file_path: Some("src/config.rs".into()),
+            line_range: None,
+            doc_comment: None,
+            signature: None,
+            module_path: vec!["crate".into(), "config".into()],
+        });
+        let fn_id = g.add_node(crate::model::CodeNode {
+            id: petgraph::stable_graph::NodeIndex::new(1),
+            kind: crate::model::NodeKind::Function,
+            name: "load".into(),
+            file_path: Some("src/config.rs".into()),
+            line_range: Some((12, 20)),
+            doc_comment: Some("加载配置\n\n多行注释".into()),
+            signature: Some("pub fn load(path: &str) -> Result<Config>".into()),
+            module_path: vec!["crate".into(), "config".into()],
+        });
+        let graph = KnowledgeGraph {
+            graph: g,
+            modules: vec![crate::model::ModuleCluster {
+                name: "crate::config".into(),
+                node_ids: vec![file_id, fn_id],
+                cohesion: 0.8,
+                coupling: 0.2,
+                description: None,
+            }],
+        };
+
+        let doc = render_api_reference(&graph);
+        assert_eq!(doc.kind, DocumentKind::ApiReference);
+        // 容器节点被跳过，只输出函数实体
+        assert!(doc.content.contains("## crate::config"));
+        assert!(doc.content.contains("- `pub fn load(path: &str) -> Result<Config>` — 加载配置 — src/config.rs:12"));
+        assert!(!doc.content.contains("config.rs` —"));
+    }
+
+    #[test]
     fn test_write_document_roundtrip() {
         let doc = make_test_doc("TestModule");
         let card = KnowledgeCard {
@@ -249,6 +395,10 @@ mod tests {
             dependents: vec![],
             design_patterns: vec![],
             todo_notes: vec![],
+            related_files: vec![],
+            coding_spec: None,
+            tech_stack: vec![],
+            architecture: None,
         };
 
         let dir = std::env::temp_dir().join("repo-wiki-test-markdown");

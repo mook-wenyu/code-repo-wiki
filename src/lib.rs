@@ -38,15 +38,117 @@ fn get_global_runtime() -> &'static Arc<Runtime> {
     RT.get_or_init(|| Arc::new(Runtime::new().expect("创建 tokio Runtime 失败")))
 }
 
-/// 运行完整的分析流水线（配置文件路径）
-pub fn run_pipeline(config_path: &Path) -> anyhow::Result<AnalysisResult> {
+/// 加载配置，并用 CLI 传入的 output 路径覆盖配置文件中的 output.dir
+///
+/// output.dir 是相对路径（默认 .repo-wiki），覆盖后渲染、搜索索引、状态目录
+/// 等所有下游引用自然指向新目录。
+///
+/// 同时消费 wiki_plan.yaml 的 scope_override：生效计划存在且提供 scope 时
+/// 覆盖 config.scope（plan.enabled=false 或文件缺失时不影响）。
+fn load_config_with_output(config_path: &Path, output: Option<&Path>) -> anyhow::Result<config::schema::WikiConfig> {
     let config = config::load_config(config_path)?;
+    let mut config = if let Some(out) = output {
+        let mut c = config;
+        c.output.dir = out.to_string_lossy().into_owned();
+        c
+    } else {
+        config
+    };
+    if let Some(plan) = crate::config::plan::resolve_plan(&config)?
+        && let Some(scope) = plan.scope_override
+    {
+        config.scope = scope;
+    }
+    Ok(config)
+}
+
+/// 加载保护集：旧 state 的 protected_docs + 新检测出的人工修改；force 时清空
+fn load_protection(
+    config: &config::schema::WikiConfig,
+    force: bool,
+) -> (std::collections::HashSet<String>, Option<incremental::state::GenerationState>) {
+    if force {
+        return (std::collections::HashSet::new(), None);
+    }
+    let state_dir = Path::new(&config.output.dir).join(".state");
+    let state = incremental::state::GenerationState::load(&state_dir).ok();
+    let mut protected: std::collections::HashSet<String> = state
+        .as_ref()
+        .map(|s| s.protected_docs.iter().cloned().collect())
+        .unwrap_or_default();
+    if let Some(s) = &state {
+        for p in s.detect_manually_modified() {
+            protected.insert(p);
+        }
+    }
+    (protected, state)
+}
+
+/// 保存生成状态：doc_fingerprints 只记录实际写盘的文档（跳过保护集），
+/// protected_docs 合并本次保护集写回
+fn save_generation_state(
+    config: &config::schema::WikiConfig,
+    insights: &[ingest::parser::FileInsight],
+    documents: &[model::WikiDocument],
+    protected: &std::collections::HashSet<String>,
+    commit_hash: &str,
+) {
+    let output_dir = Path::new(&config.output.dir);
+    let state_dir = output_dir.join(".state");
+    if let Ok(mut state) = incremental::state::GenerationState::from_insights(insights, commit_hash) {
+        let mut protected_docs: Vec<String> = protected.iter().cloned().collect();
+        protected_docs.sort();
+        state.protected_docs = protected_docs;
+        if let Ok(fps) = incremental::state::GenerationState::record_doc_fingerprints(
+            documents,
+            output_dir,
+            &output::wiki_languages(config),
+        ) {
+            state.doc_fingerprints = fps.into_iter().filter(|(p, _)| !protected.contains(p)).collect();
+        }
+        let _ = state.save(&state_dir);
+    }
+}
+
+/// 流水线进度事件（供 CLI --progress-json 与插件进度展示使用）
+#[derive(Debug, Clone, Copy)]
+pub struct ProgressEvent {
+    /// 阶段名：scanning/analyzing/chunking/cards/wiki/output/index/done
+    pub stage: &'static str,
+    /// 进度百分比（0-100）
+    pub percent: u8,
+}
+
+/// 运行完整的分析流水线（配置文件路径）
+///
+/// `output` 非空时覆盖配置文件中的 output.dir（对应 CLI 的 --output 参数），
+/// 后续渲染、搜索索引、状态目录全部使用覆盖后的值。
+/// `force` 为 true 时清空人工修改保护集并覆盖所有文档（对应 CLI 的 --force）。
+pub fn run_pipeline(config_path: &Path, output: Option<&Path>, force: bool) -> anyhow::Result<AnalysisResult> {
+    run_pipeline_with_progress(config_path, output, force, &|_| {})
+}
+
+/// 运行完整的分析流水线，并在各阶段边界回调进度事件
+///
+/// 事件点：scanning 10 / analyzing 25 / chunking 30 / cards 60 / wiki 90 /
+/// output 95 / index 98 / done 100，对应扫描、分析、生成、渲染、索引、保存阶段。
+pub fn run_pipeline_with_progress(
+    config_path: &Path,
+    output: Option<&Path>,
+    force: bool,
+    on_progress: &dyn Fn(ProgressEvent),
+) -> anyhow::Result<AnalysisResult> {
+    let config = load_config_with_output(config_path, output)?;
     let _span = tracing::info_span!("pipeline", config = %config_path.display());
     let _enter = _span.enter();
     let start = std::time::Instant::now();
 
+    // 保护集：旧 state 的 protected_docs + 检测出的人工修改；force 时清空
+    let (protected, _old_state) = load_protection(&config, force);
+
     // Phase 1: 扫描
     let file_insights = ingest::scan_and_parse(&config)?;
+    on_progress(ProgressEvent { stage: "scanning", percent: 10 });
     if file_insights.is_empty() {
         bail!("未找到任何源文件");
     }
@@ -59,35 +161,35 @@ pub fn run_pipeline(config_path: &Path) -> anyhow::Result<AnalysisResult> {
     // Phase 2: 分析
     let graph = analysis::build_graph(&file_insights)?;
     let modules = analysis::detect_modules(&graph)?;
+    on_progress(ProgressEvent { stage: "analyzing", percent: 25 });
     stats.total_entities = graph.graph.node_count();
     stats.total_edges = graph.graph.edge_count();
     stats.modules_detected = modules.len();
 
     // Phase 3: 生成（需要 tokio 运行时）
+    on_progress(ProgressEvent { stage: "chunking", percent: 30 });
     let rt = get_global_runtime();
     let gen_output = rt.block_on(generate::run_generation(&graph, &file_insights, &config))?;
+    on_progress(ProgressEvent { stage: "cards", percent: 60 });
 
     // Phase 4: 输出
-    output::render_all(&gen_output.documents, &gen_output.cards, &graph, &config)?;
+    on_progress(ProgressEvent { stage: "wiki", percent: 90 });
+    output::render_all(&gen_output.documents, &gen_output.cards, &graph, &config, &protected)?;
+    on_progress(ProgressEvent { stage: "output", percent: 95 });
 
     // Phase 5: 构建搜索索引
     if config.search.enabled && let Err(e) = build_search_index(&graph, &file_insights, &config) {
         tracing::warn!("搜索索引构建失败（不影响主流程）: {}", e);
     }
+    on_progress(ProgressEvent { stage: "index", percent: 98 });
 
     // Phase 6: 保存增量状态（含文档指纹用于人工修改保护）
     if config.incremental.enabled {
         let head_hash = incremental::diff::get_head_commit_hash().unwrap_or_default();
-        if let Ok(mut state) = incremental::state::GenerationState::from_insights(&file_insights, &head_hash) {
-            let output_dir = std::path::Path::new(&config.output.dir);
-            if let Ok(doc_fps) = incremental::state::GenerationState::record_doc_fingerprints(&gen_output.documents, output_dir) {
-                state.doc_fingerprints = doc_fps;
-            }
-            let state_dir = output_dir.join(".state");
-            let _ = state.save(&state_dir);
-        }
+        save_generation_state(&config, &file_insights, &gen_output.documents, &protected, &head_hash);
     }
 
+    on_progress(ProgressEvent { stage: "done", percent: 100 });
     stats.generation_time_ms = start.elapsed().as_millis() as u64;
     tracing::info!("流水线完成: {} 个文件, {} 个实体, {} 条边, {} 个模块, 耗时 {}ms",
         stats.files_scanned, stats.total_entities, stats.total_edges,
@@ -101,10 +203,57 @@ pub fn run_pipeline(config_path: &Path) -> anyhow::Result<AnalysisResult> {
     })
 }
 
+/// 执行知识卡片操作（CLI card 子命令与 Qoder /knowledge 对等）
+pub fn run_card_command(config_path: &Path, action: &generate::card::CardAction) -> anyhow::Result<()> {
+    let config = load_config_with_output(config_path, None)?;
+    // 编辑类动作要求卡片已存在：先校验（错误信息优先于 LLM API Key 检查）
+    match action {
+        generate::card::CardAction::Generate { .. } => {}
+        generate::card::CardAction::Modify { module, .. }
+        | generate::card::CardAction::Supplement { module, .. }
+        | generate::card::CardAction::Rewrite { module, .. } => {
+            if generate::card::read_card(&config, module)?.is_none() {
+                anyhow::bail!("模块 {module} 的卡片不存在，请先运行 `repo-wiki generate` 全量生成");
+            }
+        }
+    }
+    let provider = generate::create_provider(&config)?;
+    let rt = get_global_runtime();
+    match action {
+        generate::card::CardAction::Generate { module } => {
+            rt.block_on(generate::card::generate_module_card(&provider, &config, module))
+        }
+        generate::card::CardAction::Modify { module, instruction, references } => {
+            rt.block_on(generate::card::edit_card(
+                &provider, &config, module, instruction, references,
+                generate::card::CardEditMode::Modify,
+            ))
+        }
+        generate::card::CardAction::Supplement { module, instruction, references } => {
+            rt.block_on(generate::card::edit_card(
+                &provider, &config, module, instruction, references,
+                generate::card::CardEditMode::Supplement,
+            ))
+        }
+        generate::card::CardAction::Rewrite { module, instruction, references } => {
+            rt.block_on(generate::card::edit_card(
+                &provider, &config, module, instruction, references,
+                generate::card::CardEditMode::Rewrite,
+            ))
+        }
+    }
+}
+
 /// 运行增量更新流水线
-pub fn run_incremental_pipeline(config_path: &Path) -> anyhow::Result<AnalysisResult> {
-    let config = config::load_config(config_path)?;
+///
+/// `output` 非空时覆盖配置文件中的 output.dir（对应 CLI 的 --output 参数）。
+/// `force` 为 true 时清空人工修改保护集（Update 命令当前固定传 false）。
+pub fn run_incremental_pipeline(config_path: &Path, output: Option<&Path>, force: bool) -> anyhow::Result<AnalysisResult> {
+    let config = load_config_with_output(config_path, output)?;
     let start = std::time::Instant::now();
+
+    // 保护集必须在增量分析之前加载（增量分析内部会重写 state 文件）
+    let (protected, _old_state) = load_protection(&config, force);
 
     // Phase 1: 扫描
     let file_insights = ingest::scan_and_parse(&config)?;
@@ -116,7 +265,8 @@ pub fn run_incremental_pipeline(config_path: &Path) -> anyhow::Result<AnalysisRe
     // 检查增量变更
     let inc_result = incremental::run_incremental_update(&file_insights, &graph, &config)?;
 
-    if inc_result.affected_modules.is_empty() {
+    // 回退全量时 changed_files 非空但 affected_modules 为空，仅凭 changed_files 判断是否跳过
+    if inc_result.changed_files.is_empty() {
         tracing::info!("无变更，跳过生成");
         let stats = AnalysisStats {
             files_scanned: file_insights.len(),
@@ -139,7 +289,7 @@ pub fn run_incremental_pipeline(config_path: &Path) -> anyhow::Result<AnalysisRe
     )?;
 
     // Phase 4: 全量输出（保持索引一致）
-    output::render_all(&gen_output.documents, &gen_output.cards, &graph, &config)?;
+    output::render_all(&gen_output.documents, &gen_output.cards, &graph, &config, &protected)?;
 
     // Phase 4b: 清理已删除文件对应的输出文档
     let output_dir = Path::new(&config.output.dir).join("wiki").join("modules");
@@ -156,6 +306,12 @@ pub fn run_incremental_pipeline(config_path: &Path) -> anyhow::Result<AnalysisRe
     // Phase 5: 增量更新搜索索引
     if config.search.enabled && let Err(e) = update_search_index_incremental(&graph, &file_insights, &config, &changed_set) {
         tracing::warn!("搜索索引增量更新失败: {}", e);
+    }
+
+    // Phase 6: 保存最终状态（protected_docs 合并写回；doc_fingerprints 只记录实际写盘的文档）
+    if config.incremental.enabled {
+        let head_hash = incremental::diff::get_head_commit_hash().unwrap_or_default();
+        save_generation_state(&config, &file_insights, &gen_output.documents, &protected, &head_hash);
     }
 
     let stats = AnalysisStats {
@@ -179,13 +335,13 @@ pub fn run_incremental_pipeline(config_path: &Path) -> anyhow::Result<AnalysisRe
 pub fn run_watch(config_path: &Path) -> anyhow::Result<()> {
     let config = config::load_config(config_path)?;
     tracing::info!("首次全量生成...");
-    run_pipeline(config_path)?;
+    run_pipeline(config_path, None, false)?;
     tracing::info!("全量生成完成，开始监听文件变更...");
 
     let config_path = config_path.to_path_buf();
     incremental::watch::run_watch_loop(&config, move || {
         tracing::info!("检测到文件变更，触发增量更新...");
-        if let Err(e) = run_incremental_pipeline(&config_path) {
+        if let Err(e) = run_incremental_pipeline(&config_path, None, false) {
             tracing::error!("增量更新失败: {}", e);
         } else {
             tracing::info!("增量更新完成");

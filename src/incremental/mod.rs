@@ -16,6 +16,9 @@ use self::impact::propagate_impact;
 use self::state::GenerationState;
 use crate::config::schema::IncrementalStrategy;
 
+/// diff 行数超过该上限时回退全量生成（防止超大变更集导致 LLM 成本失控）
+const MAX_DIFF_LINES: usize = 10_000;
+
 /// 增量更新结果
 pub struct IncrementalResult {
     /// 实际发生变更的文件路径（用于 LLM 生成过滤）
@@ -46,7 +49,7 @@ pub fn run_incremental_update(
     // 按策略分发：GitDiff 或 FileWatch
     let (changed_files, affected_modules) = match config.incremental.strategy {
         IncrementalStrategy::GitDiff => {
-            run_git_diff_incremental(insights, graph, config, &state_dir)?
+            run_git_diff_incremental(insights, graph, config, &state_dir, Path::new("."))?
         }
         IncrementalStrategy::FileWatch => {
             run_file_watch_incremental(insights, graph, config, &state_dir)?
@@ -55,28 +58,47 @@ pub fn run_incremental_update(
     Ok(IncrementalResult { changed_files, affected_modules })
 }
 
+/// 回退全量生成：changed_files 为所有源文件，affected_modules 为空
+/// （affected_modules 只用于日志与生成过滤的模块维度，全量回退按文件维度处理）
+fn fallback_to_full(insights: &[FileInsight]) -> (Vec<std::path::PathBuf>, Vec<String>) {
+    let all: Vec<std::path::PathBuf> = insights.iter().map(|i| i.path.clone()).collect();
+    (all, Vec::new())
+}
+
 /// Git diff 策略的增量更新
 fn run_git_diff_incremental(
     insights: &[FileInsight],
     graph: &KnowledgeGraph,
     config: &WikiConfig,
     state_dir: &Path,
+    repo_path: &Path,
 ) -> Result<(Vec<std::path::PathBuf>, Vec<String>)> {
     // 1. 分析 Git diff
     let last_commit_hash = GenerationState::load(state_dir)
         .ok()
         .and_then(|s| s.last_commit_hash);
-    let diff_result = match analyze_git_diff(Path::new("."), last_commit_hash.as_deref()) {
+    let diff_result = match analyze_git_diff(repo_path, last_commit_hash.as_deref()) {
         Ok(result) => result,
         Err(e) => {
-            tracing::warn!("Git diff 分析失败，跳过增量更新: {}", e);
-            return Ok((Vec::new(), Vec::new()));
+            // 非 Git 仓库：无法做增量，回退全量生成
+            tracing::warn!("Git diff 分析失败，回退全量生成: {}", e);
+            return Ok(fallback_to_full(insights));
         }
     };
 
     if diff_result.added.is_empty() && diff_result.modified.is_empty() && diff_result.deleted.is_empty() {
         tracing::info!("无文件变更，跳过更新");
         return Ok((Vec::new(), Vec::new()));
+    }
+
+    if diff_result.added_lines + diff_result.deleted_lines > MAX_DIFF_LINES {
+        tracing::warn!(
+            "diff 行数超过上限 {}（新增 {} 行, 删除 {} 行），回退全量生成",
+            MAX_DIFF_LINES,
+            diff_result.added_lines,
+            diff_result.deleted_lines
+        );
+        return Ok(fallback_to_full(insights));
     }
 
     tracing::info!(
@@ -139,4 +161,96 @@ fn run_file_watch_incremental(
 
     tracing::info!("FileWatch 增量分析完成: {} 个模块受影响", affected_modules.len());
     Ok((changed_files, affected_modules))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::schema::IncrementalSection;
+
+    fn make_insight(path: &str) -> FileInsight {
+        FileInsight {
+            path: std::path::PathBuf::from(path),
+            language: "rust".into(),
+            entities: Vec::new(),
+            imports: Vec::new(),
+            doc_comments: Vec::new(),
+            source: String::new(),
+        }
+    }
+
+    fn make_config() -> WikiConfig {
+        WikiConfig {
+            incremental: IncrementalSection {
+                enabled: true,
+                strategy: IncrementalStrategy::GitDiff,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    /// 非 Git 目录：GitDiff 增量回退全量（changed_files = 所有 insights 路径）
+    #[test]
+    fn test_git_diff_incremental_non_git_falls_back_full() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_test_non_git_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let insights = vec![make_insight("src/a.rs"), make_insight("src/b.rs")];
+        let graph = KnowledgeGraph::default();
+        let config = make_config();
+        let state_dir = dir.join(".state");
+
+        let (changed, affected) =
+            run_git_diff_incremental(&insights, &graph, &config, &state_dir, &dir).unwrap();
+        assert_eq!(changed.len(), 2);
+        assert!(changed.iter().all(|p| insights.iter().any(|i| &i.path == p)));
+        assert!(affected.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 行数超限：回退全量
+    #[test]
+    fn test_git_diff_incremental_line_limit_falls_back_full() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_test_line_limit_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = git2::Repository::init(&dir).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "test").unwrap();
+        cfg.set_str("user.email", "test@test.com").unwrap();
+
+        // 第一次提交：单文件 2 行
+        std::fs::write(dir.join("a.txt"), "x\ny\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_all(["*"], git2::IndexAddOption::DEFAULT, None).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("test", "test@test.com").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+
+        // 第二次提交：超上限行数（超过 MAX_DIFF_LINES 行的内容）
+        let big = "x\n".repeat(MAX_DIFF_LINES + 1);
+        std::fs::write(dir.join("a.txt"), big).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_all(["*"], git2::IndexAddOption::DEFAULT, None).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "big", &tree, &[&repo.head().unwrap().peel_to_commit().unwrap()]).unwrap();
+
+        let insights = vec![make_insight("a.txt")];
+        let graph = KnowledgeGraph::default();
+        let config = make_config();
+        let state_dir = dir.join(".state");
+
+        let (changed, affected) =
+            run_git_diff_incremental(&insights, &graph, &config, &state_dir, &dir).unwrap();
+        assert_eq!(changed.len(), 1);
+        assert!(affected.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

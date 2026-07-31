@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::Result;
 
+use crate::config::plan::ResolvedPlan;
 use crate::config::schema::WikiConfig;
 use crate::generate::chunk::Chunk;
 use crate::generate::llm::LlmProvider;
@@ -16,14 +17,19 @@ use crate::model::{DocumentKind, KnowledgeGraph, Reference, WikiDocument};
 pub struct WikiGenerator<'a, P: LlmProvider> {
     provider: &'a P,
     call_count: AtomicUsize,
+    /// 生效计划（用于 notes 注入与模板选择，None 表示未启用）
+    plan: Option<ResolvedPlan>,
 }
 
 impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
     /// 使用指定的 LLM Provider 创建 WikiGenerator
-    pub fn new(provider: &'a P) -> Self {
+    ///
+    /// plan 为解析后的生效计划（无计划时传 None）。
+    pub fn new(provider: &'a P, plan: Option<ResolvedPlan>) -> Self {
         Self {
             provider,
             call_count: AtomicUsize::new(0),
+            plan,
         }
     }
 
@@ -50,7 +56,7 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
         self.call_count.fetch_add(1, Ordering::Relaxed);
 
         let language = &config.wiki.language;
-        let messages = prompt::wiki_page_prompt(chunk, card_summary, language);
+        let messages = prompt::wiki_page_prompt(chunk, card_summary, language, self.plan.as_ref());
         let content = self.provider.complete(&messages).await?;
         let now = chrono::Utc::now().to_rfc3339();
 
@@ -58,6 +64,7 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
             title: chunk.module_path.last().cloned().unwrap_or_default(),
             kind: DocumentKind::WikiPage,
             content,
+            language: config.wiki.language.clone(),
             module_path: chunk.module_path.clone(),
             references: build_references(chunk),
             last_updated: now,
@@ -77,7 +84,8 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
         self.call_count.fetch_add(1, Ordering::Relaxed);
 
         let language = &config.wiki.language;
-        let messages = prompt::architecture_overview_prompt(&graph.modules, graph, language);
+        let messages =
+            prompt::architecture_overview_prompt(&graph.modules, graph, language, self.plan.as_ref());
         let content = self.provider.complete(&messages).await?;
         let now = chrono::Utc::now().to_rfc3339();
 
@@ -85,6 +93,7 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
             title: "架构概览".into(),
             kind: DocumentKind::ArchitectureOverview,
             content,
+            language: config.wiki.language.clone(),
             module_path: vec![],
             references: output
                 .cards
@@ -152,9 +161,8 @@ mod tests {
     #[tokio::test]
     async fn test_skip_empty_chunk() {
         let provider = MockProvider::new();
-        let generator = WikiGenerator::new(&provider);
+        let generator = WikiGenerator::new(&provider, None);
         let config = WikiConfig::default();
-
         let empty_chunk = Chunk {
             module_path: vec![],
             entities: vec![],
@@ -180,5 +188,39 @@ mod tests {
         let refs = build_references(&chunk);
         assert_eq!(refs.len(), 2);
         assert_eq!(refs[0].target_title, "tokio");
+    }
+
+    fn make_hints_plan(title: &str) -> ResolvedPlan {
+        use crate::config::plan::PlanDocument;
+        ResolvedPlan {
+            whitelist: Some(vec![PlanDocument {
+                title: title.into(),
+                goal: String::new(),
+                parent: None,
+                include_patterns: vec![],
+                exclude_patterns: vec![],
+                hints: Some("重点写服务启动流程".into()),
+            }]),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_whitelist_hints_injected_on_title_match() {
+        // make_test_chunk（src/server.rs）的模块路径为 ["src"]，模块名为 "src"
+        let chunk = make_test_chunk();
+        let plan = make_hints_plan("src");
+        let messages = prompt::wiki_page_prompt(&chunk, "摘要", "zh", Some(&plan));
+        let user = &messages[1].content;
+        assert!(user.contains("写作提示（用户指定）: 重点写服务启动流程"));
+    }
+
+    #[test]
+    fn test_whitelist_hints_not_injected_on_title_mismatch() {
+        let chunk = make_test_chunk();
+        let plan = make_hints_plan("other");
+        let messages = prompt::wiki_page_prompt(&chunk, "摘要", "zh", Some(&plan));
+        let user = &messages[1].content;
+        assert!(!user.contains("写作提示"));
     }
 }

@@ -1,25 +1,39 @@
 //! wiki_plan.yaml 前置干预配置系统
 //!
 //! 用户通过 wiki_plan.yaml 文件控制 LLM 生成的内容方向，
-//! 包括全局 notes、模块粒度的 template 选择和文档白名单。
+//! 包括全局 notes、Knowledge Card 专用 notes、模块粒度的 template 选择、
+//! 文档白名单和扫描范围覆盖。
 //!
-//! 该文件仅在 config.plan.enabled=true 时生效。
+//! 该文件仅在 config.plan.enabled=true 时生效，路径相对于项目根
+//! （当前工作目录）解析，默认 "wiki_plan.yaml"。
 
-use std::path::Path;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-/// wiki_plan.yaml 的根结构
+/// wiki_plan.yaml 根结构（对齐 Qoder 官方语义，平铺）
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WikiPlan {
+    /// 格式版本（当前仅支持 1，缺省视为 1）
+    #[serde(default)]
+    pub version: Option<u32>,
     /// 全局 notes：追加到所有 system prompt 末尾
     pub notes: Option<String>,
-    /// 按模块模式的细致规划
+    /// Knowledge Card 专用 notes：追加到卡片 prompt 末尾
+    pub knowledgecard: Option<PlanKnowledgeCard>,
+    /// 扫描范围覆盖（优先于 config.toml scope）
+    pub scope: Option<crate::config::schema::ScopeSection>,
+    /// 按模块模式的细致规划（项目扩展）
     #[serde(default)]
     pub sections: Vec<PlanSection>,
-    /// 要生成的文档白名单（空 = 全部生成）
+    /// 文档白名单（提供时严格只输出列出的页面）
     #[serde(default)]
     pub documents: Vec<PlanDocument>,
+}
+
+/// knowledgecard 节
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanKnowledgeCard {
+    pub notes: Option<String>,
 }
 
 /// 模块级别的规划
@@ -59,11 +73,19 @@ pub struct PlanDocument {
     /// 排除的文件模式（glob）
     #[serde(default)]
     pub exclude_patterns: Vec<String>,
+    /// 针对该文档的额外生成提示（注入该文档的页面 prompt）
+    #[serde(default)]
+    pub hints: Option<String>,
 }
 
-/// 从输出目录加载 wiki_plan.yaml
-pub fn load_plan(output_dir: &Path) -> Result<Option<WikiPlan>> {
-    let plan_path = output_dir.join("wiki_plan.yaml");
+/// 从项目根（当前工作目录）加载 wiki_plan.yaml
+///
+/// path 为相对项目根的路径（默认 "wiki_plan.yaml"）。
+/// 文件缺失返回 Ok(None)；读取/解析失败或版本不受支持返回 Err。
+pub fn load_plan(path: &str) -> Result<Option<WikiPlan>> {
+    let plan_path = std::env::current_dir()
+        .with_context(|| "获取当前工作目录失败")?
+        .join(path);
     if !plan_path.exists() {
         return Ok(None);
     }
@@ -71,5 +93,54 @@ pub fn load_plan(output_dir: &Path) -> Result<Option<WikiPlan>> {
         .with_context(|| format!("读取 wiki_plan.yaml 失败: {}", plan_path.display()))?;
     let plan: WikiPlan = serde_yaml::from_str(&content)
         .with_context(|| format!("解析 wiki_plan.yaml 失败: {}", plan_path.display()))?;
+    // 版本校验：缺省视为 1，其余版本一律拒绝，防止未来不兼容格式静默误读
+    match plan.version {
+        Some(1) | None => {}
+        Some(v) => bail!("wiki_plan.yaml 版本 {} 不受支持（当前支持: 1）", v),
+    }
     Ok(Some(plan))
+}
+
+/// 解析后的生效计划（生成流水线唯一消费视图）
+///
+/// 生成层不直接接触 wiki_plan.yaml 文件，只依赖本结构，
+/// 后续切换配置来源（如远端 plan）时无需改动生成代码。
+#[derive(Debug, Clone, Default)]
+pub struct ResolvedPlan {
+    /// 全局 notes：追加到所有 system prompt 末尾
+    pub notes: Option<String>,
+    /// Knowledge Card 专用 notes：追加到卡片 prompt 末尾
+    pub card_notes: Option<String>,
+    /// 文档白名单（Some 时严格只输出列出的页面）
+    pub whitelist: Option<Vec<PlanDocument>>,
+    /// 按模块模式的细致规划
+    pub sections: Vec<PlanSection>,
+    /// 扫描范围覆盖（优先于 config.toml scope）
+    pub scope_override: Option<crate::config::schema::ScopeSection>,
+}
+
+/// 解析生效计划
+///
+/// - config.plan.enabled == false → Ok(None)
+/// - 计划文件缺失 → Ok(None)
+/// - 文件存在但解析失败或版本不受支持 → Err（调用方应中断生成）
+pub fn resolve_plan(config: &crate::config::schema::WikiConfig) -> Result<Option<ResolvedPlan>> {
+    if !config.plan.enabled {
+        return Ok(None);
+    }
+    let Some(plan) = load_plan(&config.plan.path)? else {
+        return Ok(None);
+    };
+    Ok(Some(ResolvedPlan {
+        notes: plan.notes,
+        card_notes: plan.knowledgecard.and_then(|kc| kc.notes),
+        // 空白名单等价于"全部生成"，统一折叠为 None 便于生成层判断
+        whitelist: if plan.documents.is_empty() {
+            None
+        } else {
+            Some(plan.documents)
+        },
+        sections: plan.sections,
+        scope_override: plan.scope,
+    }))
 }

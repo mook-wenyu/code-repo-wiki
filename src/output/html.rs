@@ -307,6 +307,7 @@ mod tests {
             title: "测试模块".to_string(),
             kind: crate::model::DocumentKind::WikiPage,
             content: "# 测试\n\nHello world.".to_string(),
+            language: "zh".to_string(),
             module_path: vec!["test".to_string()],
             references: vec![],
             last_updated: "2025-01-01".to_string(),
@@ -327,6 +328,10 @@ mod tests {
             dependents: vec![],
             design_patterns: vec!["工厂模式".to_string()],
             todo_notes: vec![],
+            related_files: vec![],
+            coding_spec: None,
+            tech_stack: vec![],
+            architecture: None,
         };
 
         let graph = KnowledgeGraph {

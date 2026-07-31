@@ -125,6 +125,51 @@ pub fn render_entity_graph(
     output
 }
 
+/// 渲染模块级调用关系图（节点=模块，边=跨模块 Calls 边聚合）
+///
+/// 遍历图中 Calls 边，源/目标实体映射到所属模块聚类，
+/// 模块间调用聚合为一条带调用次数的边；
+/// 未落入任何模块的实体与同模块调用不出现。
+pub fn render_module_call_graph(graph: &KnowledgeGraph) -> String {
+    // 实体节点 → 所属模块名
+    let mut node_module: std::collections::HashMap<NodeId, String> = std::collections::HashMap::new();
+    for module in &graph.modules {
+        for nid in &module.node_ids {
+            node_module.insert(*nid, module.name.clone());
+        }
+    }
+
+    // 跨模块 Calls 边按 (源模块, 目标模块) 聚合计数
+    let mut edge_counts: std::collections::HashMap<(String, String), usize> = std::collections::HashMap::new();
+    for edge in graph.graph.edge_references() {
+        if graph.graph[edge.id()].kind != EdgeKind::Calls {
+            continue;
+        }
+        let (Some(src), Some(tgt)) = (node_module.get(&edge.source()), node_module.get(&edge.target())) else {
+            continue;
+        };
+        if src == tgt {
+            continue;
+        }
+        *edge_counts.entry((src.clone(), tgt.clone())).or_insert(0) += 1;
+    }
+
+    let mut output = String::new();
+    output.push_str("graph TD\n");
+    let mut modules: HashSet<String> = HashSet::new();
+    for (src, tgt) in edge_counts.keys() {
+        modules.insert(src.clone());
+        modules.insert(tgt.clone());
+    }
+    for name in &modules {
+        output.push_str(&format!("    {}[\"{}\"]\n", sanitize_id(name), name));
+    }
+    for ((src, tgt), count) in &edge_counts {
+        output.push_str(&format!("    {} -->|{}| {}\n", sanitize_id(src), count, sanitize_id(tgt)));
+    }
+    output
+}
+
 /// 在 Mermaid 中标注循环依赖
 pub fn render_cycle_diagram(cycles: &[Vec<NodeId>], graph: &KnowledgeGraph) -> String {
     let mut output = String::new();
@@ -253,5 +298,95 @@ mod tests {
         let graph = make_test_graph();
         let output = render_cycle_diagram(&[], &graph);
         assert!(output.starts_with("graph TD"));
+    }
+
+    /// 构造 2 模块 3 实体 2 条跨模块调用边 + 1 条同模块调用边的小图
+    fn make_call_graph() -> KnowledgeGraph {
+        let mut g = StableDiGraph::<CodeNode, CodeEdge>::new();
+        let mut add_fn = |name: &str, module: &str| {
+            g.add_node(CodeNode {
+                id: NodeId::new(g.node_count()),
+                kind: NodeKind::Function,
+                name: name.into(),
+                file_path: None,
+                line_range: None,
+                doc_comment: None,
+                signature: None,
+                module_path: vec![module.into()],
+            })
+        };
+        let a1 = add_fn("a1", "alpha");
+        let b1 = add_fn("b1", "beta");
+        let b2 = add_fn("b2", "beta");
+        let c1 = add_fn("c1", "gamma");
+        let c2 = add_fn("c2", "gamma");
+        let mut add_call = |s: _, t: _| {
+            g.add_edge(
+                s,
+                t,
+                CodeEdge {
+                    id: petgraph::stable_graph::EdgeIndex::new(g.edge_count()),
+                    kind: EdgeKind::Calls,
+                    source: s,
+                    target: t,
+                    weight: 1.0,
+                    location: None,
+                },
+            )
+        };
+        add_call(a1, b1);
+        add_call(a1, b2);
+        add_call(c1, c2);
+
+        KnowledgeGraph {
+            graph: g,
+            modules: vec![
+                crate::model::ModuleCluster {
+                    name: "alpha".into(),
+                    node_ids: vec![a1],
+                    cohesion: 0.0,
+                    coupling: 0.0,
+                    description: None,
+                },
+                crate::model::ModuleCluster {
+                    name: "beta".into(),
+                    node_ids: vec![b1, b2],
+                    cohesion: 0.0,
+                    coupling: 0.0,
+                    description: None,
+                },
+                crate::model::ModuleCluster {
+                    name: "gamma".into(),
+                    node_ids: vec![c1, c2],
+                    cohesion: 0.0,
+                    coupling: 0.0,
+                    description: None,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn test_render_module_call_graph_aggregates_cross_module_calls() {
+        let graph = make_call_graph();
+        let output = render_module_call_graph(&graph);
+
+        assert!(output.starts_with("graph TD"));
+        // 两个参与跨模块调用的模块节点
+        assert!(output.contains("alpha[\"alpha\"]"));
+        assert!(output.contains("beta[\"beta\"]"));
+        // 两条跨模块调用聚合为一条带计数的边
+        assert!(output.contains("-->|2|"));
+        // 同模块调用不出现（gamma 模块不应出现在图中）
+        assert!(!output.contains("gamma"));
+        assert!(!output.contains("|1|"));
+    }
+
+    #[test]
+    fn test_render_module_call_graph_empty() {
+        let graph = KnowledgeGraph::default();
+        let output = render_module_call_graph(&graph);
+        assert!(output.starts_with("graph TD"));
+        assert_eq!(output, "graph TD\n");
     }
 }

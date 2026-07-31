@@ -1,9 +1,12 @@
 use std::path::{Path, PathBuf};
-use anyhow::Result;
+use anyhow::{Result, bail};
 use glob::Pattern;
 use ignore::WalkBuilder;
 
 use crate::config::schema::ScopeSection;
+
+/// 默认扫描文件数上限
+const MAX_FILES: usize = 10_000;
 
 const BINARY_EXTENSIONS: &[&str] = &[
     ".exe", ".dll", ".bin", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg",
@@ -44,7 +47,13 @@ impl Scanner {
     ///
     /// - 使用 `ignore::WalkBuilder` 处理 .gitignore
     /// - 按 scope.include 和 scope.exclude 的 glob 模式过滤
+    /// - 超过 MAX_FILES 个文件时返回错误
     pub fn scan(&self) -> Result<Vec<PathBuf>> {
+        self.scan_with_limit(MAX_FILES)
+    }
+
+    /// 带文件数上限的扫描（上限可配置，供测试覆盖超限分支）
+    fn scan_with_limit(&self, limit: usize) -> Result<Vec<PathBuf>> {
         let walker = WalkBuilder::new(&self.root).standard_filters(true).build();
         let mut files = Vec::new();
 
@@ -67,6 +76,9 @@ impl Scanner {
             let included = self.include.is_empty() || self.include.iter().any(|p| p.matches(&rel_str));
             let excluded = self.exclude.iter().any(|p| p.matches(&rel_str));
             if included && !excluded && !is_binary_extension(path) {
+                if files.len() >= limit {
+                    bail!("文件数超过上限 {limit}，请调整 scope.include/exclude 后重试");
+                }
                 files.push(path.to_path_buf());
             }
         }
@@ -91,5 +103,29 @@ mod tests {
         // smoke: scan current project dir, at least src/lib.rs should be found
         let files = scanner.scan().unwrap();
         assert!(files.iter().any(|p| p.to_string_lossy().contains("lib.rs")));
+    }
+
+    /// 文件数超限时应返回错误
+    #[test]
+    fn test_scan_with_limit_exceeds() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_test_scan_limit_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..4 {
+            std::fs::write(dir.join(format!("f{i}.txt")), "x").unwrap();
+        }
+
+        let scope = ScopeSection {
+            include: vec!["**/*.txt".to_string()],
+            exclude: vec![],
+        };
+        let scanner = Scanner::new(&dir, &scope);
+        assert!(scanner.scan_with_limit(3).is_err());
+
+        // 上限之内正常返回
+        let files = scanner.scan_with_limit(10).unwrap();
+        assert_eq!(files.len(), 4);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

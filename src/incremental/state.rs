@@ -21,6 +21,9 @@ pub struct GenerationState {
     /// 已生成文档路径 → SHA256 指纹（用于检测人工修改）
     #[serde(default)]
     pub doc_fingerprints: HashMap<String, String>,
+    /// 人工修改过的文档路径集合（保护集：下次自动更新不覆盖，直到 --force 清空）
+    #[serde(default)]
+    pub protected_docs: Vec<String>,
 }
 
 impl GenerationState {
@@ -94,6 +97,7 @@ impl GenerationState {
             file_fingerprints,
             module_fingerprints,
             doc_fingerprints: HashMap::new(),
+            protected_docs: Vec::new(),
             generated_at: chrono::Utc::now().to_rfc3339(),
         })
     }
@@ -111,21 +115,47 @@ impl GenerationState {
     }
 
     /// 记录所有已生成文档的 SHA256 指纹
-    pub fn record_doc_fingerprints(docs: &[crate::model::WikiDocument], output_dir: &Path) -> Result<HashMap<String, String>> {
+    ///
+    /// 路径与 render_all 实际写盘路径一致：`{output_dir}/wiki/{lang}/{file}.md`，
+    /// 文件名复用 output::markdown::wiki_file_name（ArchitectureOverview 特判写
+    /// architecture.md），languages 为主语言 + 扩展语言（与 output::wiki_languages 保持一致）。
+    pub fn record_doc_fingerprints(
+        docs: &[crate::model::WikiDocument],
+        output_dir: &Path,
+        languages: &[String],
+    ) -> Result<HashMap<String, String>> {
         let mut fps = HashMap::new();
-        for doc in docs {
-            let file_name = if doc.module_path.is_empty() {
-                format!("{}.md", doc.title)
-            } else {
-                format!("{}.md", doc.module_path.join("_"))
-            };
-            let doc_path = output_dir.join("wiki").join(&file_name);
-            if doc_path.exists() {
-                let fp = Self::compute_file_fingerprint(&doc_path)?;
-                fps.insert(doc_path.to_string_lossy().to_string(), fp);
+        for lang in languages {
+            for doc in docs {
+                let file_name = if doc.kind == crate::model::DocumentKind::ArchitectureOverview {
+                    "architecture.md".to_string()
+                } else {
+                    crate::output::markdown::wiki_file_name(doc)
+                };
+                let doc_path = output_dir.join("wiki").join(lang).join(&file_name);
+                if doc_path.exists() {
+                    let fp = Self::compute_file_fingerprint(&doc_path)?;
+                    fps.insert(doc_path.to_string_lossy().to_string(), fp);
+                }
             }
         }
         Ok(fps)
+    }
+
+    /// 比对磁盘文档与生成时指纹，返回人工修改的文档路径集合
+    ///
+    /// 磁盘文件不存在或指纹读取失败时不视为人工修改（跳过保护）。
+    pub fn detect_manually_modified(&self) -> Vec<String> {
+        self.doc_fingerprints
+            .iter()
+            .filter(|(path, fp)| {
+                Path::new(path).is_file()
+                    && Self::compute_file_fingerprint(Path::new(path))
+                        .map(|f| &f != *fp)
+                        .unwrap_or(false)
+            })
+            .map(|(path, _)| path.clone())
+            .collect()
     }
 
     /// 检查文件是否已变更
@@ -182,6 +212,7 @@ mod tests {
             },
             module_fingerprints: HashMap::new(),
             doc_fingerprints: HashMap::new(),
+            protected_docs: Vec::new(),
             generated_at: "2025-01-01T00:00:00Z".into(),
         };
 
@@ -217,6 +248,7 @@ mod tests {
             },
             module_fingerprints: HashMap::new(),
             doc_fingerprints: HashMap::new(),
+            protected_docs: Vec::new(),
             generated_at: String::new(),
         };
 
@@ -236,6 +268,7 @@ mod tests {
             file_fingerprints: HashMap::new(),
             module_fingerprints: HashMap::new(),
             doc_fingerprints: HashMap::new(),
+            protected_docs: Vec::new(),
             generated_at: String::new(),
         };
 

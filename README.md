@@ -51,15 +51,16 @@ AI 驱动的代码仓库 Wiki 自动生成工具。分析源码结构，通过 L
 
 | 命令 | 用途 |
 |------|------|
-| `generate` | 全量生成 Wiki 文档 |
-| `update` | 增量更新（基于 git diff）|
+| `generate` | 全量生成 Wiki 文档（支持 `-o` 输出覆盖、`--force` 强制重写、`--progress-json` 进度输出）|
+| `update` | 增量更新（基于 git diff，支持 `-o` 输出覆盖）|
 | `status` | 查看 Wiki 状态 |
 | `export` | 导出为 HTML |
 | `init` | 初始化配置文件 |
 | `watch` | 监听文件变更并自动更新 |
 | `search` | 搜索代码实体 |
+| `card` | 知识卡片操作（generate/modify/supplement/rewrite，对应 Qoder `/knowledge`）|
 | `install-to-opencode` | 注册为 OpenCode 插件 |
-| `uninstall-from-opencode` | 移除 OpenCode 插件 |
+| `uninstall-from-opencode` | 移除 OpenCode 插件（需 `--force`）|
 
 ## 技术栈
 
@@ -92,7 +93,45 @@ repo-wiki search --query "fn_name"
 
 # 监听文件变更
 repo-wiki watch
+
+# 知识卡片操作（Qoder /knowledge 对等）
+repo-wiki card modify config_plan --instruction "补充错误处理说明"
 ```
+
+## 生成干预（wiki_plan.yaml）
+
+仓库根放置 `wiki_plan.yaml`（随 Git 提交共享），可干预 LLM 生成方向：
+
+```yaml
+version: 1
+notes: "请重点描述安全设计"        # 全局引导提示（追加到所有 system prompt）
+knowledgecard:
+  notes: "卡片请注明编码规约"       # 知识卡片专用提示
+scope:
+  include: ["src/**"]             # 覆盖扫描范围（优先于 config.toml scope）
+  exclude: []
+sections:                          # 模块级规划（按模块路径 glob 匹配）
+  - module_pattern: "src/config/**"
+    template_type: "api-ref"       # architecture / prd / api-ref
+    notes: "重点列出接口签名与参数"
+documents:                         # 页面白名单（提供时严格只输出列出的页面）
+  - title: "src::config"
+    goal: "介绍配置系统"
+    parent: ""
+    hints: ""
+```
+
+修改后需手动触发 `generate` 才生效。`notes` 追加到 system prompt 末尾；模块级 `sections` 按模块路径匹配（支持 `src/config/**` 与 `src::config` 两种形态）；`documents` 白名单过滤输出页面集合。
+
+## 限制项
+
+- 单项目最多扫描 10,000 个文件，超限显式报错
+- 增量更新仅支持 Git 仓库（非 Git 目录自动回退全量生成）
+- 单次变更超过 10,000 行自动回退全量生成
+
+## 人工修改保护
+
+`update`（增量）与 `generate` 生成前会比对磁盘文档与上次生成时记录的 SHA256 指纹：人工修改过的文档自动加入保护集，后续更新不覆盖（保护集记录于 `.repo-wiki/.state/generation_state.json`）。使用 `generate --force` 清空保护集强制重写。
 
 ## 配置
 

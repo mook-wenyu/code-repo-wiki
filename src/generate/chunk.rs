@@ -134,7 +134,10 @@ pub fn chunk_by_file(insight: &FileInsight) -> Chunk {
         .path
         .parent()
         .and_then(|p| {
+            // 只取普通目录组件，过滤盘符（Prefix）/根目录（RootDir）等
+            // 否则 Windows 绝对路径会生成含 ":\" 的 module_path，导致 wiki 文件名非法
             p.components()
+                .filter(|c| matches!(c, std::path::Component::Normal(_)))
                 .map(|c| c.as_os_str().to_string_lossy().to_string())
                 .reduce(|a, b| format!("{}::{}", a, b))
         })
