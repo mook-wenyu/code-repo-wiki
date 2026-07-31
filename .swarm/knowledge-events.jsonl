@@ -2,3 +2,6 @@
 {"schema_version":1,"type":"injection_skip","reason":"not_architect","agent":"historian","session_id":"ses_0477aad8fffeEnmcZENiEuv3e2","event_id":"b3682978-a974-49c6-8a06-fd673d54249e","timestamp":"2026-07-31T14:12:53.797Z"}
 {"schema_version":1,"type":"injection_skip","reason":"not_architect","agent":"build","session_id":"ses_047714ce9ffemNGaAnUJLHsJc7","event_id":"51c774f1-c8b8-46f5-836a-b157b561b55f","timestamp":"2026-07-31T14:23:08.051Z"}
 {"schema_version":1,"type":"injection_skip","reason":"not_architect","agent":"build","session_id":"ses_047714ce9ffemNGaAnUJLHsJc7","event_id":"19678d55-a261-48e8-be72-c213f1e47adb","timestamp":"2026-07-31T14:23:18.195Z"}
+{"schema_version":1,"type":"injection_skip","reason":"not_architect","agent":"build","session_id":"ses_047714ce9ffemNGaAnUJLHsJc7","event_id":"2c973982-92a1-43ac-8c4b-5be37b8cee3e","timestamp":"2026-07-31T14:23:30.382Z"}
+{"schema_version":1,"type":"injection_skip","reason":"not_architect","agent":"build","session_id":"ses_047708deeffekvxesdY167sNDT","event_id":"30d34350-8d1a-4754-b55a-2edcb2f380be","timestamp":"2026-07-31T14:23:56.924Z"}
+{"schema_version":1,"type":"injection_skip","reason":"not_architect","agent":"build","session_id":"ses_047708deeffekvxesdY167sNDT","event_id":"d76bef65-84cf-4f8f-9780-e0563ea06f9f","timestamp":"2026-07-31T14:24:08.602Z"}
