@@ -179,7 +179,8 @@ fn main() -> anyhow::Result<()> {
             );
         }
         Commands::Update { config, output, force } => {
-            let result = repo_wiki::run_incremental_pipeline(&config, output.as_deref(), force)?;
+            // update 命令无外部 watch 事件，watch_paths 传空
+            let result = repo_wiki::run_incremental_pipeline(&config, output.as_deref(), force, &[])?;
             tracing::info!(
                 "增量更新完成: 扫描 {} 个文件, {} 个模块受影响",
                 result.stats.files_scanned,

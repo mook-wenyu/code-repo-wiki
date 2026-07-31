@@ -251,7 +251,14 @@ pub fn run_card_command(config_path: &Path, action: &generate::card::CardAction)
 /// `output` 非空时覆盖配置文件中的 output.dir（对应 CLI 的 --output 参数）。
 /// `force` 为 true 时清空人工修改保护集（与 run_pipeline 的 --force 语义一致，
 /// 经由 load_protection 统一处理，force=false 保留保护语义）。
-pub fn run_incremental_pipeline(config_path: &Path, output: Option<&Path>, force: bool) -> anyhow::Result<AnalysisResult> {
+/// `watch_paths` 为文件监听外部传入的事件路径（FileWatch 策略使用，
+/// 普通增量更新传 &[]）。
+pub fn run_incremental_pipeline(
+    config_path: &Path,
+    output: Option<&Path>,
+    force: bool,
+    watch_paths: &[std::path::PathBuf],
+) -> anyhow::Result<AnalysisResult> {
     let config = load_config_with_output(config_path, output)?;
     let start = std::time::Instant::now();
 
@@ -265,8 +272,9 @@ pub fn run_incremental_pipeline(config_path: &Path, output: Option<&Path>, force
     let graph = analysis::build_graph(&file_insights)?;
     let _modules = analysis::detect_modules(&graph)?;
 
-    // 检查增量变更
-    let inc_result = incremental::run_incremental_update(&file_insights, &graph, &config)?;
+    // 检查增量变更（watch_paths 透传：FileWatch 策略下删除事件路径
+    // 由此进入 changed_files，驱动下游删除清理）
+    let inc_result = incremental::run_incremental_update(&file_insights, &graph, &config, watch_paths)?;
 
     // 回退全量时 changed_files 非空但 affected_modules 为空，仅凭 changed_files 判断是否跳过
     if inc_result.changed_files.is_empty() {
@@ -381,9 +389,12 @@ pub fn run_watch(config_path: &Path) -> anyhow::Result<()> {
     tracing::info!("全量生成完成，开始监听文件变更...");
 
     let config_path = config_path.to_path_buf();
-    incremental::watch::run_watch_loop(&config, move || {
-        tracing::info!("检测到文件变更，触发增量更新...");
-        if let Err(e) = run_incremental_pipeline(&config_path, None, false) {
+    // 监听根与 scan_and_parse 的扫描根保持一致（config 无项目根字段，均取当前目录）
+    let root = std::env::current_dir()?;
+    incremental::watch::run_watch_loop(&root, &config, move |paths| {
+        tracing::info!("检测到 {} 个文件变更，触发增量更新...", paths.len());
+        // 事件路径（含删除路径）透传给增量流水线，删除清理由此触发
+        if let Err(e) = run_incremental_pipeline(&config_path, None, false, &paths) {
             tracing::error!("增量更新失败: {}", e);
         } else {
             tracing::info!("增量更新完成");

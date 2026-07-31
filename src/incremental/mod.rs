@@ -3,7 +3,7 @@ pub mod impact;
 pub mod state;
 pub mod watch;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
@@ -33,11 +33,15 @@ pub struct IncrementalResult {
 /// 2. 在知识图谱上传播变更影响
 /// 3. 返回包含变更文件路径和受影响模块的结果
 ///
+/// `watch_paths` 为文件监听外部传入的事件路径（FileWatch 策略使用，
+/// 可为空；GitDiff 分支忽略）。
+///
 /// 无 Git 历史时跳过增量更新。
 pub fn run_incremental_update(
     insights: &[FileInsight],
     graph: &KnowledgeGraph,
     config: &WikiConfig,
+    watch_paths: &[PathBuf],
 ) -> Result<IncrementalResult> {
     if !config.incremental.enabled {
         tracing::info!("增量更新已禁用，将执行全量生成");
@@ -52,7 +56,7 @@ pub fn run_incremental_update(
             run_git_diff_incremental(insights, graph, config, &state_dir, Path::new("."))?
         }
         IncrementalStrategy::FileWatch => {
-            run_file_watch_incremental(insights, graph, config, &state_dir)?
+            run_file_watch_incremental(insights, graph, config, &state_dir, watch_paths)?
         }
     };
     Ok(IncrementalResult { changed_files, affected_modules })
@@ -147,20 +151,31 @@ fn run_git_diff_incremental(
     Ok((all_changed, affected_modules))
 }
 
-/// FileWatch 策略的增量更新（变更文件由外部传入）
+/// FileWatch 策略的增量更新（变更文件来自外部事件 + 指纹比对）
 fn run_file_watch_incremental(
     insights: &[FileInsight],
     graph: &KnowledgeGraph,
     config: &WikiConfig,
     state_dir: &Path,
-) -> Result<(Vec<std::path::PathBuf>, Vec<String>)> {
+    watch_paths: &[PathBuf],
+) -> Result<(Vec<PathBuf>, Vec<String>)> {
     // 重新加载状态，比较文件指纹
     let state = GenerationState::load(state_dir).ok();
-    let mut changed_files: Vec<std::path::PathBuf> = Vec::new();
+    let mut changed_files: Vec<PathBuf> = Vec::new();
 
     for insight in insights {
         if let Ok(true) = state.as_ref().map(|s| s.is_file_changed(&insight.path)).unwrap_or(Ok(true)) {
             changed_files.push(insight.path.clone());
+        }
+    }
+
+    // 并入外部 watch 事件路径（去重）：事件路径是变更的直接证据，不再只依赖指纹比对。
+    // 指纹比对保留，用于兜底 watch 事件丢失的变更（防抖窗口冲突、事件丢失等），两者取并集。
+    // 不存在的路径（删除事件）原样进入 changed_files，供下游 cleanup_deleted_outputs
+    // 以 exists() 判断并清理旧输出——删除文件不在 insights 里，指纹比对永远捕获不到。
+    for p in watch_paths {
+        if !changed_files.contains(p) {
+            changed_files.push(p.clone());
         }
     }
 
@@ -316,6 +331,78 @@ mod tests {
             "被删文件路径应计入 changed_files（否则删除清理与索引清理永不触发）: {:?}",
             changed
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// FileWatch 核心修复：watch 事件传入已删除路径（磁盘不存在）时，
+    /// 删除路径必须进入 changed_files，下游 cleanup_deleted_outputs 才能
+    /// 清理旧输出——删除文件不在 insights 中，指纹比对永远捕获不到
+    #[test]
+    fn test_file_watch_deleted_path_in_changed_files() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_test_watch_deleted_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let src = dir.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.rs"), "v1").unwrap();
+
+        // 先保存状态：a.rs 内容未变，指纹比对不命中
+        let insight = make_insight(src.join("a.rs").to_string_lossy().as_ref());
+        let state_dir = dir.join(".state");
+        let state = GenerationState::from_insights(std::slice::from_ref(&insight), "test").unwrap();
+        state.save(&state_dir).unwrap();
+
+        // watch 事件传入已删除路径（磁盘上不存在）
+        let deleted = src.join("b.rs");
+        let graph = KnowledgeGraph::default();
+        let config = make_config();
+
+        let (changed, _affected) =
+            run_file_watch_incremental(std::slice::from_ref(&insight), &graph, &config, &state_dir, std::slice::from_ref(&deleted)).unwrap();
+        assert_eq!(
+            changed,
+            vec![deleted],
+            "删除路径必须进入 changed_files（否则删除清理永不触发）"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// FileWatch 并集语义：指纹命中与外部 watch 路径取并集
+    /// （指纹覆盖 watch 事件丢失的变更，watch 覆盖指纹捕获不到的删除）
+    #[test]
+    fn test_file_watch_union_fingerprint_and_watch_paths() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_test_watch_union_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let src = dir.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.rs"), "v1").unwrap();
+
+        // 保存状态（a.rs 指纹 v1），随后修改内容 → 指纹比对命中
+        let insight = make_insight(src.join("a.rs").to_string_lossy().as_ref());
+        let state_dir = dir.join(".state");
+        let state = GenerationState::from_insights(std::slice::from_ref(&insight), "test").unwrap();
+        state.save(&state_dir).unwrap();
+        std::fs::write(src.join("a.rs"), "v2").unwrap();
+
+        // watch 事件传入另一路径（磁盘上不存在，模拟删除）
+        let deleted = src.join("b.rs");
+        let graph = KnowledgeGraph::default();
+        let config = make_config();
+
+        let (changed, _affected) =
+            run_file_watch_incremental(std::slice::from_ref(&insight), &graph, &config, &state_dir, std::slice::from_ref(&deleted)).unwrap();
+        assert!(
+            changed.contains(&insight.path),
+            "指纹命中的文件应计入: {:?}",
+            changed
+        );
+        assert!(
+            changed.contains(&deleted),
+            "watch 路径应并入（与指纹命中取并集）: {:?}",
+            changed
+        );
+        assert_eq!(changed.len(), 2, "指纹与 watch 路径取并集，不应重复");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
