@@ -1,0 +1,75 @@
+graph TD
+    RustProjects__repo_wiki__src__output__mod["RustProjects::repo-wiki::src::output::mod"]
+    RustProjects__repo_wiki__src__config__schema["RustProjects::repo-wiki::src::config::schema"]
+    RustProjects__repo_wiki__src__config__plan["RustProjects::repo-wiki::src::config::plan"]
+    RustProjects__repo_wiki__src__generate__prompt["RustProjects::repo-wiki::src::generate::prompt"]
+    RustProjects__repo_wiki__src__lib["RustProjects::repo-wiki::src::lib"]
+    RustProjects__repo_wiki__src__generate__card["RustProjects::repo-wiki::src::generate::card"]
+    RustProjects__repo_wiki__src__model__document["RustProjects::repo-wiki::src::model::document"]
+    RustProjects__repo_wiki__src__search__agent["RustProjects::repo-wiki::src::search::agent"]
+    RustProjects__repo_wiki__src__model__node["RustProjects::repo-wiki::src::model::node"]
+    RustProjects__repo_wiki__src__generate__wiki["RustProjects::repo-wiki::src::generate::wiki"]
+    RustProjects__repo_wiki__src__search__semantic["RustProjects::repo-wiki::src::search::semantic"]
+    RustProjects__repo_wiki__src__search__text["RustProjects::repo-wiki::src::search::text"]
+    RustProjects__repo_wiki__src__incremental__mod["RustProjects::repo-wiki::src::incremental::mod"]
+    RustProjects__repo_wiki__src__output__crossref["RustProjects::repo-wiki::src::output::crossref"]
+    RustProjects__repo_wiki__src__ingest__mod["RustProjects::repo-wiki::src::ingest::mod"]
+    RustProjects__repo_wiki__src__analysis__graph["RustProjects::repo-wiki::src::analysis::graph"]
+    RustProjects__repo_wiki__src__output__html["RustProjects::repo-wiki::src::output::html"]
+    RustProjects__repo_wiki__src__search__hybrid["RustProjects::repo-wiki::src::search::hybrid"]
+    RustProjects__repo_wiki__src__main["RustProjects::repo-wiki::src::main"]
+    RustProjects__repo_wiki__src__generate__mod["RustProjects::repo-wiki::src::generate::mod"]
+    RustProjects__repo_wiki__src__generate__llm["RustProjects::repo-wiki::src::generate::llm"]
+    RustProjects__repo_wiki__src__incremental__diff["RustProjects::repo-wiki::src::incremental::diff"]
+    RustProjects__repo_wiki__src__generate__schema["RustProjects::repo-wiki::src::generate::schema"]
+    RustProjects__repo_wiki__src__incremental__impact["RustProjects::repo-wiki::src::incremental::impact"]
+    RustProjects__repo_wiki__src__ingest__scanner["RustProjects::repo-wiki::src::ingest::scanner"]
+    RustProjects__repo_wiki__src__generate__embed["RustProjects::repo-wiki::src::generate::embed"]
+    RustProjects__repo_wiki__src__output__markdown["RustProjects::repo-wiki::src::output::markdown"]
+    RustProjects__repo_wiki__src__incremental__watch["RustProjects::repo-wiki::src::incremental::watch"]
+    RustProjects__repo_wiki__src__generate__chunk["RustProjects::repo-wiki::src::generate::chunk"]
+    RustProjects__repo_wiki__src__search__store["RustProjects::repo-wiki::src::search::store"]
+    RustProjects__repo_wiki__src__generate__card --> RustProjects__repo_wiki__src__config__plan
+    RustProjects__repo_wiki__src__generate__card --> RustProjects__repo_wiki__src__config__schema
+    RustProjects__repo_wiki__src__generate__chunk --> RustProjects__repo_wiki__src__analysis__graph
+    RustProjects__repo_wiki__src__generate__embed --> RustProjects__repo_wiki__src__config__schema
+    RustProjects__repo_wiki__src__generate__llm --> RustProjects__repo_wiki__src__config__schema
+    RustProjects__repo_wiki__src__generate__mod --> RustProjects__repo_wiki__src__config__plan
+    RustProjects__repo_wiki__src__generate__mod --> RustProjects__repo_wiki__src__config__schema
+    RustProjects__repo_wiki__src__generate__mod --> RustProjects__repo_wiki__src__generate__card
+    RustProjects__repo_wiki__src__generate__prompt --> RustProjects__repo_wiki__src__generate__chunk
+    RustProjects__repo_wiki__src__generate__prompt --> RustProjects__repo_wiki__src__generate__llm
+    RustProjects__repo_wiki__src__generate__prompt --> RustProjects__repo_wiki__src__config__plan
+    RustProjects__repo_wiki__src__generate__schema --> RustProjects__repo_wiki__src__config__plan
+    RustProjects__repo_wiki__src__generate__schema --> RustProjects__repo_wiki__src__config__schema
+    RustProjects__repo_wiki__src__generate__schema --> RustProjects__repo_wiki__src__generate__mod
+    RustProjects__repo_wiki__src__generate__schema --> RustProjects__repo_wiki__src__generate__llm
+    RustProjects__repo_wiki__src__generate__wiki --> RustProjects__repo_wiki__src__config__plan
+    RustProjects__repo_wiki__src__generate__wiki --> RustProjects__repo_wiki__src__config__schema
+    RustProjects__repo_wiki__src__generate__wiki --> RustProjects__repo_wiki__src__generate__chunk
+    RustProjects__repo_wiki__src__generate__wiki --> RustProjects__repo_wiki__src__generate__mod
+    RustProjects__repo_wiki__src__generate__wiki --> RustProjects__repo_wiki__src__generate__llm
+    RustProjects__repo_wiki__src__incremental__mod --> RustProjects__repo_wiki__src__config__schema
+    RustProjects__repo_wiki__src__incremental__mod --> RustProjects__repo_wiki__src__analysis__graph
+    RustProjects__repo_wiki__src__incremental__mod --> RustProjects__repo_wiki__src__incremental__diff
+    RustProjects__repo_wiki__src__incremental__mod --> RustProjects__repo_wiki__src__incremental__impact
+    RustProjects__repo_wiki__src__incremental__watch --> RustProjects__repo_wiki__src__config__schema
+    RustProjects__repo_wiki__src__incremental__watch --> RustProjects__repo_wiki__src__generate__chunk
+    RustProjects__repo_wiki__src__ingest__mod --> RustProjects__repo_wiki__src__config__schema
+    RustProjects__repo_wiki__src__ingest__scanner --> RustProjects__repo_wiki__src__config__schema
+    RustProjects__repo_wiki__src__lib --> RustProjects__repo_wiki__src__config__schema
+    RustProjects__repo_wiki__src__main --> RustProjects__repo_wiki__src__generate__mod
+    RustProjects__repo_wiki__src__output__crossref --> RustProjects__repo_wiki__src__model__document
+    RustProjects__repo_wiki__src__output__html --> RustProjects__repo_wiki__src__config__schema
+    RustProjects__repo_wiki__src__output__markdown --> RustProjects__repo_wiki__src__output__crossref
+    RustProjects__repo_wiki__src__output__markdown --> RustProjects__repo_wiki__src__model__document
+    RustProjects__repo_wiki__src__output__mod --> RustProjects__repo_wiki__src__config__schema
+    RustProjects__repo_wiki__src__output__mod --> RustProjects__repo_wiki__src__output__markdown
+    RustProjects__repo_wiki__src__search__agent --> RustProjects__repo_wiki__src__model__node
+    RustProjects__repo_wiki__src__search__hybrid --> RustProjects__repo_wiki__src__model__node
+    RustProjects__repo_wiki__src__search__semantic --> RustProjects__repo_wiki__src__model__node
+    RustProjects__repo_wiki__src__search__semantic --> RustProjects__repo_wiki__src__generate__embed
+    RustProjects__repo_wiki__src__search__semantic --> RustProjects__repo_wiki__src__config__schema
+    RustProjects__repo_wiki__src__search__store --> RustProjects__repo_wiki__src__model__node
+    RustProjects__repo_wiki__src__search__text --> RustProjects__repo_wiki__src__model__node
+    RustProjects__repo_wiki__src__search__text --> RustProjects__repo_wiki__src__search__store

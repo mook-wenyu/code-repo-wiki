@@ -21,6 +21,12 @@ pub struct GenerationState {
     /// 已生成文档路径 → SHA256 指纹（用于检测人工修改）
     #[serde(default)]
     pub doc_fingerprints: HashMap<String, String>,
+    /// 已生成文档路径 → 所属模块名（人工修改反向同步的精确归属依据；
+    /// 全局文档 api/overview/toc 无模块归属，不记录。模块名压平为
+    /// "::" 连接（module_path.join("::")），与卡片 module_name 同规则，
+    /// 精确匹配，杜绝 stem 匹配的下划线歧义）
+    #[serde(default)]
+    pub doc_modules: HashMap<String, String>,
     /// 人工修改过的文档路径集合（保护集：下次自动更新不覆盖，直到 --force 清空）
     #[serde(default)]
     pub protected_docs: Vec<String>,
@@ -97,6 +103,7 @@ impl GenerationState {
             file_fingerprints,
             module_fingerprints,
             doc_fingerprints: HashMap::new(),
+            doc_modules: HashMap::new(),
             protected_docs: Vec::new(),
             generated_at: chrono::Utc::now().to_rfc3339(),
         })
@@ -125,19 +132,32 @@ impl GenerationState {
     /// 卡片同样计入指纹（路径 cards/{lang}/{module.replace("::","_")}.md，与
     /// render_all 写盘路径一致），使人工编辑的卡片与 wiki 页一样被
     /// detect_manually_modified 识别并纳入保护集，全量 generate 不再静默覆盖。
+    ///
+    /// 返回值：(文档指纹表, 文档模块归属表)。模块归属 = 产物路径 → 模块名
+    /// （wiki 页取 module_path.join("::")，卡片取 module_name；api/overview/toc
+    /// 全局文档无模块归属不记录），供人工修改反向同步的精确归属——
+    /// 精确匹配杜绝了 stem 匹配在模块名含下划线时的串卡片歧义。
     pub fn record_doc_fingerprints(
         docs: &[crate::model::WikiDocument],
         cards: &[crate::model::KnowledgeCard],
         output_dir: &Path,
         languages: &[String],
-    ) -> Result<HashMap<String, String>> {
+    ) -> Result<(HashMap<String, String>, HashMap<String, String>)> {
         let mut fps = HashMap::new();
+        let mut modules = HashMap::new();
         for lang in languages {
             for doc in docs {
                 let doc_path = crate::output::wiki_page_path(output_dir, lang, doc);
                 if doc_path.exists() {
                     let fp = Self::compute_file_fingerprint(&doc_path)?;
                     fps.insert(doc_path.to_string_lossy().to_string(), fp);
+                    // 模块页记录归属；全局文档（Overview/Architecture）不记录
+                    if doc.kind == crate::model::DocumentKind::WikiPage {
+                        modules.insert(
+                            doc_path.to_string_lossy().to_string(),
+                            doc.module_path.join("::"),
+                        );
+                    }
                 }
             }
         }
@@ -169,10 +189,14 @@ impl GenerationState {
                 if card_path.exists() {
                     let fp = Self::compute_file_fingerprint(&card_path)?;
                     fps.insert(card_path.to_string_lossy().to_string(), fp);
+                    modules.insert(
+                        card_path.to_string_lossy().to_string(),
+                        card.module_name.clone(),
+                    );
                 }
             }
         }
-        Ok(fps)
+        Ok((fps, modules))
     }
 
     /// 比对磁盘文档与生成时指纹，返回人工修改的文档路径集合
@@ -245,6 +269,7 @@ mod tests {
             },
             module_fingerprints: HashMap::new(),
             doc_fingerprints: HashMap::new(),
+            doc_modules: HashMap::new(),
             protected_docs: Vec::new(),
             generated_at: "2025-01-01T00:00:00Z".into(),
         };
@@ -281,6 +306,7 @@ mod tests {
             },
             module_fingerprints: HashMap::new(),
             doc_fingerprints: HashMap::new(),
+            doc_modules: HashMap::new(),
             protected_docs: Vec::new(),
             generated_at: String::new(),
         };
@@ -301,6 +327,7 @@ mod tests {
             file_fingerprints: HashMap::new(),
             module_fingerprints: HashMap::new(),
             doc_fingerprints: HashMap::new(),
+            doc_modules: HashMap::new(),
             protected_docs: Vec::new(),
             generated_at: String::new(),
         };
@@ -351,7 +378,7 @@ mod tests {
             pending_manual_edits: vec![],
         };
 
-        let fps = GenerationState::record_doc_fingerprints(&[doc], &[card], &dir, &["zh".into()]).unwrap();
+        let (fps, modules) = GenerationState::record_doc_fingerprints(&[doc], &[card], &dir, &["zh".into()]).unwrap();
         assert!(
             fps.contains_key(&card_path.to_string_lossy().to_string()),
             "已落盘的卡片应计入指纹（人工编辑后检测保护的前提）"
@@ -359,6 +386,16 @@ mod tests {
         assert!(
             fps.contains_key(&wiki_path.to_string_lossy().to_string()),
             "wiki 页应计入指纹"
+        );
+        assert_eq!(
+            modules.get(&card_path.to_string_lossy().to_string()).map(String::as_str),
+            Some("src::testmodule"),
+            "卡片指纹应记录模块归属（反向同步的精确匹配依据）"
+        );
+        assert_eq!(
+            modules.get(&wiki_path.to_string_lossy().to_string()).map(String::as_str),
+            Some("src::testmodule"),
+            "wiki 页指纹应记录模块归属（module_path 连接规则）"
         );
 
         // 未落盘的卡片（文件不存在）不计指纹，避免无中生有的保护
@@ -377,8 +414,9 @@ mod tests {
             architecture: None,
             pending_manual_edits: vec![],
         };
-        let fps2 = GenerationState::record_doc_fingerprints(&[], &[missing_card], &dir, &["zh".into()]).unwrap();
+        let (fps2, modules2) = GenerationState::record_doc_fingerprints(&[], &[missing_card], &dir, &["zh".into()]).unwrap();
         assert!(fps2.is_empty(), "文件不存在时不应记录指纹");
+        assert!(modules2.is_empty(), "文件不存在时不应记录模块归属");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

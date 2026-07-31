@@ -1,18 +1,30 @@
-import type { PluginInput } from "@opencode-ai/plugin";
+import type { Plugin, PluginInput } from "@opencode-ai/plugin";
+import { tool } from "@opencode-ai/plugin";
 import { execa } from "execa";
 
 /**
  * repo-wiki OpenCode 插件
  *
  * 提供：
- * - 4 个 Agent 工具（wiki_search, wiki_query, wiki_generate, module_info）
- * - /wiki Slash 命令（generate, update, sync, status, export）
- * - 自动调用 Rust CLI 核心引擎
+ * - 9 个 Agent 工具：4 个查询工具（wiki_search/wiki_query/wiki_generate/module_info）
+ *   + 4 个知识卡片工具（card_generate/card_modify/card_supplement/card_rewrite）
+ *   + 4 个 Wiki 管理工具（wiki_update/wiki_sync/wiki_status/wiki_export）
+ * - 自动调用 Rust CLI 核心引擎（execa）
  * - 从 .repo-wiki/ 读取现有卡片和 Wiki 数据
+ *
+ * 形状约束（opencode 1.18.10，务必保持）：
+ * - 本模块必须**命名导出函数**（插件加载器要求模块导出函数或含 server() 的对象，
+ *   返回数组形状会被加载器抛 TypeError 并静默吞掉，插件将完全不生效）
+ * - 返回值必须是官方 Hooks 形状：自定义工具放 `tool` 对象映射
+ *   （`{ [key: string]: ToolDefinition }`），**不存在 `tools`/`commands` 数组键**
+ * - 斜杠命令不走插件：由 .opencode/commands/*.md 命令文件注册（见 1.4）
+ *
+ * 历史教训：旧实现返回 { tools: [], commands: [] } 数组形状，不符合 Hooks，
+ * 导致插件从未被加载（tsc 因未标注 Plugin 类型而静默通过）。
  */
-export const RepoWikiPlugin = async ({ project, client, directory }: PluginInput) => {
 
-    /** 调用 repo-wiki CLI 并返回结构化输出 */
+export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
+    /** 调用 repo-wiki CLI 并返回结构化输出（stderr/非零退出不抛错，交由调用方处理） */
     async function runCli(args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
         try {
             const { stdout, stderr, exitCode } = await execa("repo-wiki", args, {
@@ -30,261 +42,186 @@ export const RepoWikiPlugin = async ({ project, client, directory }: PluginInput
         }
     }
 
-    /** 从 .repo-wiki/cards/ 读取 Knowledge Card */
-    async function readExistingCards(): Promise<any[]> {        const { readFileSync, existsSync, readdirSync } = await import("fs");
+    /** 从 .repo-wiki/cards/ 读取 Knowledge Card（目录不存在时返回空列表） */
+    async function readExistingCards(): Promise<Array<{ name: string; content: string }>> {
+        const { readFileSync, existsSync, readdirSync } = await import("fs");
         const { join } = await import("path");
         const cardsDir = join(directory, ".repo-wiki", "cards");
         if (!existsSync(cardsDir)) return [];
 
         try {
             const files = readdirSync(cardsDir).filter(f => f.endsWith(".md"));
-            const cards: any[] = [];
-            for (const file of files) {
-                const content = readFileSync(join(cardsDir, file), "utf-8");
-                cards.push({ name: file.replace(".md", ""), content });
-            }
-            return cards;
+            return files.map((file) => ({
+                name: file.replace(".md", ""),
+                content: readFileSync(join(cardsDir, file), "utf-8"),
+            }));
         } catch {
             return [];
         }
     }
 
-    /**
-     * 从 /knowledge 参数中提取 `--reference 路径1,路径2` 标志（可出现在任意位置），
-     * 返回参考文件列表与剩余参数（指令文本）。
-     */
-    function extractReferences(args: string[]): { refs: string[]; rest: string[] } {
-        const refs: string[] = [];
-        const rest: string[] = [];
-        for (let i = 0; i < args.length; i++) {
-            if (args[i] === "--reference") {
-                for (const r of (args[++i] ?? "").split(",")) {
-                    const t = r.trim();
-                    if (t) refs.push(t);
-                }
-            } else {
-                rest.push(args[i]);
-            }
+    /** 执行 `repo-wiki search` 并格式化为 Markdown 命中列表 */
+    async function searchEntities(query: string, topK: number): Promise<string> {
+        const result = await runCli([
+            "search", "-q", JSON.stringify(query),
+            "-k", String(topK),
+            "--json",
+            "--config", ".repo-wiki/config.toml",
+        ]);
+        if (result.code !== 0 || !result.stdout.trim()) {
+            return `搜索失败: ${result.stderr || "索引不存在，请先运行 generate"}`;
         }
-        return { refs, rest };
+        try {
+            const hits = JSON.parse(result.stdout);
+            if (hits.length === 0) return "未找到匹配结果";
+            return hits.map((h: any, i: number) =>
+                `${i + 1}. **${h.name}** (${h.kind}) - ${h.file || "-"}\n` +
+                `   签名: ${h.signature || "-"}\n` +
+                `   分数: ${h.score?.toFixed(2)}`
+            ).join("\n\n");
+        } catch {
+            return result.stdout;
+        }
+    }
+
+    /**
+     * 知识卡片工具工厂：modify/supplement/rewrite 三个动作结构一致，
+     * 仅 CLI 子命令与描述不同，用工厂消除重复（DRY）。
+     *
+     * reference 数组在 CLI 层拼为逗号分隔的 --reference 多文件参数
+     * （main.rs:124 value_delimiter=','；card.rs:175 read_references 校验存在性，
+     * 文件不存在时 CLI 显式报错）。
+     */
+    function cardTool(action: "modify" | "supplement" | "rewrite", description: string) {
+        return tool({
+            description,
+            args: {
+                module: tool.schema.string().describe("模块名（如 crate::config）"),
+                instruction: tool.schema.string().describe("修改指令文本"),
+                reference: tool.schema.array(tool.schema.string()).optional()
+                    .describe("参考文件路径列表（@ 引用的文件或显式路径）"),
+            },
+            execute: async (args) => {
+                const cliArgs = [
+                    "card", action, args.module,
+                    "--instruction", args.instruction,
+                    "--config", ".repo-wiki/config.toml",
+                ];
+                if (args.reference?.length) {
+                    cliArgs.push("--reference", args.reference.join(","));
+                }
+                const result = await runCli(cliArgs);
+                return result.code === 0
+                    ? (result.stdout || `卡片 ${args.module} ${action} 完成`)
+                    : `卡片 ${args.module} ${action} 失败: ${result.stderr}`;
+            },
+        });
+    }
+
+    /** Wiki 管理工具工厂：无参数子命令转发（update/sync/status/export） */
+    function wikiCmdTool(name: string, description: string) {
+        return tool({
+            description,
+            args: {},
+            execute: async () => {
+                const result = await runCli([name]);
+                return result.code === 0
+                    ? (result.stdout || `repo-wiki ${name} 完成`)
+                    : `repo-wiki ${name} 失败: ${result.stderr}`;
+            },
+        });
     }
 
     return {
-        tools: [
-            {
-                name: "wiki_search",
+        tool: {
+            // ---- 查询工具 ----
+            wiki_search: tool({
                 description: "搜索代码实体（函数、结构体、类等），基于 BM25 全文检索返回匹配结果",
                 args: {
-                    query: { type: "string", description: "搜索关键词" },
-                    top_k: { type: "number", description: "返回结果数量（默认 10）" },
+                    query: tool.schema.string().describe("搜索关键词"),
+                    top_k: tool.schema.number().optional().describe("返回结果数量（默认 10）"),
                 },
-                execute: async (args: any) => {
-                    const query = (args.query as string) || "";
-                    if (!query) return "请提供搜索关键词";
-                    const topK = (args.top_k as number) || 10;
-
-                    const result = await runCli([
-                        "search", "-q", JSON.stringify(query),
-                        "-k", String(topK),
-                        "--json",
-                        "--config", ".repo-wiki/config.toml",
-                    ]);
-
-                    if (result.code === 0 && result.stdout.trim()) {
-                        try {
-                            const hits = JSON.parse(result.stdout);
-                            if (hits.length === 0) return "未找到匹配结果";
-                            return hits.map((h: any, i: number) =>
-                                `${i + 1}. **${h.name}** (${h.kind}) - ${h.file || "-"}\n` +
-                                `   签名: ${h.signature || "-"}\n` +
-                                `   分数: ${h.score?.toFixed(2)}`
-                            ).join("\n\n");
-                        } catch {
-                            return result.stdout;
-                        }
-                    }
-                    return `搜索失败: ${result.stderr || "索引不存在，请先运行 generate"}`;
+                execute: async (args) => {
+                    if (!args.query) return "请提供搜索关键词";
+                    return searchEntities(args.query, args.top_k ?? 10);
                 },
-            },
-            {
-                name: "wiki_query",
+            }),
+
+            wiki_query: tool({
                 description: "查询项目 Wiki 知识，返回 Knowledge Card 或 Wiki 页面内容",
                 args: {
-                    query: { type: "string", description: "搜索关键词或模块名称" },
+                    query: tool.schema.string().describe("搜索关键词或模块名称"),
                 },
-                execute: async (args: any) => {
-                    const query = (args.query as string) || "";
-                    if (!query) return "请提供搜索关键词";
-
+                execute: async (args) => {
+                    if (!args.query) return "请提供搜索关键词";
                     const cards = await readExistingCards();
-                    const matched = cards.filter(c =>
-                        c.name.toLowerCase().includes(query.toLowerCase())
+                    const matched = cards.filter((c) =>
+                        c.name.toLowerCase().includes(args.query.toLowerCase())
                     );
-
                     if (matched.length > 0) {
-                        return matched.map(c => `## ${c.name}\n\n${c.content.slice(0, 2000)}`).join("\n\n---\n\n");
+                        return matched
+                            .map((c) => `## ${c.name}\n\n${c.content.slice(0, 2000)}`)
+                            .join("\n\n---\n\n");
                     }
+                    // 卡片未命中时回退到搜索索引
+                    return searchEntities(args.query, 10);
+                },
+            }),
 
-                    const result = await runCli([
-                        "search", "-q", JSON.stringify(query),
-                        "--json", "--config", ".repo-wiki/config.toml",
-                    ]);
-                    if (result.code === 0 && result.stdout.trim()) {
-                        return `搜索结果:\n${result.stdout.slice(0, 3000)}`;
-                    }
-                    return `未找到与 "${query}" 相关的知识`;
-                },
-            },
-            {
-                name: "wiki_generate",
-                description: "生成或更新项目 Wiki 文档",
+            wiki_generate: tool({
+                description: "全量生成或更新项目 Wiki 文档（所有模块）",
                 args: {
-                    output: { type: "string", description: "输出目录（默认 .repo-wiki）" },
+                    output: tool.schema.string().optional().describe("输出目录（默认 .repo-wiki）"),
                 },
-                execute: async (args: any) => {
-                    const output = (args.output as string) || "";
-                    const cliArgs = ["generate", "--config", ".repo-wiki/config.toml", "--progress-json"];
-                    if (output) cliArgs.push("-o", output);
-                    const child = execa("repo-wiki", cliArgs, { cwd: directory });
-                    child.stdout?.on("data", (chunk: Buffer) => {
-                        for (const line of chunk.toString().split("\n")) {
-                            if (!line.startsWith('{"stage":')) continue;
-                            try {
-                                const evt = JSON.parse(line);
-                                (client as any)?.sendProgress?.({ stage: evt.stage, progress: evt.progress });
-                            } catch {
-                                // 半行/坏行忽略：展示层容错
-                            }
-                        }
-                    });
-                    const { stdout, stderr } = await child;
-                    return stdout || `生成完成。${stderr ? "警告: " + stderr : ""}`;
+                execute: async (args) => {
+                    const cliArgs = ["generate", "--config", ".repo-wiki/config.toml"];
+                    if (args.output) cliArgs.push("-o", args.output);
+                    const result = await runCli(cliArgs);
+                    return result.code === 0
+                        ? (result.stdout || "Wiki 全量生成完成")
+                        : `生成失败: ${result.stderr}`;
                 },
-            },
-            {
-                name: "module_info",
+            }),
+
+            module_info: tool({
                 description: "获取项目中某个模块的结构化信息",
-                args: { module: { type: "string", description: "模块路径" } },
-                execute: async (args: any) => {
-                    const modulePath = String(args.module || "");
+                args: {
+                    module: tool.schema.string().describe("模块路径"),
+                },
+                execute: async (args) => {
                     const cards = await readExistingCards();
-                    const matched = cards.filter(c => c.name?.includes(modulePath));
-                    if (matched.length === 0) return `未找到模块 "${modulePath}" 的信息`;
-                    return matched.map(c => `## ${c.name}\n\n${c.content}`).join("\n\n---\n\n");
+                    const matched = cards.filter((c) => c.name?.includes(args.module));
+                    if (matched.length === 0) return `未找到模块 "${args.module}" 的信息`;
+                    return matched.map((c) => `## ${c.name}\n\n${c.content}`).join("\n\n---\n\n");
                 },
-            },
-        ],
-        commands: [{
-            name: "wiki",
-            description: "Wiki 生成与管理命令",
-            subcommands: [
-                {
-                    name: "generate",
-                    description: "全量生成项目 Wiki",
-                    execute: async () => {
-                        const result = await runCli(["generate"]);
-                        return result.code === 0 ? "Wiki 全量生成完成" : "生成失败: " + result.stderr;
-                    },
+            }),
+
+            // ---- 知识卡片工具（CLI card 子命令转发） ----
+            card_generate: tool({
+                description: "为单个模块生成知识卡片",
+                args: {
+                    module: tool.schema.string().describe("模块名（如 crate::config）"),
                 },
-                {
-                    name: "update",
-                    description: "增量更新 Wiki",
-                    execute: async () => {
-                        const result = await runCli(["update"]);
-                        return result.code === 0 ? "Wiki 增量更新完成" : "更新失败: " + result.stderr;
-                    },
+                execute: async (args) => {
+                    const result = await runCli([
+                        "card", "generate", args.module,
+                        "--config", ".repo-wiki/config.toml",
+                    ]);
+                    return result.code === 0
+                        ? (result.stdout || `卡片 ${args.module} 生成完成`)
+                        : `生成失败: ${result.stderr}`;
                 },
-                {
-                    name: "sync",
-                    description: "以 Git 工作区内容为准同步 Wiki（不触发 LLM 重生成）",
-                    execute: async () => {
-                        const result = await runCli(["sync"]);
-                        return result.code === 0 ? "Wiki 同步完成" : "同步失败: " + result.stderr;
-                    },
-                },
-                {
-                    name: "status",
-                    description: "查看 Wiki 状态",
-                    execute: async () => {
-                        const result = await runCli(["status"]);
-                        return result.code === 0 ? result.stdout : "查看状态失败: " + result.stderr;
-                    },
-                },
-                {
-                    name: "export",
-                    description: "导出 Wiki",
-                    execute: async () => {
-                        const result = await runCli(["export"]);
-                        return result.code === 0 ? result.stdout || "导出完成" : "导出失败: " + result.stderr;
-                    },
-                },
-            ],
+            }),
+            card_modify: cardTool("modify", "按指令修改已有卡片（可附参考文件）"),
+            card_supplement: cardTool("supplement", "在已有卡片上追加内容（可附参考文件）"),
+            card_rewrite: cardTool("rewrite", "忽略现有内容全量重写卡片（可附参考文件）"),
+
+            // ---- Wiki 管理工具（CLI 子命令转发） ----
+            wiki_update: wikiCmdTool("update", "增量更新 Wiki（代码变更 → 仅重建受影响页）"),
+            // sync：以 Git 工作区内容为准同步指纹库，不触发 LLM 重生成（commands.rs sync_from_git）
+            wiki_sync: wikiCmdTool("sync", "以 Git 工作区内容为准同步 Wiki（不触发 LLM 重生成）"),
+            wiki_status: wikiCmdTool("status", "查看 Wiki 状态"),
+            wiki_export: wikiCmdTool("export", "导出 Wiki"),
         },
-        {
-            name: "knowledge",
-            description: "知识卡片管理",
-            subcommands: [
-                {
-                    name: "generate",
-                    description: "为单个模块生成知识卡片",
-                    execute: async (args: string) => {
-                        const [module] = (args || "").trim().split(/\s+/);
-                        if (!module) return "用法: /knowledge generate <模块名>";
-                        const result = await runCli(["card", "generate", module, "--config", ".repo-wiki/config.toml"]);
-                        return result.code === 0
-                            ? (result.stdout || `卡片 ${module} 生成完成`)
-                            : "生成失败: " + result.stderr;
-                    },
-                },
-                {
-                    name: "modify",
-                    description: "按指令修改已有卡片（可选 --reference 逗号分隔参考文件）",
-                    execute: async (args: string) => {
-                        const { refs, rest } = extractReferences((args || "").trim().split(/\s+/));
-                        const [module, ...instructionParts] = rest;
-                        if (!module || instructionParts.length === 0) return "用法: /knowledge modify <模块名> <指令文本> [--reference 文件1,文件2]";
-                        const instruction = instructionParts.join(" ");
-                        const cliArgs = ["card", "modify", module, "--instruction", instruction, "--config", ".repo-wiki/config.toml"];
-                        if (refs.length > 0) cliArgs.push("--reference", refs.join(","));
-                        const result = await runCli(cliArgs);
-                        return result.code === 0
-                            ? (result.stdout || `卡片 ${module} 修改完成`)
-                            : "修改失败: " + result.stderr;
-                    },
-                },
-                {
-                    name: "supplement",
-                    description: "在已有卡片上追加内容（可选 --reference 逗号分隔参考文件）",
-                    execute: async (args: string) => {
-                        const { refs, rest } = extractReferences((args || "").trim().split(/\s+/));
-                        const [module, ...instructionParts] = rest;
-                        if (!module || instructionParts.length === 0) return "用法: /knowledge supplement <模块名> <指令文本> [--reference 文件1,文件2]";
-                        const instruction = instructionParts.join(" ");
-                        const cliArgs = ["card", "supplement", module, "--instruction", instruction, "--config", ".repo-wiki/config.toml"];
-                        if (refs.length > 0) cliArgs.push("--reference", refs.join(","));
-                        const result = await runCli(cliArgs);
-                        return result.code === 0
-                            ? (result.stdout || `卡片 ${module} 补充完成`)
-                            : "补充失败: " + result.stderr;
-                    },
-                },
-                {
-                    name: "rewrite",
-                    description: "忽略现有内容全量重写卡片（可选 --reference 逗号分隔参考文件）",
-                    execute: async (args: string) => {
-                        const { refs, rest } = extractReferences((args || "").trim().split(/\s+/));
-                        const [module, ...instructionParts] = rest;
-                        if (!module || instructionParts.length === 0) return "用法: /knowledge rewrite <模块名> <指令文本> [--reference 文件1,文件2]";
-                        const instruction = instructionParts.join(" ");
-                        const cliArgs = ["card", "rewrite", module, "--instruction", instruction, "--config", ".repo-wiki/config.toml"];
-                        if (refs.length > 0) cliArgs.push("--reference", refs.join(","));
-                        const result = await runCli(cliArgs);
-                        return result.code === 0
-                            ? (result.stdout || `卡片 ${module} 重写完成`)
-                            : "重写失败: " + result.stderr;
-                    },
-                },
-            ],
-        }],
     };
 };

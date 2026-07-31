@@ -279,6 +279,141 @@
         ]
       }
     },
+    "D:/RustProjects/repo-wiki/.swarm/bundled-skills/codebase-review-swarm/scripts/init-review-run.py": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\.swarm\\bundled-skills\\codebase-review-swarm\\scripts\\init-review-run.py",
+      "moduleName": ".swarm/bundled-skills/codebase-review-swarm/scripts/init-review-run.py",
+      "exports": [
+        "run",
+        "git_root",
+        "validate_run_id",
+        "resolve_run_dir",
+        "is_swarm_ignored",
+        "main"
+      ],
+      "exportLines": {
+        "run": 38,
+        "git_root": 52,
+        "validate_run_id": 57,
+        "resolve_run_dir": 65,
+        "is_swarm_ignored": 77,
+        "main": 85
+      },
+      "exportRanges": {
+        "run": {
+          "startLine": 38,
+          "endLine": 49
+        },
+        "git_root": {
+          "startLine": 52,
+          "endLine": 54
+        },
+        "validate_run_id": {
+          "startLine": 57,
+          "endLine": 62
+        },
+        "resolve_run_dir": {
+          "startLine": 65,
+          "endLine": 74
+        },
+        "is_swarm_ignored": {
+          "startLine": 77,
+          "endLine": 82
+        },
+        "main": {
+          "startLine": 85,
+          "endLine": 130
+        }
+      },
+      "imports": [
+        "argparse",
+        "datetime",
+        "json",
+        "pathlib",
+        "re",
+        "subprocess",
+        "sys"
+      ],
+      "language": "python",
+      "mtime": "2026-07-31T13:29:31.940Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": ".swarm",
+        "routes": [],
+        "dataOperations": [
+          {
+            "operation": "write",
+            "access": "sql",
+            "line": 89,
+            "evidence": "parser.add_argument(\"--review-type\", default=\"fresh\", choices=[\"fresh\", \"continuation\", \"update\"])"
+          }
+        ],
+        "security": [
+          {
+            "kind": "input_validation",
+            "line": 57,
+            "evidence": "def validate_run_id(raw: str) -> str:",
+            "confidence": "high"
+          },
+          {
+            "kind": "input_validation",
+            "line": 95,
+            "evidence": "run_id = validate_run_id(args.run_id or dt.datetime.utcnow().strftime(\"%Y%m%dT%H%M%SZ\"))",
+            "confidence": "high"
+          }
+        ],
+        "conventions": [],
+        "findings": []
+      }
+    },
+    "D:/RustProjects/repo-wiki/.swarm/bundled-skills/codebase-review-swarm/scripts/validate-skill-package.py": {
+      "filePath": "D:\\RustProjects\\repo-wiki\\.swarm\\bundled-skills\\codebase-review-swarm\\scripts\\validate-skill-package.py",
+      "moduleName": ".swarm/bundled-skills/codebase-review-swarm/scripts/validate-skill-package.py",
+      "exports": [
+        "parse_frontmatter",
+        "main"
+      ],
+      "exportLines": {
+        "parse_frontmatter": 19,
+        "main": 37
+      },
+      "exportRanges": {
+        "parse_frontmatter": {
+          "startLine": 19,
+          "endLine": 34
+        },
+        "main": {
+          "startLine": 37,
+          "endLine": 58
+        }
+      },
+      "imports": [
+        "pathlib",
+        "re",
+        "sys"
+      ],
+      "language": "python",
+      "mtime": "2026-07-31T13:29:31.942Z",
+      "ontology": {
+        "roles": [
+          "source_module"
+        ],
+        "packageBoundary": ".swarm",
+        "routes": [],
+        "dataOperations": [],
+        "security": [
+          {
+            "kind": "input_validation",
+            "line": 2,
+            "evidence": "\"\"\"Validate the local Agent Skill package structure without external dependencies.\"\"\"",
+            "confidence": "high"
+          }
+        ],
+        "conventions": [],
+        "findings": []
+      }
+    },
     "D:/RustProjects/repo-wiki/benches/bench_search.rs": {
       "filePath": "D:\\RustProjects\\repo-wiki\\benches\\bench_search.rs",
       "moduleName": "benches/bench_search.rs",
@@ -4691,9 +4826,9 @@
     }
   ],
   "metadata": {
-    "generatedAt": "2026-07-31T14:09:18.873Z",
+    "generatedAt": "2026-07-31T18:13:49.369Z",
     "generator": "repo-graph",
-    "nodeCount": 66,
+    "nodeCount": 68,
     "edgeCount": 16
   },
   "symbolEdges": [

@@ -21,6 +21,7 @@ pub fn sync_from_git(output_dir: &Path) -> Result<()> {
         file_fingerprints: HashMap::new(),
         module_fingerprints: HashMap::new(),
         doc_fingerprints: HashMap::new(),
+        doc_modules: HashMap::new(),
         protected_docs: Vec::new(),
         generated_at: chrono::Utc::now().to_rfc3339(),
     });

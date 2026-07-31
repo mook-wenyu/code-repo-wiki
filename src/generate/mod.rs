@@ -6,6 +6,7 @@ pub mod prompt;
 pub mod schema;
 pub mod wiki;
 
+use std::collections::HashMap;
 use std::time::Instant;
 
 use anyhow::Result;
@@ -68,10 +69,15 @@ pub fn collect_languages(config: &WikiConfig) -> Vec<String> {
 /// 2. 并行生成 Knowledge Card
 /// 3. 串行生成 Wiki 页面（依赖前序卡片摘要）
 /// 4. 生成架构概览页面
+///
+/// extra_edits：本次运行新检测到的人工修改记录（模块名 → 记录文本），
+/// 生成卡片前注入 LLM 输入（见 CardGenerator::generate_all_cards）；
+/// 由上层（lib.rs）从状态指纹比对结果组装，无人工修改时传空表。
 pub async fn run_generation(
     graph: &KnowledgeGraph,
     insights: &[FileInsight],
     config: &WikiConfig,
+    extra_edits: &HashMap<String, Vec<String>>,
 ) -> Result<GenerationOutput> {
     let start = Instant::now();
 
@@ -111,12 +117,13 @@ pub async fn run_generation(
     // 3. 并行生成 Knowledge Card
     let card_gen = CardGenerator::new(
         &provider,
+        config.clone(),
         config.llm.max_concurrent,
         config.wiki.language.clone(),
         plan.clone(),
     );
     let cards = card_gen
-        .generate_all_cards(&chunks)
+        .generate_all_cards(&chunks, extra_edits)
         .await?;
     tracing::info!("生成进度: 60% - 知识卡片生成完成，共 {} 个卡片", cards.len());
 
@@ -170,11 +177,13 @@ pub async fn run_generation(
 ///
 /// 与 `run_generation` 类似，但仅处理 `changed_files` 中列出的文件，
 /// 用于增量更新场景。未变更的文件使用已有缓存，不触发新的 LLM 调用。
+/// extra_edits 语义同 run_generation（本次新检测的人工修改记录）。
 pub async fn run_generation_filtered(
     graph: &KnowledgeGraph,
     insights: &[FileInsight],
     config: &WikiConfig,
     changed_files: &std::collections::HashSet<std::path::PathBuf>,
+    extra_edits: &HashMap<String, Vec<String>>,
 ) -> Result<GenerationOutput> {
     let start = Instant::now();
 
@@ -217,12 +226,13 @@ pub async fn run_generation_filtered(
     // 3. 并行生成 Knowledge Card（仅变更块）
     let card_gen = CardGenerator::new(
         &provider,
+        config.clone(),
         config.llm.max_concurrent,
         config.wiki.language.clone(),
         plan.clone(),
     );
     let cards = card_gen
-        .generate_all_cards(&chunks)
+        .generate_all_cards(&chunks, extra_edits)
         .await?;
 
     // 4. 按语言独立生成 Wiki 页面（仅变更块；卡片仅主语言生成一次，各语言页面复用主语言卡片摘要）

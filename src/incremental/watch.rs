@@ -69,9 +69,9 @@ pub fn run_watch_loop(
     for result in rx {
         match result {
             Ok(events) => {
-                // 按 kind 分组聚合防抖窗口内的事件（同 kind 路径去重合并），
+                // 聚合 + 折叠（同路径跨 kind 按最终态合并），
                 // 事件类型显式传递给下游，删除不再依赖 exists() 推断
-                let watch_events = aggregate_events(&events, &include_exts);
+                let watch_events = process_batch(&events, &include_exts);
                 if !watch_events.is_empty() {
                     on_change(watch_events);
                 }
@@ -86,8 +86,53 @@ pub fn run_watch_loop(
     Ok(())
 }
 
-/// 将防抖窗口内的事件按 kind 分组聚合：每种 kind 至多产出一个
-/// `WatchEvent`，路径过滤后去重合并（保持输入顺序）。
+/// 将防抖窗口内的事件批处理为待回调的 WatchEvent 列表（纯函数，主循环可测化）
+///
+/// 两步：aggregate_events 按 kind 分组去重合并 → fold_events 按最终态语义
+/// 折叠同路径的跨 kind 事件。窗口内同路径最多产出一个 WatchEvent。
+pub fn process_batch(events: &[DebouncedEvent], include_exts: &[String]) -> Vec<WatchEvent> {
+    fold_events(aggregate_events(events, include_exts))
+}
+
+/// 按最终态语义折叠同路径的跨 kind 事件，消除同窗口双跑完整流水线
+///
+/// 规则（文件在窗口内的最终状态决定唯一事件）：
+/// - 路径出现在 Deleted 事件中 → 从其他 kind 移除（最终不存在，删除优先于一切）
+/// - 路径同时出现在 Created 与 Modified → 保留 Modified（最终存在且被修改）
+///
+/// 不同路径、不同 kind 的事件保持独立；输出保持各 kind 首次出现的顺序。
+fn fold_events(events: Vec<WatchEvent>) -> Vec<WatchEvent> {
+    let mut out: Vec<WatchEvent> = Vec::new();
+    for event in &events {
+        let paths: Vec<PathBuf> = event
+            .paths
+            .iter()
+            .filter(|p| {
+                // 删除优先：路径最终不存在时，非 Deleted 记录无意义
+                if event.kind != ChangeKind::Deleted && has_path(&events, ChangeKind::Deleted, p) {
+                    return false;
+                }
+                // Modified 优先于 Created：文件最终存在且被修改过
+                if event.kind == ChangeKind::Created && has_path(&events, ChangeKind::Modified, p) {
+                    return false;
+                }
+                true
+            })
+            .cloned()
+            .collect();
+        if !paths.is_empty() {
+            out.push(WatchEvent { paths, kind: event.kind });
+        }
+    }
+    out
+}
+
+/// 判断 events 中是否存在指定 kind 且包含该路径的事件
+fn has_path(events: &[WatchEvent], kind: ChangeKind, path: &Path) -> bool {
+    events
+        .iter()
+        .any(|e| e.kind == kind && e.paths.iter().any(|p| p == path))
+}
 ///
 /// Modify 与 Remove 混合的窗口产出两个独立事件，删除路径不与被
 /// 修改路径混在一起，下游可直入清理而无需 exists() 推断。
@@ -343,5 +388,100 @@ mod tests {
         let aggregated = aggregate_events(&[mk(), mk()], &exts);
         assert_eq!(aggregated.len(), 1);
         assert_eq!(aggregated[0].paths, vec![PathBuf::from("src/a.rs")]);
+    }
+
+    // ---- 折叠（fold_events / process_batch）测试 ----
+    // 折叠语义：同路径跨 kind 事件按"窗口内最终态"合并——
+    // 删除优先于一切，Modified 优先于 Created；不同路径保持独立。
+
+    /// 测试事件构造器：任意 kind 的 notify 事件（路径/时刻可覆盖）
+    fn make_debounced(kind: notify::EventKind, path: &str) -> DebouncedEvent {
+        let mut e = notify::Event::new(kind);
+        e.paths = vec![PathBuf::from(path)];
+        DebouncedEvent::new(e, std::time::Instant::now())
+    }
+
+    /// Modified + Deleted 同路径 → 折叠为单个 Deleted（文件最终不存在）
+    #[test]
+    fn test_fold_modified_deleted() {
+        use notify::event::{DataChange, ModifyKind, RemoveKind};
+        let exts = vec!["rs".to_string()];
+        let events = vec![
+            make_debounced(notify::EventKind::Modify(ModifyKind::Data(DataChange::Content)), "src/a.rs"),
+            make_debounced(notify::EventKind::Remove(RemoveKind::File), "src/a.rs"),
+        ];
+        let folded = process_batch(&events, &exts);
+        assert_eq!(folded.len(), 1, "同路径 Modified+Deleted 应折叠为单事件");
+        assert_eq!(folded[0].kind, ChangeKind::Deleted);
+        assert_eq!(folded[0].paths, vec![PathBuf::from("src/a.rs")]);
+    }
+
+    /// Created + Deleted 同路径 → 折叠为单个 Deleted（创建即删，最终不存在）
+    #[test]
+    fn test_fold_created_deleted() {
+        use notify::event::{CreateKind, RemoveKind};
+        let exts = vec!["rs".to_string()];
+        let events = vec![
+            make_debounced(notify::EventKind::Create(CreateKind::File), "src/a.rs"),
+            make_debounced(notify::EventKind::Remove(RemoveKind::File), "src/a.rs"),
+        ];
+        let folded = process_batch(&events, &exts);
+        assert_eq!(folded.len(), 1);
+        assert_eq!(folded[0].kind, ChangeKind::Deleted);
+    }
+
+    /// Created + Modified 同路径 → 折叠为单个 Modified（文件最终存在且被修改）
+    #[test]
+    fn test_fold_created_modified() {
+        use notify::event::{CreateKind, DataChange, ModifyKind};
+        let exts = vec!["rs".to_string()];
+        let events = vec![
+            make_debounced(notify::EventKind::Create(CreateKind::File), "src/a.rs"),
+            make_debounced(notify::EventKind::Modify(ModifyKind::Data(DataChange::Content)), "src/a.rs"),
+        ];
+        let folded = process_batch(&events, &exts);
+        assert_eq!(folded.len(), 1);
+        assert_eq!(folded[0].kind, ChangeKind::Modified);
+        assert_eq!(folded[0].paths, vec![PathBuf::from("src/a.rs")]);
+    }
+
+    /// 聚合+折叠：同一路径的 Modify+Remove 产出单一 Deleted 事件
+    /// （aggregate 先分组，fold 再按最终态合并——下游只会跑一次删除清理）
+    #[test]
+    fn test_aggregate_events_same_path_cross_kind() {
+        use notify::event::{DataChange, ModifyKind, RemoveKind};
+        let exts = vec!["rs".to_string()];
+        let events = vec![
+            make_debounced(notify::EventKind::Modify(ModifyKind::Data(DataChange::Content)), "src/a.rs"),
+            make_debounced(notify::EventKind::Remove(RemoveKind::File), "src/a.rs"),
+        ];
+        let folded = process_batch(&events, &exts);
+        assert_eq!(folded.len(), 1);
+        assert_eq!(folded[0].kind, ChangeKind::Deleted);
+    }
+
+    /// 不同路径互不影响：a 的 Modify+Remove 折叠为 Deleted，
+    /// b 的 Modify 独立保留（折叠不吞并无关路径）
+    #[test]
+    fn test_aggregate_events_preserves_distinct_paths() {
+        use notify::event::{DataChange, ModifyKind, RemoveKind};
+        let exts = vec!["rs".to_string()];
+        let events = vec![
+            make_debounced(notify::EventKind::Modify(ModifyKind::Data(DataChange::Content)), "src/a.rs"),
+            make_debounced(notify::EventKind::Remove(RemoveKind::File), "src/a.rs"),
+            make_debounced(notify::EventKind::Modify(ModifyKind::Data(DataChange::Content)), "src/b.rs"),
+        ];
+        let folded = process_batch(&events, &exts);
+        assert_eq!(folded.len(), 2, "a 折叠为 Deleted、b 独立 Modified，共 2 事件");
+        let deleted = folded
+            .iter()
+            .find(|e| e.kind == ChangeKind::Deleted)
+            .expect("应存在 Deleted 事件");
+        assert_eq!(deleted.paths, vec![PathBuf::from("src/a.rs")]);
+        let modified = folded
+            .iter()
+            .find(|e| e.kind == ChangeKind::Modified)
+            .expect("应存在 Modified 事件");
+        assert_eq!(modified.paths, vec![PathBuf::from("src/b.rs")]);
     }
 }

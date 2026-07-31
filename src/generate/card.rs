@@ -55,6 +55,8 @@ pub struct CardGenerator<'a, P: LlmProvider> {
     language: String,
     /// 生效计划（用于 notes 注入，None 表示未启用）
     plan: Option<ResolvedPlan>,
+    /// 项目配置（卡片定位：生成前从旧卡片恢复人工修改记录，与单卡路径同构）
+    config: WikiConfig,
 }
 
 impl<'a, P: LlmProvider> CardGenerator<'a, P> {
@@ -63,8 +65,10 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
     /// max_concurrent 控制并行 LLM 调用的最大并发数（0 表示不限制）。
     /// language 指定生成内容的语言。
     /// plan 为解析后的生效计划（无计划时传 None）。
+    /// config 提供产物路径定位（卡片文件读/写规则），供人工修改记录恢复。
     pub fn new(
         provider: &'a P,
+        config: WikiConfig,
         max_concurrent: usize,
         language: String,
         plan: Option<ResolvedPlan>,
@@ -76,6 +80,7 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
             semaphore: tokio::sync::Semaphore::new(max),
             language,
             plan,
+            config,
         }
     }
 
@@ -88,8 +93,8 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
     ///
     /// 跳过空块。LLM 调用失败时返回错误。
     /// 通过 Semaphore 控制并发（acquire → complete → release）。
-    /// pending_manual_edits 为旧卡片上的人工修改记录：注入 LLM 输入，
-    /// 且解析后回填新卡片（该字段由增量管道维护，LLM 不会输出，回填保证不丢）。
+    /// pending_manual_edits 为人工修改记录：注入 LLM 输入，
+    /// 且解析后回填新卡片（该字段由管道维护，LLM 不会输出，回填保证不丢）。
     pub async fn generate_card(
         &self,
         chunk: &Chunk,
@@ -124,16 +129,34 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
     /// 并行生成所有模块的 Knowledge Card
     ///
     /// 使用 join_all + Semaphore 实现可控并发。失败的卡片会被跳过（不中断整体流程）。
-    /// 人工修改记录不在此层注入：全量/增量管道路径由 lib.rs 的 inject_manual_edits
-    /// 在生成后统一写入卡片内存；单卡重生成（generate_module_card）才从磁盘恢复记录。
+    ///
+    /// 人工修改记录的两路来源在**生成前**合并为 LLM 输入（与单卡重生成
+    /// generate_module_card 同构，管道不再"生成后补记"）：
+    /// 1. 旧卡片磁盘上的"人工修改待同步"节（recover_pending_manual_edits，
+    ///    记录随生成回填到新卡片，保证不丢）；
+    /// 2. extra_edits：本次运行新检测到的人工修改（模块名 → 记录文本），
+    ///    由上层（lib.rs 从状态指纹比对结果）组装传入。
     pub async fn generate_all_cards(
         &self,
         chunks: &[Chunk],
+        extra_edits: &std::collections::HashMap<String, Vec<String>>,
     ) -> Result<Vec<KnowledgeCard>> {
         let mut handles = Vec::with_capacity(chunks.len());
 
         for chunk in chunks {
-            handles.push(self.generate_card(chunk, &[]));
+            let module = chunk.module_path.join("::");
+            let mut pending = self.recover_pending_manual_edits(&module);
+            if let Some(extra) = extra_edits.get(&module) {
+                for note in extra {
+                    if !pending.contains(note) {
+                        pending.push(note.clone());
+                    }
+                }
+            }
+            // async move 拥有 pending（避免 future 借用循环内临时值）；
+            // chunk 为 &Chunk，self 为 &self，均为引用移动
+            let generator = self;
+            handles.push(async move { generator.generate_card(chunk, &pending).await });
         }
 
         let results = join_all(handles).await;
@@ -150,6 +173,19 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
             .collect();
 
         Ok(cards)
+    }
+
+    /// 从旧卡片磁盘文件恢复"人工修改待同步"记录（无该节时返回空）
+    ///
+    /// 按模块名精确定位卡片文件（read_card 路径规则与渲染层一致），
+    /// 解析"## 人工修改待同步"节内容——与单卡重生成路径共用同一解析逻辑，
+    /// 保证两条路径对记录的恢复行为一致。
+    fn recover_pending_manual_edits(&self, module: &str) -> Vec<String> {
+        read_card(&self.config, module)
+            .ok()
+            .flatten()
+            .map(|content| extract_pending_manual_edits(&content))
+            .unwrap_or_default()
     }
 }
 
@@ -247,7 +283,7 @@ pub async fn generate_module_card(provider: &Provider, config: &WikiConfig, modu
         .unwrap_or_default();
 
     let plan = crate::config::plan::resolve_plan(config)?;
-    let generator = CardGenerator::new(provider, 1, config.wiki.language.clone(), plan);
+    let generator = CardGenerator::new(provider, config.clone(), 1, config.wiki.language.clone(), plan);
     let card = generator.generate_card(&chunk, &pending).await?;
     let content = crate::output::markdown::render_knowledge_card(&card);
 
@@ -518,7 +554,8 @@ mod tests {
     async fn test_generate_card_keeps_pending_manual_edits() {
         let chunk = make_test_chunk();
         let provider = Provider::Mock(MockProvider::new());
-        let generator = CardGenerator::new(&provider, 1, "zh".into(), None);
+        let (config, dir) = card_fixture("pending", "src", "旧卡片内容");
+        let generator = CardGenerator::new(&provider, config, 1, "zh".into(), None);
         // 带记录：LLM 输入注入且生成后回填（渲染不丢）
         let pending = vec!["人工修改待同步: wiki/zh/src_config.md 内容摘要: 用户改的".into()];
         let card = generator.generate_card(&chunk, &pending).await.unwrap();
@@ -526,5 +563,49 @@ mod tests {
         // 无记录：不回填
         let card = generator.generate_card(&chunk, &[]).await.unwrap();
         assert!(card.pending_manual_edits.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 管道路径闭环：generate_all_cards 生成前合并两路人工修改记录——
+    /// 旧卡片磁盘恢复（recover_pending_manual_edits）+ 本次新增（extra_edits），
+    /// 去重后注入 LLM 输入并回填新卡片
+    #[tokio::test]
+    async fn test_generate_all_cards_merges_recovered_and_extra_edits() {
+        let chunk = make_test_chunk();
+        let provider = Provider::Mock(MockProvider::new());
+        // 预置旧卡片：含一条"人工修改待同步"记录（磁盘恢复源）
+        let (config, dir) = card_fixture(
+            "merge",
+            "src",
+            "# src\n\n## 摘要\n旧内容\n\n## 人工修改待同步\n\n- 人工修改待同步: wiki/zh/src.md 内容摘要: 旧记录\n",
+        );
+
+        let generator = CardGenerator::new(&provider, config, 1, "zh".into(), None);
+        // 本次新增记录（模块名 → 记录文本，lib.rs 组装）
+        let mut extra = std::collections::HashMap::new();
+        extra.insert(
+            "src".to_string(),
+            vec!["人工修改待同步: wiki/zh/src.md 内容摘要: 新修改".to_string()],
+        );
+
+        let cards = generator.generate_all_cards(&[chunk], &extra).await.unwrap();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].pending_manual_edits.len(), 2, "旧记录 + 新记录应合并为 2 条");
+        assert!(cards[0].pending_manual_edits.iter().any(|n| n.contains("旧记录")));
+        assert!(cards[0].pending_manual_edits.iter().any(|n| n.contains("新修改")));
+
+        // 去重：同一条记录同时存在于磁盘与 extra 时只保留一份
+        let cards2 = generator.generate_all_cards(
+            &[make_test_chunk()],
+            &extra,
+        ).await.unwrap();
+        assert!(
+            cards2[0].pending_manual_edits.len() <= 2,
+            "重复记录应被去重: {:?}",
+            cards2[0].pending_manual_edits
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

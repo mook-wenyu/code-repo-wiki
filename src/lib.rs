@@ -8,6 +8,7 @@ pub mod incremental;
 pub mod search;
 pub mod commands;
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use std::sync::{Arc, OnceLock};
@@ -101,13 +102,18 @@ fn save_generation_state(
         let mut protected_docs: Vec<String> = protected.iter().cloned().collect();
         protected_docs.sort();
         state.protected_docs = protected_docs;
-        if let Ok(fps) = incremental::state::GenerationState::record_doc_fingerprints(
+        if let Ok((fps, modules)) = incremental::state::GenerationState::record_doc_fingerprints(
             documents,
             cards,
             output_dir,
             &output::wiki_languages(config),
         ) {
-            state.doc_fingerprints = fps.into_iter().filter(|(p, _)| !protected.contains(p)).collect();
+            // 全量记录指纹与模块归属（含保护集文档）：受保护文档本轮被跳过
+            // 写盘，磁盘上仍是人工版，记录的即人工版指纹——下次再被人为修改
+            // 时指纹比对仍能命中检测，反向同步可持续生效；卡片侧的记录注入
+            // 自带去重（contains 检查），同一修改不会重复同步。
+            state.doc_fingerprints = fps;
+            state.doc_modules = modules;
         }
         let _ = state.save(&state_dir);
     }
@@ -146,8 +152,9 @@ pub fn run_pipeline_with_progress(
     let _enter = _span.enter();
     let start = std::time::Instant::now();
 
-    // 保护集：旧 state 的 protected_docs + 检测出的人工修改；force 时清空
-    let (protected, _old_state) = load_protection(&config, force);
+    // 保护集：旧 state 的 protected_docs + 检测出的人工修改；force 时清空。
+    // old_state 同时供人工修改反向同步组装（collect_manual_edits → 生成前注入）
+    let (protected, old_state) = load_protection(&config, force);
 
     // Phase 1: 扫描
     let file_insights = ingest::scan_and_parse(&config)?;
@@ -169,10 +176,12 @@ pub fn run_pipeline_with_progress(
     stats.total_edges = graph.graph.edge_count();
     stats.modules_detected = modules.len();
 
-    // Phase 3: 生成（需要 tokio 运行时）
+    // Phase 3: 生成（需要 tokio 运行时）。人工修改记录在生成前注入
+    // LLM 输入（collect_manual_edits：旧状态指纹比对 + 模块归属精确匹配）
     on_progress(ProgressEvent { stage: "chunking", percent: 30 });
     let rt = get_global_runtime();
-    let gen_output = rt.block_on(generate::run_generation(&graph, &file_insights, &config))?;
+    let extra_edits = collect_manual_edits(old_state.as_ref());
+    let gen_output = rt.block_on(generate::run_generation(&graph, &file_insights, &config, &extra_edits))?;
     on_progress(ProgressEvent { stage: "cards", percent: 60 });
 
     // Phase 4: 输出
@@ -289,6 +298,15 @@ pub fn run_incremental_pipeline(
 
     // 回退全量时 changed_files 非空但 affected_modules 为空，仅凭 changed_files 判断是否跳过
     if inc_result.changed_files.is_empty() {
+        // 无代码变更时若存在人工修改，仍需将其反向同步到卡片文件
+        //（生成路径跳过时此处的直接写盘是唯一落卡途径；记录在下次
+        // 有变更的生成时经 extract_pending_manual_edits 注入 LLM 输入）
+        if let Some(state) = &old_state {
+            let synced = sync_manual_edits_to_cards(&config, state)?;
+            if synced > 0 {
+                tracing::info!("人工修改已反向同步到 {} 张卡片", synced);
+            }
+        }
         tracing::info!("无变更，跳过生成");
         let stats = AnalysisStats {
             files_scanned: file_insights.len(),
@@ -303,21 +321,14 @@ pub fn run_incremental_pipeline(
         });
     }
 
-    // Phase 3: 增量生成
+    // Phase 3: 增量生成。人工修改记录在生成前注入 LLM 输入
+    //（collect_manual_edits 基于旧状态指纹比对；受保护页面本身不被覆盖）
     let rt = get_global_runtime();
     let changed_set: std::collections::HashSet<std::path::PathBuf> = inc_result.changed_files.iter().cloned().collect();
-    let mut gen_output = rt.block_on(
-        generate::run_generation_filtered(&graph, &file_insights, &config, &changed_set)
+    let extra_edits = collect_manual_edits(old_state.as_ref());
+    let gen_output = rt.block_on(
+        generate::run_generation_filtered(&graph, &file_insights, &config, &changed_set, &extra_edits)
     )?;
-
-    // Phase 3b: 人工修改反向同步——检测到的人工修改页写入对应卡片的
-    // pending_manual_edits（下次生成时作为 LLM 输入；受保护页面本身不被覆盖）
-    if let Some(state) = &old_state {
-        let modified = state.detect_manually_modified();
-        if !modified.is_empty() {
-            inject_manual_edits(&mut gen_output.cards, &modified);
-        }
-    }
 
     // Phase 4: 全量输出（保持索引一致）
     output::render_all(&gen_output.documents, &gen_output.cards, &graph, &config, &protected)?;
@@ -401,35 +412,79 @@ pub(crate) fn cleanup_deleted_outputs(
     }
 }
 
-/// 将人工修改的文档路径与内容摘要写入对应模块卡片的 `pending_manual_edits`
+/// 组装"人工修改 → 卡片记录"映射（模块名 → 记录文本列表）
 ///
 /// 官方语义："人工修改反向同步到对应知识卡片"——被人工编辑过的页面不
 /// 被自动更新覆盖，且修改被记录到卡片，下次生成时作为 LLM 输入提示。
 ///
-/// 定位规则：文档文件名主体（如 `src_testmodule`）与卡片文件名主体
-/// （`module.replace("::","_")`，output::card_file_stem 同一来源）一致
-/// 即视为对应卡片；wiki 页与卡片两类人工修改均按此规则回写。
-/// 内容摘要取磁盘当前内容（人工修改版）前 200 字符。
-pub fn inject_manual_edits(cards: &mut [model::KnowledgeCard], modified_paths: &[String]) {
-    for path in modified_paths {
-        let Some(stem) = Path::new(path)
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-        else {
+/// 来源 = 状态中指纹不匹配的产物路径（detect_manually_modified）+ 其模块
+/// 归属（doc_modules 精确映射：产物路径 → 模块名）。精确匹配杜绝了旧实现
+/// stem 匹配在模块名含下划线时（src::foo_bar vs src::foo::bar 均压平为
+/// src_foo_bar）的串卡片歧义；无模块归属的全局文档（api/overview/toc）跳过。
+/// 记录在生成层（CardGenerator::generate_all_cards）于 LLM 输入前合并注入。
+pub fn collect_manual_edits(
+    state: Option<&incremental::state::GenerationState>,
+) -> HashMap<String, Vec<String>> {
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    let Some(state) = state else { return out };
+    for path in state.detect_manually_modified() {
+        let Some(module) = state.doc_modules.get(&path) else {
             continue;
         };
-        let summary = std::fs::read_to_string(path)
+        let summary = std::fs::read_to_string(&path)
             .map(|content| content.chars().take(200).collect::<String>())
             .unwrap_or_default();
         let note = format!("人工修改待同步: {path} 内容摘要: {summary}");
-        for card in cards.iter_mut() {
-            if output::card_file_stem(&card.module_name) == stem
-                && !card.pending_manual_edits.contains(&note)
-            {
-                card.pending_manual_edits.push(note.clone());
+        out.entry(module.clone()).or_default().push(note);
+    }
+    out
+}
+
+/// 将检测到的人工修改记录直接同步到磁盘卡片（无代码变更时的反向同步路径）
+///
+/// 生成路径（有代码变更）由 CardGenerator 在 LLM 输入前注入记录并随卡片
+/// 重写落盘；本函数覆盖"无代码变更但有人工修改"的场景——update 因
+/// changed_files 为空而跳过生成时，人工修改记录也必须落到卡片文件：
+/// 读现有卡片文本 → 合并记录（去重，含已有"人工修改待同步"节时在节内
+/// 追加，否则在文件末尾新建节）→ 重写。记录下次生成时经
+/// extract_pending_manual_edits 恢复为 LLM 输入，两条路径最终都收敛于
+/// 卡片文件，保证反向同步语义在任何更新形态下都不丢。
+pub fn sync_manual_edits_to_cards(
+    config: &config::schema::WikiConfig,
+    state: &incremental::state::GenerationState,
+) -> anyhow::Result<usize> {
+    let edits = collect_manual_edits(Some(state));
+    if edits.is_empty() {
+        return Ok(0);
+    }
+    let mut synced = 0usize;
+    for (module, notes) in &edits {
+        let card_path =
+            output::card_page_path(Path::new(&config.output.dir), &config.wiki.language, module);
+        let mut content = std::fs::read_to_string(&card_path).unwrap_or_default();
+        let mut changed = false;
+        for note in notes {
+            if content.contains(note.as_str()) {
+                continue;
+            }
+            changed = true;
+            if let Some(section) = content.find("## 人工修改待同步") {
+                // 节内追加：定位节后第一个空白行（节标题与列表之间）
+                let insert_at = content[section..]
+                    .find("\n\n")
+                    .map(|i| section + i + 2)
+                    .unwrap_or(content.len());
+                content.insert_str(insert_at, &format!("- {note}\n"));
+            } else {
+                content.push_str(&format!("\n## 人工修改待同步\n\n- {note}\n"));
             }
         }
+        if changed {
+            std::fs::write(&card_path, content)?;
+            synced += 1;
+        }
     }
+    Ok(synced)
 }
 
 /// 启动文件监听模式
@@ -770,12 +825,17 @@ mod tests {
             file_fingerprints: std::collections::HashMap::new(),
             module_fingerprints: std::collections::HashMap::new(),
             doc_fingerprints: std::collections::HashMap::new(),
+            doc_modules: std::collections::HashMap::new(),
             protected_docs: vec![],
             generated_at: String::new(),
         };
         state.doc_fingerprints.insert(
             doc_path.to_string_lossy().to_string(),
             "与磁盘内容不同的指纹".into(),
+        );
+        state.doc_modules.insert(
+            doc_path.to_string_lossy().to_string(),
+            "src".into(),
         );
         state.save(&state_dir).unwrap();
 

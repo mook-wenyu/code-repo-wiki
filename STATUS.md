@@ -3,27 +3,24 @@
 ## 一、架构健康度
 - 当前模块总数：13（config/model/ingest/analysis/generate/output/incremental/search/commands + generate/schema + plan + lib.rs + main.rs）
 - 违规跨模块调用：无
-- 测试覆盖率：cargo check --all-targets 0 错误 0 警告；cargo clippy --all-targets -- -D warnings 0 警告；cargo test 202 通过 0 失败（159 lib + 43 集成/文档）
-- 代码量：约 9,700 行 / 55 .rs 文件（ast_chunker.rs 已删除）
+- 测试覆盖率：cargo check --all-targets 0 错误 0 警告；cargo clippy --all-targets -- -D warnings 0 警告；cargo test 209 通过 0 失败（164 lib + 45 集成/文档）
+- 代码量：约 9,800 行 / 55 .rs 文件（ast_chunker.rs 已删除）
 
 ## 二、本次变更影响范围
-- 修改的功能：Qoder 对等计划全部实现——搜索层收敛、overview 独立生成、api.md 主语言、三更新路径、插件补全、端到端测试
-- Phase 0.1/0.2：删除零消费的 ast_chunker.rs；CallGraph 接入 SearchAgent（call_index 预计算表，SearchHit 新增 callers/callees 字段，lib.rs 无需配合）
-- Phase 0.3/0.4：DocumentKind 新增 ProjectOverview 变体 + overview_prompt 独立 LLM 生成（全量/增量共用 generate_global_documents），output 删除占位拼接，overview 走 write_document（指纹/保护/多语言自然覆盖）；api.md 只写主语言
-- Phase 1.1：WatchEvent{paths,kind} 显式事件类型，run_incremental_pipeline 新增 change_kind 参数，Deleted 直入 cleanup_deleted_outputs
-- Phase 1.2：新 CLI 子命令 sync（commands.rs sync_from_git：指纹不存在→记录、不匹配→更新、受保护→跳过，不触发 LLM）
-- Phase 1.3：KnowledgeCard.pending_manual_edits 字段 + lib.rs inject_manual_edits（定位卡片记录路径+摘要）+ prompt 注入"人工修改待同步"节 + markdown/html 渲染
-- Phase 2：插件 /knowledge 4 子命令支持 --reference 转发（extractReferences helper，不存在文件 CLI 显式报错）；/wiki 新增 sync 子命令
-- Phase 3.1：tests/test_e2e.rs 端到端测试（generate 产物 → 增量只重写受影响页 → Deleted 清理）；config 新增 LlmProviderType::Mock（serde "mock"）供无网络测试/CI 使用
-- 摸到的文件：src/search/{ast_chunker(删),mod,agent,hybrid,callgraph}.rs、src/model/document.rs、src/generate/{wiki,mod,card,prompt}.rs、src/output/{mod,markdown,html}.rs、src/incremental/{watch,mod,state}.rs、src/lib.rs、src/commands.rs、src/main.rs、src/config/schema.rs、.opencode/plugins/repo-wiki.ts、tests/{test_e2e(新),test_overview(新),test_git_sync(新),test_multilang,test_protected_files,test_cli}.rs
-- 是否改变了接口/契约：run_incremental_pipeline 新增 watch_paths/change_kind 参数；SearchHit 新增 callers/callees（serde default 向后兼容）；KnowledgeCard 新增 pending_manual_edits；LlmProviderType 新增 mock 变体；卡片 markdown 可选节
+- 修改的功能：Qoder 对等计划（followup 1785526395084）实现收尾——插件层重建、watch 折叠、人工修改反向同步闭环、真实管道验证
+- Phase 1（插件层）：repo-wiki.ts 重写为官方 Hooks 形状（12 工具映射，命名导出+Plugin 类型）；.opencode/commands/{wiki,knowledge}.md 命令模板（@file→reference 转译引导）；.opencode.json 清理无效 plugins 键；opencode.rs 重写（幂等清理+is_installed 以文件存在性为准，7 单测）
+- Phase 3（watch 折叠）：process_batch/fold_events 同路径跨 kind 折叠（Modified+Deleted→Deleted 等最终态语义），5 新测试
+- Phase 4（1.3 闭环）：collect_manual_edits（模块精确匹配）+ CardGenerator 生成前注入（recover 旧记录+extra_edits 合并）+ sync_manual_edits_to_cards（无变更路径直写卡片）+ save 全量记录指纹（保护持续检测）+ render_all 保护页仍写卡片；5 新测试
+- Phase 2（真实冒烟）：mock provider 真实 generate/sync/update 全链路验证通过（证据 .swarm/evidence/real-pipeline.md）
+- 摸到的文件：.opencode/plugins/repo-wiki.ts、.opencode/commands/{wiki,knowledge}.md、.opencode.json、src/config/opencode.rs、src/incremental/{watch,state}.rs、src/generate/{card,mod}.rs、src/output/mod.rs、src/lib.rs、tests/test_protected_files.rs、.swarm/evidence/*
+- 是否改变了接口/契约：sync_manual_edits_to_cards/collect_manual_edits 新增 pub 函数；GenerationState.doc_modules 新增字段（serde default 兼容旧状态）；render_all 保护语义细化（页面跳过、卡片仍写）
 
 ## 三、已知风险点（由AI诚实自曝）
-- 全量/增量管道路径（generate_all_cards）的 LLM 输入注入未闭环：CardGenerator 不访问输出目录，管道路径记录注入靠 lib.rs inject_manual_edits 生成后完成；单卡重生成路径（CLI card）闭环完整
-- extract_pending_manual_edits 纯文本节解析依赖渲染层固定格式
-- inject_manual_edits 的 stem 匹配：模块名含下划线时（src::foo_bar vs src::foo::bar 均成 src_foo_bar）可能串卡片，属现有命名规则固有限制
+- 插件实际加载需新 opencode 会话验证（本会话早于修复启动，无法自证；已记录 .swarm/evidence/plugin-layer.md）
+- 模块页文件名含绝对路径（非 git 仓库时 module_path 含全路径）→ 页面与卡片文件名冗长；与官方"按模块"语义的观感差异，功能正确
+- output.dir 与 search.index_dir 的相对路径解析基准不一致（index_dir 相对 cwd），冒烟中产物出现 .repo-wiki/.repo-wiki 嵌套——既有行为，未在本次范围修复
 - 工作树有大量未提交改动（多轮会话累积），提交前需协调
 
 ## 四、下次最该做的事（AI建议）
-1. 若需管道路径的 LLM 输入闭环：给 CardGenerator 注入输出目录，生成前从旧卡片恢复 pending 记录（需改 generate/mod.rs 与 lib.rs）
-2. 多轮未提交改动协调提交（git status 当前 ~25 个变更文件）
+1. 新会话验证插件加载与 /knowledge 命令真实行为（启动日志+手动 /wiki sync）
+2. 多轮未提交改动协调提交（git status 当前 ~30 个变更文件）

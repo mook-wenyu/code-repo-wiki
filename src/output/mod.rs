@@ -109,9 +109,6 @@ pub fn render_all(
     for doc in documents {
         // 路径计算与 write_document 落盘共用 wiki_page_path（人工修改保护判定依据）
         let wiki_path = wiki_page_path(output_dir, &doc.language, doc);
-        if protected.contains(&wiki_path.to_string_lossy().to_string()) {
-            continue;
-        }
         let doc_cards: Vec<&KnowledgeCard> = cards
             .iter()
             .filter(|c| doc.module_path.iter().any(|p| c.module_name.contains(p)))
@@ -125,6 +122,16 @@ pub fn render_all(
                 )
             })
             .collect();
+        if protected.contains(&wiki_path.to_string_lossy().to_string()) {
+            // 页面受人工修改保护：跳过页面写盘（保留人工版），但关联卡片
+            // 仍写盘——人工修改记录（pending_manual_edits）随本次生成注入
+            // 卡片，若一并跳过则反向同步永远无法落盘
+            for card in &doc_cards {
+                let card_path = card_page_path(output_dir, &doc.language, &card.module_name);
+                std::fs::write(&card_path, markdown::render_knowledge_card(card))?;
+            }
+            continue;
+        }
         write_document(doc, &doc_cards, output_dir, &doc.language)?;
     }
 

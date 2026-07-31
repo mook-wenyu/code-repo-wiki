@@ -111,7 +111,7 @@ fn test_overview_protected() {
 
     // 记录生成指纹（与 update 流程一致：render_all 后 record_doc_fingerprints）
     let languages = vec!["zh".to_string()];
-    let fps = GenerationState::record_doc_fingerprints(&[module_doc.clone(), overview], &[], &dir, &languages).unwrap();
+    let (fps, _modules) = GenerationState::record_doc_fingerprints(&[module_doc.clone(), overview], &[], &dir, &languages).unwrap();
     assert!(fps.contains_key(&path_str), "overview 指纹应被记录");
     let mut doc_fingerprints = HashMap::new();
     doc_fingerprints.extend(fps);
@@ -120,6 +120,7 @@ fn test_overview_protected() {
         file_fingerprints: HashMap::new(),
         module_fingerprints: HashMap::new(),
         doc_fingerprints,
+        doc_modules: HashMap::new(),
         protected_docs: Vec::new(),
         generated_at: String::new(),
     };
