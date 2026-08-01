@@ -27,3 +27,10 @@
 ## 四、下次最该做的事（AI建议）
 1. 大仓库（万级文件）实测社区检测粒度与 LLM 全量生成耗时，按实测调 CPM resolution
 2. status 命令补真实产物检查（当前桩实现）；sample-repo fixture 配置改为 mock provider
+
+## 五、未完成项清零计划（已拍板，待实施）
+- 计划文档：.opencode/plans/1785628800000-tidying-up.md（T0-T5 共 20 任务，commit cad7eb9）
+- 双子代理审计产出：A 类 3 项（output.format 死键/status 桩/card_test_regex.txt 残留）+ B 类 5 项死代码（用户拍板保留 complete_stream）+ C 类 4 项死键 + D 类 3 项（describe_modules 信号量/评测断言/CLI 测试）
+- **新发现 2 缺陷（子代理 B）**：①affected_modules 计算后未消费——签名变更不会重生成依赖模块文档（T2 接线）；②test_e2e 的 fixture 非 git 仓库导致增量断言走全量回退，从未真实验证差分（T3 补真实 git e2e）
+- 决策（2026-08-02 拍板）：保留 complete_stream；删 output.format 枚举；删 wiki.template/embed.dimension、default_top_k 接线；status 复用 lint 补健康检查；affected_modules 接线；真实 git e2e；三项评测断言全做；describe_modules 信号量；update/watch CLI 冒烟；cargo-machete 依赖审计
+- 工作树 default-config.toml 用户 embed 配置（百炼）待随 T0 提交
