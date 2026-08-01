@@ -5,6 +5,8 @@ use petgraph::visit::{EdgeRef, IntoNodeIdentifiers};
 
 use crate::model::{EdgeKind, KnowledgeGraph, NodeId};
 
+use super::change::{EntityChangeKind, EntityChangeSet};
+
 /// 在知识图谱上传播变更影响，返回所有受影响的模块名称
 ///
 /// 从变更文件节点出发，沿 Imports/DependsOn 边双向 BFS 遍历 3 层，
@@ -19,7 +21,78 @@ pub fn propagate_impact(changed_files: &[PathBuf], graph: &KnowledgeGraph, max_d
         .map(|p| p.to_string_lossy().to_string())
         .collect();
 
-    let start_nodes: Vec<NodeId> = graph
+    let start_nodes = find_start_nodes(&file_paths, graph);
+    if start_nodes.is_empty() {
+        return Vec::new();
+    }
+
+    let mut result: Vec<String> = propagate_from(start_nodes, graph, max_depth).into_iter().collect();
+    result.sort();
+    result
+}
+
+/// 语义影响传播：区分接口级与实现级变化（演进计划 T2.2）
+///
+/// 分类语义（change.rs）：
+/// - 接口级变化（新增/删除/签名变更）：会影响调用方，向依赖方双向传播；
+/// - 实现级变化（仅函数体修改）：只影响本模块产物。
+///
+/// 粒度说明：生成过滤是文件级（run_generation_filtered 按 changed_files），
+/// 因此接口级判定也按文件——文件内任一实体是接口级变化，整个文件按
+/// 接口级传播（保守，宁多勿漏）。
+///
+/// `entity_changes` 为空（FileWatch 策略无 git 信息、或分类失败）时
+/// 回退保守的双向传播（现状行为），保证不丢影响。
+pub fn propagate_impact_semantic(
+    changed_files: &[PathBuf],
+    entity_changes: &EntityChangeSet,
+    graph: &KnowledgeGraph,
+    max_depth: usize,
+) -> Vec<String> {
+    if graph.graph.node_count() == 0 {
+        return Vec::new();
+    }
+    if entity_changes.changes.is_empty() {
+        return propagate_impact(changed_files, graph, max_depth);
+    }
+
+    // 接口级变化的文件集合
+    let interface_files: HashSet<String> = entity_changes
+        .changes
+        .iter()
+        .filter(|c| matches!(c.kind, EntityChangeKind::Added | EntityChangeKind::Removed | EntityChangeKind::SignatureChanged))
+        .map(|c| c.file.to_string_lossy().to_string())
+        .collect();
+
+    let mut affected: HashSet<String> = HashSet::new();
+    for file in changed_files {
+        let fp = file.to_string_lossy().to_string();
+        let start_nodes = find_start_nodes(std::slice::from_ref(&fp), graph);
+        if start_nodes.is_empty() {
+            continue;
+        }
+        if interface_files.contains(&fp) {
+            // 接口级：双向传播
+            affected.extend(propagate_from(start_nodes, graph, max_depth));
+        } else {
+            // 实现级：仅起点所在模块
+            for nid in start_nodes {
+                let module = graph.graph[nid].module_path.join("::");
+                if !module.is_empty() {
+                    affected.insert(module);
+                }
+            }
+        }
+    }
+
+    let mut result: Vec<String> = affected.into_iter().collect();
+    result.sort();
+    result
+}
+
+/// 按文件路径（子串匹配）找到图中的起点节点
+fn find_start_nodes(file_paths: &[String], graph: &KnowledgeGraph) -> Vec<NodeId> {
+    graph
         .graph
         .node_identifiers()
         .filter(|&nid| {
@@ -29,12 +102,11 @@ pub fn propagate_impact(changed_files: &[PathBuf], graph: &KnowledgeGraph, max_d
                 .map(|fp| file_paths.iter().any(|cfp| fp.contains(cfp.as_str())))
                 .unwrap_or(false)
         })
-        .collect();
+        .collect()
+}
 
-    if start_nodes.is_empty() {
-        return Vec::new();
-    }
-
+/// 从起点集合双向 BFS 传播影响，返回受影响模块名集合（起点自身计入）
+fn propagate_from(start_nodes: Vec<NodeId>, graph: &KnowledgeGraph, max_depth: usize) -> HashSet<String> {
     let mut affected: HashSet<String> = HashSet::new();
 
     for &start in &start_nodes {
@@ -86,9 +158,7 @@ pub fn propagate_impact(changed_files: &[PathBuf], graph: &KnowledgeGraph, max_d
         }
     }
 
-    let mut result: Vec<String> = affected.into_iter().collect();
-    result.sort();
-    result
+    affected
 }
 
 #[cfg(test)]
@@ -213,5 +283,73 @@ mod tests {
 
         let unique: std::collections::HashSet<_> = affected.iter().cloned().collect();
         assert_eq!(affected.len(), unique.len());
+    }
+
+    /// 语义传播：仅实现级变化（BodyChanged）→ 只影响本模块，不向依赖方传播
+    #[test]
+    fn test_semantic_body_change_only_local() {
+        let graph = make_simple_graph();
+        let changed = vec![PathBuf::from("src/db.rs")];
+        let changes = EntityChangeSet {
+            changes: vec![crate::incremental::change::EntityChange {
+                file: PathBuf::from("src/db.rs"),
+                entity_name: "load".into(),
+                kind: crate::incremental::change::EntityChangeKind::BodyChanged,
+                old_range: Some((1, 5)),
+                new_range: Some((1, 8)),
+            }],
+        };
+        let affected = propagate_impact_semantic(&changed, &changes, &graph, 3);
+        // 仅 db 自身（net 导入 db、core 依赖 net 都不应受影响）
+        assert_eq!(affected, vec!["db".to_string()]);
+    }
+
+    /// 语义传播：签名变化（接口级）→ 向依赖方传播
+    #[test]
+    fn test_semantic_signature_change_propagates() {
+        let graph = make_simple_graph();
+        let changed = vec![PathBuf::from("src/db.rs")];
+        let changes = EntityChangeSet {
+            changes: vec![crate::incremental::change::EntityChange {
+                file: PathBuf::from("src/db.rs"),
+                entity_name: "load".into(),
+                kind: crate::incremental::change::EntityChangeKind::SignatureChanged,
+                old_range: Some((1, 5)),
+                new_range: Some((1, 5)),
+            }],
+        };
+        let affected = propagate_impact_semantic(&changed, &changes, &graph, 3);
+        assert!(affected.contains(&"db".to_string()));
+        assert!(affected.contains(&"net".to_string()));
+        assert!(affected.contains(&"core".to_string()));
+    }
+
+    /// 语义传播：删除（接口级）→ 向依赖方传播
+    #[test]
+    fn test_semantic_removed_propagates() {
+        let graph = make_simple_graph();
+        let changed = vec![PathBuf::from("src/db.rs")];
+        let changes = EntityChangeSet {
+            changes: vec![crate::incremental::change::EntityChange {
+                file: PathBuf::from("src/db.rs"),
+                entity_name: "load".into(),
+                kind: crate::incremental::change::EntityChangeKind::Removed,
+                old_range: Some((1, 5)),
+                new_range: None,
+            }],
+        };
+        let affected = propagate_impact_semantic(&changed, &changes, &graph, 3);
+        assert!(affected.contains(&"net".to_string()), "删除应传播到导入方");
+        assert!(affected.contains(&"core".to_string()));
+    }
+
+    /// 语义传播：无实体变化信息 → 回退保守双向传播（与 propagate_impact 一致）
+    #[test]
+    fn test_semantic_empty_changes_falls_back() {
+        let graph = make_simple_graph();
+        let changed = vec![PathBuf::from("src/db.rs")];
+        let changes = EntityChangeSet::default();
+        let affected = propagate_impact_semantic(&changed, &changes, &graph, 3);
+        assert_eq!(affected.len(), 3, "空实体变化应回退双向传播");
     }
 }

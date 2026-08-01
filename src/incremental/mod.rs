@@ -1,3 +1,4 @@
+pub mod change;
 pub mod diff;
 pub mod impact;
 pub mod state;
@@ -11,8 +12,9 @@ use crate::config::schema::WikiConfig;
 use crate::ingest::parser::FileInsight;
 use crate::model::KnowledgeGraph;
 
+use self::change::{classify_entity_changes, EntityChangeSet};
 use self::diff::analyze_git_diff;
-use self::impact::propagate_impact;
+use self::impact::{propagate_impact, propagate_impact_semantic};
 use self::state::GenerationState;
 use crate::config::schema::IncrementalStrategy;
 
@@ -139,8 +141,22 @@ fn run_git_diff_incremental(
         }
     }
 
-    // 3. 在知识图谱上传播变更影响
-    let affected_modules = propagate_impact(&all_changed, graph, config.incremental.max_depth);
+    // 3. 实体级变化分类（演进计划 T2.2）：区分接口级/实现级变化，
+    // 语义传播只让接口级变化（新增/删除/签名变更）影响依赖方，
+    // 实现级变化（仅函数体修改）只重生成本模块——避免一次小改动
+    // 触发全仓库级联重生成。分类失败时回退保守的双向传播。
+    let entity_changes = match classify_entity_changes(&diff_result, insights) {
+        Ok(set) => set,
+        Err(e) => {
+            tracing::warn!("实体级变化分类失败，回退双向传播: {}", e);
+            EntityChangeSet::default()
+        }
+    };
+    let affected_modules = if entity_changes.changes.is_empty() {
+        propagate_impact(&all_changed, graph, config.incremental.max_depth)
+    } else {
+        propagate_impact_semantic(&all_changed, &entity_changes, graph, config.incremental.max_depth)
+    };
 
     // 4. 保存新的状态
     if let Ok(new_state) = GenerationState::from_insights(insights, &diff_result.to_commit) && let Err(e) = new_state.save(state_dir) {
