@@ -19,6 +19,8 @@ pub struct WikiGenerator<'a, P: LlmProvider> {
     call_count: AtomicUsize,
     /// 生效计划（用于 notes 注入与模板选择，None 表示未启用）
     plan: Option<ResolvedPlan>,
+    /// 生成失败的模块名列表（演进计划 T3.2 失败隔离：失败只记录不中断）
+    failed: std::sync::Mutex<Vec<String>>,
 }
 
 impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
@@ -30,12 +32,25 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
             provider,
             call_count: AtomicUsize::new(0),
             plan,
+            failed: std::sync::Mutex::new(Vec::new()),
         }
     }
 
     /// 返回已完成的 LLM 调用次数
     pub fn llm_call_count(&self) -> usize {
         self.call_count.load(Ordering::Relaxed)
+    }
+
+    /// 返回生成失败的模块名列表（演进计划 T3.2：失败隔离的可见性出口）
+    pub fn failed_modules(&self) -> Vec<String> {
+        self.failed.lock().map(|g| g.clone()).unwrap_or_default()
+    }
+
+    /// 记录一个模块的生成失败（内部使用，并发安全）
+    pub(crate) fn record_failure(&self, module: String) {
+        if let Ok(mut failed) = self.failed.lock() {
+            failed.push(module);
+        }
     }
 
     /// 生成模块 Wiki 页面

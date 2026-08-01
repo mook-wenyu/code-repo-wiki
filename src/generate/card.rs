@@ -57,6 +57,8 @@ pub struct CardGenerator<'a, P: LlmProvider> {
     plan: Option<ResolvedPlan>,
     /// 项目配置（卡片定位：生成前从旧卡片恢复人工修改记录，与单卡路径同构）
     config: WikiConfig,
+    /// 生成失败的模块名列表（演进计划 T3.2 失败隔离：失败只记录不中断）
+    failed: std::sync::Mutex<Vec<String>>,
 }
 
 impl<'a, P: LlmProvider> CardGenerator<'a, P> {
@@ -81,12 +83,18 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
             language,
             plan,
             config,
+            failed: std::sync::Mutex::new(Vec::new()),
         }
     }
 
     /// 返回已完成的 LLM 调用次数
     pub fn llm_call_count(&self) -> usize {
         self.call_count.load(Ordering::Relaxed)
+    }
+
+    /// 返回生成失败的模块名列表（演进计划 T3.2：失败隔离的可见性出口）
+    pub fn failed_modules(&self) -> Vec<String> {
+        self.failed.lock().map(|g| g.clone()).unwrap_or_default()
     }
 
     /// 为单个模块生成 Knowledge Card
@@ -160,14 +168,21 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
         }
 
         let results = join_all(handles).await;
-        let cards: Vec<KnowledgeCard> = results
+        let module_names: Vec<String> = chunks.iter().map(|c| c.module_path.join("::")).collect();
+        let cards: Vec<KnowledgeCard> = module_names
             .into_iter()
-            .filter_map(|r| {
-                if let Err(e) = &r {
-                    tracing::warn!("Knowledge Card 生成失败，跳过: {}", e);
-                    None
-                } else {
-                    r.ok()
+            .zip(results)
+            .filter_map(|(module, r)| {
+                match r {
+                    Ok(card) => Some(card),
+                    Err(e) => {
+                        // 失败隔离：记录失败的模块名（T3.2），不中断其他模块生成
+                        tracing::warn!("Knowledge Card 生成失败，跳过 {}: {}", module, e);
+                        if let Ok(mut failed) = self.failed.lock() {
+                            failed.push(module);
+                        }
+                        None
+                    }
                 }
             })
             .collect();

@@ -35,6 +35,8 @@ pub struct GenerationStats {
     pub total_tokens_used: usize,
     pub llm_calls: usize,
     pub generation_time_ms: u64,
+    /// 生成失败的模块名列表（演进计划 T3.2 失败隔离的可见性出口）
+    pub failed_modules: Vec<String>,
 }
 
 /// 根据配置创建 LLM Provider
@@ -143,6 +145,12 @@ pub async fn run_generation(
     let stats = GenerationStats {
         llm_calls: card_gen.llm_call_count() + wiki_gen.llm_call_count(),
         generation_time_ms: elapsed.as_millis() as u64,
+        // 失败隔离统计（T3.2）：卡片与页面两路失败模块名合并
+        failed_modules: {
+            let mut f = card_gen.failed_modules();
+            f.extend(wiki_gen.failed_modules());
+            f
+        },
         ..Default::default()
     };
 
@@ -272,6 +280,12 @@ pub async fn run_generation_filtered(
     let stats = GenerationStats {
         llm_calls: card_gen.llm_call_count() + wiki_gen.llm_call_count(),
         generation_time_ms: elapsed.as_millis() as u64,
+        // 失败隔离统计（T3.2）：卡片与页面两路失败模块名合并
+        failed_modules: {
+            let mut f = card_gen.failed_modules();
+            f.extend(wiki_gen.failed_modules());
+            f
+        },
         ..Default::default()
     };
 
@@ -380,6 +394,8 @@ async fn generate_wiki_pages<P: LlmProvider>(
 ) -> Vec<WikiDocument> {
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(max_concurrent.max(1)));
     let mut handles = Vec::with_capacity(chunks.len() * languages.len());
+    // 记录每个任务的模块名（失败时写入 wiki_gen 的失败列表，T3.2）
+    let mut task_modules = Vec::with_capacity(chunks.len() * languages.len());
     for lang in languages {
         let mut lang_cfg = config.clone();
         lang_cfg.wiki.language = lang.clone();
@@ -387,6 +403,7 @@ async fn generate_wiki_pages<P: LlmProvider>(
             let card_summary = cards.get(i).map(|c| c.summary.clone()).unwrap_or_default();
             let semaphore = semaphore.clone();
             let lang_cfg = lang_cfg.clone();
+            task_modules.push(chunk.module_path.join("::"));
             handles.push(async move {
                 let _permit = semaphore
                     .acquire()
@@ -398,12 +415,15 @@ async fn generate_wiki_pages<P: LlmProvider>(
     }
 
     let results = futures::future::join_all(handles).await;
-    results
+    task_modules
         .into_iter()
-        .filter_map(|r| match r {
+        .zip(results)
+        .filter_map(|(module, r)| match r {
             Ok(doc) => Some(doc),
             Err(e) => {
-                tracing::warn!("跳过 Wiki 页面生成: {}", e);
+                // 失败隔离：记录失败的模块名（T3.2），不中断其他模块生成
+                tracing::warn!("跳过 Wiki 页面生成 {}: {}", module, e);
+                wiki_gen.record_failure(module);
                 None
             }
         })
