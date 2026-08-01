@@ -17,6 +17,9 @@
 - **AST 精确搜索 CLI 暴露**：库层 AstQuery/SearchAgent::search_ast 完整但 CLI 未接（search 命令仅 text/semantic/hybrid 索引引擎）→ 新增 `execute_ast_search`（lib.rs，扫描源文件逐文件 AST 定位定义，返回文件+行号+签名，不依赖索引）+ main.rs Commands::AstSearch（文本/JSON 输出）+ 插件 ast_search 工具；真实验证函数/结构体定位、未找到提示、JSON；集成测试 test_ast_search_finds_definition
 - 摸到的文件：src/commands.rs、src/main.rs、src/output/{lint,html}.rs、src/generate/wiki.rs、src/lib.rs、default-config.toml、.opencode/plugins/repo-wiki.ts
 - 是否改变了接口/契约：新增 CLI 子命令 note；lint 现在执行过时检查（行为变化）；default-config dir 变化
+- 分析报告（只读评估，不改代码）：深度分析报告落盘 .scratch/analysis-report.md——对照 RepoDoc/CodeWiki/RepoSummary/HGEN 等 2024-2026 论文与工程，确认架构方向正确（知识图谱+影响传播路线），两大短板为模块聚类（目录启发式 vs 社区检测）与影响传播（文件路径 vs AST 实体级分类），另列 P0 三项收尾（提交 6 文件、card/page 并行、LLM 重试）
+- 深度演进实现计划（规划，未改代码）：.opencode/plans/1785542400000-deep-evolution.md——基于两并行子代理全源码证据化检索（发现 llm.rs 已有重试、卡片已有并发、RRF 非标准、default-config.toml 死键等 12 项关键事实）+ 网络查证（leiden-rs 0.8.1 支持 petgraph adapter、petgraph 0.8 兼容）。计划含 T0-T4 共 14 任务、D1-D10 决策点、F1-F4 雾区、依赖图与整体验收标准；核心：Leiden 社区检测聚类 + AST 实体级变化分类与语义影响传播 + 生成并发化 + 评测基准。等用户拍板决策点后开工
+- 决策拍板（2026-08-01，用户经 question 工具确认）：D1=leiden-rs；D2/D4/D5/D8/D9/D10 采纳推荐；**D3=实体级双层聚类**（新增 T1.2b 特征聚类任务：embedding 注入 + 纯结构降级，analysis 层经 DIP 接 Embedder trait）；D6=实体集合对比；D7=语义传播；存储=本地 markdown；范围=T0→T4 全量。计划已修订（T1.2b、T3.3 特征追溯联动、决策记录小节），等待用户确认后开工
 
 ## 三、已知风险点（由AI诚实自曝）
 - 大型仓库（10 模块）真实 LLM 全量生成超时 20min——deepseek 单次调用 ~60s，30+ 次调用，外部 API 性能限制；并行 describe 已缓解但 card/page 串行仍是瓶颈
