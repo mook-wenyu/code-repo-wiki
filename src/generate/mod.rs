@@ -18,6 +18,7 @@ use crate::incremental::change::EntityChangeSet;
 use crate::model::{KnowledgeCard, KnowledgeGraph, WikiDocument};
 
 use self::card::CardGenerator;
+use self::chunk::Chunk;
 use self::llm::{AnthropicProvider, LlmProvider, Message, OpenAiProvider, Provider};
 use self::wiki::WikiGenerator;
 
@@ -100,20 +101,16 @@ pub async fn run_generation(
     // 2.3 解析 wiki_plan.yaml 生效计划（禁用或文件缺失 → None；坏文件中断）
     let plan = crate::config::plan::resolve_plan(config)?;
 
-    // 2.5 Level 0 实体摘要：为每个实体生成摘要（跳过已有摘要的实体）
-    for chunk in &mut chunks {
-        for entity in &mut chunk.entities {
-            if entity.summary.is_none() {
-                let prompt =
-                    crate::generate::prompt::entity_summary_prompt(entity, &config.wiki.language, plan.as_ref());
-                let messages = vec![Message::user(prompt)];
-                match provider.complete(&messages).await {
-                    Ok(summary) => entity.summary = Some(summary.trim().to_string()),
-                    Err(e) => tracing::warn!("生成实体摘要失败: {}", e),
-                }
-            }
-        }
-    }
+    // 2.5 Level 0 实体摘要（并行，演进计划 T3.1）：为每个实体生成摘要
+    generate_entity_summaries(
+        &provider,
+        &mut chunks,
+        &config.wiki.language,
+        plan.as_ref(),
+        config.llm.max_concurrent,
+        |_, _| true,
+    )
+    .await;
 
     // 3. 并行生成 Knowledge Card
     let card_gen = CardGenerator::new(
@@ -128,30 +125,12 @@ pub async fn run_generation(
         .await?;
     tracing::info!("生成进度: 60% - 知识卡片生成完成，共 {} 个卡片", cards.len());
 
-    // 4. 按语言独立生成 Wiki 页面（卡片仅主语言生成一次，各语言页面复用主语言卡片摘要）
+    // 4. 按语言独立生成 Wiki 页面（并行，演进计划 T3.1；卡片仅主语言生成一次，
+    // 各语言页面复用主语言卡片摘要）
     let languages = collect_languages(config);
     let wiki_gen = WikiGenerator::new(&provider, plan.clone());
-    let mut documents = Vec::with_capacity(chunks.len() * languages.len());
-
-    for lang in &languages {
-        let mut lang_cfg = config.clone();
-        lang_cfg.wiki.language = lang.clone();
-        for (i, chunk) in chunks.iter().enumerate() {
-            let card_summary = cards.get(i).map(|c| c.summary.as_str()).unwrap_or("");
-            match wiki_gen
-                .generate_wiki_page(chunk, card_summary, &lang_cfg)
-                .await
-            {
-                Ok(doc) => documents.push(doc),
-                Err(e) => tracing::warn!(
-                    "跳过模块 {:?} 的 Wiki 页面生成 ({}): {}",
-                    chunk.module_path,
-                    lang,
-                    e
-                ),
-            }
-        }
-    }
+    let mut documents =
+        generate_wiki_pages(&wiki_gen, &chunks, &cards, &languages, config, config.llm.max_concurrent).await;
     tracing::info!("生成进度: 90% - Wiki 页面生成完成，共 {} 个页面", documents.len());
 
     // 5. 生成全局文档（架构概览 + 数据库 Schema，全量/增量共用同一辅助函数）
@@ -225,7 +204,7 @@ pub async fn run_generation_filtered(
     // 2.5 解析 wiki_plan.yaml 生效计划（禁用或文件缺失 → None；坏文件中断）
     let plan = crate::config::plan::resolve_plan(config)?;
 
-    // 2.5 增量实体摘要（演进计划 T2.3 实体级过滤）：
+    // 2.5 增量实体摘要（演进计划 T2.3 实体级过滤 + T3.1 并行化）：
     // 仅对**接口级变化文件**中的实体重新生成摘要（新增/删除/签名变更），
     // 纯实现级变化（函数体修改）与未变化实体保留旧摘要，不浪费 LLM 调用。
     // 未提供实体变化信息（FileWatch 策略）时跳过本步骤（保持现状行为）。
@@ -243,23 +222,21 @@ pub async fn run_generation_filtered(
             })
             .map(|c| c.file.clone())
             .collect();
-        for chunk in &mut chunks {
-            for (i, entity) in chunk.entities.iter_mut().enumerate() {
-                let source_file = chunk.entity_sources.get(i).cloned().unwrap_or_default();
-                if entity.summary.is_none() && interface_files.contains(&source_file) {
-                    let prompt = crate::generate::prompt::entity_summary_prompt(
-                        entity,
-                        &config.wiki.language,
-                        plan.as_ref(),
-                    );
-                    let messages = vec![Message::user(prompt)];
-                    match provider.complete(&messages).await {
-                        Ok(summary) => entity.summary = Some(summary.trim().to_string()),
-                        Err(e) => tracing::warn!("增量生成实体摘要失败: {}", e),
-                    }
-                }
-            }
-        }
+        generate_entity_summaries(
+            &provider,
+            &mut chunks,
+            &config.wiki.language,
+            plan.as_ref(),
+            config.llm.max_concurrent,
+            |chunk, ei| {
+                chunk
+                    .entity_sources
+                    .get(ei)
+                    .map(|f| interface_files.contains(f))
+                    .unwrap_or(false)
+            },
+        )
+        .await;
     }
 
     // 3. 并行生成 Knowledge Card（仅变更块）
@@ -274,30 +251,12 @@ pub async fn run_generation_filtered(
         .generate_all_cards(&chunks, extra_edits)
         .await?;
 
-    // 4. 按语言独立生成 Wiki 页面（仅变更块；卡片仅主语言生成一次，各语言页面复用主语言卡片摘要）
+    // 4. 按语言独立生成 Wiki 页面（并行，演进计划 T3.1；仅变更块；卡片仅主语言生成一次，
+    // 各语言页面复用主语言卡片摘要）
     let languages = collect_languages(config);
     let wiki_gen = WikiGenerator::new(&provider, plan.clone());
-    let mut documents = Vec::with_capacity(chunks.len() * languages.len());
-
-    for lang in &languages {
-        let mut lang_cfg = config.clone();
-        lang_cfg.wiki.language = lang.clone();
-        for (i, chunk) in chunks.iter().enumerate() {
-            let card_summary = cards.get(i).map(|c| c.summary.as_str()).unwrap_or("");
-            match wiki_gen
-                .generate_wiki_page(chunk, card_summary, &lang_cfg)
-                .await
-            {
-                Ok(doc) => documents.push(doc),
-                Err(e) => tracing::warn!(
-                    "跳过变更模块 {:?} 的 Wiki 页面生成 ({}): {}",
-                    chunk.module_path,
-                    lang,
-                    e
-                ),
-            }
-        }
-    }
+    let mut documents =
+        generate_wiki_pages(&wiki_gen, &chunks, &cards, &languages, config, config.llm.max_concurrent).await;
 
     // 5. 生成全局文档（架构概览 + 数据库 Schema）
     // 全局文档与"变更了哪些模块"无关：架构概览基于完整 KnowledgeGraph 的模块列表，
@@ -341,6 +300,113 @@ fn filter_by_whitelist(
     documents
         .into_iter()
         .filter(|d| allowed.contains(d.title.as_str()))
+        .collect()
+}
+
+/// 并行生成实体摘要（Level 0，演进计划 T3.1 并行化）
+///
+/// 只对通过 `filter` 且 summary 为 None 的实体发起 LLM 调用；
+/// 并发受 max_concurrent 信号量控制（与卡片/Schema 生成一致），
+/// 失败仅告警不中断。结果按收集顺序写回 chunks（join_all 保序），
+/// 与串行版的产物顺序一致。
+///
+/// `filter` 用于增量场景的实体级过滤（T2.3）：仅接口级变化文件的
+/// 实体重新生成摘要；全量场景传恒真闭包。
+async fn generate_entity_summaries(
+    provider: &Provider,
+    chunks: &mut [Chunk],
+    language: &str,
+    plan: Option<&ResolvedPlan>,
+    max_concurrent: usize,
+    filter: impl Fn(&Chunk, usize) -> bool,
+) {
+    // 收集任务（只读遍历收集，避免并发写 chunks 的借用冲突）
+    let tasks: Vec<(usize, usize, String)> = chunks
+        .iter()
+        .enumerate()
+        .flat_map(|(ci, chunk)| {
+            chunk
+                .entities
+                .iter()
+                .enumerate()
+                .filter(|(ei, e)| e.summary.is_none() && filter(chunk, *ei))
+                .map(move |(ei, entity)| {
+                    (ci, ei, prompt::entity_summary_prompt(entity, language, plan))
+                })
+        })
+        .collect();
+    if tasks.is_empty() {
+        return;
+    }
+
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(max_concurrent.max(1)));
+    let handles: Vec<_> = tasks
+        .iter()
+        .map(|(_, _, prompt)| {
+            let semaphore = semaphore.clone();
+            let prompt = prompt.clone();
+            async move {
+                let _permit = semaphore
+                    .acquire()
+                    .await
+                    .map_err(|_| anyhow::anyhow!("信号量已关闭"))?;
+                provider.complete(&[Message::user(prompt)]).await
+            }
+        })
+        .collect();
+    let results = futures::future::join_all(handles).await;
+
+    // 按收集顺序写回（join_all 保序，产物与串行版一致）
+    for ((ci, ei, _), result) in tasks.iter().zip(results) {
+        match result {
+            Ok(summary) => chunks[*ci].entities[*ei].summary = Some(summary.trim().to_string()),
+            Err(e) => tracing::warn!("实体摘要生成失败: {}", e),
+        }
+    }
+}
+
+/// 按语言并行生成 Wiki 页面（演进计划 T3.1 并行化）
+///
+/// 卡片摘要按 chunk 索引一一对应；并发受 max_concurrent 信号量控制，
+/// join_all 保序收集——与串行版的产出顺序一致，页面集合不变。
+/// 失败页面跳过并告警（不中断整体生成）。
+async fn generate_wiki_pages<P: LlmProvider>(
+    wiki_gen: &WikiGenerator<'_, P>,
+    chunks: &[Chunk],
+    cards: &[KnowledgeCard],
+    languages: &[String],
+    config: &WikiConfig,
+    max_concurrent: usize,
+) -> Vec<WikiDocument> {
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(max_concurrent.max(1)));
+    let mut handles = Vec::with_capacity(chunks.len() * languages.len());
+    for lang in languages {
+        let mut lang_cfg = config.clone();
+        lang_cfg.wiki.language = lang.clone();
+        for (i, chunk) in chunks.iter().enumerate() {
+            let card_summary = cards.get(i).map(|c| c.summary.clone()).unwrap_or_default();
+            let semaphore = semaphore.clone();
+            let lang_cfg = lang_cfg.clone();
+            handles.push(async move {
+                let _permit = semaphore
+                    .acquire()
+                    .await
+                    .map_err(|_| anyhow::anyhow!("信号量已关闭"))?;
+                wiki_gen.generate_wiki_page(chunk, &card_summary, &lang_cfg).await
+            });
+        }
+    }
+
+    let results = futures::future::join_all(handles).await;
+    results
+        .into_iter()
+        .filter_map(|r| match r {
+            Ok(doc) => Some(doc),
+            Err(e) => {
+                tracing::warn!("跳过 Wiki 页面生成: {}", e);
+                None
+            }
+        })
         .collect()
 }
 
