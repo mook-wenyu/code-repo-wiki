@@ -436,3 +436,112 @@ fn test_search_semantic_without_embed_errors() {
 
     let _ = std::fs::remove_dir_all(&work_dir);
 }
+// ==================== T5.2/T5.3：update 与 watch CLI 冒烟 ====================
+
+/// update：generate 后修改源文件，update 命令应成功退出并只重建受影响模块
+/// （演进计划 T5.2；真实差分路径由 test_incremental_git_e2e 覆盖，这里只做 CLI 冒烟）
+#[test]
+fn test_update_command_smoke() {
+    let work_dir = prepare_repo("update_smoke");
+    std::fs::create_dir_all(work_dir.join("src")).unwrap();
+    std::fs::write(work_dir.join("src").join("extra.rs"), "pub fn extra() -> u32 { 7 }\n").unwrap();
+
+    let out = run_bin(&work_dir, &["generate", "-c", "config.toml"]);
+    assert!(
+        out.status.success(),
+        "generate 应成功，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // 修改一个源文件后增量更新
+    std::fs::write(work_dir.join("src").join("extra.rs"), "pub fn extra() -> u32 { 8 }\n").unwrap();
+    let out = run_bin(&work_dir, &["update", "-c", "config.toml"]);
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.status.success(),
+        "update 应成功退出，输出: {combined}"
+    );
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
+
+/// watch：真实监听 + 文件变更驱动增量更新（演进计划 T5.3）
+///
+/// 阻塞型命令的测试模式：spawn 子进程 → 轮询 try_wait（100ms 间隔）→
+/// 写入源文件触发监听 → 轮询产物出现（≤5s）→ kill 子进程。
+/// 子进程持有 stdout 管道，轮询期间必须持续排空管道，否则管道缓冲
+/// 填满后子进程阻塞、无法继续处理事件（watch 单测的死锁陷阱）。
+#[test]
+fn test_watch_command_detects_change() {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Child, Stdio};
+    use std::time::{Duration, Instant};
+
+    let work_dir = prepare_repo("watch_smoke");
+    // watch 监听根 = scope.include[0] 的通配符前目录；TEST_CONFIG 的 include 是 "**/*.rs"，
+    // 监听根为仓库根，src/extra.rs 在其下
+    std::fs::create_dir_all(work_dir.join("src")).unwrap();
+    let extra = work_dir.join("src").join("extra.rs");
+    std::fs::write(&extra, "pub fn extra() -> u32 { 7 }\n").unwrap();
+
+    // 先全量生成一次（增量更新才有基线）
+    let out = run_bin(&work_dir, &["generate", "-c", "config.toml"]);
+    assert!(out.status.success(), "generate 应成功");
+    assert!(
+        work_dir.join(".repo-wiki").join("wiki").join("zh").join("api.md").exists(),
+        "基线产物应存在"
+    );
+
+    // 启动 watch（阻塞监听）
+    let mut child = Command::new(env!("CARGO_BIN_EXE_repo-wiki"))
+        .args(["watch", "-c", "config.toml"])
+        .current_dir(&work_dir)
+        .env("RUST_LOG", "off")
+        .env_remove("OPENAI_API_KEY")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("启动 watch 失败");
+    // 排空 stdout（watch 输出量小，这里只排空 stderr；stdout 管道保持打开）
+    let mut stderr_reader = BufReader::new(child.stderr.take().unwrap());
+    let drain_thread = std::thread::spawn(move || {
+        let mut line = String::new();
+        while let Ok(n) = stderr_reader.read_line(&mut line) {
+            if n == 0 { break; }
+            line.clear();
+        }
+    });
+
+    // 等待 watch 完成启动（监听目录就绪）后写入变更
+    std::thread::sleep(Duration::from_millis(500));
+    std::fs::write(&extra, "pub fn extra() -> u32 { 9 }\n").unwrap();
+
+    // 轮询：变更应触发增量更新（产物 mtime 更新；以 api.md 的修改时间变化为信号）
+    let before = std::fs::metadata(work_dir.join(".repo-wiki").join("wiki").join("zh").join("api.md"))
+        .and_then(|m| m.modified())
+        .ok();
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let mut detected = false;
+    while Instant::now() < deadline {
+        // 每轮排空 stderr 管道（防止缓冲填满阻塞子进程）
+        std::thread::sleep(Duration::from_millis(100));
+        if let Ok(m) = std::fs::metadata(work_dir.join(".repo-wiki").join("wiki").join("zh").join("api.md"))
+            .and_then(|m| m.modified())
+        {
+            if before.map(|b| m > b + Duration::from_millis(500)).unwrap_or(false) {
+                detected = true;
+                break;
+            }
+        }
+    }
+    assert!(detected, "watch 应检测到文件变更并触发增量更新");
+
+    // 收尾：kill 子进程（watch 是阻塞监听，必须显式终止）
+    let _ = child.kill();
+    let _ = child.wait();
+    drain_thread.join().unwrap();
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
