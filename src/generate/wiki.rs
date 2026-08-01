@@ -527,6 +527,7 @@ mod tests {
                     description: None,
                 },
             ],
+            features: Vec::new(),
         };
         let provider = MockProvider::new();
         let generator = WikiGenerator::new(&provider, None);

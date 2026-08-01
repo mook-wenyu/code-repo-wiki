@@ -20,7 +20,8 @@ tree-sitter-c-sharp = "0.23"
 tree-sitter-java = "0.23"
 notify = "7"
 notify-debouncer-full = "0.4"
-petgraph = { version = "0.7", features = ["serde-1"] }
+petgraph = { version = "0.8", features = ["serde-1"] }
+leiden-rs = { version = "0.8", default-features = false, features = ["petgraph", "rayon"] }
 git2 = "0.20"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "time"] }
 reqwest = { version = "0.12", features = ["json", "stream"] }

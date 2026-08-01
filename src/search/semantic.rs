@@ -128,7 +128,7 @@ mod tests {
             batch_size: 10,
             dimension: Some(1536),
         };
-        Arc::new(EmbeddingEngine::new(&config).unwrap())
+        Arc::new(EmbeddingEngine::new(&config, test_runtime().handle().clone()).unwrap())
     }
 
     fn tmp_path(label: &str) -> std::path::PathBuf {

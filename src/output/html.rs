@@ -404,6 +404,7 @@ mod tests {
                 coupling: 0.2,
                 description: None,
             }],
+            features: Vec::new(),
         };
 
         export_html(&[doc], &[card], &graph, &config)?;

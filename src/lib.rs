@@ -170,7 +170,8 @@ pub fn run_pipeline_with_progress(
 
     // Phase 2: 分析（build_graph 内部完成模块检测并写回 graph.modules，
     // 此处直接读结果供 stats，不重复运行检测）
-    let graph = analysis::build_graph(&file_insights)?;
+    let mut graph = analysis::build_graph(&file_insights)?;
+    attach_features(&mut graph, &config);
     on_progress(ProgressEvent { stage: "analyzing", percent: 25 });
     stats.total_entities = graph.graph.node_count();
     stats.total_edges = graph.graph.edge_count();
@@ -299,7 +300,8 @@ pub fn run_incremental_pipeline(
     let file_insights = ingest::scan_and_parse(&config)?;
 
     // Phase 2: 分析（build_graph 内部完成模块检测并写回 graph.modules）
-    let graph = analysis::build_graph(&file_insights)?;
+    let mut graph = analysis::build_graph(&file_insights)?;
+    attach_features(&mut graph, &config);
 
     // 检查增量变更（watch_paths 透传：FileWatch 策略下删除事件路径
     // 由此进入 changed_files，驱动下游删除清理）
@@ -535,6 +537,38 @@ fn search_index_dir(config: &config::schema::WikiConfig) -> std::path::PathBuf {
     Path::new(&config.output.dir).join(&config.search.index_dir)
 }
 
+/// 实体级特征聚类接线（演进计划 T1.2b）
+///
+/// 在 build_graph 之后调用：embed 未启用或 EmbeddingEngine 初始化失败时
+/// 降级为纯结构聚类（detect_features 的 embedder 参数传 None）。
+/// 特征聚类失败只告警不中断主流程（特征是附加信息，不影响生成主链路）。
+fn attach_features(graph: &mut model::KnowledgeGraph, config: &config::schema::WikiConfig) {
+    let embedder: Option<std::sync::Arc<dyn analysis::feature::Embedder>> = if config.embed.enabled {
+        match generate::embed::EmbeddingEngine::new(&config.embed, get_global_runtime().handle().clone()) {
+            Ok(e) => {
+                // 显式经中间 let 触发 unsize coercion（Option 内不自动转换）
+                let engine: std::sync::Arc<dyn analysis::feature::Embedder> = std::sync::Arc::new(e);
+                Some(engine)
+            }
+            Err(e) => {
+                tracing::warn!("特征聚类 Embedding 初始化失败，降级为纯结构聚类: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    match analysis::feature::detect_features(graph, embedder.as_deref()) {
+        Ok(features) => {
+            graph.features = features;
+            tracing::info!("特征聚类完成: {} 个特征", graph.features.len());
+        }
+        Err(e) => {
+            tracing::warn!("特征聚类失败（不影响主流程）: {e}");
+        }
+    }
+}
+
 /// 全量构建搜索索引
 ///
 /// 遍历知识图谱中所有实体节点，从 FileInsight 中提取对应源码片段，
@@ -573,7 +607,7 @@ fn build_search_index(
     if config.embed.enabled {
         let semantic_path = index_dir.join("semantic_index.db");
         let _ = std::fs::remove_file(&semantic_path);
-        match generate::embed::EmbeddingEngine::new(&config.embed) {
+        match generate::embed::EmbeddingEngine::new(&config.embed, get_global_runtime().handle().clone()) {
             Ok(embedder) => {
                 let embedder = std::sync::Arc::new(embedder);
                 let mut semantic_engine = search::semantic::SemanticEngine::open(&semantic_path, embedder, get_global_runtime().clone())?;
@@ -640,7 +674,7 @@ fn update_search_index_incremental(
     // 增量更新语义索引（如已启用）
     if config.embed.enabled {
         let semantic_path = index_dir.join("semantic_index.db");
-            if semantic_path.exists() && let Ok(embedder) = generate::embed::EmbeddingEngine::new(&config.embed) {
+            if semantic_path.exists() && let Ok(embedder) = generate::embed::EmbeddingEngine::new(&config.embed, get_global_runtime().handle().clone()) {
                 let embedder = std::sync::Arc::new(embedder);
                 if let Ok(mut semantic_engine) = search::semantic::SemanticEngine::open(&semantic_path, embedder, get_global_runtime().clone()) {
                     for file in changed_files {
@@ -722,7 +756,7 @@ pub fn execute_search(
             if !semantic_path.exists() {
                 anyhow::bail!("语义索引不存在，请在配置中启用 embed 并运行 `repo-wiki generate`");
             }
-            let embedder = generate::embed::EmbeddingEngine::new(&config.embed)?;
+            let embedder = generate::embed::EmbeddingEngine::new(&config.embed, get_global_runtime().handle().clone())?;
             let embedder = std::sync::Arc::new(embedder);
             let semantic_engine = search::semantic::SemanticEngine::open(&semantic_path, embedder, get_global_runtime().clone())?;
             let results = semantic_engine.search(query, top_k)?;
@@ -731,7 +765,7 @@ pub fn execute_search(
         config::schema::SearchEngineType::Hybrid => {
             let text_engine = search::text::TextEngine::open(&text_path)?;
             let semantic_engine = if semantic_path.exists() && config.embed.enabled {
-                generate::embed::EmbeddingEngine::new(&config.embed)
+                generate::embed::EmbeddingEngine::new(&config.embed, get_global_runtime().handle().clone())
                     .ok()
                     .and_then(|e| search::semantic::SemanticEngine::open(&semantic_path, Arc::new(e), get_global_runtime().clone()).ok())
             } else { None };

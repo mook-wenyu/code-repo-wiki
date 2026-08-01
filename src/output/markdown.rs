@@ -494,6 +494,7 @@ mod tests {
                 coupling: 0.2,
                 description: None,
             }],
+            features: Vec::new(),
         };
 
         let doc = render_api_reference(&graph);

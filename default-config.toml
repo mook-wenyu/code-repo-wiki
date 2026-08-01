@@ -1,23 +1,58 @@
-[project]
-name = ""
+# repo-wiki 默认配置模板（install 命令写入 .repo-wiki/config.toml）
+# 键集合与 src/config/schema.rs 严格对齐；未知键会被 serde 忽略（无效配置，勿写）。
+
+[wiki]
+template = "architecture"
+language = "zh"
+# 扩展语言（每语言独立生成叙事页面）：["en"]
+expand_languages = []
 
 [scope]
-include = ["src/"]
-exclude = []
+include = ["src/**", "lib/**"]
+exclude = ["**/test/**", "**/vendor/**", "target/**", "**/node_modules/**"]
 
 [output]
 # 产物根目录：wiki 页/卡片/资产都写在其下（render_all 内部再建 wiki/{lang}/
 # 子目录，因此这里必须是"产物根"而非 wiki 目录本身——dir="wiki" 会造成
 # wiki/wiki/zh 嵌套，schema 默认与 install 模板一致用 .repo-wiki）
 dir = ".repo-wiki"
+format = "markdown"
 
 [llm]
+provider = "openai"
 model = "deepseek-v4-flash"
 base_url = "https://api.deepseek.com/v1"
 #api_key = ""
 api_key_env = "DEEPSEEK_API_KEY"
+# 并发 LLM 调用数（卡片/页面/实体摘要共用同一信号量）
+max_concurrent = 4
+#max_tokens = 128000
+#temperature = 0.5
 
-[generate]
-max_concurrency = 4
-max_tokens = 128000
-temperature = 0.5
+[embed]
+# 语义搜索与实体级特征聚类的向量来源；false 时特征聚类降级为纯调用边结构聚类
+enabled = false
+provider = "openai"
+model = "text-embedding-3-small"
+#base_url = ""
+#api_key = ""
+api_key_env = "OPENAI_API_KEY"
+batch_size = 20
+#dimension = 1536
+
+[search]
+enabled = true
+index_dir = ".search"
+default_engine = "text"
+default_top_k = 10
+rrf_k = 60
+
+[incremental]
+enabled = true
+strategy = "git-diff"
+# BFS 传播变更影响的最大深度
+max_depth = 3
+
+[plan]
+enabled = false
+path = "wiki_plan.yaml"

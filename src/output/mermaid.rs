@@ -276,6 +276,7 @@ mod tests {
         KnowledgeGraph {
             graph: g,
             modules: vec![],
+            features: Vec::new(),
         }
     }
 
@@ -367,6 +368,7 @@ mod tests {
                     description: None,
                 },
             ],
+            features: Vec::new(),
         }
     }
 

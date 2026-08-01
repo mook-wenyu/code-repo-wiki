@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, Result};
 
+use crate::analysis::feature::Embedder;
 use crate::config::schema::EmbedSection;
 
 /// Embedding 引擎：将代码/文档文本转为向量表示。
@@ -11,13 +12,16 @@ pub struct EmbeddingEngine {
     client: reqwest::Client,
     config: EmbedSection,
     call_count: AtomicUsize,
+    /// 全局 tokio Runtime 句柄（同步 Embedder 实现经其驱动 async 请求）
+    rt: tokio::runtime::Handle,
 }
 
 impl EmbeddingEngine {
     /// 从配置创建 Embedding 引擎。
     ///
     /// 优先使用 `api_key` 字段，其次从环境变量读取。
-    pub fn new(config: &EmbedSection) -> Result<Self> {
+    /// `rt` 传入全局 Runtime 句柄（语义索引与特征聚类共用）。
+    pub fn new(config: &EmbedSection, rt: tokio::runtime::Handle) -> Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(60))
             .build()
@@ -26,6 +30,7 @@ impl EmbeddingEngine {
             client,
             config: config.clone(),
             call_count: AtomicUsize::new(0),
+            rt,
         })
     }
 
@@ -131,6 +136,24 @@ impl EmbeddingEngine {
     /// 已完成的 API 调用次数。
     pub fn call_count(&self) -> usize {
         self.call_count.load(Ordering::Relaxed)
+    }
+}
+
+/// 特征聚类用的 Embedder 实现（analysis::feature::Embedder）。
+///
+/// 同步方法经内部持有的 tokio Handle 驱动 async 请求。
+impl Embedder for EmbeddingEngine {
+    fn embed(&self, text: &str) -> Result<Vec<f32>> {
+        self.rt.block_on(EmbeddingEngine::embed(self, text))
+    }
+
+    fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        self.rt
+            .block_on(EmbeddingEngine::embed_batch(self, texts))
+    }
+
+    fn cosine_similarity(&self, a: &[f32], b: &[f32]) -> f64 {
+        EmbeddingEngine::cosine_similarity(a, b) as f64
     }
 }
 

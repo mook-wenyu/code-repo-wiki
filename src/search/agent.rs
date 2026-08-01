@@ -195,7 +195,7 @@ mod tests {
         g.add_edge(a, b, make_edge(a, b));
         g.add_edge(b, c, make_edge(b, c));
 
-        let kg = KnowledgeGraph { graph: g, modules: vec![] };
+        let kg = KnowledgeGraph { graph: g, modules: vec![], features: Vec::new() };
         let index = CallGraph::new(&kg).build_call_index();
 
         let mut t = TextEngine::open(unique_db_path("agent_callgraph")).unwrap();

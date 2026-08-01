@@ -92,7 +92,7 @@ mod tests {
             kind: EdgeKind::Calls, source: caller, target: callee,
             weight: 1.0, location: None,
         });
-        KnowledgeGraph { graph: g, modules: vec![] }
+        KnowledgeGraph { graph: g, modules: vec![], features: Vec::new() }
     }
 
     #[test]

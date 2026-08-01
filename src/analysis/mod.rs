@@ -1,3 +1,5 @@
+pub mod community;
+pub mod feature;
 pub mod graph;
 pub mod module;
 

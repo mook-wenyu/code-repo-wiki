@@ -1,9 +1,11 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
-use petgraph::visit::{EdgeRef, IntoEdgeReferences, IntoNodeReferences};
+use petgraph::visit::{EdgeRef, IntoEdgeReferences};
 
 
 use crate::model::*;
+
+use super::community::{community_name, detect_communities};
 
 /// 模块边界检测器
 pub struct ModuleDetector<'a> {
@@ -16,90 +18,56 @@ impl<'a> ModuleDetector<'a> {
     }
 
     /// 执行模块检测，返回模块聚类列表
-    /// 算法：基于目录前缀的凝聚聚类 + Louvain 启发式
+    ///
+    /// 算法（演进计划 T1.2）：Leiden 社区检测（CPM 质量函数）在跨文件
+    /// Imports/Calls/DependsOn 依赖图上划分 File 节点社区；每个社区命名
+    /// 走 [`community_name`] 三档规则（公共目录前缀 → 文件数最多目录 →
+    /// module_{n}），重名时追加文件 stem 消歧（模块名是 wiki 产物文件名
+    /// 的唯一来源，重名会互相覆盖）。
+    ///
+    /// cohesion/coupling 仅作为**描述性元数据**写入 ModuleCluster（见
+    /// count_edges 注释：历史上阈值拒绝导致"全有或全无"的脆弱分界）。
     pub fn detect(&self) -> Vec<ModuleCluster> {
-        let mut clusters: Vec<ModuleCluster> = Vec::new();
+        let communities = detect_communities(self.graph);
+        let mut clusters: Vec<ModuleCluster> = Vec::with_capacity(communities.len());
+        // 已用模块名集合：保证产物路径唯一
+        let mut used_names: HashSet<String> = HashSet::new();
 
-        // 收集所有 File 及上级 Module 节点
-        let file_nodes: Vec<NodeId> = self
-            .graph
-            .graph
-            .node_references()
-            .filter(|(_, n)| n.kind == NodeKind::File)
-            .map(|(id, _)| id)
-            .collect();
-
-        if file_nodes.is_empty() {
-            return clusters;
-        }
-
-        // 1. 按文件路径的目录前缀分组（深度 1~3）
-        let mut depth_candidates: Vec<HashMap<Vec<String>, Vec<NodeId>>> = Vec::new();
-        for depth in 1..=3 {
-            let mut groups: HashMap<Vec<String>, Vec<NodeId>> = HashMap::new();
-            for &nid in &file_nodes {
-                if let Some(path) = self.graph.graph.node_weight(nid).and_then(|n| n.file_path.as_ref()) {
-                    let prefix = path_prefix(path, depth);
-                    groups.entry(prefix).or_default().push(nid);
-                }
-            }
-            depth_candidates.push(groups);
-        }
-
-        // 2. 计算每个候选的内聚度和耦合度
-        // 分组依据 = 目录前缀（Rust 语言级模块约定：目录即模块）。
-        // cohesion/coupling 仅作为**描述性元数据**写入 ModuleCluster，
-        // 不再作为拒绝条件——实测表明小规模项目中模块间调用天然稠密
-        // （coupling 普遍 >0.7），硬阈值导致"全有或全无"的脆弱分界
-        // （Calls 边修复前 0 模块、修复后只剩 src 兜底），
-        // 且阈值是经验值、随图信号变化剧烈漂移。
-        let mut scored: Vec<(Vec<String>, f64, f64, Vec<NodeId>)> = Vec::new();
-        let mut assigned: HashSet<NodeId> = HashSet::new();
-
-        // 深度从大到小（3→1）优先分配
-        for groups in depth_candidates.iter().rev() {
-            for (prefix, nodes) in groups {
-                if nodes.len() < 2 {
-                    continue; // 单文件不成模块
-                }
-                // 检查节点是否已被分配
-                let unassigned: Vec<NodeId> =
-                    nodes.iter().filter(|n| !assigned.contains(n)).copied().collect();
-                if unassigned.is_empty() {
-                    continue;
-                }
-
-                let all_ids: Vec<NodeId> = nodes.clone();
-                let cohesion = self.calculate_cohesion(&all_ids);
-                let coupling = self.calculate_coupling(&all_ids);
-                for &n in &unassigned {
-                    assigned.insert(n);
-                }
-                scored.push((prefix.clone(), cohesion, coupling, all_ids));
-            }
-        }
-
-        // 3. 对未归属节点分配到最近的模块
-        let unassigned: Vec<NodeId> = file_nodes.iter().filter(|n| !assigned.contains(n)).copied().collect();
-        for nid in unassigned {
-            if let Some(best) = self.find_nearest_module(nid, &scored) {
-                for (_, _, _, nodes) in scored.iter_mut() {
-                    if nodes.contains(&best) && !nodes.contains(&nid) {
-                        nodes.push(nid);
-                        break;
+        for (idx, community) in communities.iter().enumerate() {
+            // 命名输入 = 社区内文件路径（确定性：communities 已按最小路径排序）
+            let file_paths: Vec<String> = community
+                .iter()
+                .filter_map(|nid| {
+                    self.graph
+                        .graph
+                        .node_weight(*nid)
+                        .and_then(|n| n.file_path.clone())
+                })
+                .collect();
+            let mut name = community_name(&file_paths, idx);
+            if used_names.contains(&name) {
+                // 消歧：单文件社区与同目录社区重名时，追加文件 stem
+                if let Some(stem) = file_stem(&file_paths) {
+                    let alt = format!("{name}::{stem}");
+                    if !used_names.contains(&alt) {
+                        name = alt;
+                    } else {
+                        name = format!("module_{idx}");
                     }
+                } else {
+                    name = format!("module_{idx}");
                 }
             }
-        }
+            used_names.insert(name.clone());
 
-        // 4. 构建输出
-        for (prefix, cohesion, coupling, nodes) in scored {
-            let name = prefix.join("::");
+            let cohesion = self.calculate_cohesion(community);
+            let coupling = self.calculate_coupling(community);
+
             // 扩展：File 节点 + 其直接 Contains 的实体节点（与 count_edges 同一规则，
             // 但这是**持久化到 ModuleCluster.node_ids** 的集合——api.md 分组、
             // mermaid 模块图跨模块边聚合都遍历 node_ids，若只含 File 节点则
             // 实体清单为空、模块图全空）
-            let file_set: HashSet<NodeId> = nodes.iter().copied().collect();
+            let file_set: HashSet<NodeId> = community.iter().copied().collect();
             let mut expanded: HashSet<NodeId> = file_set.clone();
             for edge in self.graph.graph.edge_references() {
                 let kind = self.graph.graph.edge_weight(edge.id()).map(|e| e.kind.clone());
@@ -111,7 +79,7 @@ impl<'a> ModuleDetector<'a> {
             let mut unique: Vec<NodeId> = expanded.into_iter().collect();
             unique.sort();
             clusters.push(ModuleCluster {
-                name: name.clone(),
+                name,
                 node_ids: unique,
                 cohesion,
                 coupling,
@@ -182,71 +150,14 @@ impl<'a> ModuleDetector<'a> {
         }
         (internal, external)
     }
-
-    /// 找到最近的已分配模块
-    fn find_nearest_module(
-        &self,
-        nid: NodeId,
-        clusters: &[(Vec<String>, f64, f64, Vec<NodeId>)],
-    ) -> Option<NodeId> {
-        let node_path = self
-            .graph
-            .graph
-            .node_weight(nid)
-            .and_then(|n| n.file_path.as_ref())
-            .map(|p| p.to_lowercase());
-
-        let mut best: Option<(usize, &NodeId)> = None;
-        for (_prefix, _, _, nodes) in clusters {
-            for cn in nodes {
-                let cp = self.graph.graph.node_weight(*cn).and_then(|n| n.file_path.as_ref()).map(|p| p.to_lowercase());
-                if let (Some(np), Some(cp)) = (&node_path, cp) {
-                    let common = common_prefix_length(np, &cp);
-                    if common > best.map(|(l, _)| l).unwrap_or(0) {
-                        best = Some((common, cn));
-                    }
-                }
-            }
-        }
-        best.map(|(_, n)| *n)
-    }
 }
 
-/// 取路径的前 depth 个目录段
-fn path_prefix(path: &str, depth: usize) -> Vec<String> {
-    use std::path::Component;
-    let p = std::path::Path::new(path);
-    p.components()
-        .filter_map(|c| match c {
-            Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
-            _ => None,
-        })
-        .take(depth)
-        .collect()
-}
-
-/// 计算两个路径字符串的公共目录段数
-fn common_prefix_length(a: &str, b: &str) -> usize {
-    use std::path::Component;
-    let segs_a: Vec<_> = std::path::Path::new(a)
-        .components()
-        .filter_map(|c| match c {
-            Component::Normal(s) => Some(s.to_string_lossy()),
-            _ => None,
-        })
-        .collect();
-    let segs_b: Vec<_> = std::path::Path::new(b)
-        .components()
-        .filter_map(|c| match c {
-            Component::Normal(s) => Some(s.to_string_lossy()),
-            _ => None,
-        })
-        .collect();
-    segs_a
-        .iter()
-        .zip(segs_b.iter())
-        .take_while(|(a, b)| a == b)
-        .count()
+/// 取社区内第一个文件的 stem（重名消歧用，如 "src/net/tcp.rs" → "tcp"）
+fn file_stem(files: &[String]) -> Option<String> {
+    files
+        .first()
+        .and_then(|p| std::path::Path::new(p).file_stem())
+        .map(|s| s.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]
@@ -368,14 +279,13 @@ mod tests {
         );
     }
 
-    /// 多目录聚合：src/net（2 文件）与 src/http（2 文件）应各自检出一个模块，
-    /// 目录前缀分组（Rust 目录=模块约定）在无阈值拒绝下稳定成立；
-    /// 子模块实体不因 src 兜底模块后写覆盖而丢失（模块图/实体分组的前提）
+    /// 多目录社区检测：src/net（2 文件）有跨文件调用 → Leiden 聚为一个社区；
+    /// src/http 两文件互不相连 → 各成单文件社区（同目录重名经文件 stem 消歧）
     #[test]
     fn test_detect_multiple_directories() {
         let mut kg = KnowledgeGraph::default();
         let g = &mut kg.graph;
-        let add_file = |g: &mut petgraph::stable_graph::StableDiGraph<CodeNode, CodeEdge>, id: usize, path: &str, segs: Vec<&str>| -> NodeId {
+        let add_file = |g: &mut petgraph::stable_graph::StableDiGraph<CodeNode, CodeEdge>, id: usize, path: &str, segs: Vec<&str>| -> (NodeId, NodeId) {
             let nid = g.add_node(CodeNode {
                 id: NodeId::new(id), kind: NodeKind::File, name: path.into(),
                 file_path: Some(path.into()), line_range: None, doc_comment: None,
@@ -391,30 +301,36 @@ mod tests {
                 id: EdgeId::new(g.edge_count()), kind: EdgeKind::Contains,
                 source: nid, target: eid, weight: 1.0, location: None,
             });
-            nid
+            (nid, eid)
         };
-        // 2 个目录各 2 个文件（深度 2 分组 [src,net]/[src,http] 各 2 文件成模块）
-        let _ = add_file(g, 0, "src/net/tcp.rs", vec!["src", "net"]);
-        let _ = add_file(g, 1, "src/net/udp.rs", vec!["src", "net"]);
-        let _ = add_file(g, 2, "src/http/server.rs", vec!["src", "http"]);
-        let _ = add_file(g, 3, "src/http/client.rs", vec!["src", "http"]);
+        let (tcp, etcp) = add_file(g, 0, "src/net/tcp.rs", vec!["src", "net"]);
+        let (_udp, eudp) = add_file(g, 1, "src/net/udp.rs", vec!["src", "net"]);
+        let _server = add_file(g, 2, "src/http/server.rs", vec!["src", "http"]);
+        let _client = add_file(g, 3, "src/http/client.rs", vec!["src", "http"]);
+        // tcp 实体 → udp 实体 跨文件调用：net 目录两文件聚为一社区
+        g.add_edge(etcp, eudp, CodeEdge {
+            id: EdgeId::new(g.edge_count()), kind: EdgeKind::Calls,
+            source: etcp, target: eudp, weight: 0.7, location: None,
+        });
+        let _ = tcp;
 
         let detector = ModuleDetector::new(&kg);
         let clusters = detector.detect();
         let names: Vec<&str> = clusters.iter().map(|c| c.name.as_str()).collect();
-        // 应检出 src::net 与 src::http（深度 2 优先分配），src 兜底吸收两者
+        // 社区检测语义：net 两文件一个社区；http 两文件各成社区（重名消歧）
         assert!(
             names.contains(&"src::net"),
-            "应检出 src::net 模块，实际: {names:?}"
+            "应检出 src::net 社区，实际: {names:?}"
         );
         assert!(
             names.contains(&"src::http"),
-            "应检出 src::http 模块，实际: {names:?}"
+            "应检出 src::http 单文件社区，实际: {names:?}"
         );
-        // 每个子模块含 2 文件 + 2 实体（Contains 扩展）
+        // 名字必须唯一（模块名 → wiki 产物文件名，重名互相覆盖）
+        let unique: std::collections::HashSet<&str> = names.iter().copied().collect();
+        assert_eq!(unique.len(), names.len(), "模块名必须唯一: {names:?}");
+        // net 社区含 2 文件 + 2 实体（Contains 扩展）
         let net = clusters.iter().find(|c| c.name == "src::net").unwrap();
         assert_eq!(net.node_ids.len(), 4, "src::net 应含 2 文件 + 2 实体");
-        let http = clusters.iter().find(|c| c.name == "src::http").unwrap();
-        assert_eq!(http.node_ids.len(), 4, "src::http 应含 2 文件 + 2 实体");
     }
 }

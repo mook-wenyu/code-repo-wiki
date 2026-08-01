@@ -247,6 +247,7 @@ mod tests {
         let kg = KnowledgeGraph {
             graph: g,
             modules: vec![],
+        features: Vec::new(),
         };
         let map = build_node_to_file_map(&kg);
         assert_eq!(map.len(), 1); // 只含 File 节点

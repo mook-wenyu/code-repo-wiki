@@ -160,6 +160,7 @@ mod tests {
         KnowledgeGraph {
             graph: g,
             modules: vec![],
+        features: Vec::new(),
         }
     }
 

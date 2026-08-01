@@ -17,15 +17,19 @@ pub struct SearchHit {
 }
 
 /// RRF 混合排序：将多引擎结果按 Reciprocal Rank Fusion 合并
+///
+/// 标准 RRF：score = Σ k/(k+rank)，rank 为各引擎内部排名（0 起）。
+/// 注意：此前实现混入"引擎序号×10"的偏移（rank + engine_rank*10），
+/// 导致同一文档在不同引擎的排名权重被引擎顺序污染——已修正为标准实现。
 pub fn rrf_merge(results: &[Vec<SearchHit>], top_k: usize, k: f64) -> Vec<SearchHit> {
     use std::collections::HashMap;
     // 名称 → 累计 RRF 分数
     let mut scores: HashMap<String, (f64, CodeNode)> = HashMap::new();
-    for (engine_rank, list) in results.iter().enumerate() {
+    for list in results {
         for (rank, hit) in list.iter().enumerate() {
             let entry = scores.entry(hit.node.name.clone()).or_insert_with(|| (0.0, hit.node.clone()));
-            // RRF: k / (k + rank)
-            entry.0 += k / (k + (rank + engine_rank * 10) as f64);
+            // 标准 RRF: k / (k + rank)
+            entry.0 += k / (k + rank as f64);
         }
     }
     let mut merged: Vec<SearchHit> = scores.into_iter()
@@ -89,6 +93,32 @@ mod tests {
         ];
         let result = rrf_merge(&[t, s], 5, 60.0);
         assert_eq!(result.len(), 1);
+    }
+
+    /// 双引擎交叉排名：同一文档在两引擎排名不同时，融合排序只由各引擎
+    /// 内部排名决定，与引擎先后顺序无关（标准 RRF 性质，防引擎偏移回归）。
+    #[test]
+    fn test_rrf_merge_cross_engine_ranking() {
+        // 文档 a：text 第 1、semantic 第 3；文档 b：text 第 2、semantic 第 1
+        let text = vec![
+            SearchHit { node: make_node("a"), score: 1.0, source: "text".into(), callers: vec![], callees: vec![] },
+            SearchHit { node: make_node("b"), score: 0.9, source: "text".into(), callers: vec![], callees: vec![] },
+        ];
+        let semantic = vec![
+            SearchHit { node: make_node("b"), score: 1.0, source: "semantic".into(), callers: vec![], callees: vec![] },
+            SearchHit { node: make_node("x"), score: 0.8, source: "semantic".into(), callers: vec![], callees: vec![] },
+            SearchHit { node: make_node("a"), score: 0.6, source: "semantic".into(), callers: vec![], callees: vec![] },
+        ];
+        // 调换引擎顺序，融合分数必须完全一致
+        let f1 = rrf_merge(&[text.clone(), semantic.clone()], 5, 60.0);
+        let f2 = rrf_merge(&[semantic, text], 5, 60.0);
+        assert_eq!(f1.len(), f2.len());
+        for (h1, h2) in f1.iter().zip(f2.iter()) {
+            assert_eq!(h1.node.name, h2.node.name);
+            assert!((h1.score - h2.score).abs() < 1e-9);
+        }
+        // b 在双引擎均靠前（1+1 排名），应排在 a（1+3）之前
+        assert_eq!(f1[0].node.name, "b");
     }
 
     #[test]
