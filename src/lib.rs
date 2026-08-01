@@ -735,7 +735,16 @@ pub fn execute_search(
                     .ok()
                     .and_then(|e| search::semantic::SemanticEngine::open(&semantic_path, Arc::new(e), get_global_runtime().clone()).ok())
             } else { None };
-            let agent = search::agent::SearchAgent::new(text_engine, semantic_engine, config.search.rrf_k as f64);
+            let mut agent = search::agent::SearchAgent::new(text_engine, semantic_engine, config.search.rrf_k as f64);
+            // 调用链补全：重建知识图谱以获得 Calls 边，构建调用索引注入 agent。
+            // CLI 场景单次搜索的重建开销可接受（实测本项目约 1.2s）；
+            // 失败时静默降级为无补全（索引缺失等，搜索主功能不受影响）。
+            if let Ok(insights) = ingest::scan_and_parse(&config)
+                && let Ok(graph) = analysis::build_graph(&insights)
+            {
+                let index = search::callgraph::CallGraph::new(&graph).build_call_index();
+                agent = agent.with_call_index(index);
+            }
             Ok(agent.search(query, top_k, true))
         }
     }

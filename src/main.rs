@@ -238,6 +238,8 @@ fn main() -> anyhow::Result<()> {
                         "lines": hit.node.line_range,
                         "signature": hit.node.signature,
                         "source": hit.source,
+                        "callers": hit.callers,
+                        "callees": hit.callees,
                     })
                 }).collect();
                 println!("{}", serde_json::to_string_pretty(&json_results)?);

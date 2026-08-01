@@ -145,3 +145,78 @@ fn test_overview_protected() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// 概览→模块引用防回归：references 的 target_path 必须与模块页写盘文件名
+/// （module_path.join("_") 规则，markdown::wiki_file_name）一致，否则 crossref
+/// validate 报断链（此前修复:概览用 replace("::","/") 生成 wiki/zh/src/analysis.md
+/// 而写盘是 src_analysis.md,导致真实产物全部断链）
+#[test]
+fn test_overview_module_refs_match_write_path() {
+    use repo_wiki::model::KnowledgeCard;
+
+    let dir = std::env::temp_dir().join(format!("repo_wiki_test_overview_refs_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let config = make_config(&dir);
+
+    // 构造两个模块卡片(模块名含 ::,验证 target_path 用 _ 而非 / 分隔)
+    let card1 = KnowledgeCard {
+        module_name: "src::net".into(),
+        module_type: "module".into(),
+        summary: "net".into(),
+        key_entities: vec![],
+        dependencies: vec![],
+        dependents: vec![],
+        design_patterns: vec![],
+        todo_notes: vec![],
+        related_files: vec![],
+        coding_spec: None,
+        tech_stack: vec![],
+        architecture: None,
+        pending_manual_edits: vec![],
+    };
+    let card2 = KnowledgeCard {
+        module_name: "src::http".into(),
+        module_type: "module".into(),
+        summary: "http".into(),
+        key_entities: vec![],
+        dependencies: vec![],
+        dependents: vec![],
+        design_patterns: vec![],
+        todo_notes: vec![],
+        related_files: vec![],
+        coding_spec: None,
+        tech_stack: vec![],
+        architecture: None,
+        pending_manual_edits: vec![],
+    };
+
+    let provider = MockProvider::new();
+    let generator = WikiGenerator::new(&provider, None);
+    let graph = KnowledgeGraph::default();
+    let output = GenerationOutput {
+        cards: vec![card1, card2],
+        documents: vec![],
+        generation_stats: GenerationStats::default(),
+    };
+    let overview =
+        futures::executor::block_on(generator.generate_overview(&output, &graph, &config)).unwrap();
+
+    // 每个引用 target_path = wiki/zh/<module.replace("::","_")>.md(与写盘一致)
+    assert_eq!(overview.references.len(), 2, "应生成 2 个模块引用");
+    let paths: Vec<&str> = overview.references.iter().map(|r| r.target_path.as_str()).collect();
+    assert!(
+        paths.contains(&"wiki/zh/src_net.md"),
+        "src::net 引用应为 wiki/zh/src_net.md, 实际: {paths:?}"
+    );
+    assert!(
+        paths.contains(&"wiki/zh/src_http.md"),
+        "src::http 引用应为 wiki/zh/src_http.md, 实际: {paths:?}"
+    );
+    // 不得再出现 "/" 分隔的旧错误路径(wiki/zh/src/net.md)
+    assert!(
+        !paths.iter().any(|p| p.contains("src/net.md")),
+        "不应出现 / 分隔的旧错误路径: {paths:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

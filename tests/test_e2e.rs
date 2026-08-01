@@ -167,13 +167,14 @@ impl Alpha {
     )
     .expect("删除增量更新失败");
 
-    // a 模块页面应被清理，b 模块页面应保留
-    let pages_after_delete = list_wiki_pages(&repo);
+    // a 文件被删除:增量重建后 src 模块(合并 a+b)内容不再包含模块 A 实体;
+    // 删除清理路径不再依赖 exists() 推断,由 Deleted 事件显式驱动
+    let src_page = repo.join(".repo-wiki").join("wiki").join("zh").join("src.md");
+    let src_content = std::fs::read_to_string(&src_page).unwrap_or_default();
     assert!(
-        pages_after_delete.len() < pages_after_generate.len(),
-        "删除后页面数应减少: {:?} → {:?}",
-        pages_after_generate,
-        pages_after_delete
+        !src_content.contains("Alpha"),
+        "删除后模块页不应包含模块 A 实体(Alpha), 实际: {:?}",
+        src_content
     );
     assert!(
         del.documents.iter().all(|d| d.module_path.first() != Some(&"a".to_string())),

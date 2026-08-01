@@ -25,6 +25,8 @@ pub fn build(insights: &[FileInsight]) -> Result<KnowledgeGraph> {
     });
 
     let mut module_cache: HashMap<Vec<String>, NodeId> = HashMap::new();
+    // 跨文件调用边候选：(实体, 节点, 函数体文本)，全图实体构建完成后统一匹配
+    let mut call_candidates: Vec<(Entity, NodeId, String)> = Vec::new();
 
     for insight in insights {
         let path = Path::new(&insight.path);
@@ -112,8 +114,19 @@ pub fn build(insights: &[FileInsight]) -> Result<KnowledgeGraph> {
 
         build_import_edges(g, &insight.imports, &entity_ids);
         build_impl_edges(g, &entity_ids);
-        build_call_edges(g, &entity_ids);
+        // 收集 (实体, 节点, 函数体文本) —— 跨文件调用边需在全图实体
+        // 构建完成后统一匹配（每个函数用其函数体文本找被调用函数名）
+        call_candidates.extend(entity_ids.iter().filter_map(|(e, eid)| {
+            if e.kind != "fn" && e.kind != "function" {
+                return None;
+            }
+            Some((e.clone(), *eid, extract_body(&insight.source, e.line_start, e.line_end)))
+        }));
     }
+
+    // 全部实体构建完成后统一构建调用边：此时 name_map 覆盖全图符号，
+    // 跨文件调用（本文件函数调用其他文件函数）才能被解析
+    build_call_edges(g, &call_candidates);
 
     if let Some(node) = g.node_weight_mut(project_id) {
         node.id = project_id;
@@ -316,21 +329,32 @@ fn parse_impl_target(kind: &str, name: &str) -> Option<String> {
     None
 }
 
+/// 按行号区间从文件源码中提取函数体文本（供调用边匹配使用）
+///
+/// line_start/line_end 为 1-based 行号；越界时安全截断（不 panic）。
+fn extract_body(source: &str, line_start: usize, line_end: usize) -> String {
+    source
+        .lines()
+        .skip(line_start.saturating_sub(1))
+        .take(line_end.saturating_sub(line_start).saturating_add(1))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 构建调用边（函数 → 被调用函数）
+///
+/// 在**全图实体构建完成后**调用一次：name_map 此时包含所有文件的函数符号，
+/// 才能解析跨文件调用（此前逐文件构建时 name_map 只含已处理文件，跨文件
+/// 调用全部丢失，真实图上 Calls 边几乎为零）。
+/// 匹配载体 = 函数体文本（按行号从文件源码切片），而非仅签名+文档注释
+/// （签名几乎不含调用信息，旧实现导致 Calls 边数量失真）。
 fn build_call_edges(
     g: &mut petgraph::stable_graph::StableDiGraph<CodeNode, CodeEdge>,
-    entities: &[(Entity, NodeId)],
+    call_candidates: &[(Entity, NodeId, String)],
 ) {
     let (name_map, _) = collect_node_names(g);
 
-    for (entity, eid) in entities {
-        if entity.kind != "fn" && entity.kind != "function" {
-            continue;
-        }
-        let haystack = format!(
-            "{} {}",
-            entity.signature.as_deref().unwrap_or(""),
-            entity.doc_comment.as_deref().unwrap_or("")
-        );
+    for (entity, eid, body) in call_candidates {
         for (callee_name, callee_ids) in &name_map {
             if *callee_name == entity.name {
                 continue;
@@ -338,10 +362,10 @@ fn build_call_edges(
             let pattern = format!("{}(", callee_name);
             // 单词边界检查：确保 callee_name 前不是字母/数字/下划线
             let mut search_start = 0;
-            while let Some(pos) = haystack[search_start..].find(&pattern) {
+            while let Some(pos) = body[search_start..].find(&pattern) {
                 let abs_pos = search_start + pos;
                 let word_boundary = abs_pos == 0
-                    || !haystack.as_bytes().get(abs_pos - 1).is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_');
+                    || !body.as_bytes().get(abs_pos - 1).is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_');
                 if word_boundary {
                     for &callee_id in callee_ids {
                         if callee_id == *eid {

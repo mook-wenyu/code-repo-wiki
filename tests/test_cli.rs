@@ -411,3 +411,97 @@ fn test_export_produces_html_artifacts() {
 
     let _ = std::fs::remove_dir_all(&work_dir);
 }
+
+/// Hybrid CLI 搜索集成测试：generate(索引+调用图) 后 search --engine hybrid --json，
+/// 断言命中结果含 callers/callees 调用链补全字段（验证 execute_search 的
+/// call_index 注入链路从 CLI 端到端可用）
+#[test]
+fn test_search_hybrid_includes_callchain() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("sample-repo");
+    let work_dir = unique_dir("search_hybrid");
+    let _ = std::fs::remove_dir_all(&work_dir);
+    copy_dir(&fixture, &work_dir);
+
+    // 覆盖 config.toml：启用搜索索引（fixture 自带 config 可能未开）
+    let port = spawn_mock_llm();
+    let config = format!(
+        r#"
+[scope]
+include = ["**/*.rs"]
+exclude = []
+
+[output]
+dir = "wiki"
+format = "markdown"
+
+[llm]
+provider = "openai"
+model = "gpt-4o"
+base_url = "http://127.0.0.1:{}/v1"
+api_key = "mock"
+api_key_env = "OPENAI_API_KEY"
+max_concurrent = 1
+
+[incremental]
+enabled = false
+strategy = "git-diff"
+
+[search]
+enabled = true
+index_dir = ".search"
+default_engine = "hybrid"
+default_top_k = 10
+"#,
+        port
+    );
+    std::fs::write(work_dir.join("config.toml"), config).unwrap();
+
+    let gen_out = run_bin(&work_dir, &["generate", "--config", "config.toml"], &[]);
+    assert!(
+        gen_out.status.success(),
+        "generate 应成功, stderr: {}",
+        String::from_utf8_lossy(&gen_out.stderr)
+    );
+
+    let out = run_bin(
+        &work_dir,
+        &["search", "-q", "authenticate", "-k", "3", "--engine", "hybrid", "--json", "--config", "config.toml"],
+        &[],
+    );
+    assert!(
+        out.status.success(),
+        "hybrid 搜索应成功, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let hits: Vec<serde_json::Value> = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("应输出合法 JSON: {e}\n实际: {stdout}"));
+
+    // main 调用 authenticate（真实调用边），命中 authenticate 时应补全调用者 main
+    let auth_hit = hits.iter().find(|h| {
+        h.get("name")
+            .and_then(|n| n.as_str())
+            .map(|n| n.contains("authenticate"))
+            .unwrap_or(false)
+    });
+    assert!(
+        auth_hit.is_some(),
+        "应命中 authenticate, 实际 hits: {stdout}"
+    );
+    let hit = auth_hit.unwrap();
+    let callers = hit.get("callers").and_then(|c| c.as_array()).cloned().unwrap_or_default();
+    assert!(
+        !callers.is_empty(),
+        "authenticate 的调用链补全应含调用者 main, 实际 callers: {callers:?} (hit: {hit})"
+    );
+    assert!(
+        hit.get("callees").is_some(),
+        "命中结果应含 callees 字段"
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}

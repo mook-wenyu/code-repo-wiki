@@ -135,7 +135,11 @@ pub fn render_module_call_graph(graph: &KnowledgeGraph) -> String {
     let mut node_module: std::collections::HashMap<NodeId, String> = std::collections::HashMap::new();
     for module in &graph.modules {
         for nid in &module.node_ids {
-            node_module.insert(*nid, module.name.clone());
+            // 先到先得：graph.modules 按深度 3→1 排列（检测时深度从大到小推进），
+            // 子模块先写入 → 实体归属最深的模块；父模块（src 兜底）后处理时
+            // entry 已存在则跳过，避免父模块把子模块实体全部覆盖、
+            // 导致跨模块调用全部被判定为"同模块调用"而被跳过（模块图恒空的根因）
+            node_module.entry(*nid).or_insert_with(|| module.name.clone());
         }
     }
 

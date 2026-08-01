@@ -61,7 +61,10 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
         let now = chrono::Utc::now().to_rfc3339();
 
         Ok(WikiDocument {
-            title: chunk.module_path.last().cloned().unwrap_or_default(),
+            // 标题 = 完整模块路径（"src::generate"）：crossref 校验与概览/架构
+            // 页引用的 target_title（模块名）一致，且链接文本比末段更可辨识；
+            // 页面文件名由 module_path 派生，与标题解耦
+            title: chunk.module_path.join("::"),
             kind: DocumentKind::WikiPage,
             content,
             language: config.wiki.language.clone(),
@@ -103,7 +106,9 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
                     target_path: format!(
                         "wiki/{}/{}.md",
                         config.wiki.language,
-                        c.module_name.replace("::", "/")
+                        // 模块页写盘文件名 = module_path.join("_")（见 output::wiki_file_name），
+                        // 链接必须与之一致，否则 TOC/概览出现断链
+                        c.module_name.replace("::", "_")
                     ),
                     relation: "module".into(),
                 })
@@ -143,7 +148,9 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
                     target_path: format!(
                         "wiki/{}/{}.md",
                         config.wiki.language,
-                        c.module_name.replace("::", "/")
+                        // 模块页写盘文件名 = module_path.join("_")（见 output::wiki_file_name），
+                        // 链接必须与之一致，否则 TOC/概览出现断链
+                        c.module_name.replace("::", "_")
                     ),
                     relation: "module".into(),
                 })
@@ -226,7 +233,11 @@ fn build_references(chunk: &Chunk, language: &str) -> Vec<Reference> {
         .iter()
         .map(|dep| Reference {
             target_title: dep.clone(),
-            target_path: format!("wiki/{language}/{}.md", dep.replace("::", "/")),
+            target_path: format!(
+                "wiki/{language}/{}.md",
+                // 依赖模块页文件名与输出层 wiki_file_name 一致（"::" → "_"）
+                dep.replace("::", "_")
+            ),
             relation: "depends_on".into(),
         })
         .collect()
@@ -297,6 +308,24 @@ mod tests {
         assert_eq!(refs.len(), 2);
         assert_eq!(refs[0].target_title, "tokio");
         assert_eq!(refs[0].target_path, "wiki/zh/tokio.md");
+    }
+
+    /// 链接路径与写盘文件名规则必须一致（"::" → "_"，与 output::wiki_file_name 相同），
+    /// 否则 TOC/概览/模块互链全部断链（历史 bug：曾用 "::" → "/" 生成 wiki/zh/src/analysis.md
+    /// 而实际写盘 src_analysis.md）
+    #[test]
+    fn test_build_references_uses_underscore_like_write_path() {
+        let chunk = Chunk {
+            module_path: vec!["src".into(), "generate".into()],
+            entities: vec![],
+            imports: vec![],
+            dependencies: vec!["src::analysis".into(), "src::output".into()],
+            file_paths: vec![],
+        };
+
+        let refs = build_references(&chunk, "zh");
+        assert_eq!(refs[0].target_path, "wiki/zh/src_analysis.md");
+        assert_eq!(refs[1].target_path, "wiki/zh/src_output.md");
     }
 
     fn make_hints_plan(title: &str) -> ResolvedPlan {
