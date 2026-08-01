@@ -31,6 +31,38 @@ pub fn propagate_impact(changed_files: &[PathBuf], graph: &KnowledgeGraph, max_d
     result
 }
 
+/// 将受影响模块名反查为文件路径集合（T2 传播闭环接线）
+///
+/// 影响传播（propagate_impact / propagate_impact_semantic）产出的是
+/// `CodeNode.module_path.join("::")`（目录 + 文件 stem 派生，如
+/// "src::net::tcp"），与 `ModuleCluster.name`（社区名，如 "src"）不是
+/// 同一套命名——因此反查按 **File 节点的 module_path 精确匹配**，
+/// 而非社区名匹配。生成过滤（run_generation_filtered）用返回值把
+/// 受影响模块的文件并入变更集，实现"签名变更 → 依赖方模块文档
+/// 重生成"的语义传播闭环。
+pub fn module_files(affected_modules: &[String], graph: &KnowledgeGraph) -> Vec<PathBuf> {
+    let target: HashSet<&str> = affected_modules.iter().map(|s| s.as_str()).collect();
+    let mut files: Vec<PathBuf> = graph
+        .graph
+        .node_identifiers()
+        .filter_map(|nid| {
+            let node = &graph.graph[nid];
+            if node.kind != crate::model::NodeKind::File {
+                return None;
+            }
+            let mp = node.module_path.join("::");
+            if target.contains(mp.as_str()) {
+                node.file_path.as_ref().map(PathBuf::from)
+            } else {
+                None
+            }
+        })
+        .collect();
+    files.sort();
+    files.dedup();
+    files
+}
+
 /// 语义影响传播：区分接口级与实现级变化（演进计划 T2.2）
 ///
 /// 分类语义（change.rs）：
@@ -351,5 +383,44 @@ mod tests {
         let changes = EntityChangeSet::default();
         let affected = propagate_impact_semantic(&changed, &changes, &graph, 3);
         assert_eq!(affected.len(), 3, "空实体变化应回退双向传播");
+    }
+
+    /// T2 传播闭环：受影响模块名（module_path.join("::") 形式）反查文件路径
+    #[test]
+    fn test_module_files_resolves_affected_modules() {
+        // 构造 File 节点图（反查按 File 节点匹配；make_simple_graph 的节点是 Module 类型不适用）
+        let mut g = StableDiGraph::<CodeNode, CodeEdge>::new();
+        for (i, (path, segs)) in [
+            ("src/net.rs", vec!["net"]),
+            ("src/db.rs", vec!["db"]),
+            ("src/core.rs", vec!["core"]),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            g.add_node(CodeNode {
+                id: NodeId::new(i),
+                kind: NodeKind::File,
+                name: path.into(),
+                file_path: Some(path.into()),
+                line_range: None,
+                doc_comment: None,
+                signature: None,
+                module_path: segs.into_iter().map(|s| s.to_string()).collect(),
+            });
+        }
+        let graph = KnowledgeGraph { graph: g, modules: vec![], features: Vec::new() };
+
+        let files = module_files(&["net".into(), "db".into()], &graph);
+        assert_eq!(files.len(), 2, "应反查出 net.rs 与 db.rs");
+        assert!(files.contains(&PathBuf::from("src/net.rs")));
+        assert!(files.contains(&PathBuf::from("src/db.rs")));
+        // 未知模块名 → 空
+        assert!(module_files(&["not_exist".into()], &graph).is_empty());
+        // 空输入 → 空
+        assert!(module_files(&[], &graph).is_empty());
+        // 去重：同一受影响名重复出现只反查一次
+        let files2 = module_files(&["net".into(), "net".into()], &graph);
+        assert_eq!(files2.len(), 1);
     }
 }

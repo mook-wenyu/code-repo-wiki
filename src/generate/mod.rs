@@ -175,13 +175,18 @@ pub async fn run_generation_filtered(
     changed_files: &std::collections::HashSet<std::path::PathBuf>,
     extra_edits: &HashMap<String, Vec<String>>,
     entity_changes: Option<&EntityChangeSet>,
+    affected_modules: &[String],
 ) -> Result<GenerationOutput> {
     let start = Instant::now();
 
-    // 过滤出变更文件的 Insight（克隆为拥有数据）
+    // 过滤出变更文件的 Insight（克隆为拥有数据）。
+    // T2 传播闭环接线：除变更文件外，语义传播判定的受影响模块文件也
+    // 并入生成范围——签名/删除等接口级变化会重生成依赖方模块的文档，
+    // 实现级变化（body-only）传播结果只含本模块，行为不变。
+    let affected_files = crate::incremental::impact::module_files(affected_modules, graph);
     let changed_insights: Vec<FileInsight> = insights
         .iter()
-        .filter(|f| changed_files.contains(&f.path))
+        .filter(|f| changed_files.contains(&f.path) || affected_files.contains(&f.path))
         .cloned()
         .collect();
 
