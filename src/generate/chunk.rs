@@ -273,4 +273,105 @@ mod tests {
         assert!(!map.contains_key(&fn_id));
         assert_eq!(map[&file_id], std::path::PathBuf::from("src/lib.rs"));
     }
+
+    #[test]
+    fn test_chunk_by_module_groups_entities_by_module() {
+        // 构造两个模块的图谱：src::a（file_a.rs 含实体 e1）、src::b（file_b.rs 含实体 e2），
+        // file_a 通过 Imports 边依赖 file_b，验证实体归属、依赖分析与 entity_sources 平行性
+        let mut graph = KnowledgeGraph::default();
+
+        let file_a = graph.graph.add_node(crate::model::CodeNode {
+            id: petgraph::stable_graph::NodeIndex::new(0),
+            kind: NodeKind::File,
+            name: "file_a.rs".into(),
+            file_path: Some("src/a/file_a.rs".into()),
+            line_range: None,
+            doc_comment: None,
+            signature: None,
+            module_path: vec!["src".into(), "a".into()],
+        });
+        let e1 = graph.graph.add_node(crate::model::CodeNode {
+            id: petgraph::stable_graph::NodeIndex::new(1),
+            kind: NodeKind::Function,
+            name: "e1".into(),
+            file_path: Some("src/a/file_a.rs".into()),
+            line_range: Some((1, 5)),
+            doc_comment: None,
+            signature: Some("fn e1()".into()),
+            module_path: vec!["src".into(), "a".into()],
+        });
+        let file_b = graph.graph.add_node(crate::model::CodeNode {
+            id: petgraph::stable_graph::NodeIndex::new(2),
+            kind: NodeKind::File,
+            name: "file_b.rs".into(),
+            file_path: Some("src/b/file_b.rs".into()),
+            line_range: None,
+            doc_comment: None,
+            signature: None,
+            module_path: vec!["src".into(), "b".into()],
+        });
+        let e2 = graph.graph.add_node(crate::model::CodeNode {
+            id: petgraph::stable_graph::NodeIndex::new(3),
+            kind: NodeKind::Function,
+            name: "e2".into(),
+            file_path: Some("src/b/file_b.rs".into()),
+            line_range: Some((1, 5)),
+            doc_comment: None,
+            signature: Some("fn e2()".into()),
+            module_path: vec!["src".into(), "b".into()],
+        });
+
+        // 文件包含实体；a 依赖 b（Imports 边 file_a → file_b）
+        graph.graph.add_edge(file_a, e1, crate::model::CodeEdge {
+            id: petgraph::stable_graph::EdgeIndex::new(0),
+            kind: EdgeKind::Contains,
+            source: file_a,
+            target: e1,
+            weight: 1.0,
+            location: None,
+        });
+        graph.graph.add_edge(file_b, e2, crate::model::CodeEdge {
+            id: petgraph::stable_graph::EdgeIndex::new(1),
+            kind: EdgeKind::Contains,
+            source: file_b,
+            target: e2,
+            weight: 1.0,
+            location: None,
+        });
+        graph.graph.add_edge(file_a, file_b, crate::model::CodeEdge {
+            id: petgraph::stable_graph::EdgeIndex::new(2),
+            kind: EdgeKind::Imports,
+            source: file_a,
+            target: file_b,
+            weight: 1.0,
+            location: None,
+        });
+
+        // 模块按名字典序传入：chunk 与 modules 输入一一对应（chunk_by_module 不重排序）
+        let modules = vec![
+            ModuleCluster { name: "src::a".into(), node_ids: vec![file_a, e1], cohesion: 0.9, coupling: 0.1, description: None },
+            ModuleCluster { name: "src::b".into(), node_ids: vec![file_b, e2], cohesion: 0.9, coupling: 0.1, description: None },
+        ];
+        let insights = vec![
+            make_insight("src/a/file_a.rs", vec![make_entity("e1", "fn")]),
+            make_insight("src/b/file_b.rs", vec![make_entity("e2", "fn")]),
+        ];
+
+        let chunks = chunk_by_module(&insights, &modules, &graph);
+
+        // 两个模块各生成一个 chunk，模块路径按名字拆分为 ["src", "a"] / ["src", "b"]
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].module_path, vec!["src".to_string(), "a".to_string()]);
+        assert_eq!(chunks[1].module_path, vec!["src".to_string(), "b".to_string()]);
+        // 每个 chunk 只包含自己模块的实体
+        assert_eq!(chunks[0].entities.len(), 1);
+        assert_eq!(chunks[0].entities[0].name, "e1");
+        assert_eq!(chunks[1].entities[0].name, "e2");
+        // a 依赖 b：Imports 边被依赖分析捕获
+        assert_eq!(chunks[0].dependencies, vec!["src::b".to_string()]);
+        assert!(chunks[1].dependencies.is_empty());
+        // entity_sources 与 entities 平行对应（每个实体记录其源文件）
+        assert_eq!(chunks[0].entity_sources, vec![std::path::PathBuf::from("src/a/file_a.rs")]);
+        assert_eq!(chunks[1].entity_sources, vec![std::path::PathBuf::from("src/b/file_b.rs")]);
+    }
 }
