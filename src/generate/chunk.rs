@@ -114,6 +114,8 @@ pub fn chunk_by_module(
         let module_path: Vec<String> = module.name.split("::").map(|s| s.to_string()).collect();
 
         // 计算实际依赖：从本模块节点出发，通过 Imports 边到达其他模块的节点
+        // module_node_ids 是 HashMap，迭代序随机——deps 必须排序，
+        // 否则卡片 frontmatter 的 dependencies 顺序跨次漂移（确定性评测失败）
         let mut deps: Vec<String> = Vec::new();
         for (&other_name, other_set) in &module_node_ids {
             if other_name == module.name {
@@ -129,6 +131,7 @@ pub fn chunk_by_module(
                 deps.push(other_name.to_string());
             }
         }
+        deps.sort();
 
         chunks.push(Chunk {
             module_path,
