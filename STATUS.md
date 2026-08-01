@@ -3,8 +3,8 @@
 ## 一、架构健康度
 - 当前模块总数：16（analysis 拆出 community/feature 两个子模块；incremental 新增 change）
 - 违规跨模块调用：无
-- 测试覆盖率：cargo clippy --all-targets -- -D warnings 0 警告；cargo test 267 通过 0 失败（207 lib + 60 集成，17 套件）；bench 6 项全过
-- 代码量：约 13,400 行 / 60 .rs 文件（演进新增 ~2,700 行）
+- 测试覆盖率：cargo clippy --all-targets -- -D warnings 0 警告；cargo test 20 套件全绿（208 lib + 集成，含真实 git 差分 e2e/确定性快照/聚类稳定性/watch 冒烟）；bench 6 项全过；cargo machete 零未使用依赖
+- 代码量：约 14,200 行 / 61 .rs 文件
 
 ## 二、本次变更影响范围
 - 修改的功能：深度演进计划 T0-T4 全部 15 项实现完成——图社区检测聚类、实体级变化分类与语义传播、生成并行化、失败隔离、反向链接与特征追溯、CoT 提示、评测基准、测试缺口补全、文档修正
@@ -28,9 +28,6 @@
 1. 大仓库（万级文件）实测社区检测粒度与 LLM 全量生成耗时，按实测调 CPM resolution
 2. status 命令补真实产物检查（当前桩实现）；sample-repo fixture 配置改为 mock provider
 
-## 五、未完成项清零计划（已拍板，待实施）
-- 计划文档：.opencode/plans/1785628800000-tidying-up.md（T0-T5 共 20 任务，commit cad7eb9）
-- 双子代理审计产出：A 类 3 项（output.format 死键/status 桩/card_test_regex.txt 残留）+ B 类 5 项死代码（用户拍板保留 complete_stream）+ C 类 4 项死键 + D 类 3 项（describe_modules 信号量/评测断言/CLI 测试）
-- **新发现 2 缺陷（子代理 B）**：①affected_modules 计算后未消费——签名变更不会重生成依赖模块文档（T2 接线）；②test_e2e 的 fixture 非 git 仓库导致增量断言走全量回退，从未真实验证差分（T3 补真实 git e2e）
-- 决策（2026-08-02 拍板）：保留 complete_stream；删 output.format 枚举；删 wiki.template/embed.dimension、default_top_k 接线；status 复用 lint 补健康检查；affected_modules 接线；真实 git e2e；三项评测断言全做；describe_modules 信号量；update/watch CLI 冒烟；cargo-machete 依赖审计
-- 工作树 default-config.toml 用户 embed 配置（百炼）待随 T0 提交
+## 五、未完成项清零计划（T0-T5 全部完成，commit 9da0696/09b341b 后）
+- **全部完成**：删 output.format/wiki.template/embed.dimension 死键 + model_name/死渲染器/3 种未构建边类型；status 补健康检查（复用 lint）；default_top_k 接线；affected_modules 传播闭环接线（module_files 反查）；真实 git 差分 e2e（四场景）+ 修复 Windows 路径分隔符系统性 bug（norm_sep）；确定性快照测试（修 deps 顺序非确定性）+ 聚类稳定性测试；describe_modules 信号量（修 Semaphore MAX_PERMITS panic）；update/watch CLI 冒烟；cargo-machete 零未使用依赖
+- 过程中新发现并修复的真实缺陷：tokio 1.53 Semaphore::new(usize::MAX) panic；chunk 依赖顺序非确定性；删除清理社区前缀名不匹配（上轮）；Windows 路径分隔符致传播/分类失效（本轮最重大）
