@@ -122,9 +122,11 @@ pub async fn run_generation(
         config.wiki.language.clone(),
         plan.clone(),
     );
-    let cards = card_gen
+    let mut cards = card_gen
         .generate_all_cards(&chunks, extra_edits)
         .await?;
+    // 特征追溯回填（演进计划 T3.3）：模块实体与特征实体的交集 → 特征名
+    backfill_features(&mut cards, &chunks, graph);
     tracing::info!("生成进度: 60% - 知识卡片生成完成，共 {} 个卡片", cards.len());
 
     // 4. 按语言独立生成 Wiki 页面（并行，演进计划 T3.1；卡片仅主语言生成一次，
@@ -255,9 +257,11 @@ pub async fn run_generation_filtered(
         config.wiki.language.clone(),
         plan.clone(),
     );
-    let cards = card_gen
+    let mut cards = card_gen
         .generate_all_cards(&chunks, extra_edits)
         .await?;
+    // 特征追溯回填（演进计划 T3.3）：模块实体与特征实体的交集 → 特征名
+    backfill_features(&mut cards, &chunks, graph);
 
     // 4. 按语言独立生成 Wiki 页面（并行，演进计划 T3.1；仅变更块；卡片仅主语言生成一次，
     // 各语言页面复用主语言卡片摘要）
@@ -315,6 +319,42 @@ fn filter_by_whitelist(
         .into_iter()
         .filter(|d| allowed.contains(d.title.as_str()))
         .collect()
+}
+
+/// 特征追溯回填（演进计划 T3.3）
+///
+/// 模块涉及的实体级特征 = 模块 chunk 实体名与特征实体名集合的交集。
+/// 特征名列表写入卡片（render_knowledge_card 渲染"特征追溯"节），
+/// 提供"功能 → 实现它的模块"的可追溯视图（RepoSummary 的 traceability）。
+/// 特征实体名经 graph 反查 NodeId 得到；不经过 LLM，杜绝幻觉。
+fn backfill_features(cards: &mut [KnowledgeCard], chunks: &[Chunk], graph: &KnowledgeGraph) {
+    if graph.features.is_empty() || cards.is_empty() {
+        return;
+    }
+    // 预构建 特征名 → 实体名集合（避免每张卡片重复遍历图）
+    let feature_entities: Vec<(String, std::collections::HashSet<String>)> = graph
+        .features
+        .iter()
+        .map(|f| {
+            let names: std::collections::HashSet<String> = f
+                .node_ids
+                .iter()
+                .filter_map(|nid| graph.graph.node_weight(*nid).map(|n| n.name.clone()))
+                .collect();
+            (f.name.clone(), names)
+        })
+        .collect();
+    for (card, chunk) in cards.iter_mut().zip(chunks) {
+        let entity_names: std::collections::HashSet<&str> =
+            chunk.entities.iter().map(|e| e.name.as_str()).collect();
+        let mut matched: Vec<String> = feature_entities
+            .iter()
+            .filter(|(_, names)| names.iter().any(|n| entity_names.contains(n.as_str())))
+            .map(|(name, _)| name.clone())
+            .collect();
+        matched.sort();
+        card.features = matched;
+    }
 }
 
 /// 并行生成实体摘要（Level 0，演进计划 T3.1 并行化）

@@ -131,6 +131,9 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
         if !pending_manual_edits.is_empty() {
             card.pending_manual_edits = pending_manual_edits.to_vec();
         }
+        // 反向链接回填（演进计划 T3.3）：key_entities 按名匹配 chunk 实体，
+        // 填充 "文件路径:起始行-结束行" 的源码定位，不经过 LLM（防幻觉）
+        backfill_entity_sources(&mut card, chunk);
         Ok(card)
     }
 
@@ -355,6 +358,7 @@ fn parse_card_response(response: &str, chunk: &Chunk) -> Result<KnowledgeCard> {
                     kind: v["kind"].as_str().unwrap_or("").to_string(),
                     visibility: v["visibility"].as_str().unwrap_or("public").to_string(),
                     doc: v["doc"].as_str().map(|s| s.to_string()),
+                    source: None,
                 })
                 .collect()
         })
@@ -409,7 +413,35 @@ fn parse_card_response(response: &str, chunk: &Chunk) -> Result<KnowledgeCard> {
         tech_stack,
         architecture,
         pending_manual_edits: Vec::new(),
+        features: Vec::new(),
     })
+}
+
+/// 回填实体反向链接（演进计划 T3.3）
+///
+/// key_entities 按实体名匹配 chunk 实体，填充 "文件路径:起始行-结束行"。
+/// 文件归属来自 chunk.entity_sources（T2.3 引入的实体→文件平行向量）；
+/// 源码定位不经过 LLM，杜绝幻觉。未匹配到实体的条目保持 None。
+fn backfill_entity_sources(card: &mut KnowledgeCard, chunk: &Chunk) {
+    for es in &mut card.key_entities {
+        if es.source.is_some() {
+            continue;
+        }
+        if let Some((idx, entity)) = chunk
+            .entities
+            .iter()
+            .enumerate()
+            .find(|(_, e)| e.name == es.name)
+            && let Some(file) = chunk.entity_sources.get(idx)
+        {
+            es.source = Some(format!(
+                "{}:{}-{}",
+                file.display(),
+                entity.line_start,
+                entity.line_end
+            ));
+        }
+    }
 }
 
 /// 从 LLM 响应中提取 JSON 字符串（去除 Markdown 代码块标记）

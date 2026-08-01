@@ -572,6 +572,7 @@ mod tests {
                 kind: "function".into(),
                 visibility: "public".into(),
                 doc: None,
+                source: None,
             }],
             dependencies: vec![],
             dependents: vec![],
@@ -582,6 +583,7 @@ mod tests {
             tech_stack: vec![],
             architecture: None,
             pending_manual_edits: vec![],
+            features: Vec::new(),
         };
         let prompt = overview_prompt(&[], &[card], &graph, &config);
         assert!(prompt.contains("## 模块卡片摘要"), "应含卡片摘要节");

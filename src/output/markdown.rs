@@ -130,15 +130,22 @@ pub fn render_knowledge_card(card: &KnowledgeCard) -> String {
     output.push_str(&format!("# {}\n\n", card.module_name));
     output.push_str(&format!("## 摘要\n\n{}\n\n", card.summary));
 
-    // 关键实体
+    // 关键实体（source 为回填的源码定位反向链接，T3.3）
     if !card.key_entities.is_empty() {
         output.push_str("## 关键实体\n\n");
         for entity in &card.key_entities {
             let doc = entity.doc.as_deref().unwrap_or("");
-            output.push_str(&format!(
-                "- `{}` ({}) — {}\n",
-                entity.name, entity.kind, doc
-            ));
+            if let Some(src) = &entity.source {
+                output.push_str(&format!(
+                    "- `{}` ({}) — {} [源码:{}]\n",
+                    entity.name, entity.kind, doc, src
+                ));
+            } else {
+                output.push_str(&format!(
+                    "- `{}` ({}) — {}\n",
+                    entity.name, entity.kind, doc
+                ));
+            }
         }
         output.push('\n');
     }
@@ -167,6 +174,15 @@ pub fn render_knowledge_card(card: &KnowledgeCard) -> String {
         output.push_str("## 待办事项\n\n");
         for note in &card.todo_notes {
             output.push_str(&format!("- [ ] {}\n", note));
+        }
+        output.push('\n');
+    }
+
+    // 特征追溯（演进计划 T3.3：本模块参与的实体级特征，非空时渲染）
+    if !card.features.is_empty() {
+        output.push_str("## 特征追溯\n\n");
+        for f in &card.features {
+            output.push_str(&format!("- `{}`\n", f));
         }
         output.push('\n');
     }
@@ -347,6 +363,7 @@ mod tests {
                 kind: "struct".into(),
                 visibility: "public".into(),
                 doc: Some("配置结构体".into()),
+                source: None,
             }],
             dependencies: vec!["serde".into()],
             dependents: vec![],
@@ -357,6 +374,7 @@ mod tests {
             tech_stack: vec!["serde".into()],
             architecture: Some("分层".into()),
             pending_manual_edits: vec!["人工修改待同步: wiki/zh/src_config.md 内容摘要: 手动改".into()],
+            features: Vec::new(),
         };
 
         let output = render_knowledge_card(&card);
@@ -395,7 +413,9 @@ mod tests {
             tech_stack: vec![],
             architecture: None,
             pending_manual_edits: vec![],
+            features: Vec::new(),
         };
+
         let output = render_knowledge_card(&card);
         assert!(!output.contains("人工修改待同步"), "无记录时不应渲染空节");
     }
@@ -522,6 +542,7 @@ mod tests {
             tech_stack: vec![],
             architecture: None,
             pending_manual_edits: vec![],
+            features: Vec::new(),
         };
 
         let dir = std::env::temp_dir().join("repo-wiki-test-markdown");

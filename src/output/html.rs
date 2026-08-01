@@ -383,6 +383,7 @@ mod tests {
                 kind: "函数".to_string(),
                 visibility: "pub".to_string(),
                 doc: Some("入口函数".to_string()),
+                source: None,
             }],
             dependencies: vec!["serde".to_string()],
             dependents: vec![],
@@ -393,6 +394,7 @@ mod tests {
             tech_stack: vec![],
             architecture: None,
             pending_manual_edits: vec!["人工修改待同步: wiki/zh/核心模块.md 内容摘要: 手动改".into()],
+            features: Vec::new(),
         };
 
         let graph = KnowledgeGraph {

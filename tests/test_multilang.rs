@@ -66,8 +66,8 @@ fn test_write_document_language_param() {
         coding_spec: None,
         tech_stack: vec![],
         architecture: None,
-        pending_manual_edits: vec![],
-    };
+        pending_manual_edits: vec![],        features: Vec::new(),    };
+
     let dir = std::env::temp_dir().join(format!("repo_wiki_test_multilang_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();

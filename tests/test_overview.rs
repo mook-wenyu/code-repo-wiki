@@ -172,8 +172,8 @@ fn test_overview_module_refs_match_write_path() {
         coding_spec: None,
         tech_stack: vec![],
         architecture: None,
-        pending_manual_edits: vec![],
-    };
+        pending_manual_edits: vec![],        features: Vec::new(),    };
+
     let card2 = KnowledgeCard {
         module_name: "src::http".into(),
         module_type: "module".into(),
@@ -187,8 +187,8 @@ fn test_overview_module_refs_match_write_path() {
         coding_spec: None,
         tech_stack: vec![],
         architecture: None,
-        pending_manual_edits: vec![],
-    };
+        pending_manual_edits: vec![],        features: Vec::new(),    };
+
 
     let provider = MockProvider::new();
     let generator = WikiGenerator::new(&provider, None);

@@ -376,6 +376,7 @@ mod tests {
             tech_stack: vec![],
             architecture: None,
             pending_manual_edits: vec![],
+            features: Vec::new(),
         };
 
         let (fps, modules) = GenerationState::record_doc_fingerprints(&[doc], &[card], &dir, &["zh".into()]).unwrap();
@@ -413,7 +414,9 @@ mod tests {
             tech_stack: vec![],
             architecture: None,
             pending_manual_edits: vec![],
+            features: Vec::new(),
         };
+
         let (fps2, modules2) = GenerationState::record_doc_fingerprints(&[], &[missing_card], &dir, &["zh".into()]).unwrap();
         assert!(fps2.is_empty(), "文件不存在时不应记录指纹");
         assert!(modules2.is_empty(), "文件不存在时不应记录模块归属");

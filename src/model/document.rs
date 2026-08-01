@@ -77,6 +77,10 @@ pub struct KnowledgeCard {
     /// 下次生成时作为 LLM 输入提示（"有人工修改待同步"）
     #[serde(default)]
     pub pending_manual_edits: Vec<String>,
+    /// 本模块涉及的实体级特征名（演进计划 T3.3：特征追溯，
+    /// 由生成管道从 graph.features 与模块实体的交集回填，不经过 LLM）
+    #[serde(default)]
+    pub features: Vec<String>,
 }
 
 /// 实体摘要（用于 Knowledge Card）
@@ -86,4 +90,8 @@ pub struct EntitySummary {
     pub kind: String,
     pub visibility: String,
     pub doc: Option<String>,
+    /// 反向链接：源码定位 "文件路径:起始行-结束行"（演进计划 T3.3，
+    /// 由生成管道从 chunk 实体回填，不经过 LLM）
+    #[serde(default)]
+    pub source: Option<String>,
 }

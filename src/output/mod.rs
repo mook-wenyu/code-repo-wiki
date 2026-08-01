@@ -303,6 +303,7 @@ mod tests {
             tech_stack: vec![],
             architecture: None,
             pending_manual_edits: vec![],
+            features: Vec::new(),
         }
     }
 

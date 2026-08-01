@@ -207,8 +207,8 @@ fn test_render_all_protected_page_still_writes_card() {
         coding_spec: None,
         tech_stack: vec![],
         architecture: None,
-        pending_manual_edits: vec!["人工修改待同步: wiki/zh/foo.md 内容摘要: 用户改的".into()],
-    };
+        pending_manual_edits: vec!["人工修改待同步: wiki/zh/foo.md 内容摘要: 用户改的".into()],        features: Vec::new(),    };
+
 
     let config = WikiConfig {
         output: OutputSection { dir: dir.to_string_lossy().to_string(), ..Default::default() },
@@ -351,8 +351,8 @@ fn test_manual_edit_recorded_in_card() {
         coding_spec: None,
         tech_stack: vec![],
         architecture: None,
-        pending_manual_edits: vec![],
-    };
+        pending_manual_edits: vec![],        features: Vec::new(),    };
+
 
     // 注入前：无记录时卡片渲染不含该节（避免空节）
     let before = repo_wiki::output::markdown::render_knowledge_card(&card);
