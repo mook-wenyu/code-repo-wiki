@@ -268,8 +268,7 @@ fn extract_pending_manual_edits(content: &str) -> Vec<String> {
 pub async fn generate_module_card(provider: &Provider, config: &WikiConfig, module: &str) -> Result<()> {
     let insights = crate::ingest::scan_and_parse(config)?;
     let graph = crate::analysis::build_graph(&insights)?;
-    let modules = crate::analysis::detect_modules(&graph)?;
-    let chunks = crate::generate::chunk::chunk_by_module(&insights, &modules, &graph);
+    let chunks = crate::generate::chunk::chunk_by_module(&insights, &graph.modules, &graph);
     let chunk = chunks
         .into_iter()
         .find(|c| c.module_path.join("::") == module)

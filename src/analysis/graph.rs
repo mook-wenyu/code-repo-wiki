@@ -126,6 +126,13 @@ pub fn build(insights: &[FileInsight]) -> Result<KnowledgeGraph> {
         warn!("检测到 {} 个循环依赖: {:?}", cycles.len(), cycles);
     }
 
+    // 模块检测接线:图构建完成后运行社区检测,结果写回 kg.modules。
+    // 生成层(generate/mod.rs)、渲染层(markdown/html/mermaid)均以
+    // graph.modules 为模块分组的唯一来源;此前仅 lib.rs 显式调用
+    // detect_modules 且结果只进 stats,modules 恒空导致按模块生成
+    // 从未生效。检测失败向上传播(无兜底)。
+    kg.modules = crate::analysis::detect_modules(&kg)?;
+
     Ok(kg)
 }
 

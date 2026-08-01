@@ -1,1 +1,8 @@
 /target
+
+# 生成产物（mock 误操作曾提交 31 个文件，见 .scratch/repo-wiki-hardening/issues/03）
+.repo-wiki/
+
+# 本地轨迹/计划（本地 issue tracker 约定）
+.scratch/
+.swarm/evidence/

@@ -349,3 +349,65 @@ fn test_card_reference_validation() {
 
     let _ = std::fs::remove_dir_all(&work_dir);
 }
+
+/// B6:export 命令 CLI 级 E2E——generate 后执行 export,
+/// 断言 HTML 产物目录生成且含主文档页(html export 仅单测覆盖,
+/// 此处补真实二进制链路)
+#[test]
+fn test_export_produces_html_artifacts() {
+    let work_dir = prepare_repo("export");
+
+    let gen_out = run_bin(
+        &work_dir,
+        &["generate", "--config", "config.toml"],
+        &[],
+    );
+    assert!(
+        gen_out.status.success(),
+        "generate 应成功, stderr: {}",
+        String::from_utf8_lossy(&gen_out.stderr)
+    );
+
+    let out = run_bin(
+        &work_dir,
+        &["export", "--config", "config.toml"],
+        &[],
+    );
+    assert!(
+        out.status.success(),
+        "export 应成功, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // html 产物目录:export_html 写入 {output.dir}/html/?
+    // 以实际落盘文件断言(不臆测路径,失败时列出目录内容)
+    // html 产物:export_html 在 wiki/ 目录内写 {title}.html + 根 index.html
+    // (与 .md 并存,不建独立 html/ 子目录)
+    let html_dir = work_dir.join("wiki");
+    let html_files: Vec<_> = std::fs::read_dir(&html_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path()
+                .extension()
+                .map(|x| x == "html")
+                .unwrap_or(false)
+        })
+        .collect();
+    assert!(
+        !html_files.is_empty(),
+        "wiki/ 目录应包含 .html 导出文件: {}",
+        html_dir.display()
+    );
+    assert!(
+        work_dir.join("wiki").join("index.html").exists(),
+        "wiki/index.html(目录页)应生成"
+    );
+    assert!(
+        !html_files.is_empty(),
+        "html 目录应包含导出文件: {}",
+        html_dir.display()
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}

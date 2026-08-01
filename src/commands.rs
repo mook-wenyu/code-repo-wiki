@@ -15,16 +15,24 @@ use crate::incremental::state::GenerationState;
 /// 本质上 = 重新加载工作区 .md 内容到指纹库，不触发任何 LLM 生成。
 pub fn sync_from_git(output_dir: &Path) -> Result<()> {
     let state_dir = output_dir.join(".state");
-    // 无既有状态时从空状态开始：所有产物视为新文件，全部记录指纹
-    let mut state = GenerationState::load(&state_dir).unwrap_or_else(|_| GenerationState {
-        last_commit_hash: None,
-        file_fingerprints: HashMap::new(),
-        module_fingerprints: HashMap::new(),
-        doc_fingerprints: HashMap::new(),
-        doc_modules: HashMap::new(),
-        protected_docs: Vec::new(),
-        generated_at: chrono::Utc::now().to_rfc3339(),
-    });
+    let state_path = state_dir.join("generation_state.json");
+    // 状态不存在（首次 sync）→ 从空状态开始：所有产物视为新文件，全部记录指纹。
+    // 状态存在但损坏 → 显式报错（不静默重置：空状态会丢失 protected_docs，
+    // 使人工修改保护在后续 update 中失效）。
+    let mut state = if !state_path.exists() {
+        GenerationState {
+            last_commit_hash: None,
+            file_fingerprints: HashMap::new(),
+            module_fingerprints: HashMap::new(),
+            doc_fingerprints: HashMap::new(),
+            doc_modules: HashMap::new(),
+            protected_docs: Vec::new(),
+            generated_at: chrono::Utc::now().to_rfc3339(),
+        }
+    } else {
+        GenerationState::load(&state_dir)
+            .with_context(|| format!("状态文件损坏，拒绝静默重置（保护信息会丢失）: {}", state_path.display()))?
+    };
 
     let mut updated = 0usize;
     let mut skipped = 0usize;

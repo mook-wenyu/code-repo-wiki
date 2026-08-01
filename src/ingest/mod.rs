@@ -12,7 +12,16 @@ use parser::{FileInsight, ParserRegistry};
 pub fn scan_and_parse(config: &WikiConfig) -> Result<Vec<FileInsight>> {
     let root = std::env::current_dir()?;
     let scanner = scanner::Scanner::new(&root, &config.scope);
-    let files = scanner.scan()?;
+    // 扫描产出绝对路径；转换为相对扫描根（== 进程 cwd）的路径——
+    // 模块名派生（graph/chunk 的 Normal 组件提取）、搜索索引、指纹记录
+    // 全部以相对路径为基准，杜绝绝对路径污染模块名（此前产出
+    // RustProjects_repo-wiki_src 这类含机器路径的模块名）。
+    // 相对路径下的 IO 相对 cwd 解析，与绝对路径等价。
+    let files = scanner
+        .scan()?
+        .into_iter()
+        .map(|f| f.strip_prefix(&root).map(|p| p.to_path_buf()).unwrap_or(f))
+        .collect::<Vec<_>>();
 
     let registry = ParserRegistry::new();
 

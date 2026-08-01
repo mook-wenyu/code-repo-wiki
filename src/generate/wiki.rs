@@ -241,7 +241,6 @@ mod tests {
     
     use std::path::PathBuf;
 
-    #[allow(dead_code)]
     fn make_test_chunk() -> Chunk {
         let entity = Entity {
             name: "Server".into(),

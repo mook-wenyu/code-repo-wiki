@@ -70,7 +70,11 @@ impl OpenCodeConfig {
                 "清理 opencode.json 中无效的 plugins 键（官方仅认单数 plugin）: {}",
                 self.config_path.display()
             );
-            value.as_object_mut().unwrap().remove("plugins");
+            // 顶层必须是对象（数组/标量 JSON 无键可清，属配置错误，显式报错而非兜底）
+            value
+                .as_object_mut()
+                .with_context(|| format!("opencode.json 顶层应为 JSON 对象: {}", self.config_path.display()))?
+                .remove("plugins");
         }
 
         let output = serde_json::to_string_pretty(&value)
@@ -98,7 +102,10 @@ impl OpenCodeConfig {
             .with_context(|| format!("解析配置文件失败: {}", self.config_path.display()))?;
 
         if value.get_mut("plugins").is_some() {
-            value.as_object_mut().unwrap().remove("plugins");
+            value
+                .as_object_mut()
+                .with_context(|| format!("opencode.json 顶层应为 JSON 对象: {}", self.config_path.display()))?
+                .remove("plugins");
             let output = serde_json::to_string_pretty(&value)
                 .with_context(|| "序列化 opencode.json 失败")?;
             std::fs::write(&self.config_path, &output)

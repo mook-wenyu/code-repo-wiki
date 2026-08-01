@@ -18,7 +18,7 @@ pub struct KnowledgeGraph {
 }
 
 /// 模块聚类
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModuleCluster {
     pub name: String,
     pub node_ids: Vec<NodeId>,

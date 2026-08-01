@@ -168,13 +168,13 @@ pub fn run_pipeline_with_progress(
         ..Default::default()
     };
 
-    // Phase 2: 分析
+    // Phase 2: 分析（build_graph 内部完成模块检测并写回 graph.modules，
+    // 此处直接读结果供 stats，不重复运行检测）
     let graph = analysis::build_graph(&file_insights)?;
-    let modules = analysis::detect_modules(&graph)?;
     on_progress(ProgressEvent { stage: "analyzing", percent: 25 });
     stats.total_entities = graph.graph.node_count();
     stats.total_edges = graph.graph.edge_count();
-    stats.modules_detected = modules.len();
+    stats.modules_detected = graph.modules.len();
 
     // Phase 3: 生成（需要 tokio 运行时）。人工修改记录在生成前注入
     // LLM 输入（collect_manual_edits：旧状态指纹比对 + 模块归属精确匹配）
@@ -275,6 +275,16 @@ pub fn run_incremental_pipeline(
     let config = load_config_with_output(config_path, output)?;
     let start = std::time::Instant::now();
 
+    // 事件路径统一相对化（相对 cwd）：scan_and_parse 产出的 insight 路径
+    // 已是相对扫描根（== cwd），watch 层外部传入的路径必须对齐同一基准，
+    // 否则删除清理的模块名派生（module_name_from_path 取 Normal 组件）
+    // 会对绝对路径取出机器路径，清理不到任何产物。
+    let cwd = std::env::current_dir()?;
+    let watch_paths: Vec<std::path::PathBuf> = watch_paths
+        .iter()
+        .map(|p| p.strip_prefix(&cwd).map(|r| r.to_path_buf()).unwrap_or_else(|_| p.clone()))
+        .collect();
+
     // 保护集必须在增量分析之前加载（增量分析内部会重写 state 文件）
     let (protected, old_state) = load_protection(&config, force);
 
@@ -282,19 +292,18 @@ pub fn run_incremental_pipeline(
     // 对应产物（wiki 页 + 卡片）。删除路径随后仍进入增量流程
     // （FileWatch 策略并入 changed_files），驱动搜索索引清理与状态保存。
     if change_kind == Some(incremental::watch::ChangeKind::Deleted) {
-        cleanup_deleted_outputs(&config, watch_paths);
+        cleanup_deleted_outputs(&config, &watch_paths);
     }
 
     // Phase 1: 扫描
     let file_insights = ingest::scan_and_parse(&config)?;
 
-    // Phase 2: 分析
+    // Phase 2: 分析（build_graph 内部完成模块检测并写回 graph.modules）
     let graph = analysis::build_graph(&file_insights)?;
-    let _modules = analysis::detect_modules(&graph)?;
 
     // 检查增量变更（watch_paths 透传：FileWatch 策略下删除事件路径
     // 由此进入 changed_files，驱动下游删除清理）
-    let inc_result = incremental::run_incremental_update(&file_insights, &graph, &config, watch_paths)?;
+    let inc_result = incremental::run_incremental_update(&file_insights, &graph, &config, &watch_paths)?;
 
     // 回退全量时 changed_files 非空但 affected_modules 为空，仅凭 changed_files 判断是否跳过
     if inc_result.changed_files.is_empty() {
@@ -352,7 +361,7 @@ pub fn run_incremental_pipeline(
         files_parsed: file_insights.iter().filter(|f| !f.entities.is_empty()).count(),
         total_entities: graph.graph.node_count(),
         total_edges: graph.graph.edge_count(),
-        modules_detected: _modules.len(),
+        modules_detected: graph.modules.len(),
         generation_time_ms: start.elapsed().as_millis() as u64,
     };
 

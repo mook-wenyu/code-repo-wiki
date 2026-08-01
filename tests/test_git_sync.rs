@@ -106,3 +106,22 @@ fn test_sync_without_state_records_new_fingerprints() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// 状态文件存在但损坏（非法 JSON）时 sync 显式报错：
+/// 静默重置会丢失 protected_docs，使人工修改保护失效
+#[test]
+fn test_sync_corrupted_state_errors_explicitly() {
+    let (dir, _) = fixture("corrupt", "内容");
+    let state_dir = dir.join(".state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    std::fs::write(state_dir.join("generation_state.json"), "{ not valid json !").unwrap();
+
+    let err = repo_wiki::commands::sync_from_git(&dir).unwrap_err();
+    assert!(
+        err.to_string().contains("状态文件损坏"),
+        "损坏状态应显式报错而非静默重置: {}",
+        err
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
