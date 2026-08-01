@@ -9,7 +9,7 @@ use super::change::{EntityChangeKind, EntityChangeSet};
 
 /// 在知识图谱上传播变更影响，返回所有受影响的模块名称
 ///
-/// 从变更文件节点出发，沿 Imports/DependsOn 边双向 BFS 遍历 3 层，
+/// 从变更文件节点出发，沿 Imports/Calls 边双向 BFS 遍历 3 层，
 /// 找到所有直接或间接受影响的模块。
 pub fn propagate_impact(changed_files: &[PathBuf], graph: &KnowledgeGraph, max_depth: usize) -> Vec<String> {
     if graph.graph.node_count() == 0 {
@@ -143,7 +143,7 @@ fn propagate_from(start_nodes: Vec<NodeId>, graph: &KnowledgeGraph, max_depth: u
                 }
 
                 let kind = &graph.graph[edge.id()].kind;
-                if !matches!(kind, EdgeKind::Imports | EdgeKind::DependsOn | EdgeKind::Calls) {
+                if !matches!(kind, EdgeKind::Imports | EdgeKind::Calls) {
                     continue;
                 }
 
@@ -207,7 +207,7 @@ mod tests {
             core, net,
             CodeEdge {
                 id: petgraph::stable_graph::EdgeIndex::new(0),
-                kind: EdgeKind::DependsOn,
+                kind: EdgeKind::Imports,
                 source: core,
                 target: net,
                 weight: 1.0,

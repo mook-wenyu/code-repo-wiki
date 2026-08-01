@@ -8,7 +8,7 @@
 | **Entity** | AST 中的一个具名代码单元（函数/类/结构体/接口/枚举/变量/属性） |
 | **CodeGraph** | petgraph 0.8 `StableDiGraph<CodeNode, CodeEdge>` 知识图谱 |
 | **CodeNode** | 图中的节点，代表一个实体、文件或模块 |
-| **CodeEdge** | 图中的边，代表 Contains/Imports/Calls/Implements/DependsOn/Extends/TypeReference 关系 |
+| **CodeEdge** | 图中的边，代表 Contains/Imports/Calls/Implements 关系 |
 | **ModuleCluster** | 文件级社区检测（leiden-rs CPM）产出的模块划分，cohesion/coupling 为描述性元数据 |
 | **Feature** | 实体级特征聚类（跨文件协作的方法组），嵌入相似度与调用结构融合聚类 |
 | **Chunk** | 按模块聚类的实体分组（含 entity_sources 记录实体归属文件），传递给 LLM 生成卡片 |

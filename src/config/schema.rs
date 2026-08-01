@@ -24,7 +24,6 @@ pub struct WikiConfig {
 /// Wiki 基本配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WikiSection {
-    pub template: WikiTemplate,
     pub language: String,
     #[serde(default)]
     pub expand_languages: Vec<String>,
@@ -33,18 +32,10 @@ pub struct WikiSection {
 impl Default for WikiSection {
     fn default() -> Self {
         Self {
-            template: WikiTemplate::Architecture,
             language: "zh".to_string(),
             expand_languages: Vec::new(),
         }
     }
-}
-
-/// Wiki 模板类型
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum WikiTemplate {
-    #[serde(rename = "architecture")]
-    Architecture,
 }
 
 /// 扫描范围配置
@@ -118,22 +109,14 @@ pub enum LlmProviderType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutputSection {
     pub dir: String,
-    pub format: OutputFormat,
 }
 
 impl Default for OutputSection {
     fn default() -> Self {
         Self {
             dir: ".repo-wiki".to_string(),
-            format: OutputFormat::Markdown,
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum OutputFormat {
-    #[serde(rename = "markdown")]
-    Markdown,
 }
 
 /// 嵌入模型提供商类型
@@ -156,8 +139,6 @@ pub struct EmbedSection {
     pub api_key_env: String,
     /// 批处理大小（一次 API 调用中最多 embedding 的文本数）
     pub batch_size: usize,
-    /// 向量维度（部分本地模型需手动指定）
-    pub dimension: Option<usize>,
 }
 
 impl Default for EmbedSection {
@@ -170,7 +151,6 @@ impl Default for EmbedSection {
             api_key: None,
             api_key_env: "OPENAI_API_KEY".to_string(),
             batch_size: 20,
-            dimension: None,
         }
     }
 }

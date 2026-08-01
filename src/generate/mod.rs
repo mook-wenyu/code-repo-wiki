@@ -602,7 +602,6 @@ mod tests {
             wiki: WikiSection {
                 language: "zh".into(),
                 expand_languages: vec!["en".into(), "ja".into()],
-                ..Default::default()
             },
             ..Default::default()
         };

@@ -34,7 +34,6 @@ exclude = []
 
 [output]
 dir = ".repo-wiki"
-format = "markdown"
 
 [llm]
 provider = "mock"
@@ -99,16 +98,41 @@ fn prepare_repo(tag: &str) -> PathBuf {
 
 // ==================== 测试用例 ====================
 
-/// status：配置可加载即输出就绪状态与配置文件路径（main.rs Status 分支行为）
+/// status：无产物时报告未生成；generate 后就绪并输出页面/卡片统计与配置文件路径
+/// （main.rs Status 分支行为，T1）
 #[test]
 fn test_status_reports_ready() {
     let work_dir = prepare_repo("status");
 
+    // 未生成时（无产物）：提示运行 generate
     let out = run_bin(&work_dir, &["status", "-c", "config.toml"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         out.status.success(),
         "status 应成功退出，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("Wiki 状态: 未生成"),
+        "无产物时应提示未生成，实际 stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("配置文件: config.toml"),
+        "应输出配置文件路径，实际 stdout: {stdout}"
+    );
+
+    // generate 后：就绪 + 页面/卡片统计
+    let out = run_bin(&work_dir, &["generate", "-c", "config.toml"]);
+    assert!(
+        out.status.success(),
+        "generate 应成功，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = run_bin(&work_dir, &["status", "-c", "config.toml"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "generate 后 status 应成功，stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
@@ -118,6 +142,10 @@ fn test_status_reports_ready() {
     assert!(
         stdout.contains("配置文件: config.toml"),
         "应输出配置文件路径，实际 stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("页面:") && stdout.contains("卡片:"),
+        "应输出页面/卡片统计，实际 stdout: {stdout}"
     );
 
     let _ = std::fs::remove_dir_all(&work_dir);
@@ -323,6 +351,52 @@ fn test_search_text_engine_json() {
         auth_hit.unwrap().get("file").and_then(|f| f.as_str()).is_some_and(|f| f.contains("auth.rs")),
         "命中应定位到 auth.rs，实际: {stdout}"
     );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
+
+/// T0.8 search.default_top_k 接线：配置 default_top_k=3 且 CLI 不传 -k 时，
+/// search 结果数回退到配置值（≤3）；对照 -k 5 显式传参不受配置影响（>3）
+#[test]
+fn test_search_top_k_falls_back_to_config() {
+    let work_dir = prepare_repo("search_topk");
+    // 覆写配置：search.default_top_k 从 10 改为 3（T0.8 接线验证）
+    let cfg = std::fs::read_to_string(work_dir.join("config.toml")).unwrap();
+    std::fs::write(
+        work_dir.join("config.toml"),
+        cfg.replace("default_top_k = 10", "default_top_k = 3"),
+    )
+    .unwrap();
+
+    let out = run_bin(&work_dir, &["generate", "-c", "config.toml"]);
+    assert!(
+        out.status.success(),
+        "generate 应成功（构建文本索引），stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // 不传 -k：结果数受配置 default_top_k=3 约束
+    let out = run_bin(
+        &work_dir,
+        &["search", "-q", "pub", "-e", "text", "--json", "-c", "config.toml"],
+    );
+    assert!(
+        out.status.success(),
+        "search 应成功，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let hits: Vec<serde_json::Value> = serde_json::from_str(&String::from_utf8_lossy(&out.stdout))
+        .unwrap_or_else(|e| panic!("应输出合法 JSON: {e}\n实际: {}", String::from_utf8_lossy(&out.stdout)));
+    assert!(!hits.is_empty(), "应至少一个命中，实际: {:?}", hits);
+    assert!(hits.len() <= 3, "未传 -k 应回退配置 default_top_k=3，实际 {} 条", hits.len());
+
+    // 对照：显式 -k 5 应超过配置值（证明候选多于 3，回退确实生效）
+    let out = run_bin(
+        &work_dir,
+        &["search", "-q", "pub", "-k", "5", "-e", "text", "--json", "-c", "config.toml"],
+    );
+    let hits5: Vec<serde_json::Value> = serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
+    assert!(hits5.len() > 3, "显式 -k 5 应返回 5 条（候选多于 3），实际 {} 条", hits5.len());
 
     let _ = std::fs::remove_dir_all(&work_dir);
 }

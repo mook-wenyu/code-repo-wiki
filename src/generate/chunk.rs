@@ -113,7 +113,7 @@ pub fn chunk_by_module(
 
         let module_path: Vec<String> = module.name.split("::").map(|s| s.to_string()).collect();
 
-        // 计算实际依赖：从本模块节点出发，通过 Imports/DependsOn 边到达其他模块的节点
+        // 计算实际依赖：从本模块节点出发，通过 Imports 边到达其他模块的节点
         let mut deps: Vec<String> = Vec::new();
         for (&other_name, other_set) in &module_node_ids {
             if other_name == module.name {
@@ -122,8 +122,7 @@ pub fn chunk_by_module(
             let has_dep = module.node_ids.iter().any(|nid| {
                 graph.graph.edges(*nid).any(|e| {
                     let kind = &graph.graph[e.id()].kind;
-                    (kind == &EdgeKind::Imports || kind == &EdgeKind::DependsOn)
-                        && other_set.contains(&e.target())
+                    kind == &EdgeKind::Imports && other_set.contains(&e.target())
                 })
             });
             if has_dep {

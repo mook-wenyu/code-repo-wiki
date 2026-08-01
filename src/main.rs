@@ -87,9 +87,9 @@ enum Commands {
         /// 搜索关键词
         #[arg(short, long)]
         query: String,
-        /// 返回结果数量
-        #[arg(short = 'k', long, default_value = "10")]
-        top_k: usize,
+        /// 返回结果数量（未传时取配置 search.default_top_k）
+        #[arg(short = 'k', long)]
+        top_k: Option<usize>,
         /// 配置文件路径
         #[arg(short, long, default_value = ".repo-wiki/config.toml")]
         config: PathBuf,
@@ -226,10 +226,25 @@ fn main() -> anyhow::Result<()> {
             tracing::info!("同步完成 (--config {})", config.display());
         }
         Commands::Status { config } => {
-            let _cfg = repo_wiki::config::load_config(&config)?;
+            let cfg = repo_wiki::config::load_config(&config)?;
             tracing::info!("配置加载成功: {}", config.display());
-            println!("Wiki 状态: 就绪");
-            println!("配置文件: {}", config.display());
+            let report = repo_wiki::commands::status_report(&cfg);
+            // ready 才报告页面统计与 lint 结果；未生成时引导运行 generate
+            if report.ready {
+                println!("Wiki 状态: 就绪");
+                println!("配置文件: {}", config.display());
+                println!("页面: {} 张，卡片: {} 张", report.wiki_pages, report.cards);
+                // lint 产物健康检查结果（与 lint 命令同格式，问题退出码非 0）
+                for issue in &report.issues {
+                    println!("- [{}] {}: {}", issue.kind, issue.path, issue.message);
+                }
+                if !report.issues.is_empty() {
+                    anyhow::bail!("status: 发现 {} 个问题", report.issues.len());
+                }
+            } else {
+                println!("Wiki 状态: 未生成（运行 repo-wiki generate）");
+                println!("配置文件: {}", config.display());
+            }
         }
         Commands::Lint { config } => {
             // lint 检查产物健康:孤儿页/断链/过时;发现问题时以非 0 退出码结束
@@ -238,15 +253,7 @@ fn main() -> anyhow::Result<()> {
             let output_dir = Path::new(&cfg.output.dir);
             // 源码根从 scope.include 派生(取通配符前的目录前缀,如 "src/**" → "src")：
             // 过时检查需要对比源文件 mtime,空根会导致检查静默跳过(缺陷修复前行为)
-            let source_roots: Vec<std::path::PathBuf> = cfg
-                .scope
-                .include
-                .iter()
-                .map(|p| {
-                    let dir = p.split('*').next().unwrap_or_default().trim_end_matches('/');
-                    std::path::PathBuf::from(if dir.is_empty() { "." } else { dir })
-                })
-                .collect();
+            let source_roots = repo_wiki::commands::source_roots_from_include(&cfg.scope.include);
             let issues = repo_wiki::output::lint::lint(output_dir, &source_roots);
             if issues.is_empty() {
                 println!("lint: 通过，无孤儿页/断链/过时问题");
@@ -319,6 +326,8 @@ fn main() -> anyhow::Result<()> {
                 Some(other) => anyhow::bail!("不支持的搜索引擎: {other}（可选: text/semantic/hybrid）"),
                 None => cfg.search.default_engine.clone(),
             };
+            // CLI 显式 -k 优先，未传时回退配置 search.default_top_k
+            let top_k = top_k.unwrap_or(cfg.search.default_top_k);
             let results = repo_wiki::execute_search(&config, &query, top_k, &engine_type)?;
             if json {
                 // JSON 格式输出（供 OpenCode 插件解析）

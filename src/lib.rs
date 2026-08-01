@@ -885,7 +885,6 @@ mod tests {
         config.wiki = WikiSection {
             language: "zh".into(),
             expand_languages: vec!["en".into()],
-            ..Default::default()
         };
 
         // 预置被删文件 src/foo.rs 的旧输出：模块 "src" → wiki 页 src.md、卡片 src.md

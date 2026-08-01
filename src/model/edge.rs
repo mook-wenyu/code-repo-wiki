@@ -30,12 +30,6 @@ pub enum EdgeKind {
     Imports,
     /// 实现关系（Impl → Trait）
     Implements,
-    /// 泛化依赖（模块间粗粒度依赖）
-    DependsOn,
-    /// 继承关系（SubClass → SuperClass）
-    Extends,
-    /// 类型引用（使用某类型定义）
-    TypeReference,
 }
 
 impl EdgeKind {
@@ -45,9 +39,6 @@ impl EdgeKind {
             EdgeKind::Calls => "calls",
             EdgeKind::Imports => "imports",
             EdgeKind::Implements => "implements",
-            EdgeKind::DependsOn => "depends_on",
-            EdgeKind::Extends => "extends",
-            EdgeKind::TypeReference => "type_reference",
         }
     }
 

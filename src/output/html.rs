@@ -275,13 +275,12 @@ fn escape_html(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::model::{EntitySummary, ModuleCluster, KnowledgeCard, KnowledgeGraph, WikiDocument};
-    use crate::config::schema::{WikiConfig, OutputSection, OutputFormat};
+    use crate::config::schema::{WikiConfig, OutputSection};
 
     fn test_config() -> WikiConfig {
         WikiConfig {
             output: OutputSection {
                 dir: ".repo-wiki".to_string(),
-                format: OutputFormat::Markdown,
             },
             ..Default::default()
         }

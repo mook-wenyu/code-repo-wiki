@@ -230,18 +230,18 @@ mod tests {
     #[test]
     fn test_coupling() {
         let mut kg = make_small_graph();
-        // 添加外部边
+        // 添加外部边（TypeReference 已随未构建边类型删除，改用 Calls）
         kg.graph.add_edge(
             NodeId::new(4), NodeId::new(5),
             CodeEdge {
-                id: EdgeId::new(kg.graph.edge_count()), kind: EdgeKind::TypeReference,
+                id: EdgeId::new(kg.graph.edge_count()), kind: EdgeKind::Calls,
                 source: NodeId::new(4), target: NodeId::new(5), weight: 0.5, location: None,
             },
         );
         let detector = ModuleDetector::new(&kg);
         let ids = vec![NodeId::new(2)]; // 只包含 a.rs（扩展后含 foo）
         let coupling = detector.calculate_coupling(&ids);
-        // 扩展后 set={f1,e1};跨边界: e1→e2 的 Calls 和 TypeReference → e2 在集合外 => 2
+        // 扩展后 set={f1,e1};跨边界: e1→e2 的 Calls 两条（原有 + 新增）→ e2 在集合外 => 2
         // 总非 Contains = 2; coupling = 2/2 = 1.0
         dbg!(coupling);
         assert!((coupling - 1.0).abs() < 1e-6);

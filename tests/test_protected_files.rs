@@ -156,7 +156,7 @@ fn test_render_all_protected_skips() {
     };
 
     let config = WikiConfig {
-        output: OutputSection { dir: dir.to_string_lossy().to_string(), ..Default::default() },
+        output: OutputSection { dir: dir.to_string_lossy().to_string() },
         wiki: WikiSection { language: "zh".into(), ..Default::default() },
         ..Default::default()
     };
@@ -211,7 +211,7 @@ fn test_render_all_protected_page_still_writes_card() {
 
 
     let config = WikiConfig {
-        output: OutputSection { dir: dir.to_string_lossy().to_string(), ..Default::default() },
+        output: OutputSection { dir: dir.to_string_lossy().to_string() },
         wiki: WikiSection { language: "zh".into(), ..Default::default() },
         ..Default::default()
     };
@@ -253,7 +253,7 @@ fn test_schema_doc_fingerprint_path_matches_render_all() {
     };
 
     let config = WikiConfig {
-        output: OutputSection { dir: dir.to_string_lossy().to_string(), ..Default::default() },
+        output: OutputSection { dir: dir.to_string_lossy().to_string() },
         wiki: WikiSection { language: "zh".into(), ..Default::default() },
         ..Default::default()
     };
@@ -298,7 +298,7 @@ fn test_doc_fingerprint_path_matches_render_all() {
     };
 
     let config = WikiConfig {
-        output: OutputSection { dir: dir.to_string_lossy().to_string(), ..Default::default() },
+        output: OutputSection { dir: dir.to_string_lossy().to_string() },
         wiki: WikiSection { language: "zh".into(), ..Default::default() },
         ..Default::default()
     };

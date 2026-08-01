@@ -42,7 +42,6 @@ impl Message {
 /// 注意：async fn in trait 不满足 dyn 安全性，请通过泛型或 Provider 枚举使用。
 #[allow(async_fn_in_trait)]
 pub trait LlmProvider: Send + Sync {
-    fn model_name(&self) -> &str;
     async fn complete(&self, messages: &[Message]) -> Result<String>;
     async fn complete_stream(&self, messages: &[Message]) -> Result<Vec<String>> {
         let _ = messages;
@@ -64,14 +63,6 @@ pub enum Provider {
 }
 
 impl LlmProvider for Provider {
-    fn model_name(&self) -> &str {
-        match self {
-            Provider::OpenAi(p) => p.model_name(),
-            Provider::Anthropic(p) => p.model_name(),
-            Provider::Mock(p) => p.model_name(),
-        }
-    }
-
     async fn complete(&self, messages: &[Message]) -> Result<String> {
         match self {
             Provider::OpenAi(p) => p.complete(messages).await,
@@ -141,10 +132,6 @@ impl OpenAiProvider {
 }
 
 impl LlmProvider for OpenAiProvider {
-    fn model_name(&self) -> &str {
-        &self.model
-    }
-
     async fn complete_stream(&self, messages: &[Message]) -> Result<Vec<String>> {
         self.call_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -336,10 +323,6 @@ impl AnthropicProvider {
 }
 
 impl LlmProvider for AnthropicProvider {
-    fn model_name(&self) -> &str {
-        &self.model
-    }
-
     async fn complete(&self, messages: &[Message]) -> Result<String> {
         self.call_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -525,10 +508,6 @@ impl Default for MockProvider {
 }
 
 impl LlmProvider for MockProvider {
-    fn model_name(&self) -> &str {
-        "mock-model"
-    }
-
     async fn complete(&self, _messages: &[Message]) -> Result<String> {
         self.call_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -664,7 +643,6 @@ mod tests {
     #[tokio::test]
     async fn test_mock_provider() {
         let provider = MockProvider::new();
-        assert_eq!(provider.model_name(), "mock-model");
 
         let messages = vec![Message::user("测试消息")];
         let result = provider.complete(&messages).await;
@@ -784,7 +762,6 @@ mod tests {
             temperature: None,
         };
         let provider = AnthropicProvider::new(&config).unwrap();
-        assert_eq!(provider.model_name(), "claude-test");
         assert_eq!(provider.call_count(), 0);
     }
 

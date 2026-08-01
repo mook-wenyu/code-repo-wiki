@@ -94,8 +94,8 @@ fn test_render_all_multi_lang_dirs() {
     let config = WikiConfig {
         wiki: WikiSection {
             language: "zh".into(),
-            expand_languages: vec!["en".into()],
-            ..Default::default()
+            expand_languages: vec![
+            ],
         },
         output: OutputSection::default(),
         ..Default::default()
@@ -119,7 +119,6 @@ fn test_render_all_multi_lang_dirs() {
     let multi_config = WikiConfig {
         output: OutputSection {
             dir: dir.to_string_lossy().to_string(),
-            ..Default::default()
         },
         ..config
     };

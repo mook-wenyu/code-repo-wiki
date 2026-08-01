@@ -14,7 +14,6 @@ fn make_config(dir: &std::path::Path) -> WikiConfig {
     WikiConfig {
         output: OutputSection {
             dir: dir.to_string_lossy().into_owned(),
-            ..Default::default()
         },
         wiki: WikiSection {
             language: "zh".into(),

@@ -2,7 +2,50 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::config::schema::WikiConfig;
 use crate::incremental::state::GenerationState;
+use crate::output::lint::{lint, LintIssue};
+
+/// status 报告（结构化，main 只做格式化）
+pub struct StatusReport {
+    pub ready: bool,            // 产物根存在且非空
+    pub wiki_pages: usize,      // wiki/{lang}/*.md 数量（所有语言合计）
+    pub cards: usize,           // cards/{lang}/*.md 数量
+    pub issues: Vec<LintIssue>, // lint 产物健康检查结果
+    pub config_path: String,
+}
+
+/// 汇总产物状态：页面/卡片数量 + lint 健康检查（供 `repo-wiki status` 使用）
+///
+/// 目录不存在时数量计 0、lint 无问题，不算缺陷（未生成也是合法状态）。
+pub fn status_report(config: &WikiConfig) -> StatusReport {
+    let output_dir = Path::new(&config.output.dir);
+    // ready = wiki 目录存在且含 .md 文件（有产物才算生成过）
+    let wiki_pages = collect_md_files(&output_dir.join("wiki")).len();
+    let cards = collect_md_files(&output_dir.join("cards")).len();
+    let issues = lint(output_dir, &source_roots_from_include(&config.scope.include));
+    StatusReport {
+        ready: wiki_pages > 0,
+        wiki_pages,
+        cards,
+        issues,
+        config_path: config.output.dir.clone(),
+    }
+}
+
+/// 从 scope.include 派生源码根（取通配符前的目录前缀，如 "src/**" → "src"）
+///
+/// lint 过时检查需要对比源文件 mtime，空根会导致检查静默跳过；
+/// main.rs 的 lint 命令与 status 共用此派生，避免两处内联逻辑漂移。
+pub fn source_roots_from_include(include: &[String]) -> Vec<PathBuf> {
+    include
+        .iter()
+        .map(|p| {
+            let dir = p.split('*').next().unwrap_or_default().trim_end_matches('/');
+            PathBuf::from(if dir.is_empty() { "." } else { dir })
+        })
+        .collect()
+}
 
 /// 将产物目录（wiki/{lang}/、cards/{lang}/）的工作区内容同步到指纹库
 ///

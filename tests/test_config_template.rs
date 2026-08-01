@@ -38,7 +38,8 @@ fn test_template_loads_cleanly() {
     assert_eq!(config.llm.max_concurrent, 4);
     assert_eq!(config.llm.api_key_env, "DEEPSEEK_API_KEY");
     assert!(!config.scope.include.is_empty());
-    assert!(!config.embed.enabled);
+    // embed 段随模板配置（当前模板启用百炼 embedding，仅断言字段可解析）
+    assert!(!config.embed.model.is_empty());
     assert_eq!(config.search.rrf_k, 60);
     assert_eq!(config.incremental.max_depth, 3);
     assert!(!config.plan.enabled);

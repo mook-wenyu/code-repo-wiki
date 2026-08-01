@@ -2,9 +2,9 @@
 //! 划分功能内聚的模块社区，替代旧的"目录前缀凝聚聚类"。
 //!
 //! 设计要点（对应演进计划 T1.2/T1.3）：
-//! - 聚类单位是 **File 节点**，依赖边取跨文件的 Imports/Calls/DependsOn
+//! - 聚类单位是 **File 节点**，依赖边取跨文件的 Imports/Calls
 //!   （同文件内调用是内部实现细节，不参与模块划分）；
-//! - 边权重与 graph.rs 构建时一致（Imports=0.8 / Calls=0.7 / DependsOn=0.8），
+//! - 边权重与 graph.rs 构建时一致（Imports=0.8 / Calls=0.7），
 //!   同对文件间多条边按权重相加聚合；
 //! - CPM 质量函数 + 固定种子（确定性输出，可复现）；
 //! - 无跨文件依赖时退化为"每文件一个社区"（Leiden 对无边图无划分意义）；
@@ -30,7 +30,6 @@ const LEIDEN_RESOLUTION: f64 = 0.5;
 /// 社区检测边权重（与 src/analysis/graph.rs 构建时的字面量同源）
 pub const WEIGHT_IMPORTS: f64 = 0.8;
 pub const WEIGHT_CALLS: f64 = 0.7;
-pub const WEIGHT_DEPENDS_ON: f64 = 0.8;
 
 /// 文件级社区检测：返回 File 节点的社区划分（每社区一个 Vec<NodeId>）
 ///
@@ -58,7 +57,7 @@ pub fn detect_communities(graph: &KnowledgeGraph) -> Vec<Vec<NodeId>> {
         .collect();
 
     // 实体 → 所属 File 映射（经 Contains 边反查）。
-    // 关键语义：Calls/Imports/DependsOn 边都挂在**实体节点**上（File 节点
+    // 关键语义：Calls/Imports 边都挂在**实体节点**上（File 节点
     // 只有 Contains 边），社区划分的单位是 File，必须先归位。
     let mut entity_to_file: HashMap<NodeId, NodeId> = HashMap::new();
     for edge in graph.graph.edge_references() {
@@ -86,8 +85,7 @@ pub fn detect_communities(graph: &KnowledgeGraph) -> Vec<Vec<NodeId>> {
         let w = match e.kind {
             EdgeKind::Imports => WEIGHT_IMPORTS,
             EdgeKind::Calls => WEIGHT_CALLS,
-            EdgeKind::DependsOn => WEIGHT_DEPENDS_ON,
-            _ => continue, // Contains/Implements/Extends/TypeReference 不参与社区划分
+            _ => continue, // 其他类型边（Contains/Implements）不参与社区划分
         };
         let (Some(sf), Some(tf)) = (file_of(edge.source()), file_of(edge.target())) else {
             continue; // 端点既不是 File 也不是实体（Module 等中间节点）

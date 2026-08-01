@@ -2,7 +2,6 @@
 # 键集合与 src/config/schema.rs 严格对齐；未知键会被 serde 忽略（无效配置，勿写）。
 
 [wiki]
-template = "architecture"
 language = "zh"
 # 扩展语言（每语言独立生成叙事页面）：["en"]
 expand_languages = []
@@ -16,7 +15,6 @@ exclude = ["**/test/**", "**/vendor/**", "target/**", "**/node_modules/**"]
 # 子目录，因此这里必须是"产物根"而非 wiki 目录本身——dir="wiki" 会造成
 # wiki/wiki/zh 嵌套，schema 默认与 install 模板一致用 .repo-wiki）
 dir = ".repo-wiki"
-format = "markdown"
 
 [llm]
 provider = "openai"
@@ -38,7 +36,6 @@ base_url = "https://llm-q0265e4he9m0qs23.cn-beijing.maas.aliyuncs.com/compatible
 #api_key = ""
 api_key_env = "BAILIAN_API_KEY"
 batch_size = 20
-#dimension = 1536
 
 [search]
 enabled = true

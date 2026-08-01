@@ -46,7 +46,6 @@ pub fn beta() -> &'static str { "beta" }
     let config = WikiConfig {
         output: OutputSection {
             dir: repo.join(".repo-wiki").to_string_lossy().into_owned(),
-            ..Default::default()
         },
         wiki: WikiSection {
             language: "zh".into(),
