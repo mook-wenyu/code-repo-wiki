@@ -83,10 +83,11 @@ pub fn classify_entity_changes(
     let from_tree = from_commit.tree()?;
     let registry = ParserRegistry::new();
 
-    // 当前工作区实体：路径 → 实体列表
+    // 当前工作区实体：路径 → 实体列表（键归一化：git diff 路径正斜杠，
+    // insight 路径在 Windows 上是反斜杠，统一为 "/" 才能匹配）
     let current: HashMap<String, Vec<Entity>> = current_insights
         .iter()
-        .map(|i| (i.path.to_string_lossy().to_string(), i.entities.clone()))
+        .map(|i| (super::norm_sep(&i.path.to_string_lossy()), i.entities.clone()))
         .collect();
 
     let mut set = EntityChangeSet::default();
@@ -95,14 +96,14 @@ pub fn classify_entity_changes(
     for path in &diff.modified {
         let old_entities = read_old_entities(&repo, &from_tree, path, &registry)?;
         let new_entities = current
-            .get(&path.to_string_lossy().to_string())
+            .get(&super::norm_sep(&path.to_string_lossy()))
             .cloned()
             .unwrap_or_default();
         compare_entities(&mut set, path, &old_entities, &new_entities);
     }
     // added：全部实体视为新增
     for path in &diff.added {
-        if let Some(ents) = current.get(&path.to_string_lossy().to_string()) {
+        if let Some(ents) = current.get(&super::norm_sep(&path.to_string_lossy())) {
             for e in ents {
                 set.changes.push(EntityChange {
                     file: path.clone(),

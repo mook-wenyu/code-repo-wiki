@@ -21,6 +21,17 @@ use crate::config::schema::IncrementalStrategy;
 /// diff 行数超过该上限时回退全量生成（防止超大变更集导致 LLM 成本失控）
 const MAX_DIFF_LINES: usize = 10_000;
 
+/// 路径分隔符归一化（Windows 兼容）
+///
+/// git2 的 delta 路径恒用正斜杠（"src/net/tcp.rs"），而 scanner/insight
+/// 的路径在 Windows 上是反斜杠（"src\net\tcp.rs"）——所有跨来源的
+/// 路径比较（影响传播起点匹配、实体变化分类、增量生成过滤）必须先
+/// 归一化，否则 Windows 上传播/分类/过滤全部失效（子串 contains 与
+/// HashSet 精确匹配都按字节比较）。
+pub(crate) fn norm_sep(p: &str) -> String {
+    p.replace('\\', "/")
+}
+
 /// 增量更新结果
 pub struct IncrementalResult {
     /// 实际发生变更的文件路径（用于 LLM 生成过滤）

@@ -47,9 +47,10 @@ pub fn module_files(affected_modules: &[String], graph: &KnowledgeGraph) -> Vec<
         .node_identifiers()
         .filter_map(|nid| {
             let node = &graph.graph[nid];
-            if node.kind != crate::model::NodeKind::File {
-                return None;
-            }
+            // File 与实体节点都参与匹配：传播途经节点（含函数等实体）的
+            // module_path 带文件 stem（如 "src::http::server"），而 File 节点
+            // 的 module_path 只到目录（如 "src::http"）——实体节点同样携带
+            // file_path，按其实体名匹配后取文件路径去重。
             let mp = node.module_path.join("::");
             if target.contains(mp.as_str()) {
                 node.file_path.as_ref().map(PathBuf::from)
@@ -123,7 +124,11 @@ pub fn propagate_impact_semantic(
 }
 
 /// 按文件路径（子串匹配）找到图中的起点节点
+///
+/// 路径先经 norm_sep 归一化（git 正斜杠 vs Windows 反斜杠），
+/// 否则 Windows 上 git diff 路径永远匹配不到图中的节点。
 fn find_start_nodes(file_paths: &[String], graph: &KnowledgeGraph) -> Vec<NodeId> {
+    let normalized: Vec<String> = file_paths.iter().map(|p| super::norm_sep(p)).collect();
     graph
         .graph
         .node_identifiers()
@@ -131,7 +136,10 @@ fn find_start_nodes(file_paths: &[String], graph: &KnowledgeGraph) -> Vec<NodeId
             let node = &graph.graph[nid];
             node.file_path
                 .as_ref()
-                .map(|fp| file_paths.iter().any(|cfp| fp.contains(cfp.as_str())))
+                .map(|fp| {
+                    let fp = super::norm_sep(fp);
+                    normalized.iter().any(|cfp| fp.contains(cfp.as_str()))
+                })
                 .unwrap_or(false)
         })
         .collect()
