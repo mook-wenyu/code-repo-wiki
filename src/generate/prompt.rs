@@ -143,6 +143,34 @@ fn architecture_overview_user_prompt(modules: &[ModuleCluster], graph: &Knowledg
 }
 
 /// 生成架构概览的 prompt
+/// 生成单模块一行职责描述的 prompt（自底向上合成的一层：
+/// 架构/概览基于各模块职责描述输出，而非只有模块名+节点数）
+///
+/// 输入 = 模块名 + 实体名列表（≤30，LLM 据此判断职责边界），
+/// 输出约束 = 一句话、≤30 字、只输出描述文本本身（无前缀/引号/换行）。
+pub fn module_description_prompt(
+    module_name: &str,
+    entity_names: &[String],
+    language: &str,
+) -> Vec<Message> {
+    let entities = if entity_names.is_empty() {
+        "(无实体)".to_string()
+    } else {
+        entity_names.join(", ")
+    };
+    vec![
+        Message::system(format!(
+            "你是代码架构分析专家。请用一句中文（{} 字以内）概括给定模块的职责。\
+             只输出职责描述本身，不要前缀、引号或换行。",
+            if language == "zh" { 30 } else { 60 }
+        )),
+        Message::user(format!(
+            "模块名: {module_name}\n包含实体: {entities}\n\n请输出该模块的一句话职责描述。"
+        )),
+    ]
+}
+
+/// 生成架构概览页面（自顶向下的系统级描述）
 pub fn architecture_overview_prompt(
     modules: &[ModuleCluster],
     graph: &KnowledgeGraph,

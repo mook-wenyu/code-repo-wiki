@@ -78,6 +78,10 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
     /// 生成架构概览页面
     ///
     /// 基于所有模块的生成输出和知识图谱，生成项目级的架构概览文档。
+    /// 生成前先为每个模块生成一行职责描述（describe_modules），
+    /// 填充到模块快照的 description 字段——架构 prompt 依此输出模块职责，
+    /// 取代原本恒为 None 的空描述（此前的 overview 只有模块名+节点数+边计数，
+    /// 无法表达"模块负责什么"）。
     pub async fn generate_architecture(
         &self,
         output: &GenerationOutput,
@@ -87,8 +91,9 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
         self.call_count.fetch_add(1, Ordering::Relaxed);
 
         let language = &config.wiki.language;
+        let modules = self.describe_modules(graph, language).await;
         let messages =
-            prompt::architecture_overview_prompt(&graph.modules, graph, language, self.plan.as_ref());
+            prompt::architecture_overview_prompt(&modules, graph, language, self.plan.as_ref());
         let content = self.provider.complete(&messages).await?;
         let now = chrono::Utc::now().to_rfc3339();
 
@@ -118,6 +123,71 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
         })
     }
 
+    /// 为每个模块生成一行职责描述（LLM），返回带 description 的模块快照
+    ///
+    /// 逐模块一条 user 消息：输入 = 模块名 + 实体名列表 + 依赖模块列表，
+    /// 输出 = 一句话职责（≤30 字）。跳过 src 兜底模块（它吸收未聚类文件，
+    /// 无明确职责边界，描述会失真）；LLM 失败时保留空描述（降级不影响主流程）。
+    async fn describe_modules(
+        &self,
+        graph: &KnowledgeGraph,
+        language: &str,
+    ) -> Vec<crate::model::ModuleCluster> {
+        use crate::model::ModuleCluster;
+        let mut enriched: Vec<ModuleCluster> = Vec::with_capacity(graph.modules.len());
+        for module in &graph.modules {
+            // 兜底模块(src)与空模块跳过：无职责边界可描述
+            if module.name == "src" || module.node_ids.is_empty() {
+                enriched.push(module.clone());
+                continue;
+            }
+            let mut desc: Option<String> = None;
+            if let Ok(text) = self.describe_module(module, graph, language).await
+                && !text.trim().is_empty()
+            {
+                desc = Some(text.trim().to_string());
+            }
+            let mut enriched_module = module.clone();
+            enriched_module.description = desc;
+            enriched.push(enriched_module);
+        }
+        enriched
+    }
+
+    /// 生成单个模块的一句话职责描述（LLM）
+    async fn describe_module(
+        &self,
+        module: &crate::model::ModuleCluster,
+        graph: &KnowledgeGraph,
+        language: &str,
+    ) -> Result<String> {
+        self.call_count.fetch_add(1, Ordering::Relaxed);
+
+        // 收集模块内实体名（跳过容器节点），作为 LLM 判断职责的输入
+        let entity_names: Vec<String> = module
+            .node_ids
+            .iter()
+            .filter_map(|nid| graph.graph.node_weight(*nid))
+            .filter(|n| {
+                !matches!(
+                    n.kind,
+                    crate::model::NodeKind::Project
+                        | crate::model::NodeKind::Module
+                        | crate::model::NodeKind::File
+                )
+            })
+            .map(|n| n.name.clone())
+            .take(30)
+            .collect();
+
+        let messages = prompt::module_description_prompt(
+            &module.name,
+            &entity_names,
+            language,
+        );
+        self.provider.complete(&messages).await
+    }
+
     /// 生成项目概览页面
     ///
     /// 与 generate_architecture 同签名同风格：基于完整 KnowledgeGraph 的
@@ -130,7 +200,11 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
     ) -> Result<WikiDocument> {
         self.call_count.fetch_add(1, Ordering::Relaxed);
 
-        let messages = vec![Message::user(overview_prompt(graph, config))];
+        // 与 generate_architecture 一致：先补模块职责描述，概览内容才能
+        // 表达"模块负责什么"；再叠加卡片摘要（自底向上合成：父概览基于
+        // 子模块的职责描述 + 卡片摘要生成，而非仅模块名/节点数/边计数）
+        let modules = self.describe_modules(graph, &config.wiki.language).await;
+        let messages = vec![Message::user(overview_prompt(&modules, &output.cards, graph, config))];
         let content = self.provider.complete(&messages).await?;
         let now = chrono::Utc::now().to_rfc3339();
 
@@ -163,14 +237,19 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
 
 /// 生成项目概览的 prompt（单条 user 消息，模板风格与 architecture_overview_prompt 一致）
 ///
-/// 输入 = 模块列表 + 模块间依赖摘要（按 (源模块, 目标模块) 聚合非结构边），
-/// 输出 = 项目概览，含技术栈 / 目录结构 / 核心模块三节。
-fn overview_prompt(graph: &KnowledgeGraph, config: &WikiConfig) -> String {
+/// 输入 = 模块列表（含职责描述）+ 卡片摘要（自底向上合成的一层：概览基于
+/// 子模块的卡片摘要生成）+ 模块间依赖摘要，输出 = 技术栈 / 目录结构 / 核心模块。
+fn overview_prompt(
+    modules: &[crate::model::ModuleCluster],
+    cards: &[crate::model::KnowledgeCard],
+    graph: &KnowledgeGraph,
+    config: &WikiConfig,
+) -> String {
     let mut parts = Vec::new();
 
     parts.push(format!(
         "你是一个资深软件架构师，负责为整个项目生成人类可读的项目概览文档。\n\n\
-         请基于下面的模块聚类信息和模块间依赖摘要，输出以下结构：\n\n\
+         请基于下面的模块聚类信息、各模块卡片摘要和模块间依赖摘要，输出以下结构：\n\n\
          # 项目概览\n\n\
          ## 技术栈\n根据模块名称与依赖关系推断项目使用的技术栈。\n\n\
          ## 目录结构\n根据模块划分描述仓库的目录结构。\n\n\
@@ -180,7 +259,7 @@ fn overview_prompt(graph: &KnowledgeGraph, config: &WikiConfig) -> String {
     ));
 
     parts.push("## 模块列表".to_string());
-    for module in &graph.modules {
+    for module in modules {
         let desc = module.description.as_deref().unwrap_or("");
         parts.push(format!(
             "- {} (节点数: {}{})",
@@ -194,9 +273,33 @@ fn overview_prompt(graph: &KnowledgeGraph, config: &WikiConfig) -> String {
         ));
     }
 
+    // 卡片摘要：模块级详情的浓缩（自底向上合成的输入）。
+    // 每卡片一行：模块名 + 摘要 + 关键实体（实体名列表，数量多于描述输入）
+    if !cards.is_empty() {
+        parts.push("## 模块卡片摘要".to_string());
+        for card in cards {
+            let entities: Vec<&str> = card
+                .key_entities
+                .iter()
+                .map(|e| e.name.as_str())
+                .take(8)
+                .collect();
+            parts.push(format!(
+                "- {}: {}（关键实体: {}）",
+                card.module_name,
+                card.summary,
+                if entities.is_empty() {
+                    "无".to_string()
+                } else {
+                    entities.join(", ")
+                }
+            ));
+        }
+    }
+
     // 模块间依赖摘要：建立 节点→模块 映射后，按模块对聚合非 Contains 边
     let mut module_of: std::collections::HashMap<NodeId, &str> = Default::default();
-    for module in &graph.modules {
+    for module in modules {
         for nid in &module.node_ids {
             module_of.insert(*nid, module.name.as_str());
         }
@@ -360,5 +463,109 @@ mod tests {
         let messages = prompt::wiki_page_prompt(&chunk, "摘要", "zh", Some(&plan));
         let user = &messages[1].content;
         assert!(!user.contains("写作提示"));
+    }
+
+    /// 模块职责描述 prompt:含模块名与实体列表,并约束一行输出
+    #[test]
+    fn test_module_description_prompt_shape() {
+        let messages = prompt::module_description_prompt(
+            "src::net",
+            &["connect".into(), "listen".into()],
+            "zh",
+        );
+        let user = &messages[1].content;
+        assert!(user.contains("src::net"), "应含模块名");
+        assert!(user.contains("connect"), "应含实体名");
+        assert!(user.contains("listen"), "应含实体名");
+        assert!(messages[0].content.contains("30"), "zh 应约束 30 字内");
+    }
+
+    /// describe_modules:src 兜底模块跳过,带实体模块获得描述快照
+    #[tokio::test]
+    async fn test_describe_modules_enriches_description() {
+        use crate::model::{CodeEdge, CodeNode, ModuleCluster, NodeId, NodeKind};
+        use petgraph::stable_graph::StableDiGraph;
+
+        let mut g = StableDiGraph::<CodeNode, CodeEdge>::new();
+        let f = g.add_node(CodeNode {
+            id: NodeId::new(0),
+            kind: NodeKind::File,
+            name: "net.rs".into(),
+            file_path: Some("src/net.rs".into()),
+            line_range: None,
+            doc_comment: None,
+            signature: None,
+            module_path: vec!["src".into(), "net".into()],
+        });
+        let e = g.add_node(CodeNode {
+            id: NodeId::new(1),
+            kind: NodeKind::Function,
+            name: "connect".into(),
+            file_path: Some("src/net.rs".into()),
+            line_range: None,
+            doc_comment: None,
+            signature: None,
+            module_path: vec!["src".into(), "net".into()],
+        });
+        let kg = KnowledgeGraph {
+            graph: g,
+            modules: vec![
+                ModuleCluster {
+                    name: "src::net".into(),
+                    node_ids: vec![f, e],
+                    cohesion: 0.5,
+                    coupling: 0.5,
+                    description: None,
+                },
+                ModuleCluster {
+                    name: "src".into(),
+                    node_ids: vec![],
+                    cohesion: 1.0,
+                    coupling: 0.0,
+                    description: None,
+                },
+            ],
+        };
+        let provider = MockProvider::new();
+        let generator = WikiGenerator::new(&provider, None);
+        let enriched = generator.describe_modules(&kg, "zh").await;
+        assert_eq!(enriched.len(), 2);
+        assert!(enriched[0].description.is_some(), "带实体的模块应获得描述");
+        assert_eq!(enriched[1].name, "src");
+        assert!(enriched[1].description.is_none(), "src 兜底模块不描述");
+    }
+
+    /// 概览自底向上合成:overview_prompt 注入卡片摘要段(模块名+摘要+关键实体)
+    #[test]
+    fn test_overview_prompt_includes_card_summaries() {
+        use crate::model::KnowledgeCard;
+
+        let graph = KnowledgeGraph::default();
+        let config = WikiConfig::default();
+        let card = KnowledgeCard {
+            module_name: "src::net".into(),
+            module_type: "module".into(),
+            summary: "网络模块:连接管理与监听".into(),
+            key_entities: vec![crate::model::EntitySummary {
+                name: "connect".into(),
+                kind: "function".into(),
+                visibility: "public".into(),
+                doc: None,
+            }],
+            dependencies: vec![],
+            dependents: vec![],
+            design_patterns: vec![],
+            todo_notes: vec![],
+            related_files: vec![],
+            coding_spec: None,
+            tech_stack: vec![],
+            architecture: None,
+            pending_manual_edits: vec![],
+        };
+        let prompt = overview_prompt(&[], &[card], &graph, &config);
+        assert!(prompt.contains("## 模块卡片摘要"), "应含卡片摘要节");
+        assert!(prompt.contains("src::net"), "应含模块名");
+        assert!(prompt.contains("网络模块"), "应含卡片摘要");
+        assert!(prompt.contains("connect"), "应含关键实体");
     }
 }

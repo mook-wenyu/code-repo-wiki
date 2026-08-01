@@ -41,18 +41,47 @@ pub fn export_html(
         write_html_file(&path, &html)?;
     }
 
-    // 生成 index.html（目录页）
-    let mut toc_items = String::new();
+    // 生成 index.html（目录页）：按模块分组（与 _toc.md 的 index 优先导航一致）
+    let mut module_groups: std::collections::BTreeMap<String, Vec<&WikiDocument>> = Default::default();
+    let mut global_docs: Vec<&WikiDocument> = Vec::new();
     for doc in documents {
-        let file_name = sanitize_filename(&doc.title);
-        toc_items.push_str(&format!(
-            "<li><a href=\"wiki/{}.html\">{}</a></li>\n",
-            file_name,
-            escape_html(&doc.title)
-        ));
+        if doc.module_path.is_empty() {
+            global_docs.push(doc);
+        } else {
+            module_groups
+                .entry(doc.module_path.join("::"))
+                .or_default()
+                .push(doc);
+        }
+    }
+    let mut toc_items = String::new();
+    if !global_docs.is_empty() {
+        toc_items.push_str("<h2>全局文档</h2>\n<ul>\n");
+        for doc in &global_docs {
+            let file_name = sanitize_filename(&doc.title);
+            toc_items.push_str(&format!(
+                "<li><a href=\"wiki/{}.html\">{}</a></li>\n",
+                file_name,
+                escape_html(&doc.title)
+            ));
+        }
+        toc_items.push_str("</ul>\n");
+    }
+    toc_items.push_str("<h2>模块</h2>\n");
+    for (module, docs) in &module_groups {
+        toc_items.push_str(&format!("<h3>{}</h3>\n<ul>\n", escape_html(module)));
+        for doc in docs {
+            let file_name = sanitize_filename(&doc.title);
+            toc_items.push_str(&format!(
+                "<li><a href=\"wiki/{}.html\">{}</a></li>\n",
+                file_name,
+                escape_html(&doc.title)
+            ));
+        }
+        toc_items.push_str("</ul>\n");
     }
     let toc_body = format!(
-        "<h1>Wiki 目录</h1>\n<p>共 {} 个文档</p>\n<ul>\n{}</ul>\n",
+        "<h1>Wiki 目录</h1>\n<p>共 {} 个文档</p>\n{}\n",
         documents.len(),
         toc_items
     );

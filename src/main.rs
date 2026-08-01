@@ -50,6 +50,12 @@ enum Commands {
         #[arg(short, long, default_value = ".repo-wiki/config.toml")]
         config: PathBuf,
     },
+    /// 检查 Wiki 产物健康（孤儿页/断链/过时），供 CI 使用；有问题时退出码非 0
+    Lint {
+        /// 配置文件路径
+        #[arg(short, long, default_value = ".repo-wiki/config.toml")]
+        config: PathBuf,
+    },
     /// 导出 Wiki 为 HTML
     Export {
         /// 配置文件路径
@@ -202,6 +208,21 @@ fn main() -> anyhow::Result<()> {
             tracing::info!("配置加载成功: {}", config.display());
             println!("Wiki 状态: 就绪");
             println!("配置文件: {}", config.display());
+        }
+        Commands::Lint { config } => {
+            // lint 检查产物健康:孤儿页/断链/过时;发现问题时以非 0 退出码结束
+            // (供 CI 门禁使用:git hook 或流水线可据此拒绝合并)
+            let cfg = repo_wiki::config::load_config(&config)?;
+            let output_dir = Path::new(&cfg.output.dir);
+            let issues = repo_wiki::output::lint::lint(output_dir, &[]);
+            if issues.is_empty() {
+                println!("lint: 通过，无孤儿页/断链/过时问题");
+            } else {
+                for issue in &issues {
+                    println!("lint [{}] {}: {}", issue.kind, issue.path, issue.message);
+                }
+                anyhow::bail!("lint: 发现 {} 个问题", issues.len());
+            }
         }
         Commands::Export { config } => {
             let cfg = repo_wiki::config::load_config(&config)?;

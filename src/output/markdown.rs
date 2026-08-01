@@ -184,47 +184,82 @@ pub fn render_knowledge_card(card: &KnowledgeCard) -> String {
 }
 
 /// 渲染目录页 _toc.md
+///
+/// 按模块分组（Karpathy LLM Wiki 的"index 优先导航"最佳实践）：
+/// 模块文档按 module_path 前缀分组展示，全局文档（架构/概览/API/目录）单列。
+/// 链接路径与写盘命名保持一致（wiki/{doc.language}/{file}）。
 pub fn render_table_of_contents(documents: &[WikiDocument]) -> String {
     let mut output = String::new();
     output.push_str("# Wiki 文档目录\n\n");
-    output.push_str(&format!(
-        "> 共 {} 个页面\n\n",
-        documents.len()
-    ));
+    output.push_str(&format!("> 共 {} 个页面\n\n", documents.len()));
 
+    // 按 module_path 前缀分组:模块文档归入各自模块,全局文档单列
+    let mut module_docs: std::collections::BTreeMap<String, Vec<&WikiDocument>> = Default::default();
+    let mut global_docs: Vec<&WikiDocument> = Vec::new();
     for doc in documents {
-        let module_path = if doc.module_path.is_empty() {
-            "根".to_string()
+        if doc.module_path.is_empty() {
+            global_docs.push(doc);
         } else {
-            doc.module_path.join(" > ")
-        };
-        let kind = match doc.kind {
-            DocumentKind::WikiPage => "模块文档",
-            DocumentKind::ArchitectureOverview => "架构概览",
-            DocumentKind::ProjectOverview => "项目概览",
-            DocumentKind::TableOfContents => "目录",
-            DocumentKind::KnowledgeCard => "知识卡片",
-            DocumentKind::ModuleDoc => "模块文档",
-            DocumentKind::ApiReference => "API 参考",
-            DocumentKind::DatabaseSchema => "数据库 Schema",
-        };
-        // 链接的文件名必须与 write_document 的落盘命名保持一致，否则 TOC 就是断链：
-        // 1. 所有文档都写在 wiki/{doc.language}/ 语言目录下，链接必须带语言前缀；
-        // 2. 架构概览固定写为 architecture.md（见 write_document），不能走 module_path 派生；
-        // 3. 项目概览固定写为 overview.md，与 wiki_page_path 特判保持一致；
-        // 4. 其余文档用 wiki_file_name（模块路径或标题派生，覆盖 Database Schema 等无模块路径文档）。
-        let file = match doc.kind {
-            DocumentKind::ArchitectureOverview => "architecture.md".to_string(),
-            DocumentKind::ProjectOverview => "overview.md".to_string(),
-            _ => wiki_file_name(doc),
-        };
-        output.push_str(&format!(
-            "- [{}](wiki/{}/{}) `[{}]` — {}\n",
-            doc.title, doc.language, file, kind, module_path
-        ));
+            module_docs
+                .entry(doc.module_path.join("::"))
+                .or_default()
+                .push(doc);
+        }
+    }
+
+    // 全局文档（架构/概览/API/目录）优先
+    if !global_docs.is_empty() {
+        output.push_str("## 全局文档\n\n");
+        for doc in &global_docs {
+            output.push_str(&render_toc_line(doc));
+        }
+        output.push('\n');
+    }
+
+    // 模块文档按模块分组
+    output.push_str("## 模块\n\n");
+    for (module, docs) in &module_docs {
+        output.push_str(&format!("### {module}\n\n"));
+        for doc in docs {
+            output.push_str(&render_toc_line(doc));
+        }
+        output.push('\n');
     }
 
     output
+}
+
+/// 渲染 TOC 单行:链接 + 类型标签 + 模块路径
+fn render_toc_line(doc: &WikiDocument) -> String {
+    let kind = match doc.kind {
+        DocumentKind::WikiPage => "模块文档",
+        DocumentKind::ArchitectureOverview => "架构概览",
+        DocumentKind::ProjectOverview => "项目概览",
+        DocumentKind::TableOfContents => "目录",
+        DocumentKind::KnowledgeCard => "知识卡片",
+        DocumentKind::ModuleDoc => "模块文档",
+        DocumentKind::ApiReference => "API 参考",
+        DocumentKind::DatabaseSchema => "数据库 Schema",
+    };
+    // 链接的文件名必须与 write_document 的落盘命名保持一致，否则 TOC 就是断链：
+    // 1. 所有文档都写在 wiki/{doc.language}/ 语言目录下，链接必须带语言前缀；
+    // 2. 架构概览固定写为 architecture.md（见 write_document），不能走 module_path 派生；
+    // 3. 项目概览固定写为 overview.md，与 wiki_page_path 特判保持一致；
+    // 4. 其余文档用 wiki_file_name（模块路径或标题派生，覆盖 Database Schema 等无模块路径文档）。
+    let file = match doc.kind {
+        DocumentKind::ArchitectureOverview => "architecture.md".to_string(),
+        DocumentKind::ProjectOverview => "overview.md".to_string(),
+        _ => wiki_file_name(doc),
+    };
+    let module_path = if doc.module_path.is_empty() {
+        "根".to_string()
+    } else {
+        doc.module_path.join(" > ")
+    };
+    format!(
+        "- [{}](wiki/{}/{}) `[{}]` — {}\n",
+        doc.title, doc.language, file, kind, module_path
+    )
 }
 
 /// 计算 Wiki 页面文件名
@@ -389,6 +424,38 @@ mod tests {
         assert!(output.contains("](wiki/zh/crate_config.md)"));
         assert!(output.contains("](wiki/zh/crate_server.md)"));
         assert!(output.contains("](wiki/zh/architecture.md)"));
+    }
+
+    /// TOC 按模块分组（index 优先导航）：全局文档与模块文档分节
+    #[test]
+    fn test_render_table_of_contents_groups_by_module() {
+        let mut docs = vec![make_test_doc("Config"), make_test_doc("Server")];
+        docs.push(WikiDocument {
+            title: "项目概览".into(),
+            kind: DocumentKind::ProjectOverview,
+            content: String::new(),
+            language: "zh".into(),
+            module_path: vec![],
+            references: vec![],
+            last_updated: "2025-01-01T00:00:00Z".into(),
+            fingerprint: None,
+        });
+        let output = render_table_of_contents(&docs);
+
+        // 全局文档节与模块节并存
+        assert!(output.contains("## 全局文档"), "应有全局文档节");
+        assert!(output.contains("## 模块"), "应有模块节");
+        // 模块文档归入 module_path 分组头
+        assert!(
+            output.contains("### crate::config"),
+            "模块文档应按 module_path 分组, 实际: {output}"
+        );
+        // 全局文档在全局节内(项目概览 title 出现), 且不在模块节内
+        let global_section = output.split("## 模块").next().unwrap_or("");
+        assert!(
+            global_section.contains("项目概览"),
+            "项目概览应在全局文档节"
+        );
     }
 
     #[test]

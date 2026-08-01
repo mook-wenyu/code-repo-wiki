@@ -505,3 +505,84 @@ default_top_k = 10
 
     let _ = std::fs::remove_dir_all(&work_dir);
 }
+
+/// lint 命令:干净产物通过(exit 0);人为制造孤儿页/断链后失败(非 0)并列出问题。
+/// 注:直接构造产物 fixture(不依赖 generate 的 output.dir 嵌套语义),保证断言确定性。
+#[test]
+fn test_lint_detects_issues_in_artifacts() {
+    let work_dir = unique_dir("lint");
+    let _ = std::fs::remove_dir_all(&work_dir);
+    // 构造"干净"产物:单个 wiki 页 + 目录页(链接指向 core → core 有入链非孤儿)。
+    // 产物布局遵循 render_all 规则:config.output.dir 下再建 wiki/{lang}/ 子目录
+    let wiki = work_dir.join("wiki").join("wiki").join("zh");
+    std::fs::create_dir_all(&wiki).unwrap();
+    std::fs::write(wiki.join("core.md"), "# Core\n\n模块页\n").unwrap();
+    std::fs::write(
+        work_dir.join("wiki").join("_toc.md"),
+        "# 目录\n\n- [Core](wiki/zh/core.md)\n",
+    )
+    .unwrap();
+    std::fs::write(work_dir.join("config.toml"), "\
+[scope]
+include = [\"**/*.rs\"]
+exclude = []
+
+[output]
+dir = \"wiki\"
+format = \"markdown\"
+
+[llm]
+provider = \"mock\"
+model = \"mock\"
+base_url = \"x\"
+api_key = \"mock\"
+api_key_env = \"\"
+max_concurrent = 1
+
+[incremental]
+enabled = false
+strategy = \"git-diff\"
+
+[search]
+enabled = false
+index_dir = \".search\"
+default_engine = \"text\"
+default_top_k = 10
+").unwrap();
+
+    // 干净产物 → lint 通过(无孤儿页)
+    let clean = run_bin(&work_dir, &["lint", "--config", "config.toml"], &[]);
+    assert!(
+        clean.status.success(),
+        "干净产物 lint 应通过, stderr: {}",
+        String::from_utf8_lossy(&clean.stderr)
+    );
+
+    // 人为制造孤儿页(无人链接的新页面)与断链(链接到不存在文件)
+    std::fs::write(
+        wiki.join("orphan_page.md"),
+        "# 孤儿页\n\n- [不存在](wiki/zh/missing.md)\n",
+    )
+    .unwrap();
+
+    let dirty = run_bin(&work_dir, &["lint", "--config", "config.toml"], &[]);
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&dirty.stdout),
+        String::from_utf8_lossy(&dirty.stderr)
+    );
+    assert!(
+        !dirty.status.success(),
+        "孤儿页+断链应导致 lint 失败, 输出: {combined}"
+    );
+    assert!(
+        combined.contains("orphan"),
+        "应报告孤儿页问题, 输出: {combined}"
+    );
+    assert!(
+        combined.contains("missing.md"),
+        "应报告断链问题, 输出: {combined}"
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}

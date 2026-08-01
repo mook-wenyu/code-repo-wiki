@@ -1,4 +1,5 @@
 pub mod crossref;
+pub mod lint;
 pub mod markdown;
 pub mod mermaid;
 pub mod html;
@@ -17,7 +18,7 @@ pub fn wiki_languages(config: &WikiConfig) -> Vec<String> {
     crate::generate::collect_languages(config)
 }
 
-/// API 参考页写盘路径：`{output_dir}/wiki/{lang}/api.md`（每种语言独立一份）
+/// API 参考页写盘路径：`{}/wiki/{lang}/api.md`（每种语言独立一份）
 ///
 /// render_all 写盘与状态层指纹记录共用本函数产出路径，
 /// 保证人工修改保护的判定路径与指纹记录路径完全一致（同一规则，防止两处漂移）。
@@ -25,12 +26,12 @@ pub fn api_doc_path(output_dir: &Path, lang: &str) -> PathBuf {
     output_dir.join("wiki").join(lang).join("api.md")
 }
 
-/// 概览页写盘路径：`{output_dir}/wiki/{lang}/overview.md`（仅主语言一份）
+/// 概览页写盘路径：`{}/wiki/{lang}/overview.md`（仅主语言一份）
 pub fn overview_doc_path(output_dir: &Path, lang: &str) -> PathBuf {
     output_dir.join("wiki").join(lang).join("overview.md")
 }
 
-/// 目录页写盘路径：`{output_dir}/_toc.md`（输出目录根一份）
+/// 目录页写盘路径：`{}/_toc.md`（输出目录根一份）
 pub fn toc_doc_path(output_dir: &Path) -> PathBuf {
     output_dir.join("_toc.md")
 }
@@ -42,7 +43,7 @@ pub(crate) fn card_file_stem(module: &str) -> String {
     module.replace("::", "_")
 }
 
-/// 卡片写盘路径：`{output_dir}/cards/{lang}/{module.replace("::","_")}.md`
+/// 卡片写盘路径：`{}/cards/{lang}/{module.replace("::","_")}.md`
 ///
 /// render_all 写盘、卡片指纹记录与删除清理共用本函数产出路径，
 /// 保证人工修改保护的判定路径与指纹记录路径完全一致（防止两处漂移）。
@@ -53,7 +54,7 @@ pub(crate) fn card_page_path(output_dir: &Path, lang: &str, module: &str) -> Pat
         .join(format!("{}.md", card_file_stem(module)))
 }
 
-/// Wiki 页面写盘路径：`{output_dir}/wiki/{lang}/{file}.md`
+/// Wiki 页面写盘路径：`{}/wiki/{lang}/{file}.md`
 ///
 /// 文件名复用 markdown::wiki_file_name（ArchitectureOverview 特判写 architecture.md）。
 /// render_all 写盘、write_document 落盘与状态层指纹记录共用本函数，
@@ -205,7 +206,68 @@ pub fn render_all(
         graph.modules.len(),
         config.output.dir
     );
+
+    // AGENTS.md 引导文件：不存在才生成（幂等），人工已有 AGENTS.md 时跳过
+    let _ = generate_agents_md(output_dir);
     Ok(())
+}
+
+/// 生成 AGENTS.md 引导文件（AI 代理导航入口，repositories-wiki 最佳实践）
+///
+/// 写入当前工作目录（与 scan_and_parse 的扫描根一致）：若已存在则跳过
+/// （尊重人工维护的 AGENTS.md，不覆盖）；内容指向 wiki 产物目录并说明
+/// AI 代理如何消费（搜索命令、卡片格式、更新流程、lint 门禁）。
+/// 返回是否生成了文件（false = 已存在跳过）。
+pub fn generate_agents_md(output_dir: &Path) -> Result<bool> {
+    // AGENTS.md 写到产物目录的上级（项目根）：output_dir 通常是 .repo-wiki/ 或 wiki/，
+    // 其上级即仓库根。不用 cwd——测试的 cwd 是项目根而 output_dir 是临时目录，
+    // 用 cwd 会把 AGENTS.md 写进被测仓库，污染工作树。
+    let Some(root) = output_dir.parent() else {
+        return Ok(false);
+    };
+    let agents_path = root.join("AGENTS.md");
+    if agents_path.exists() {
+        return Ok(false);
+    }
+    let content = format!(
+        r#"# AGENTS.md — AI 代理导航（由 repo-wiki 生成，可人工编辑）
+
+本仓库使用 repo-wiki 维护可持续进化的项目 Wiki，产物位于 `{}/`。
+
+## 产物布局
+
+- `{}/wiki/{{lang}}/` — 模块页（每模块一份，含职责/实体/依赖/使用示例）
+- `{}/wiki/{{lang}}/api.md` — API 参考（按模块分组）
+- `{}/wiki/{{lang}}/architecture.md` — 架构概览
+- `{}/wiki/{{lang}}/overview.md` — 项目概览（自底向上合成）
+- `{}/cards/{{lang}}/` — Knowledge Card（AI 代理的结构化摘要，JSON 元数据+Markdown）
+- `{}/assets/diagrams/` — Mermaid 调用图/依赖图
+
+## AI 代理使用指引
+
+1. 先读 `{}/wiki/{{lang}}/overview.md` 与 `architecture.md` 建立全局认知，
+   再按需深入模块页。
+2. 查找实体（函数/结构体/类）用 `repo-wiki search -q "<关键词>"`（支持
+   text/semantic/hybrid 三引擎，hybrid 含调用链补全）。
+3. 修改代码后运行 `repo-wiki update` 增量更新；`repo-wiki sync` 以 Git 内容
+   合入；`repo-wiki lint` 检查产物健康（孤儿页/断链/过时）。
+4. 人工修改产物页面后不会被自动覆盖（保护机制），修改会反向同步到卡片
+   （pending_manual_edits 节）。
+5. 知识沉淀：`repo-wiki note "<记录>"` 追加到 `{}/wiki/{{lang}}/_log.md`。
+"#,
+        output_dir.display(),
+        output_dir.display(),
+        output_dir.display(),
+        output_dir.display(),
+        output_dir.display(),
+        output_dir.display(),
+        output_dir.display(),
+        output_dir.display(),
+        output_dir.display()
+    );
+    std::fs::write(&agents_path, content)?;
+    tracing::info!("AGENTS.md 已生成: {}", agents_path.display());
+    Ok(true)
 }
 
 #[cfg(test)]
