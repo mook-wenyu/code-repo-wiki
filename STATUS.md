@@ -1,32 +1,29 @@
 # 项目状态简报 （AI自动维护，禁止贴代码）
 
 ## 一、架构健康度
-- 当前模块总数：13（config/model/ingest/analysis/generate/output/incremental/search/commands + generate/schema + plan + lib.rs + main.rs）
+- 当前模块总数：16（analysis 拆出 community/feature 两个子模块；incremental 新增 change）
 - 违规跨模块调用：无
-- 测试覆盖率：cargo check --all-targets 0 错误 0 警告；cargo clippy --all-targets -- -D warnings 0 警告；cargo test 231 通过 0 失败（181 lib + 50 集成，14 套件）
-- 代码量：约 10,700 行 / 56 .rs 文件
+- 测试覆盖率：cargo clippy --all-targets -- -D warnings 0 警告；cargo test 267 通过 0 失败（207 lib + 60 集成，17 套件）；bench 6 项全过
+- 代码量：约 13,400 行 / 60 .rs 文件（演进新增 ~2,700 行）
 
 ## 二、本次变更影响范围
-- 修改的功能：深度分析遗留未完成项修复——lint 过时检查修复、note 命令实现、output.dir 嵌套语义、describe 并行化、插件补 note/lint 工具
-- **lint 过时检查修复（最重大）**：CLI 传空 source_roots 导致过时检查静默跳过 → main.rs Lint 分支从 scope.include 派生源码根（"src/**"→"src"）；lint 只检查 wiki 页不检查卡片（卡片才含"相关文件"段）→ 过时检查遍历 cards 目录；resolve_source_path 双路径修复（先试 cwd 相对再试 root.join）；stale 单测隔离 cwd 竞态（独立 fixture）
-- **note 命令实现**：commands.rs append_note（追加 `## YYYY-MM-DD` 节，节内序号递增，Karpathy log 模式）+ main.rs Commands::Note；2 单测（序号递增/空内容拒绝）
-- **output.dir 嵌套语义**：default-config.toml dir="wiki" 与 schema 默认 ".repo-wiki" 不一致（install 模板导致 wiki/wiki/zh 嵌套）→ 对齐为 ".repo-wiki" + 注释说明
-- **describe 并行化**：wiki.rs describe_modules 串行 await → futures::future::join_all 并行（10+ 模块真实 LLM 超时根因之一）
-- **插件补 2 工具**：wiki_note（带 text 参数）、wiki_lint（产物健康检查）；tsc 零错误
-- **html css 链接 bug 修复**：wrap_html 硬编码 `../style.css`，index.html（产物根）与 style.css 同目录却引用 `../style.css`（样式失效）→ 改为 css_href 参数（index 用 `style.css`，wiki/cards 子目录页用 `../style.css`）；新增 test_wrap_html_css_href_follows_depth；真实验证 index.html href="style.css"
-- **AST 精确搜索 CLI 暴露**：库层 AstQuery/SearchAgent::search_ast 完整但 CLI 未接（search 命令仅 text/semantic/hybrid 索引引擎）→ 新增 `execute_ast_search`（lib.rs，扫描源文件逐文件 AST 定位定义，返回文件+行号+签名，不依赖索引）+ main.rs Commands::AstSearch（文本/JSON 输出）+ 插件 ast_search 工具；真实验证函数/结构体定位、未找到提示、JSON；集成测试 test_ast_search_finds_definition
-- 摸到的文件：src/commands.rs、src/main.rs、src/output/{lint,html}.rs、src/generate/wiki.rs、src/lib.rs、default-config.toml、.opencode/plugins/repo-wiki.ts
-- 是否改变了接口/契约：新增 CLI 子命令 note；lint 现在执行过时检查（行为变化）；default-config dir 变化
-- 分析报告（只读评估，不改代码）：深度分析报告落盘 .scratch/analysis-report.md——对照 RepoDoc/CodeWiki/RepoSummary/HGEN 等 2024-2026 论文与工程，确认架构方向正确（知识图谱+影响传播路线），两大短板为模块聚类（目录启发式 vs 社区检测）与影响传播（文件路径 vs AST 实体级分类），另列 P0 三项收尾（提交 6 文件、card/page 并行、LLM 重试）
-- 深度演进实现计划（规划，未改代码）：.opencode/plans/1785542400000-deep-evolution.md——基于两并行子代理全源码证据化检索（发现 llm.rs 已有重试、卡片已有并发、RRF 非标准、default-config.toml 死键等 12 项关键事实）+ 网络查证（leiden-rs 0.8.1 支持 petgraph adapter、petgraph 0.8 兼容）。计划含 T0-T4 共 14 任务、D1-D10 决策点、F1-F4 雾区、依赖图与整体验收标准；核心：Leiden 社区检测聚类 + AST 实体级变化分类与语义影响传播 + 生成并发化 + 评测基准。等用户拍板决策点后开工
-- 决策拍板（2026-08-01，用户经 question 工具确认）：D1=leiden-rs；D2/D4/D5/D8/D9/D10 采纳推荐；**D3=实体级双层聚类**（新增 T1.2b 特征聚类任务：embedding 注入 + 纯结构降级，analysis 层经 DIP 接 Embedder trait）；D6=实体集合对比；D7=语义传播；存储=本地 markdown；范围=T0→T4 全量。计划已修订（T1.2b、T3.3 特征追溯联动、决策记录小节），等待用户确认后开工
+- 修改的功能：深度演进计划 T0-T4 全部 15 项实现完成——图社区检测聚类、实体级变化分类与语义传播、生成并行化、失败隔离、反向链接与特征追溯、CoT 提示、评测基准、测试缺口补全、文档修正
+- **T0 配置/排序修复**：default-config.toml 删除 [project]/[generate] 死键对齐 schema 8 段；RRF 移除引擎偏移改纯 rank（hybrid.rs）
+- **T1 聚类升级**：leiden-rs 0.8.1（CPM γ=0.5 seed=42）文件级社区检测替换目录前缀凝聚聚类（community.rs）；实体级特征聚类（feature.rs，Embedder trait DIP 注入 + embedding 失败降级纯结构）；确定性命名三档（公共前缀→最多目录→module_{n}）；petgraph 0.7→0.8
+- **T2 实体级增量**：change.rs 新旧实体对比分类（Added/Removed/SignatureChanged/BodyChanged，git2 读旧 commit 重解析）；impact.rs 语义传播（接口级双向、实现级仅本模块）；Chunk 加 entity_sources；增量仅接口级变化实体重生成摘要
+- **T3 生成增强**：实体摘要与 Wiki 页面 Semaphore 可控并发（join_all 保序）；失败隔离（failed_modules 进 GenerationStats）；反向链接 [源码:path:start-end] + 卡片特征追溯节；CoT 分步推理引导（输出格式不变）
+- **T4 评测与测试**：bench_clustering_detection（20 簇合成仓库验证还原度+确定性，200 文件 247ms）；llm.rs 请求构建/SSE/重试/Anthropic 请求体测试（AnthropicProvider 加 base_url 字段）；semantic 伪向量真实检索+阈值测试；chunk 分组测试；CLI status/note/init/sync/search 冒烟（tests/test_cli_smoke.rs）；CONTEXT.md 修正 sqlite-vec 失实描述
+- 摸到的文件：src/analysis/{community,feature,module,mod}.rs、src/incremental/{change,impact,mod}.rs、src/generate/{chunk,card,wiki,prompt,mod,llm,embed}.rs、src/model/mod.rs、src/model/document.rs、src/search/{hybrid,semantic}.rs、src/output/{markdown,html,mod}.rs、src/lib.rs、Cargo.toml、default-config.toml、CONTEXT.md、README.md、benches/bench_search.rs、tests/（3 新文件）
+- 是否改变了接口/契约：是（未上线无存量用户，已批准不向后兼容）——EmbeddingEngine::new 增加 rt 参数；AnthropicProvider 增加 base_url 字段；run_generation_filtered 增加 entity_changes 参数；KnowledgeCard/EntitySummary 增加字段；KnowledgeGraph 增加 features；模块命名从目录前缀改为社区检测
 
 ## 三、已知风险点（由AI诚实自曝）
-- 大型仓库（10 模块）真实 LLM 全量生成超时 20min——deepseek 单次调用 ~60s，30+ 次调用，外部 API 性能限制；并行 describe 已缓解但 card/page 串行仍是瓶颈
-- 真实 LLM 链路仅在小仓库（1 文件）验证成功（34s）；大型仓库未验证完整产物
-- B1-B6 运行时项（插件加载/命令交互/watch 端到端）仍需真实 opencode 会话验证
-- 工作树 6 文件改动待提交
+- CPM 分辨率 γ=0.5/0.4 由小仓库与合成图实测选定，真实大仓库（万级文件）社区粒度未验证，需实测调参
+- 特征聚类的 embedding 注入路径（0.5 语义权重）无 API key 未真实验证，仅验证纯结构降级路径
+- 实体级变化分类依赖 git 仓库 + 旧 commit 内容可解析（文件级删除/重命名不分类实体）
+- status 命令是桩实现（只打印就绪+配置路径，不检查产物）
+- tests/fixtures/sample-repo/config.toml 是 openai provider + api_key="mock" 无 base_url——直接复用该 fixture 跑 generate 会真实触网（现有测试均在临时副本改写为 mock）
+- 真实 LLM 全量生成（大仓库）端到端产物未验证；watch 端到端未验证
 
 ## 四、下次最该做的事（AI建议）
-1. 提交本轮 4 项修复 + 插件 2 工具（6 文件）
-2. 真实 LLM 全量验证需小步拆分（逐模块生成）或接受 API 性能限制
+1. 大仓库（万级文件）实测社区检测粒度与 LLM 全量生成耗时，按实测调 CPM resolution
+2. status 命令补真实产物检查（当前桩实现）；sample-repo fixture 配置改为 mock provider

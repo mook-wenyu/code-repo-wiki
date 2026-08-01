@@ -6,10 +6,12 @@
 |------|------|
 | **Insight** | 单文件解析结果：AST 实体列表 + 导入列表 |
 | **Entity** | AST 中的一个具名代码单元（函数/类/结构体/接口/枚举/变量/属性） |
-| **CodeGraph** | petgraph `StableDiGraph<CodeNode, CodeEdge>` 知识图谱 |
+| **CodeGraph** | petgraph 0.8 `StableDiGraph<CodeNode, CodeEdge>` 知识图谱 |
 | **CodeNode** | 图中的节点，代表一个实体、文件或模块 |
-| **CodeEdge** | 图中的边，代表 Contains/Imports/Calls/Implements/Extends 关系 |
-| **Chunk** | 按模块聚类的实体分组，传递给 LLM 生成卡片 |
+| **CodeEdge** | 图中的边，代表 Contains/Imports/Calls/Implements/DependsOn/Extends/TypeReference 关系 |
+| **ModuleCluster** | 文件级社区检测（leiden-rs CPM）产出的模块划分，cohesion/coupling 为描述性元数据 |
+| **Feature** | 实体级特征聚类（跨文件协作的方法组），嵌入相似度与调用结构融合聚类 |
+| **Chunk** | 按模块聚类的实体分组（含 entity_sources 记录实体归属文件），传递给 LLM 生成卡片 |
 | **KnowledgeCard** | LLM 生成的模块摘要（JSON 格式），包含 summary、key_entities、design_patterns |
 | **WikiDocument** | 单个 wiki 页面，包含 LLM 渲染的 Markdown 内容 |
 | **Embedding** | 代码/文档文本的向量表示，用于语义搜索和相似度匹配 |
@@ -18,7 +20,7 @@
 | **Frontier** | 增量更新时待处理的变更集合 |
 | **SymbolEngine** | 基于 tree-sitter query API 的符号级搜索引擎，支持 AST 模式匹配、精确定位 |
 | **TextEngine** | 基于 SQLite FTS5 的全文搜索引擎，支持 BM25 关键字检索 |
-| **SemanticEngine** | 基于 embedding + sqlite-vec 的语义搜索引擎，支持向量相似度查询 |
+| **SemanticEngine** | 基于 embedding + SQLite BLOB 向量存储（内存余弦相似度，>0.3 阈值过滤）的语义搜索引擎 |
 | **HybridSearch** | RRF（Reciprocal Rank Fusion）融合 BM25 + 语义搜索的混合检索 |
 | **AstQuery** | 封装 tree-sitter Query 对象的 AST 查询器，用于精确符号定位和引用追踪 |
 | **CodeAgent** | 可自动回溯的搜索 Agent，多轮组合关键词+语义+AST 查询 |

@@ -16,7 +16,7 @@ AI 驱动的代码仓库 Wiki 自动生成工具。分析源码结构，通过 L
               └────────┬─────────┘
                        ▼
               ┌──────────────────┐
-              │ analysis (graph) │  petgraph 知识图谱
+              │ analysis (graph) │  petgraph 知识图谱 + leiden 社区检测
               │ build + detect   │
               └────────┬─────────┘
                        ▼
@@ -39,9 +39,9 @@ AI 驱动的代码仓库 Wiki 自动生成工具。分析源码结构，通过 L
 ## 核心功能
 
 - **代码解析**：基于 tree-sitter，支持 Rust/Python/JavaScript/TypeScript/Go/C#/Java
-- **知识图谱**：petgraph 构建实体间（调用/导入/包含/实现）关系图
+- **知识图谱**：petgraph 构建实体间（调用/导入/包含/实现）关系图，leiden-rs 社区检测划分模块
 - **Wiki 生成**：经 LLM（OpenAI/Anthropic）生成模块知识卡片和文档
-- **增量更新**：git diff 或文件事件驱动，只重新生成变更模块
+- **增量更新**：git diff 或文件事件驱动，实体级变化分类（新增/删除/签名变更/正文修改）驱动语义传播，只重新生成受影响模块
 - **搜索**：BM25 全文搜索 + 向量语义搜索 + RRF 混合排序
 - **文件监听**：`watch` 子命令实时监听文件变更，自动增量更新
 - **HTML 导出**：将 Wiki 导出为静态 HTML 站点
@@ -66,10 +66,10 @@ AI 驱动的代码仓库 Wiki 自动生成工具。分析源码结构，通过 L
 
 - **语言**：Rust (edition 2024)
 - **解析**：tree-sitter（Rust/Python/JS/TS/Go/C#/Java）
-- **图结构**：petgraph (StableDiGraph)
-- **存储**：rusqlite (SQLite FTS5)
-- **LLM**：OpenAI / Anthropic / 兼容 API
-- **嵌入**：text-embedding-3-small 等
+- **图结构**：petgraph 0.8 (StableDiGraph) + leiden-rs（社区检测）
+- **存储**：rusqlite (SQLite FTS5 + 向量 BLOB)
+- **LLM**：OpenAI / Anthropic / 兼容 API（含超时重试、流式解析）
+- **嵌入**：text-embedding-3-small 等（embedding 注入特征聚类）
 - **CLI**：clap（derive 模式）
 - **文件监听**：notify + debouncer
 
