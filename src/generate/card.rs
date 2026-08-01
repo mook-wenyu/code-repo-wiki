@@ -75,7 +75,9 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
         language: String,
         plan: Option<ResolvedPlan>,
     ) -> Self {
-        let max = if max_concurrent == 0 { usize::MAX } else { max_concurrent };
+        // tokio Semaphore 许可数有 MAX_PERMITS 上限（约 2^61），usize::MAX 会 panic；
+        // "0=不限制" 用足够大的许可数表达（对真实并发规模永不构成瓶颈）
+        let max = if max_concurrent == 0 { 1_000_000_000 } else { max_concurrent };
         Self {
             provider,
             call_count: AtomicUsize::new(0),

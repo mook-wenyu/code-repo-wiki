@@ -132,7 +132,7 @@ pub async fn run_generation(
     // 4. 按语言独立生成 Wiki 页面（并行，演进计划 T3.1；卡片仅主语言生成一次，
     // 各语言页面复用主语言卡片摘要）
     let languages = collect_languages(config);
-    let wiki_gen = WikiGenerator::new(&provider, plan.clone());
+    let wiki_gen = WikiGenerator::new(&provider, plan.clone(), config.llm.max_concurrent);
     let mut documents =
         generate_wiki_pages(&wiki_gen, &chunks, &cards, &languages, config, config.llm.max_concurrent).await;
     tracing::info!("生成进度: 90% - Wiki 页面生成完成，共 {} 个页面", documents.len());
@@ -271,7 +271,7 @@ pub async fn run_generation_filtered(
     // 4. 按语言独立生成 Wiki 页面（并行，演进计划 T3.1；仅变更块；卡片仅主语言生成一次，
     // 各语言页面复用主语言卡片摘要）
     let languages = collect_languages(config);
-    let wiki_gen = WikiGenerator::new(&provider, plan.clone());
+    let wiki_gen = WikiGenerator::new(&provider, plan.clone(), config.llm.max_concurrent);
     let mut documents =
         generate_wiki_pages(&wiki_gen, &chunks, &cards, &languages, config, config.llm.max_concurrent).await;
 

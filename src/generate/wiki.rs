@@ -21,18 +21,26 @@ pub struct WikiGenerator<'a, P: LlmProvider> {
     plan: Option<ResolvedPlan>,
     /// 生成失败的模块名列表（演进计划 T3.2 失败隔离：失败只记录不中断）
     failed: std::sync::Mutex<Vec<String>>,
+    /// describe_modules 并发信号量（演进计划 T5.1：模块职责描述并行
+    /// 生成时限制并发，避免 10+ 模块仓库一次性打爆 LLM API 限流）
+    semaphore: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
 impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
     /// 使用指定的 LLM Provider 创建 WikiGenerator
     ///
     /// plan 为解析后的生效计划（无计划时传 None）。
-    pub fn new(provider: &'a P, plan: Option<ResolvedPlan>) -> Self {
+    /// max_concurrent 控制 describe_modules 的并行上限（0 表示不限制）。
+    pub fn new(provider: &'a P, plan: Option<ResolvedPlan>, max_concurrent: usize) -> Self {
+        // tokio Semaphore 许可数有 MAX_PERMITS 上限（约 2^61），usize::MAX 会 panic；
+        // "0=不限制" 用足够大的许可数表达（对真实并发规模永不构成瓶颈）
+        let max = if max_concurrent == 0 { 1_000_000_000 } else { max_concurrent };
         Self {
             provider,
             call_count: AtomicUsize::new(0),
             plan,
             failed: std::sync::Mutex::new(Vec::new()),
+            semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(max)),
         }
     }
 
@@ -150,22 +158,31 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
         graph: &KnowledgeGraph,
         language: &str,
     ) -> Vec<crate::model::ModuleCluster> {
-        // 并行生成所有需描述的模块描述（保留输入顺序）
+        // 并行生成所有需描述的模块描述（保留输入顺序）；Semaphore 限制
+        // 并发（演进计划 T5.1）：0=不限时许可数巨大永不会阻塞。
+        let semaphore = self.semaphore.clone();
         let futures: Vec<_> = graph
             .modules
             .iter()
-            .map(|module| async {
-                // 兜底模块(src)与空模块跳过：无职责边界可描述
-                if module.name == "src" || module.node_ids.is_empty() {
-                    return module.clone();
+            .map(|module| {
+                let semaphore = semaphore.clone();
+                async move {
+                    // 兜底模块(src)与空模块跳过：无职责边界可描述
+                    if module.name == "src" || module.node_ids.is_empty() {
+                        return module.clone();
+                    }
+                    let _permit = match semaphore.acquire().await {
+                        Ok(p) => p,
+                        Err(_) => return module.clone(),
+                    };
+                    let mut enriched = module.clone();
+                    if let Ok(text) = self.describe_module(module, graph, language).await
+                        && !text.trim().is_empty()
+                    {
+                        enriched.description = Some(text.trim().to_string());
+                    }
+                    enriched
                 }
-                let mut enriched = module.clone();
-                if let Ok(text) = self.describe_module(module, graph, language).await
-                    && !text.trim().is_empty()
-                {
-                    enriched.description = Some(text.trim().to_string());
-                }
-                enriched
             })
             .collect();
         futures::future::join_all(futures).await
@@ -400,7 +417,7 @@ mod tests {
     #[tokio::test]
     async fn test_skip_empty_chunk() {
         let provider = MockProvider::new();
-        let generator = WikiGenerator::new(&provider, None);
+        let generator = WikiGenerator::new(&provider, None, 0);
         let config = WikiConfig::default();
         let empty_chunk = Chunk {
             module_path: vec![],
@@ -548,7 +565,7 @@ mod tests {
             features: Vec::new(),
         };
         let provider = MockProvider::new();
-        let generator = WikiGenerator::new(&provider, None);
+        let generator = WikiGenerator::new(&provider, None, 0);
         let enriched = generator.describe_modules(&kg, "zh").await;
         assert_eq!(enriched.len(), 2);
         assert!(enriched[0].description.is_some(), "带实体的模块应获得描述");

@@ -40,7 +40,7 @@ fn make_module_doc() -> WikiDocument {
 /// 用 mock LLM 生成 overview 文档
 fn generate_overview_doc(config: &WikiConfig) -> WikiDocument {
     let provider = MockProvider::new();
-    let generator = WikiGenerator::new(&provider, None);
+    let generator = WikiGenerator::new(&provider, None, 0);
     let graph = KnowledgeGraph::default();
     let output = GenerationOutput {
         cards: vec![],
@@ -190,7 +190,7 @@ fn test_overview_module_refs_match_write_path() {
 
 
     let provider = MockProvider::new();
-    let generator = WikiGenerator::new(&provider, None);
+    let generator = WikiGenerator::new(&provider, None, 0);
     let graph = KnowledgeGraph::default();
     let output = GenerationOutput {
         cards: vec![card1, card2],
