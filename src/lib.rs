@@ -375,24 +375,6 @@ pub fn run_incremental_pipeline(
     })
 }
 
-/// 从源码文件路径派生模块名（与 generate::chunk::chunk_by_file 同规则：
-/// 取目录的普通组件以 "::" 连接，不含文件名）
-///
-/// 删除清理时被删文件已不在新 graph/insights 中，无法还原其模块聚类归属，
-/// 只能按此确定性规则重建模块名；wiki 页文件名 = 模块名.replace("::","_")，
-/// 与 render_all 落盘（module_path.join("_")）完全一致。
-fn module_name_from_path(path: &Path) -> String {
-    path.parent()
-        .map(|p| {
-            p.components()
-                .filter(|c| matches!(c, std::path::Component::Normal(_)))
-                .map(|c| c.as_os_str().to_string_lossy().to_string())
-                .collect::<Vec<_>>()
-                .join("::")
-        })
-        .unwrap_or_default()
-}
-
 /// 清理已删除源文件对应的旧输出（wiki 页 + 卡片）
 ///
 /// 只清理"已不存在"的变更文件（deleted 与 renamed 旧路径由
@@ -410,17 +392,37 @@ pub(crate) fn cleanup_deleted_outputs(
         if f.exists() {
             continue;
         }
-        let module = module_name_from_path(f);
-        if module.is_empty() {
-            continue;
+        // 候选模块名 = 被删文件父目录的每一级前缀。社区检测的模块名档 1
+        // （最长公共父目录）必是某级前缀，档 2（文件数最多目录）亦然；
+        // 档 3（module_{n}，无目录时）无法由路径推导，漏删为已知限制。
+        // 逐一尝试删除，覆盖跨目录合并社区的公共前缀名（如 "src"）——
+        // 仅用完整父目录名（"src::a"）在跨目录社区下会清理不到。
+        let segments = path_normal_segments(f);
+        let mut candidates: Vec<String> = Vec::new();
+        for len in 1..=segments.len() {
+            candidates.push(segments[..len].join("::"));
         }
-        let file_name = output::module_page_file_name(&module);
-        for lang in &languages {
-            // 被删文件的旧页面/旧卡片逐一尝试删除，失败静默（文件可能本就不存在）
-            let _ = std::fs::remove_file(output_dir.join("wiki").join(lang).join(&file_name));
-            let _ = std::fs::remove_file(output::card_page_path(output_dir, lang, &module));
+        for module in candidates {
+            let file_name = output::module_page_file_name(&module);
+            for lang in &languages {
+                // 被删文件的旧页面/旧卡片逐一尝试删除，失败静默（文件可能本就不存在）
+                let _ = std::fs::remove_file(output_dir.join("wiki").join(lang).join(&file_name));
+                let _ = std::fs::remove_file(output::card_page_path(output_dir, lang, &module));
+            }
         }
     }
+}
+
+/// 提取路径的目录 Normal 组件序列（过滤盘符/根目录，与模块名派生规则一致）
+fn path_normal_segments(path: &std::path::Path) -> Vec<String> {
+    path.parent()
+        .map(|p| {
+            p.components()
+                .filter(|c| matches!(c, std::path::Component::Normal(_)))
+                .map(|c| c.as_os_str().to_string_lossy().to_string())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// 组装"人工修改 → 卡片记录"映射（模块名 → 记录文本列表）
@@ -923,15 +925,57 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A1 单测：模块名派生规则（与 chunk_by_file 一致，不含文件名）
+    /// 跨目录合并社区的删除清理：社区名是公共父目录前缀（如 "src"）时，
+    /// 被删文件 src/a/x.rs 的完整父目录名是 "src::a"——仅按完整父目录清理
+    /// 会漏删社区页 src.md，因此候选模块名必须包含每一级前缀。
     #[test]
-    fn test_module_name_from_path_uses_directories() {
-        assert_eq!(module_name_from_path(Path::new("src/config.rs")), "src");
-        assert_eq!(module_name_from_path(Path::new("src/foo/bar.rs")), "src::foo");
-        // Windows 盘符不进入模块名（与 chunk_by_file 的 Normal 组件过滤一致）
-        assert_eq!(module_name_from_path(Path::new("C:/src/config.rs")), "src");
-        // 根目录文件无模块名
-        assert_eq!(module_name_from_path(Path::new("config.rs")), "");
+    fn test_cleanup_deleted_outputs_covers_community_prefix() {
+        let dir = std::env::temp_dir()
+            .join(format!("repo_wiki_test_cleanup_prefix_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut config = crate::config::schema::WikiConfig::default();
+        config.output.dir = dir.to_string_lossy().into_owned();
+
+        // 预置两个可能由同一社区产出的页面：完整父目录名（src_a）与公共前缀（src）
+        let deleted = PathBuf::from("src/a/x.rs");
+        for name in ["src_a", "src"] {
+            let wiki = dir.join("wiki").join("zh").join(format!("{name}.md"));
+            let card = dir.join("cards").join("zh").join(format!("{name}.md"));
+            std::fs::create_dir_all(wiki.parent().unwrap()).unwrap();
+            std::fs::create_dir_all(card.parent().unwrap()).unwrap();
+            std::fs::write(&wiki, "旧页面").unwrap();
+            std::fs::write(&card, "旧卡片").unwrap();
+        }
+
+        cleanup_deleted_outputs(&config, &[deleted]);
+
+        for name in ["src_a", "src"] {
+            assert!(
+                !dir.join("wiki").join("zh").join(format!("{name}.md")).exists(),
+                "社区公共前缀页面也应被清理: {name}"
+            );
+            assert!(
+                !dir.join("cards").join("zh").join(format!("{name}.md")).exists(),
+                "社区公共前缀卡片也应被清理: {name}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 模块名候选段提取（不含文件名，盘符不进段）
+    #[test]
+    fn test_path_normal_segments() {
+        assert_eq!(path_normal_segments(Path::new("src/config.rs")), vec!["src"]);
+        assert_eq!(
+            path_normal_segments(Path::new("src/foo/bar.rs")),
+            vec!["src".to_string(), "foo".to_string()]
+        );
+        // Windows 盘符不进入段（与 chunk_by_file 的 Normal 组件过滤一致）
+        assert_eq!(path_normal_segments(Path::new("C:/src/config.rs")), vec!["src"]);
+        // 根目录文件无目录段
+        assert!(path_normal_segments(Path::new("config.rs")).is_empty());
     }
 
     /// A2：force=true 清空保护集（含旧 protected_docs 与人工修改检测），
