@@ -477,7 +477,7 @@ fn test_update_command_smoke() {
 #[test]
 fn test_watch_command_detects_change() {
     use std::io::{BufRead, BufReader};
-    use std::process::{Child, Stdio};
+    use std::process::Stdio;
     use std::time::{Duration, Instant};
 
     let work_dir = prepare_repo("watch_smoke");
@@ -530,11 +530,10 @@ fn test_watch_command_detects_change() {
         std::thread::sleep(Duration::from_millis(100));
         if let Ok(m) = std::fs::metadata(work_dir.join(".repo-wiki").join("wiki").join("zh").join("api.md"))
             .and_then(|m| m.modified())
+            && before.map(|b| m > b + Duration::from_millis(500)).unwrap_or(false)
         {
-            if before.map(|b| m > b + Duration::from_millis(500)).unwrap_or(false) {
-                detected = true;
-                break;
-            }
+            detected = true;
+            break;
         }
     }
     assert!(detected, "watch 应检测到文件变更并触发增量更新");
