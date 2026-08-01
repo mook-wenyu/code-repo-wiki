@@ -27,6 +27,9 @@ pub struct IncrementalResult {
     pub changed_files: Vec<std::path::PathBuf>,
     /// 受影响的模块名称列表（用于日志和下游分析）
     pub affected_modules: Vec<String>,
+    /// 实体级变化分类（GitDiff 策略产出；FileWatch 策略为空——
+    /// 下游据此跳过实体级摘要过滤，见 generate::run_generation_filtered）
+    pub entity_changes: EntityChangeSet,
 }
 
 /// 运行增量更新分析
@@ -47,21 +50,22 @@ pub fn run_incremental_update(
 ) -> Result<IncrementalResult> {
     if !config.incremental.enabled {
         tracing::info!("增量更新已禁用，将执行全量生成");
-        return Ok(IncrementalResult { changed_files: Vec::new(), affected_modules: Vec::new() });
+        return Ok(IncrementalResult { changed_files: Vec::new(), affected_modules: Vec::new(), entity_changes: EntityChangeSet::default() });
     }
 
     let state_dir = Path::new(&config.output.dir).join(".state");
 
     // 按策略分发：GitDiff 或 FileWatch
-    let (changed_files, affected_modules) = match config.incremental.strategy {
+    let (changed_files, affected_modules, entity_changes) = match config.incremental.strategy {
         IncrementalStrategy::GitDiff => {
             run_git_diff_incremental(insights, graph, config, &state_dir, Path::new("."))?
         }
         IncrementalStrategy::FileWatch => {
-            run_file_watch_incremental(insights, graph, config, &state_dir, watch_paths)?
+            let (files, modules) = run_file_watch_incremental(insights, graph, config, &state_dir, watch_paths)?;
+            (files, modules, EntityChangeSet::default())
         }
     };
-    Ok(IncrementalResult { changed_files, affected_modules })
+    Ok(IncrementalResult { changed_files, affected_modules, entity_changes })
 }
 
 /// 回退全量生成：changed_files 为所有源文件，affected_modules 为空
@@ -78,7 +82,7 @@ fn run_git_diff_incremental(
     config: &WikiConfig,
     state_dir: &Path,
     repo_path: &Path,
-) -> Result<(Vec<std::path::PathBuf>, Vec<String>)> {
+) -> Result<(Vec<std::path::PathBuf>, Vec<String>, EntityChangeSet)> {
     // 1. 分析 Git diff
     let last_commit_hash = GenerationState::load(state_dir)
         .ok()
@@ -88,13 +92,14 @@ fn run_git_diff_incremental(
         Err(e) => {
             // 非 Git 仓库：无法做增量，回退全量生成
             tracing::warn!("Git diff 分析失败，回退全量生成: {}", e);
-            return Ok(fallback_to_full(insights));
+            let (files, modules) = fallback_to_full(insights);
+            return Ok((files, modules, EntityChangeSet::default()));
         }
     };
 
     if diff_result.added.is_empty() && diff_result.modified.is_empty() && diff_result.deleted.is_empty() {
         tracing::info!("无文件变更，跳过更新");
-        return Ok((Vec::new(), Vec::new()));
+        return Ok((Vec::new(), Vec::new(), EntityChangeSet::default()));
     }
 
     if diff_result.added_lines + diff_result.deleted_lines > MAX_DIFF_LINES {
@@ -104,7 +109,8 @@ fn run_git_diff_incremental(
             diff_result.added_lines,
             diff_result.deleted_lines
         );
-        return Ok(fallback_to_full(insights));
+        let (files, modules) = fallback_to_full(insights);
+        return Ok((files, modules, EntityChangeSet::default()));
     }
 
     tracing::info!(
@@ -164,7 +170,7 @@ fn run_git_diff_incremental(
     }
 
     tracing::info!("增量更新分析完成: {} 个模块受影响", affected_modules.len());
-    Ok((all_changed, affected_modules))
+    Ok((all_changed, affected_modules, entity_changes))
 }
 
 /// FileWatch 策略的增量更新（变更文件来自外部事件 + 指纹比对）
@@ -251,7 +257,7 @@ mod tests {
         let config = make_config();
         let state_dir = dir.join(".state");
 
-        let (changed, affected) =
+        let (changed, affected, _entity_changes) =
             run_git_diff_incremental(&insights, &graph, &config, &state_dir, &dir).unwrap();
         assert_eq!(changed.len(), 2);
         assert!(changed.iter().all(|p| insights.iter().any(|i| &i.path == p)));
@@ -294,7 +300,7 @@ mod tests {
         let config = make_config();
         let state_dir = dir.join(".state");
 
-        let (changed, affected) =
+        let (changed, affected, _entity_changes) =
             run_git_diff_incremental(&insights, &graph, &config, &state_dir, &dir).unwrap();
         assert_eq!(changed.len(), 1);
         assert!(affected.is_empty());
@@ -340,7 +346,7 @@ mod tests {
         let config = make_config();
         let state_dir = dir.join(".state");
 
-        let (changed, _affected) =
+        let (changed, _affected, _entity_changes) =
             run_git_diff_incremental(&insights, &graph, &config, &state_dir, &dir).unwrap();
         assert!(
             changed.iter().any(|p| p == Path::new("src/foo.rs")),

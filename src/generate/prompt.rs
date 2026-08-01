@@ -512,6 +512,7 @@ mod tests {
             imports: vec![],
             dependencies: vec![],
             file_paths: vec![],
+            entity_sources: vec![],
         }
     }
 

@@ -393,6 +393,7 @@ mod tests {
             imports: vec![],
             dependencies: vec![],
             file_paths: vec![],
+            entity_sources: vec![],
         };
 
         let result = generator.generate_wiki_page(&empty_chunk, "", &config).await;
@@ -407,6 +408,7 @@ mod tests {
             imports: vec![],
             dependencies: vec!["tokio".into(), "serde".into()],
             file_paths: vec![],
+            entity_sources: vec![],
         };
 
         let refs = build_references(&chunk, "zh");
@@ -426,6 +428,7 @@ mod tests {
             imports: vec![],
             dependencies: vec!["src::analysis".into(), "src::output".into()],
             file_paths: vec![],
+            entity_sources: vec![],
         };
 
         let refs = build_references(&chunk, "zh");

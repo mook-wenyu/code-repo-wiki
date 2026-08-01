@@ -14,6 +14,7 @@ use anyhow::Result;
 use crate::config::plan::ResolvedPlan;
 use crate::config::schema::WikiConfig;
 use crate::ingest::parser::FileInsight;
+use crate::incremental::change::EntityChangeSet;
 use crate::model::{KnowledgeCard, KnowledgeGraph, WikiDocument};
 
 use self::card::CardGenerator;
@@ -184,6 +185,7 @@ pub async fn run_generation_filtered(
     config: &WikiConfig,
     changed_files: &std::collections::HashSet<std::path::PathBuf>,
     extra_edits: &HashMap<String, Vec<String>>,
+    entity_changes: Option<&EntityChangeSet>,
 ) -> Result<GenerationOutput> {
     let start = Instant::now();
 
@@ -206,7 +208,7 @@ pub async fn run_generation_filtered(
     tracing::info!("增量生成: {} 个文件变更", changed_insights.len());
 
     // 1. AST 感知分块（仅变更文件）
-    let chunks: Vec<_> = if graph.modules.is_empty() {
+    let mut chunks: Vec<_> = if graph.modules.is_empty() {
         changed_insights
             .iter()
             .map(chunk::chunk_by_file)
@@ -222,6 +224,43 @@ pub async fn run_generation_filtered(
 
     // 2.5 解析 wiki_plan.yaml 生效计划（禁用或文件缺失 → None；坏文件中断）
     let plan = crate::config::plan::resolve_plan(config)?;
+
+    // 2.5 增量实体摘要（演进计划 T2.3 实体级过滤）：
+    // 仅对**接口级变化文件**中的实体重新生成摘要（新增/删除/签名变更），
+    // 纯实现级变化（函数体修改）与未变化实体保留旧摘要，不浪费 LLM 调用。
+    // 未提供实体变化信息（FileWatch 策略）时跳过本步骤（保持现状行为）。
+    if let Some(changes) = entity_changes {
+        let interface_files: std::collections::HashSet<std::path::PathBuf> = changes
+            .changes
+            .iter()
+            .filter(|c| {
+                matches!(
+                    c.kind,
+                    crate::incremental::change::EntityChangeKind::Added
+                        | crate::incremental::change::EntityChangeKind::Removed
+                        | crate::incremental::change::EntityChangeKind::SignatureChanged
+                )
+            })
+            .map(|c| c.file.clone())
+            .collect();
+        for chunk in &mut chunks {
+            for (i, entity) in chunk.entities.iter_mut().enumerate() {
+                let source_file = chunk.entity_sources.get(i).cloned().unwrap_or_default();
+                if entity.summary.is_none() && interface_files.contains(&source_file) {
+                    let prompt = crate::generate::prompt::entity_summary_prompt(
+                        entity,
+                        &config.wiki.language,
+                        plan.as_ref(),
+                    );
+                    let messages = vec![Message::user(prompt)];
+                    match provider.complete(&messages).await {
+                        Ok(summary) => entity.summary = Some(summary.trim().to_string()),
+                        Err(e) => tracing::warn!("增量生成实体摘要失败: {}", e),
+                    }
+                }
+            }
+        }
+    }
 
     // 3. 并行生成 Knowledge Card（仅变更块）
     let card_gen = CardGenerator::new(

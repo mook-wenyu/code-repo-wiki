@@ -22,6 +22,9 @@ pub struct Chunk {
     pub dependencies: Vec<String>,
     /// 关联的源文件路径
     pub file_paths: Vec<PathBuf>,
+    /// 每个实体所属的源文件（与 entities 平行；空表示未记录，
+    /// 供增量场景按实体级过滤摘要生成——演进计划 T2.3）
+    pub entity_sources: Vec<PathBuf>,
 }
 
 impl Chunk {
@@ -82,9 +85,14 @@ pub fn chunk_by_module(
         let mut entities = Vec::new();
         let mut imports = Vec::new();
         let mut file_paths = Vec::new();
+        let mut entity_sources = Vec::new();
 
         for insight in insights {
             if module_file_paths.contains(&insight.path) {
+                // 记录实体 → 源文件归属（与 entities 平行，供 T2.3 实体级过滤）
+                for _ in &insight.entities {
+                    entity_sources.push(insight.path.clone());
+                }
                 entities.extend(insight.entities.clone());
                 imports.extend(insight.imports.clone());
                 if !file_paths.contains(&insight.path) {
@@ -93,8 +101,15 @@ pub fn chunk_by_module(
             }
         }
 
-        entities.sort_by(|a, b| a.name.cmp(&b.name));
-        entities.dedup_by(|a, b| a.name == b.name);
+        // 实体与文件归属按同一键（name）排序去重，保证两者仍平行
+        let mut paired: Vec<(Entity, PathBuf)> = entities
+            .into_iter()
+            .zip(entity_sources)
+            .collect();
+        paired.sort_by(|a, b| a.0.name.cmp(&b.0.name));
+        paired.dedup_by(|a, b| a.0.name == b.0.name);
+        let entities: Vec<Entity> = paired.iter().map(|(e, _)| e.clone()).collect();
+        let entity_sources: Vec<PathBuf> = paired.iter().map(|(_, f)| f.clone()).collect();
 
         let module_path: Vec<String> = module.name.split("::").map(|s| s.to_string()).collect();
 
@@ -122,6 +137,7 @@ pub fn chunk_by_module(
             imports,
             dependencies: deps,
             file_paths,
+            entity_sources,
         });
     }
 
@@ -150,6 +166,7 @@ pub fn chunk_by_file(insight: &FileInsight) -> Chunk {
         imports: insight.imports.clone(),
         dependencies: Vec::new(),
         file_paths: vec![insight.path.clone()],
+        entity_sources: insight.entities.iter().map(|_| insight.path.clone()).collect(),
     }
 }
 
@@ -206,6 +223,7 @@ mod tests {
             imports: vec![],
             dependencies: vec![],
             file_paths: vec![],
+            entity_sources: vec![],
         };
         assert!(empty_chunk.is_empty());
     }

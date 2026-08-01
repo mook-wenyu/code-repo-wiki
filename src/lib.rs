@@ -338,7 +338,7 @@ pub fn run_incremental_pipeline(
     let changed_set: std::collections::HashSet<std::path::PathBuf> = inc_result.changed_files.iter().cloned().collect();
     let extra_edits = collect_manual_edits(old_state.as_ref());
     let gen_output = rt.block_on(
-        generate::run_generation_filtered(&graph, &file_insights, &config, &changed_set, &extra_edits)
+        generate::run_generation_filtered(&graph, &file_insights, &config, &changed_set, &extra_edits, Some(&inc_result.entity_changes))
     )?;
 
     // Phase 4: 全量输出（保持索引一致）
