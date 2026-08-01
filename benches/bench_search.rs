@@ -11,8 +11,14 @@ use std::time::Instant;
 use repo_wiki::config::schema::{ScopeSection, WikiConfig};
 use repo_wiki::ingest::parser::FileInsight;
 
-/// 串行化依赖当前工作目录的基准（scan_and_parse 内部使用 current_dir）
+/// 串行化依赖当前工作目录的基准（scan_and_parse 内部使用 current_dir）。
+/// 容忍毒化：任一基准断言失败（panic）后，并行运行的兄弟基准仍需能拿锁
+/// 完成清理，避免一次失败级联毒化整个基准套件。
 static CWD_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock_cwd() -> std::sync::MutexGuard<'static, ()> {
+    CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// 覆盖默认 scope 的配置：默认 include 只匹配 src/** 与 lib/**，基准仓库在临时目录根下
 fn bench_config() -> WikiConfig {
@@ -126,7 +132,7 @@ fn bench_scan_and_parse() {
         eprintln!("skip bench: CI");
         return;
     }
-    let _guard = CWD_LOCK.lock().unwrap();
+    let _guard = lock_cwd();
 
     let dir = std::env::temp_dir().join(format!("bench_repo_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -151,7 +157,7 @@ fn bench_graph_build() {
         eprintln!("skip bench: CI");
         return;
     }
-    let _guard = CWD_LOCK.lock().unwrap();
+    let _guard = lock_cwd();
 
     let dir = std::env::temp_dir().join(format!("bench_graph_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -207,4 +213,127 @@ fn bench_index_batch() {
 
     eprintln!("bench index_batch: 1000 entities, {}ms", elapsed.as_millis());
     let _ = std::fs::remove_file(&text_path);
+}
+
+/// 社区检测 + 特征聚类基准（演进计划 T4.1）
+///
+/// 合成 20 簇 × 10 文件 = 200 文件的模块化仓库：簇内互调、每簇仅向
+/// 下一簇发 1 条跨簇调用。验证：
+/// 1. 正确性——社区检测应还原出 ~20 个模块（seed 固定，结果确定性）；
+/// 2. 性能——模块检测与特征聚类（纯结构降级）耗时报告。
+#[test]
+fn bench_clustering_detection() {
+    if std::env::var("CI").is_ok() {
+        eprintln!("skip bench: CI");
+        return;
+    }
+    let _guard = lock_cwd();
+
+    let dir = std::env::temp_dir().join(format!("bench_cluster_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let old = std::env::current_dir().unwrap();
+    std::env::set_current_dir(&dir).unwrap();
+
+    // 20 簇 × 10 文件：每文件定义 f{m}_{i} 与 g{m}_{i}；
+    // f 调用同簇全部其他文件的 g（簇内完全图——模拟真实仓库稠密的
+    // 簇内协作，CPM 对纯环结构只能合并 2 节点，完全图才有正合并增量），
+    // 每簇第 0 个文件的 g 额外调用下一簇第 0 个文件的 f（单条跨簇边）
+    const CLUSTERS: usize = 20;
+    const PER_CLUSTER: usize = 10;
+    for m in 0..CLUSTERS {
+        for i in 0..PER_CLUSTER {
+            // f 调用同簇全部其他文件的 g（完全图）
+            let mut body = format!("pub fn f{m}_{i}(x: u32) -> u32 {{");
+            for j in 0..PER_CLUSTER {
+                if j != i {
+                    body.push_str(&format!(" g{m}_{j}(x) +"));
+                }
+            }
+            body.push_str(" x }\n");
+            // 每簇第 0 个文件的 g 指向下一簇（单条跨簇边），其余 g 为内部实现
+            if i == 0 {
+                let next_cluster = (m + 1) % CLUSTERS;
+                body.push_str(&format!(
+                    "pub fn g{m}_{i}(x: u32) -> u32 {{ f{next_cluster}_0(x) + x }}\n"
+                ));
+            } else {
+                body.push_str(&format!("pub fn g{m}_{i}(x: u32) -> u32 {{ x }}\n"));
+            }
+            let sub = dir.join(format!("m{m}"));
+            std::fs::create_dir_all(&sub).unwrap();
+            std::fs::write(sub.join(format!("f{i}.rs")), body).unwrap();
+        }
+    }
+
+    let insights = repo_wiki::ingest::scan_and_parse(&bench_config()).unwrap();
+    std::env::set_current_dir(old).unwrap();
+    eprintln!(
+        "debug: insights={} first_entities={:?} first_source={:?}",
+        insights.len(),
+        insights
+            .first()
+            .map(|i| i.entities.iter().map(|e| (e.name.clone(), e.kind.clone(), e.line_start, e.line_end)).collect::<Vec<_>>()),
+        insights.first().map(|i| i.source.chars().take(120).collect::<String>())
+    );
+
+    // 图构建 + 模块检测
+    let start = Instant::now();
+    let graph = repo_wiki::analysis::build_graph(&insights).unwrap();
+    let call_edges = {
+        use petgraph::visit::{EdgeRef, IntoEdgeReferences};
+        graph
+            .graph
+            .edge_references()
+            .filter(|e| {
+                graph
+                    .graph
+                    .edge_weight(e.id())
+                    .map(|w| w.kind == repo_wiki::model::EdgeKind::Calls)
+                    .unwrap_or(false)
+            })
+            .count()
+    };
+    eprintln!(
+        "debug: nodes={} edges={} calls={} modules={}",
+        graph.graph.node_count(),
+        graph.graph.edge_count(),
+        call_edges,
+        graph.modules.len()
+    );
+    let modules = repo_wiki::analysis::detect_modules(&graph).unwrap();
+    let detect_ms = start.elapsed().as_millis();
+
+    // 正确性：20 簇跨簇边仅 20 条（弱连接），社区检测应还原接近 20 个模块；
+    // 允许少量合并/拆分，但不允许塌缩成几个大模块（全并）或碎成 200 个（全拆）
+    let n = modules.len();
+    assert!(
+        (10..=30).contains(&n),
+        "社区检测应还原约 20 个模块，实际 {n} 个: {:?}",
+        modules.iter().map(|m| &m.name).take(8).collect::<Vec<_>>()
+    );
+    // 命名确定性：公共目录前缀应含 m0/m1 等簇目录
+    let names: Vec<&str> = modules.iter().map(|m| m.name.as_str()).collect();
+    assert!(names.iter().any(|n| n.contains("m0")), "簇目录应进入模块名: {names:?}");
+
+    // 特征聚类（纯结构，无 embedding）
+    let start = Instant::now();
+    let features = repo_wiki::analysis::feature::detect_features(&graph, None).unwrap();
+    let feature_ms = start.elapsed().as_millis();
+    // 每个跨簇调用边对应一个特征（至少 20 条跨簇调用应产生特征）
+    assert!(
+        features.len() >= 10,
+        "跨簇调用应产生特征，实际 {} 个",
+        features.len()
+    );
+
+    eprintln!(
+        "bench clustering: {} files, {} modules in {}ms, {} features in {}ms",
+        insights.len(),
+        n,
+        detect_ms,
+        features.len(),
+        feature_ms
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
