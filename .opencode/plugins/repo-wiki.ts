@@ -135,6 +135,22 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
     return {
         tool: {
             // ---- 查询工具 ----
+            ast_search: tool({
+                description: "AST 精确符号查找：扫描源文件定位符号定义（文件+行号+签名，不依赖搜索索引）",
+                args: {
+                    symbol: tool.schema.string().describe("要查找的符号名（函数/结构体/trait/类等）"),
+                    language: tool.schema.string().optional().describe("源语言（rust/python/go/...，省略时按扩展名推断）"),
+                },
+                execute: async (args) => {
+                    if (!args.symbol) return "请提供要查找的符号名";
+                    const cliArgs = ["ast-search", args.symbol, "--config", ".repo-wiki/config.toml"];
+                    if (args.language) cliArgs.push("--language", args.language);
+                    const result = await runCli(cliArgs);
+                    return result.code === 0
+                        ? (result.stdout || `未找到符号 "${args.symbol}" 的定义`)
+                        : `查找失败: ${result.stderr}`;
+                },
+            }),
             wiki_search: tool({
                 description: "搜索代码实体（函数、结构体、类等），基于 BM25 全文检索返回匹配结果",
                 args: {
@@ -222,6 +238,36 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
             wiki_sync: wikiCmdTool("sync", "以 Git 工作区内容为准同步 Wiki（不触发 LLM 重生成）"),
             wiki_status: wikiCmdTool("status", "查看 Wiki 状态"),
             wiki_export: wikiCmdTool("export", "导出 Wiki"),
+            // note：追加一条知识沉淀记录到 _log.md（Karpathy log 模式，人工可读可 grep）
+            wiki_note: tool({
+                description: "追加一条知识沉淀记录到 Wiki _log.md（人工可读可 grep 的会话知识日志）",
+                args: {
+                    text: tool.schema.string().describe("记录内容"),
+                },
+                execute: async (args) => {
+                    if (!args.text || !args.text.trim()) return "请提供记录内容";
+                    const result = await runCli([
+                        "note", args.text.trim(),
+                        "--config", ".repo-wiki/config.toml",
+                    ]);
+                    return result.code === 0
+                        ? (result.stdout || "知识记录已追加")
+                        : `记录失败: ${result.stderr}`;
+                },
+            }),
+            // lint：检查产物健康（孤儿页/断链/过时），供 CI 与人工巡检使用
+            wiki_lint: tool({
+                description: "检查 Wiki 产物健康：孤儿页/断链/过时文档（发现问题时退出码非 0）",
+                args: {},
+                execute: async () => {
+                    const result = await runCli([
+                        "lint", "--config", ".repo-wiki/config.toml",
+                    ]);
+                    return result.code === 0
+                        ? (result.stdout || "lint: 通过，无孤儿页/断链/过时问题")
+                        : `lint 发现问题:\n${result.stdout || result.stderr}`;
+                },
+            }),
         },
     };
 };

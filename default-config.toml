@@ -6,7 +6,10 @@ include = ["src/"]
 exclude = []
 
 [output]
-dir = "wiki"
+# 产物根目录：wiki 页/卡片/资产都写在其下（render_all 内部再建 wiki/{lang}/
+# 子目录，因此这里必须是"产物根"而非 wiki 目录本身——dir="wiki" 会造成
+# wiki/wiki/zh 嵌套，schema 默认与 install 模板一致用 .repo-wiki）
+dir = ".repo-wiki"
 
 [llm]
 model = "deepseek-v4-flash"

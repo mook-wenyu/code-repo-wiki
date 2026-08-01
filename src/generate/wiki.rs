@@ -128,30 +128,32 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
     /// 逐模块一条 user 消息：输入 = 模块名 + 实体名列表 + 依赖模块列表，
     /// 输出 = 一句话职责（≤30 字）。跳过 src 兜底模块（它吸收未聚类文件，
     /// 无明确职责边界，描述会失真）；LLM 失败时保留空描述（降级不影响主流程）。
+    /// 各模块描述**并行**生成（join_all 保留顺序）——串行在 10+ 模块仓库会
+    /// 拖长架构概览/项目概览的生成（真实 LLM 实测超时 10min 的根因之一）。
     async fn describe_modules(
         &self,
         graph: &KnowledgeGraph,
         language: &str,
     ) -> Vec<crate::model::ModuleCluster> {
-        use crate::model::ModuleCluster;
-        let mut enriched: Vec<ModuleCluster> = Vec::with_capacity(graph.modules.len());
-        for module in &graph.modules {
-            // 兜底模块(src)与空模块跳过：无职责边界可描述
-            if module.name == "src" || module.node_ids.is_empty() {
-                enriched.push(module.clone());
-                continue;
-            }
-            let mut desc: Option<String> = None;
-            if let Ok(text) = self.describe_module(module, graph, language).await
-                && !text.trim().is_empty()
-            {
-                desc = Some(text.trim().to_string());
-            }
-            let mut enriched_module = module.clone();
-            enriched_module.description = desc;
-            enriched.push(enriched_module);
-        }
-        enriched
+        // 并行生成所有需描述的模块描述（保留输入顺序）
+        let futures: Vec<_> = graph
+            .modules
+            .iter()
+            .map(|module| async {
+                // 兜底模块(src)与空模块跳过：无职责边界可描述
+                if module.name == "src" || module.node_ids.is_empty() {
+                    return module.clone();
+                }
+                let mut enriched = module.clone();
+                if let Ok(text) = self.describe_module(module, graph, language).await
+                    && !text.trim().is_empty()
+                {
+                    enriched.description = Some(text.trim().to_string());
+                }
+                enriched
+            })
+            .collect();
+        futures::future::join_all(futures).await
     }
 
     /// 生成单个模块的一句话职责描述（LLM）

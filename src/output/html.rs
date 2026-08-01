@@ -35,7 +35,7 @@ pub fn export_html(
     // 每个 WikiDocument → wiki/{name}.html
     for doc in documents {
         let body = md_to_html(&doc.content);
-        let html = wrap_html(&doc.title, &body);
+        let html = wrap_html(&doc.title, &body, "../style.css");
         let file_name = sanitize_filename(&doc.title);
         let path = wiki_dir.join(format!("{}.html", file_name));
         write_html_file(&path, &html)?;
@@ -85,7 +85,7 @@ pub fn export_html(
         documents.len(),
         toc_items
     );
-    let toc_html = wrap_html("Wiki 目录", &toc_body);
+    let toc_html = wrap_html("Wiki 目录", &toc_body, "style.css");
     write_html_file(&output_dir.join("index.html"), &toc_html)?;
 
     // 生成 style.css
@@ -199,7 +199,7 @@ blockquote { border-left: 4px solid #ddd; margin: 0; padding: 0 16px; color: #66
             body.push_str("</ul>\n");
         }
 
-        let html = wrap_html(&card.module_name, &body);
+        let html = wrap_html(&card.module_name, &body, "../style.css");
         let file_name = sanitize_filename(&card.module_name);
         let path = cards_dir.join(format!("{}.html", file_name));
         write_html_file(&path, &html)?;
@@ -209,7 +209,12 @@ blockquote { border-left: 4px solid #ddd; margin: 0; padding: 0 16px; color: #66
 }
 
 /// 生成完整 HTML 文档，包含 <!DOCTYPE>、<head> 和样式链接
-fn wrap_html(title: &str, body: &str) -> String {
+/// 包装完整 HTML 文档。
+///
+/// `css_href` 为样式表相对路径：index.html 位于产物根（与 style.css 同目录，
+/// 用 `style.css`）；wiki/ 与 cards/ 下的页面在子目录（用 `../style.css`）。
+/// 硬编码单一路径会让 index.html 引用错误位置（样式失效）。
+fn wrap_html(title: &str, body: &str, css_href: &str) -> String {
     format!(
         r#"<!DOCTYPE html>
 <html lang="zh">
@@ -217,14 +222,15 @@ fn wrap_html(title: &str, body: &str) -> String {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
-<link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="{css_href}">
 </head>
 <body>
 {body}
 </body>
 </html>"#,
         title = escape_html(title),
-        body = body
+        body = body,
+        css_href = css_href
     )
 }
 
@@ -283,7 +289,7 @@ mod tests {
 
     #[test]
     fn test_wrap_html_has_doctype_and_closing_tags() {
-        let html = wrap_html("测试页面", "<p>Hello</p>");
+        let html = wrap_html("测试页面", "<p>Hello</p>", "style.css");
         assert!(html.starts_with("<!DOCTYPE html>"), "应该以 DOCTYPE 开头");
         assert!(html.contains("<title>测试页面</title>"), "应该包含 title");
         assert!(html.contains("</html>"), "应该包含闭合 html 标签");
@@ -291,9 +297,25 @@ mod tests {
         assert!(html.contains("style.css"), "应该引用 style.css");
     }
 
+    /// 样式表相对路径随文档层级变化：index.html 在产物根用 style.css，
+    /// wiki/cards 子目录页面用 ../style.css（样式才能正确加载）
+    #[test]
+    fn test_wrap_html_css_href_follows_depth() {
+        let index = wrap_html("目录", "<p>x</p>", "style.css");
+        assert!(
+            index.contains(r#"href="style.css""#),
+            "index 应引用 style.css, 实际: {index}"
+        );
+        let page = wrap_html("页面", "<p>x</p>", "../style.css");
+        assert!(
+            page.contains(r#"href="../style.css""#),
+            "子目录页面应引用 ../style.css, 实际: {page}"
+        );
+    }
+
     #[test]
     fn test_wrap_html_escapes_title() {
-        let html = wrap_html("<script>alert('xss')</script>", "<p>body</p>");
+        let html = wrap_html("<script>alert('xss')</script>", "<p>body</p>", "style.css");
         assert!(!html.contains("<script>"), "title 中的 HTML 应该被转义");
         assert!(html.contains("&lt;script&gt;"), "title 中的 < 应该被转义为 &lt;");
     }

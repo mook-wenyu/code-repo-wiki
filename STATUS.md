@@ -3,29 +3,27 @@
 ## 一、架构健康度
 - 当前模块总数：13（config/model/ingest/analysis/generate/output/incremental/search/commands + generate/schema + plan + lib.rs + main.rs）
 - 违规跨模块调用：无
-- 测试覆盖率：cargo check --all-targets 0 错误 0 警告；cargo clippy --all-targets -- -D warnings 0 警告；cargo test 226 通过 0 失败（176 lib + 50 集成，14 套件）
-- 代码量：约 10,500 行 / 56 .rs 文件（新增 src/output/lint.rs）
+- 测试覆盖率：cargo check --all-targets 0 错误 0 警告；cargo clippy --all-targets -- -D warnings 0 警告；cargo test 231 通过 0 失败（181 lib + 50 集成，14 套件）
+- 代码量：约 10,700 行 / 56 .rs 文件
 
 ## 二、本次变更影响范围
-- 修改的功能：wiki-quality-gaps 计划（.scratch/wiki-quality-gaps/）7 项全部实现——模块职责描述、概览自底向上合成、wiki lint、AGENTS.md 引导、wikilink 导航、知识沉淀通道
-- **01 模块职责描述**：wiki.rs describe_modules/describe_module（逐模块 LLM 一行职责，src 兜底跳过）；prompt.rs module_description_prompt（≤30 字约束）；architecture/overview 接入 enriched 快照
-- **02 概览自底向上合成**：overview_prompt 注入卡片摘要（CodeWiki 合成：父概览基于子文档卡片摘要）
-- **03 wiki lint**：src/output/lint.rs（孤儿页=无入链/断链=链接目标不存在/过时=页面 mtime<源文件 mtime）；CLI `repo-wiki lint`（exit 码供 CI）
-- **04 AGENTS.md 引导**：generate_agents_md 写 output_dir.parent()/AGENTS.md（已存在跳过，人工版不覆盖）；render_all 末尾幂等调用
-- **05 wikilink 导航**：TOC 与 html index 按模块分组（Karpathy index 优先导航），render_toc_line 抽离
-- **06 知识沉淀通道**：形态定案=Karpathy log.md 追加日志（note 命令→_log.md），不扩 KnowledgeCard
-- 前置缺陷修复（上轮）：跨文件调用边（Calls 2→6125）、模块检测阈值移除（10 模块）、概览断链、api.md/模块图空、CLI 调用链补全
-- 摸到的文件：src/generate/{wiki,prompt}.rs、src/output/{mod,markdown,html,lint(新)}.rs、src/main.rs、src/lib.rs、src/analysis/{graph,module}.rs、tests/{test_cli,test_e2e,test_overview}.rs、.scratch/wiki-quality-gaps/
-- 是否改变了接口/契约：新增 CLI 子命令 lint；overview_prompt 签名变化（modules+cards 参数）；TOC/HTML 结构变化（分组）
+- 修改的功能：深度分析遗留未完成项修复——lint 过时检查修复、note 命令实现、output.dir 嵌套语义、describe 并行化、插件补 note/lint 工具
+- **lint 过时检查修复（最重大）**：CLI 传空 source_roots 导致过时检查静默跳过 → main.rs Lint 分支从 scope.include 派生源码根（"src/**"→"src"）；lint 只检查 wiki 页不检查卡片（卡片才含"相关文件"段）→ 过时检查遍历 cards 目录；resolve_source_path 双路径修复（先试 cwd 相对再试 root.join）；stale 单测隔离 cwd 竞态（独立 fixture）
+- **note 命令实现**：commands.rs append_note（追加 `## YYYY-MM-DD` 节，节内序号递增，Karpathy log 模式）+ main.rs Commands::Note；2 单测（序号递增/空内容拒绝）
+- **output.dir 嵌套语义**：default-config.toml dir="wiki" 与 schema 默认 ".repo-wiki" 不一致（install 模板导致 wiki/wiki/zh 嵌套）→ 对齐为 ".repo-wiki" + 注释说明
+- **describe 并行化**：wiki.rs describe_modules 串行 await → futures::future::join_all 并行（10+ 模块真实 LLM 超时根因之一）
+- **插件补 2 工具**：wiki_note（带 text 参数）、wiki_lint（产物健康检查）；tsc 零错误
+- **html css 链接 bug 修复**：wrap_html 硬编码 `../style.css`，index.html（产物根）与 style.css 同目录却引用 `../style.css`（样式失效）→ 改为 css_href 参数（index 用 `style.css`，wiki/cards 子目录页用 `../style.css`）；新增 test_wrap_html_css_href_follows_depth；真实验证 index.html href="style.css"
+- **AST 精确搜索 CLI 暴露**：库层 AstQuery/SearchAgent::search_ast 完整但 CLI 未接（search 命令仅 text/semantic/hybrid 索引引擎）→ 新增 `execute_ast_search`（lib.rs，扫描源文件逐文件 AST 定位定义，返回文件+行号+签名，不依赖索引）+ main.rs Commands::AstSearch（文本/JSON 输出）+ 插件 ast_search 工具；真实验证函数/结构体定位、未找到提示、JSON；集成测试 test_ast_search_finds_definition
+- 摸到的文件：src/commands.rs、src/main.rs、src/output/{lint,html}.rs、src/generate/wiki.rs、src/lib.rs、default-config.toml、.opencode/plugins/repo-wiki.ts
+- 是否改变了接口/契约：新增 CLI 子命令 note；lint 现在执行过时检查（行为变化）；default-config dir 变化
 
 ## 三、已知风险点（由AI诚实自曝）
-- 10 模块真实 LLM 生成超时 10min（max_concurrent=1 串行 30+ 调用）——describe 批量可并行化（未做）
-- output.dir 嵌套语义缺陷：dir="wiki" 时产物 wiki/wiki/zh（render_all 在 output.dir 下再建 wiki/{lang}）；default-config 与 schema 默认 .repo-wiki 不一致（待决策）
-- lint 过时检查依赖"相关文件"行格式（`- \`path\``），手工编写的页面可能提取不到源文件（降级为不检查）
-- AGENTS.md 生成位置 = output_dir.parent()（仓库根），多语言/多输出目录项目可能生成位置不合预期
-- B1-B6 运行时项（插件加载/命令交互/watch 端到端）仍需真实会话验证
-- 工作树 8 文件改动+1 新增待提交（含 default-config.toml deepseek 配置、opencode-swarm.json 删除等环境改动）
+- 大型仓库（10 模块）真实 LLM 全量生成超时 20min——deepseek 单次调用 ~60s，30+ 次调用，外部 API 性能限制；并行 describe 已缓解但 card/page 串行仍是瓶颈
+- 真实 LLM 链路仅在小仓库（1 文件）验证成功（34s）；大型仓库未验证完整产物
+- B1-B6 运行时项（插件加载/命令交互/watch 端到端）仍需真实 opencode 会话验证
+- 工作树 6 文件改动待提交
 
 ## 四、下次最该做的事（AI建议）
-1. 提交本轮 wiki-quality-gaps 7 项实现（9 文件）
-2. 评估 10 模块 describe 并行化（性能）与 output.dir 嵌套语义（default-config 对齐 schema）
+1. 提交本轮 4 项修复 + 插件 2 工具（6 文件）
+2. 真实 LLM 全量验证需小步拆分（逐模块生成）或接受 API 性能限制

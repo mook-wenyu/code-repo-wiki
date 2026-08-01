@@ -586,3 +586,52 @@ default_top_k = 10
 
     let _ = std::fs::remove_dir_all(&work_dir);
 }
+
+/// AST 精确符号查找：扫描源文件定位符号定义(文件+行号+签名)，
+/// 不依赖搜索索引。sample-repo 的 auth.rs 定义 authenticate 函数。
+#[test]
+fn test_ast_search_finds_definition() {
+    let work_dir = prepare_repo("ast_search");
+
+    let out = run_bin(
+        &work_dir,
+        &["ast-search", "authenticate", "--config", "config.toml"],
+        &[],
+    );
+    assert!(
+        out.status.success(),
+        "ast-search 应成功, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        combined.contains("pub fn authenticate"),
+        "应输出 authenticate 函数签名, 实际: {combined}"
+    );
+    assert!(
+        combined.contains("auth.rs"),
+        "应定位到 auth.rs, 实际: {combined}"
+    );
+
+    // 不存在的符号 → 明确提示
+    let miss = run_bin(
+        &work_dir,
+        &["ast-search", "definitely_missing", "--config", "config.toml"],
+        &[],
+    );
+    let miss_out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&miss.stdout),
+        String::from_utf8_lossy(&miss.stderr)
+    );
+    assert!(
+        miss_out.contains("未找到符号"),
+        "缺失符号应提示, 实际: {miss_out}"
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}

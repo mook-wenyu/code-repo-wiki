@@ -56,6 +56,14 @@ enum Commands {
         #[arg(short, long, default_value = ".repo-wiki/config.toml")]
         config: PathBuf,
     },
+    /// 追加一条知识沉淀记录到 _log.md（Karpathy log 模式，人工可读可 grep）
+    Note {
+        /// 记录文本
+        text: String,
+        /// 配置文件路径（取主语言写日志）
+        #[arg(short, long, default_value = ".repo-wiki/config.toml")]
+        config: PathBuf,
+    },
     /// 导出 Wiki 为 HTML
     Export {
         /// 配置文件路径
@@ -91,6 +99,20 @@ enum Commands {
         /// 搜索引擎选择: text / semantic / hybrid（默认取配置文件中的 default_engine）
         #[arg(short, long)]
         engine: Option<String>,
+    },
+    /// AST 精确符号查找：扫描源文件定位符号定义（文件+行号+签名，不依赖搜索索引）
+    AstSearch {
+        /// 要查找的符号名（函数/结构体/trait/类等）
+        symbol: String,
+        /// 源语言（rust/python/go/...）；省略时按文件扩展名自动推断
+        #[arg(short, long)]
+        language: Option<String>,
+        /// 配置文件路径
+        #[arg(short, long, default_value = ".repo-wiki/config.toml")]
+        config: PathBuf,
+        /// 以 JSON 格式输出
+        #[arg(long)]
+        json: bool,
     },
     /// 知识卡片操作（Qoder /knowledge 对等）
     Card {
@@ -214,7 +236,18 @@ fn main() -> anyhow::Result<()> {
             // (供 CI 门禁使用:git hook 或流水线可据此拒绝合并)
             let cfg = repo_wiki::config::load_config(&config)?;
             let output_dir = Path::new(&cfg.output.dir);
-            let issues = repo_wiki::output::lint::lint(output_dir, &[]);
+            // 源码根从 scope.include 派生(取通配符前的目录前缀,如 "src/**" → "src")：
+            // 过时检查需要对比源文件 mtime,空根会导致检查静默跳过(缺陷修复前行为)
+            let source_roots: Vec<std::path::PathBuf> = cfg
+                .scope
+                .include
+                .iter()
+                .map(|p| {
+                    let dir = p.split('*').next().unwrap_or_default().trim_end_matches('/');
+                    std::path::PathBuf::from(if dir.is_empty() { "." } else { dir })
+                })
+                .collect();
+            let issues = repo_wiki::output::lint::lint(output_dir, &source_roots);
             if issues.is_empty() {
                 println!("lint: 通过，无孤儿页/断链/过时问题");
             } else {
@@ -224,11 +257,50 @@ fn main() -> anyhow::Result<()> {
                 anyhow::bail!("lint: 发现 {} 个问题", issues.len());
             }
         }
+        Commands::AstSearch { symbol, language, config, json } => {
+            // AST 精确符号查找：不依赖搜索索引，直接扫描源文件解析 AST 定位定义
+            let results = repo_wiki::execute_ast_search(&config, &symbol, language.as_deref())?;
+            if json {
+                let json_results: Vec<serde_json::Value> = results.iter().map(|hit| {
+                    serde_json::json!({
+                        "name": hit.node.name,
+                        "kind": hit.node.kind.as_str(),
+                        "file": hit.node.file_path,
+                        "lines": hit.node.line_range,
+                        "signature": hit.node.signature,
+                        "source": hit.source,
+                    })
+                }).collect();
+                println!("{}", serde_json::to_string_pretty(&json_results)?);
+            } else {
+                if results.is_empty() {
+                    println!("未找到符号 \"{symbol}\" 的定义");
+                }
+                for (i, hit) in results.iter().enumerate() {
+                    let sig = hit.node.signature.as_deref().unwrap_or(&hit.node.name);
+                    let loc = match (&hit.node.file_path, hit.node.line_range) {
+                        (Some(f), Some((s, e))) => format!("{f}:{s}-{e}"),
+                        (Some(f), None) => f.clone(),
+                        _ => "(unknown)".to_string(),
+                    };
+                    println!("{}. {sig} — {loc}", i + 1);
+                }
+            }
+        }
         Commands::Export { config } => {
             let cfg = repo_wiki::config::load_config(&config)?;
             let result = repo_wiki::run_pipeline(&config, None, false)?;
             repo_wiki::output::html::export_html(&result.documents, &result.cards, &result.graph, &cfg)?;
             tracing::info!("HTML 导出完成 (--config {})", config.display());
+        }
+        Commands::Note { text, config } => {
+            let cfg = repo_wiki::config::load_config(&config)?;
+            repo_wiki::commands::append_note(
+                Path::new(&cfg.output.dir),
+                &cfg.wiki.language,
+                &text,
+            )?;
+            tracing::info!("知识记录已写入 (--config {})", config.display());
         }
         Commands::Init { path } => {
             repo_wiki::config::create_default_config(&path)?;

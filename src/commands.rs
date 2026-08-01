@@ -58,6 +58,60 @@ pub fn sync_from_git(output_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// 追加一条知识沉淀记录到 `{output_dir}/wiki/{lang}/_log.md`（Karpathy log.md 模式）
+///
+/// 每条记录以 `## YYYY-MM-DD` 节组织，节内按追加顺序编号（当天第 N 条）。
+/// _log.md 是人工可读、grep 可查、git 可追踪的追加式会话知识日志——
+/// 与 wiki 页（LLM 生成、受保护）分开：人工记录永不被自动生成覆盖。
+/// 文件不存在时自动创建；目录不存在时自动创建（与 render_all 的写盘约定一致）。
+pub fn append_note(output_dir: &Path, language: &str, text: &str) -> Result<()> {
+    let text = text.trim();
+    if text.is_empty() {
+        anyhow::bail!("note 内容不能为空");
+    }
+    let log_dir = output_dir.join("wiki").join(language);
+    std::fs::create_dir_all(&log_dir)?;
+    let log_path = log_dir.join("_log.md");
+
+    // 读取现有内容以确定今天的节内已有几条（追加式，不重写历史）
+    let existing = std::fs::read_to_string(&log_path).unwrap_or_default();
+    let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let today_header = format!("## {date}");
+    // 今天节内已有条数 = 文件中今天节之后出现的 "- N." 数量
+    let today_seq = existing
+        .split(&today_header)
+        .nth(1)
+        .map(|after| {
+            after
+                .lines()
+                .filter(|l| l.trim().starts_with("- "))
+                .count()
+        })
+        .unwrap_or(0);
+
+    // 追加：无今天节则新建节，否则续写
+    let entry = format!("- {}. {text}\n", today_seq + 1);
+    let mut append = String::new();
+    if !existing.contains(&today_header) {
+        // 已有内容不以换行结尾时先补一行（避免与上一个节粘连）
+        if !existing.is_empty() && !existing.ends_with('\n') {
+            append.push('\n');
+        }
+        append.push_str(&today_header);
+        append.push('\n');
+    }
+    append.push_str(&entry);
+
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)?;
+    use std::io::Write;
+    file.write_all(append.as_bytes())?;
+    tracing::info!("知识记录已追加: {}", log_path.display());
+    Ok(())
+}
+
 /// 递归收集目录下所有 .md 文件（目录不存在时返回空列表）
 fn collect_md_files(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
@@ -152,4 +206,47 @@ pub fn uninstall(force: bool) -> Result<()> {
 
     println!("✓ repo-wiki 卸载完成 (数据保留: .repo-wiki/)");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// append_note 追加式日志：同一日期节内序号递增；两次调用不覆盖历史
+    #[test]
+    fn test_append_note_increments_sequence() {
+        let dir = std::env::temp_dir().join(format!(
+            "repo_wiki_note_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        append_note(&dir, "zh", "第一条记录").unwrap();
+        append_note(&dir, "zh", "第二条记录").unwrap();
+
+        let log = std::fs::read_to_string(dir.join("wiki").join("zh").join("_log.md")).unwrap();
+        assert!(log.contains("## "), "应含日期节");
+        assert!(log.contains("- 1. 第一条记录"), "第一条应编号 1, 实际: {log}");
+        assert!(log.contains("- 2. 第二条记录"), "第二条应编号 2, 实际: {log}");
+        assert_eq!(
+            log.matches("- ").count(),
+            2,
+            "应恰好 2 条记录, 实际: {log}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 空内容拒绝写入（显式报错，不产生空记录）
+    #[test]
+    fn test_append_note_rejects_empty() {
+        let dir = std::env::temp_dir().join(format!(
+            "repo_wiki_note_empty_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(append_note(&dir, "zh", "   ").is_err(), "空内容应报错");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

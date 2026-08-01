@@ -750,6 +750,85 @@ pub fn execute_search(
     }
 }
 
+/// 执行 AST 精确符号查找（供 CLI `ast-search` 子命令调用）
+///
+/// 扫描配置范围内全部源文件，对每个文件用 tree-sitter 解析 AST，
+/// 定位与 `symbol` 同名的顶层定义节点（函数/结构体/trait/类等）。
+/// 与索引搜索（text/semantic/hybrid，模糊匹配）互补：AST 查找返回
+/// **精确的定义位置**（文件+行号+签名），不依赖搜索索引。
+///
+/// `language` 为源语言（rust/python/go/...），传入 None 时由文件扩展名自动推断。
+pub fn execute_ast_search(
+    config_path: &Path,
+    symbol: &str,
+    language: Option<&str>,
+) -> anyhow::Result<Vec<search::hybrid::SearchHit>> {
+    if symbol.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let config = config::load_config(config_path)?;
+    let insights = ingest::scan_and_parse(&config)?;
+
+    let mut hits = Vec::new();
+    for insight in &insights {
+        // 语言：显式指定优先；否则按文件扩展名推断（与 parser 注册一致）
+        let lang = match language {
+            Some(l) => l.to_string(),
+            None => match insight.path.extension().and_then(|e| e.to_str()) {
+                Some("rs") => "rust".to_string(),
+                Some("py") => "python".to_string(),
+                Some("js") => "javascript".to_string(),
+                Some("ts") => "typescript".to_string(),
+                Some("go") => "go".to_string(),
+                Some("cs") => "csharp".to_string(),
+                _ => continue,
+            },
+        };
+        // 直接用 AstQuery 解析查找（不经过 SearchAgent，搜索上下文不依赖索引）
+        let mut q = match search::ast::AstQuery::new(&lang) {
+            Ok(q) => q,
+            Err(_) => continue,
+        };
+        let Ok(Some(m)) = q.find_definition(&insight.source, symbol) else {
+            continue;
+        };
+        // 捕获节点文本作为签名（如整行函数定义）；定位到文件+行号
+        let signature = m
+            .captures
+            .get("name")
+            .cloned()
+            .unwrap_or_else(|| symbol.to_string());
+        // 模块路径从文件父目录派生（与 chunk_by_file 同规则：Normal 组件 "::" 连接）
+        let module_path: Vec<String> = insight
+            .path
+            .parent()
+            .map(|p| {
+                p.components()
+                    .filter(|c| matches!(c, std::path::Component::Normal(_)))
+                    .map(|c| c.as_os_str().to_string_lossy().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        hits.push(search::hybrid::SearchHit {
+            node: model::CodeNode {
+                id: model::NodeId::new(0),
+                kind: model::NodeKind::Function,
+                name: symbol.to_string(),
+                file_path: Some(insight.path.to_string_lossy().to_string()),
+                line_range: Some((m.start_line, m.end_line)),
+                doc_comment: None,
+                signature: Some(signature),
+                module_path,
+            },
+            score: 100.0,
+            source: "ast".into(),
+            callers: vec![],
+            callees: vec![],
+        });
+    }
+    Ok(hits)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

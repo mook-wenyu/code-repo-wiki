@@ -111,10 +111,13 @@ pub fn lint(output_dir: &Path, source_roots: &[PathBuf]) -> Vec<LintIssue> {
             }
         }
 
-        // ---- 3. 过时检查：模块页生成时间 < 其源文件 mtime ----
-        // 从产物文件内容提取源文件路径（相关文件段: - `path`），
-        // 与源码根下对应文件的 mtime 对比
-        for page in &pages {
+        // ---- 3. 过时检查：模块页/卡片生成时间 < 其源文件 mtime ----
+        // 从产物内容提取源文件路径（相关文件段: - `path`，卡片含此段，
+        // 模块页正文未必含），与源码根下对应文件的 mtime 对比
+        let cards_dir = output_dir.join("cards").join(lang);
+        let mut stale_targets: Vec<PathBuf> = pages.clone();
+        stale_targets.extend(collect_md_files(&cards_dir));
+        for page in &stale_targets {
             let content = std::fs::read_to_string(page).unwrap_or_default();
             let file_name = page
                 .file_name()
@@ -215,16 +218,19 @@ fn resolve_source_path(source_roots: &[PathBuf], src: &str) -> PathBuf {
         return p.to_path_buf();
     }
     for root in source_roots {
+        // 产物内路径是相对 cwd 的完整相对路径(如 "src/lib.rs"),可能已含 root 前缀:
+        // 先试 cwd 相对(p 原样),再试 root.join(p)(历史行为,兼容不含前缀的情况)
+        let p_path = Path::new(p);
+        if p_path.exists() {
+            return p_path.to_path_buf();
+        }
         let candidate = root.join(p);
         if candidate.exists() {
             return candidate;
         }
     }
-    // 全部未命中:返回第一个根的拼接(供 metadata 报错)
-    source_roots
-        .first()
-        .map(|r| r.join(p))
-        .unwrap_or_else(|| p.to_path_buf())
+    // 全部未命中:返回 cwd 相对路径(供 metadata 报错)
+    Path::new(p).to_path_buf()
 }
 
 #[cfg(test)]
@@ -233,8 +239,15 @@ mod tests {
 
     /// 构造临时产物目录:两页面,a 链接 b(故 b 有入链、a 无入链=孤儿),
     /// 且 a 链接不存在的 c.md(断链)
-    fn make_fixture() -> (std::path::PathBuf, Vec<PathBuf>) {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_lint_{}", std::process::id()));
+    /// 构造临时产物目录（tag 区分并行测试，避免同 pid 目录互删）:
+    /// 两页面,a 链接 b(故 b 有入链、a 无入链=孤儿),
+    /// 且 a 链接不存在的 c.md(断链)
+    fn make_fixture(tag: &str) -> (std::path::PathBuf, Vec<PathBuf>) {
+        let dir = std::env::temp_dir().join(format!(
+            "repo_wiki_lint_{}_{}",
+            tag,
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let wiki = dir.join("wiki").join("zh");
         std::fs::create_dir_all(&wiki).unwrap();
@@ -244,14 +257,19 @@ mod tests {
             "# A\n\n- [B](wiki/zh/b.md)\n- [C](wiki/zh/c.md)\n",
         )
         .unwrap();
-        // b.md 无任何链接,且引用源文件 src/lib.rs
-        std::fs::write(wiki.join("b.md"), "# B\n\n## 相关文件\n\n- `src/lib.rs`\n").unwrap();
-        // 源文件:比 b.md 新,触发过时
+        // 源文件先创建（b.md 引用其绝对路径,避免测试依赖 cwd——并行测试切换 cwd 会互相干扰）
         let src_root = dir.join("src");
         std::fs::create_dir_all(&src_root).unwrap();
         let src_file = src_root.join("lib.rs");
         std::fs::write(&src_file, "pub fn f() {}\n").unwrap();
-        // 让 src/lib.rs 明显晚于 b.md
+        let src_file_display = src_file.to_string_lossy().to_string();
+        // b.md 无任何链接,且引用源文件 src/lib.rs（绝对路径）
+        std::fs::write(
+            wiki.join("b.md"),
+            format!("# B\n\n## 相关文件\n\n- `{}`\n", src_file_display),
+        )
+        .unwrap();
+        // 让 src/lib.rs 明显晚于 b.md（b.md 引用绝对路径,resolve 直接命中）
         let now = std::time::SystemTime::now();
         let _ = std::fs::File::options()
             .write(true)
@@ -273,7 +291,8 @@ mod tests {
 
     #[test]
     fn test_lint_orphan_and_broken() {
-        let (dir, src_roots) = make_fixture();
+        let (dir, src_roots) = make_fixture("orphan");
+        eprintln!("DEBUG orphan dir: {:?}", dir);
         let issues = lint(&dir, &src_roots);
         // 孤儿页: a.md 链接 b 但无任何入链 → 应命中
         assert!(
@@ -294,6 +313,45 @@ mod tests {
             issues
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 过时检查:产物引用源文件且源文件 mtime 更新 → 报 stale。
+    /// 独立构造 fixture(不共享 make_fixture,避免并行测试竞态):
+    /// 页面引用源文件绝对路径,先写页面再写源文件(源严格更新),
+    /// 重写源文件刷新 mtime 后 lint 应报 stale。
+    #[test]
+    fn test_lint_stale_detects_newer_source() {
+        let dir = std::env::temp_dir().join(format!(
+            "repo_wiki_lint_stale_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        let src_root = dir.join("src");
+        std::fs::create_dir_all(&src_root).unwrap();
+        let src_file = src_root.join("lib.rs");
+        std::fs::write(&src_file, "pub fn f() {}\n").unwrap();
+        let abs = src_file.to_string_lossy().to_string();
+        // 页面引用源文件绝对路径
+        std::fs::write(
+            wiki.join("lib.md"),
+            format!("# Lib\n\n## 相关文件\n\n- `{}`\n", abs),
+        )
+        .unwrap();
+        // 先等页面 mtime 落定,再重写源文件(严格更新)
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(&src_file, "pub fn updated() {}\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+
+        let issues = lint(&dir, &[src_root]);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(
+            issues.iter().any(|i| i.kind == "stale"),
+            "源文件更新后应报过时, 实际: {:?}",
+            issues
+        );
     }
 
     #[test]
