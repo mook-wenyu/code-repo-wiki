@@ -6,3 +6,7 @@
 # 本地轨迹/计划（本地 issue tracker 约定）
 .scratch/
 .swarm/evidence/
+
+# wiki 运行状态与索引（可再生，不入库）
+wiki/.search/
+wiki/.state/
