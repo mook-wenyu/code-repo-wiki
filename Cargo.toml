@@ -38,6 +38,10 @@ hex = "0.4"
 serde_yaml = "0.9"
 rmcp = { version = "3.1.0", features = ["server", "transport-io"] }
 sqlite-vec = "0.1.9"
+# Mermaid 语法校验（G2 校验-重试-降级循环的权威解析器）：
+# 纯 Rust、无浏览器依赖，对齐 mermaid@11.15.0 语法基线；
+# 错误消息人类可读（t03 POC 实测 "Unterminated node label" 等），可直接作为 LLM 重试反馈
+merman-core = "0.7"
 
 # 基准目标：harness = true 使其以普通 #[test] 形式运行（cargo test --bench bench_search），
 # 而非需要 nightly 的 #[bench]；benches/ 目录默认不被 cargo test 编译，必须显式声明

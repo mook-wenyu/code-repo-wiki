@@ -327,6 +327,180 @@ pub fn remove_mcp_config(project_root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// wiki 引用块的起始标记（注入块的唯一边界）
+pub const WIKI_BLOCK_START: &str = "<!-- REPO-WIKI:START -->";
+
+/// wiki 引用块的结束标记
+pub const WIKI_BLOCK_END: &str = "<!-- REPO-WIKI:END -->";
+
+/// 注入块的固定模板（含标记对，install-wiki 与 --also-claude 共用）
+///
+/// 内容为中文 markdown 指针风格：只引产物路径与常用命令，不复制 wiki
+/// 正文（避免与 LLM 生成的产物内容双份漂移）。以换行结尾，保证追加/
+/// 替换后与相邻内容衔接干净。固定为常量是测试断言的锚点。
+pub const WIKI_BLOCK_TEMPLATE: &str = "\
+<!-- REPO-WIKI:START -->
+本仓库使用 repo-wiki 维护可持续进化的项目 Wiki，产物位于 `wiki/`。
+
+## AI 代理使用指引
+
+1. 先读 `wiki/wiki/zh/overview.md` 与 `wiki/wiki/zh/architecture.md` 建立全局认知，
+   再按需深入模块页。
+2. 查找实体（函数/结构体/类）用 `repo-wiki search -q \"<关键词>\"`（支持
+   text/semantic/hybrid 三引擎，hybrid 含调用链补全）。
+3. 修改代码后运行 `repo-wiki update` 增量更新；`repo-wiki lint` 检查产物健康。
+4. 知识沉淀：`repo-wiki note \"<记录>\"` 追加到 `wiki/wiki/zh/_log.md`。
+<!-- REPO-WIKI:END -->
+";
+
+/// 文档中 wiki 标记对的状态
+enum WikiBlockState {
+    /// 完整标记对：START 所在行的行首偏移，END 所在行的行尾偏移（含换行）
+    Both(usize, usize),
+    /// 只出现一个标记（或顺序颠倒）：拒绝自动修复
+    Half,
+    /// 无任何标记
+    None,
+}
+
+/// 定位文档中的 wiki 标记对
+///
+/// - Both: start 对齐到 START 行首、end 对齐到 END 行尾（含换行），
+///   使"整块替换/删除"只触碰标记及其之间内容，不伤用户文本。
+/// - Half: 只出现 START 或 END 之一，或 END 出现在 START 之前（顺序颠倒）。
+///   此时不自动修复——半标记说明文件被人为改坏或与其他工具冲突，
+///   修补方向有歧义（删哪半？补哪半？），显式报错让用户处理。
+/// - None: 干净状态，可安全追加。
+fn wiki_block_state(content: &str) -> WikiBlockState {
+    let start = content.find(WIKI_BLOCK_START);
+    let end = content.find(WIKI_BLOCK_END);
+    match (start, end) {
+        (Some(s), Some(e)) if s < e => {
+            let line_start = content[..s].rfind('\n').map_or(0, |i| i + 1);
+            let line_end = content[e..].find('\n').map_or(content.len(), |i| e + i + 1);
+            WikiBlockState::Both(line_start, line_end)
+        }
+        (None, None) => WikiBlockState::None,
+        _ => WikiBlockState::Half,
+    }
+}
+
+/// 将 wiki 引用块注入文档文本（纯函数，不含 I/O，install-wiki / --also-claude 共用）
+///
+/// 幂等策略：
+/// - 完整标记对 → 整块替换（只动标记之间内容，保留用户其他内容）；
+/// - 无标记 → 文件尾 trim 后追加（与已有内容之间留一个空行）；
+/// - 只有一半标记 → 报错（理由见 `wiki_block_state`）。
+pub fn inject_wiki_block(content: &str, block: &str) -> Result<String> {
+    match wiki_block_state(content) {
+        WikiBlockState::Both(start, end) => {
+            let mut out = String::with_capacity(content.len() + block.len());
+            out.push_str(&content[..start]);
+            out.push_str(block);
+            out.push_str(&content[end..]);
+            Ok(out)
+        }
+        WikiBlockState::None => {
+            // 追加：trim 掉尾部空白后接一个空行再放块，避免与用户内容粘连
+            let trimmed = content.trim_end();
+            let mut out = String::with_capacity(content.len() + block.len() + 2);
+            out.push_str(trimmed);
+            if !trimmed.is_empty() {
+                out.push_str("\n\n");
+            }
+            out.push_str(block);
+            Ok(out)
+        }
+        WikiBlockState::Half => {
+            anyhow::bail!("检测到不完整的 wiki 标记对（只出现 {WIKI_BLOCK_START} 或 {WIKI_BLOCK_END} 之一，或顺序颠倒），拒绝修改，请人工检查文件")
+        }
+    }
+}
+
+/// 从文档文本移除 wiki 引用块（纯函数，不含 I/O）
+///
+/// 返回 `None` 表示无标记（未安装）；`Some` 为移除后的内容。
+/// 半标记同样报错（与注入一致：不自动修复）。
+pub fn remove_wiki_block(content: &str) -> Result<Option<String>> {
+    match wiki_block_state(content) {
+        WikiBlockState::Both(start, end) => {
+            let mut out = String::with_capacity(content.len() - (end - start));
+            out.push_str(&content[..start]);
+            out.push_str(&content[end..]);
+            Ok(Some(out))
+        }
+        WikiBlockState::None => Ok(None),
+        WikiBlockState::Half => {
+            anyhow::bail!("检测到不完整的 wiki 标记对（只出现 {WIKI_BLOCK_START} 或 {WIKI_BLOCK_END} 之一，或顺序颠倒），拒绝修改，请人工检查文件")
+        }
+    }
+}
+
+/// 向单个文件写入 wiki 引用块（读 → 注入 → 原子写）
+fn write_wiki_block(path: &Path) -> Result<()> {
+    // 文件不存在视为空文档（正常创建路径），读取失败才显式报错
+    let content = if path.exists() {
+        std::fs::read_to_string(path)
+            .with_context(|| format!("读取文件失败: {}", path.display()))?
+    } else {
+        String::new()
+    };
+    let new_content = inject_wiki_block(&content, WIKI_BLOCK_TEMPLATE)?;
+    crate::fs::write_file_atomic(path, &new_content)
+}
+
+/// 移除单个文件中的 wiki 引用块；返回是否实际移除
+fn remove_wiki_block_from_file(path: &Path) -> Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("读取文件失败: {}", path.display()))?;
+    match remove_wiki_block(&content)? {
+        Some(new_content) => {
+            crate::fs::write_file_atomic(path, &new_content)?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+/// install-wiki: 向项目根 AGENTS.md 注入 wiki 引用块（--also-claude 时同步写 CLAUDE.md）
+///
+/// 文件不存在则创建；已存在完整标记对则整块替换（只动标记之间内容）；
+/// 半标记报错（不修，理由见 `wiki_block_state`）。
+pub fn install_wiki(root: &crate::project::ProjectRoot, also_claude: bool) -> Result<()> {
+    let agents_path = root.join(Path::new("AGENTS.md"));
+    write_wiki_block(&agents_path)?;
+    println!("✓ wiki 引用块已注入 {}", agents_path.display());
+    if also_claude {
+        let claude_path = root.join(Path::new("CLAUDE.md"));
+        write_wiki_block(&claude_path)?;
+        println!("✓ wiki 引用块已注入 {}", claude_path.display());
+    }
+    Ok(())
+}
+
+/// uninstall-wiki: 移除 AGENTS.md 中的 wiki 引用块（含标记本身）
+///
+/// - AGENTS.md 无标记 → 提示"未安装"，退出码 0（幂等，与卸载语义一致）；
+/// - 半标记 → 报错（不修）；
+/// - CLAUDE.md 只在含标记对时清理（install --also-claude 的对称卸载），
+///   从未注入过则静默跳过——CLAUDE.md 不被无标记情况下改动。
+pub fn uninstall_wiki(root: &crate::project::ProjectRoot) -> Result<()> {
+    let agents_path = root.join(Path::new("AGENTS.md"));
+    if remove_wiki_block_from_file(&agents_path)? {
+        println!("✓ wiki 引用块已从 {} 移除", agents_path.display());
+    } else {
+        println!("AGENTS.md 未安装 wiki 引用块，无需卸载");
+    }
+    let claude_path = root.join(Path::new("CLAUDE.md"));
+    if remove_wiki_block_from_file(&claude_path)? {
+        println!("✓ wiki 引用块已从 {} 移除", claude_path.display());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,5 +637,84 @@ mod tests {
         assert!(err.to_string().contains("解析 .mcp.json 失败"), "应显式报错: {err}");
         assert!(path.exists(), "解析失败时不应删除文件");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ==================== wiki 引用块注入/移除 ====================
+
+    /// 全新注入：空文档 → 追加完整标记对，结果恰等于模板本身
+    #[test]
+    fn test_inject_wiki_block_fresh() {
+        let out = inject_wiki_block("", WIKI_BLOCK_TEMPLATE).unwrap();
+        assert_eq!(out, WIKI_BLOCK_TEMPLATE, "空文档注入结果应等于模板本身");
+        assert!(out.contains(WIKI_BLOCK_START) && out.contains(WIKI_BLOCK_END));
+    }
+
+    /// 幂等替换：已含完整标记对 → 旧块整体替换为模板，用户前后内容保留
+    #[test]
+    fn test_inject_wiki_block_replaces_existing() {
+        let before = "用户头部\n\n<!-- REPO-WIKI:START -->\n旧块内容\n<!-- REPO-WIKI:END -->\n\n用户尾部\n";
+        let out = inject_wiki_block(before, WIKI_BLOCK_TEMPLATE).unwrap();
+        assert!(out.starts_with("用户头部\n\n"), "用户头部应保留, 实际: {out}");
+        assert!(out.ends_with("用户尾部\n"), "用户尾部应保留, 实际: {out}");
+        assert!(out.contains(WIKI_BLOCK_TEMPLATE), "旧块应被替换为模板, 实际: {out}");
+        assert!(!out.contains("旧块内容"), "旧块内容应被替换掉, 实际: {out}");
+    }
+
+    /// 幂等：同一文档注入两次 → 结果一致（第二次走替换路径）
+    #[test]
+    fn test_inject_wiki_block_twice_stable() {
+        let first = inject_wiki_block("头部\n", WIKI_BLOCK_TEMPLATE).unwrap();
+        let second = inject_wiki_block(&first, WIKI_BLOCK_TEMPLATE).unwrap();
+        assert_eq!(first, second, "重复注入应幂等（内容不变）");
+    }
+
+    /// 半标记报错：只有 START / 只有 END / 顺序颠倒 → 均显式报错
+    #[test]
+    fn test_inject_wiki_block_half_marker_errors() {
+        let cases = [
+            "# 标题\n<!-- REPO-WIKI:START -->\n",
+            "<!-- REPO-WIKI:END -->\n",
+            "<!-- REPO-WIKI:END -->\n<!-- REPO-WIKI:START -->\n",
+        ];
+        for case in cases {
+            let err = inject_wiki_block(case, WIKI_BLOCK_TEMPLATE).unwrap_err();
+            assert!(err.to_string().contains("不完整"), "半标记应报错: {err}");
+        }
+    }
+
+    /// 保留用户内容：无标记追加场景下用户内容完整保留在块之前
+    #[test]
+    fn test_inject_wiki_block_preserves_user_content() {
+        let before = "# 我的项目\n\n这是用户写的说明。\n";
+        let out = inject_wiki_block(before, WIKI_BLOCK_TEMPLATE).unwrap();
+        let marker_idx = out.find(WIKI_BLOCK_START).unwrap();
+        assert_eq!(
+            &out[..marker_idx],
+            "# 我的项目\n\n这是用户写的说明。\n\n",
+            "块前应只有用户内容加一个空行"
+        );
+    }
+
+    /// remove：无标记 → None（未安装）
+    #[test]
+    fn test_remove_wiki_block_not_installed() {
+        assert!(remove_wiki_block("# 标题\n").unwrap().is_none());
+    }
+
+    /// remove：完整标记对 → 移除标记及内容，用户前后内容保留
+    #[test]
+    fn test_remove_wiki_block_removes_only_block() {
+        let content =
+            "用户头部\n\n<!-- REPO-WIKI:START -->\n块内容\n<!-- REPO-WIKI:END -->\n用户尾部\n";
+        let out = remove_wiki_block(content).unwrap().unwrap();
+        assert!(!out.contains(WIKI_BLOCK_START) && !out.contains(WIKI_BLOCK_END), "标记应被移除: {out}");
+        assert!(out.contains("用户头部") && out.contains("用户尾部"), "用户内容应保留: {out}");
+    }
+
+    /// remove：半标记同样报错
+    #[test]
+    fn test_remove_wiki_block_half_marker_errors() {
+        let err = remove_wiki_block("<!-- REPO-WIKI:START -->\n").unwrap_err();
+        assert!(err.to_string().contains("不完整"), "半标记应报错: {err}");
     }
 }

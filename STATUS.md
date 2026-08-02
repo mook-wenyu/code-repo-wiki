@@ -1,5 +1,29 @@
 # 项目状态简报 （AI自动维护，禁止贴代码）
 
+## 十五、外部对标 v7 深度分析（2026-08-03，联网权威检索）
+- 方法：本地全量检索（59 src 文件/19,554 行/17 模块/369 测试全绿）+ 实时联网检索（Karpathy gist 原文、LangChain OpenWiki、FSoft CodeWiki ACL 2026、he-yufeng RepoWiki、repositories-wiki、repowikiagent、doc-wiki、repowiki-cli、AGENTS.md 标准、arXiv 2604.15385/2312.10349/2509.14273、Anthropic Memory/Dreaming）
+- 结论：repo-wiki 是 Karpathy LLM Wiki 模式工程化完成度最高的开源实现之一——增量三层/引用契约/确定性测试/检索多样性四项领先；主要差距在消费引导层与质量闭环
+- **新识别 4 项差距**：G1（高）AGENTS.md/CLAUDE.md 指令注入缺失（OpenWiki/repositories-wiki/repowikiagent 全部标配）；G2（中）Mermaid 无校验-降级-修复循环（OpenWiki degrade-and-repair）；G3（中）无 index.md/PageRank 阅读路径（仅 _toc.md 简单目录）；G4（低）无 CI 工作流模板 + LLM 分层
+- 未验证边界保持：真实大仓库端到端/CPM 调参/embedding 注入/缓存磁盘占用/语义阈值
+- 报告：.scratch/research/ANALYSIS-v7-2026-08-03.md
+
+## 十七、G3 阅读指南 index.md 实施（2026-08-03，本会话）
+- 修改的功能：新建 src/generate/index.rs——LLM 生成阅读指南（输入=模块列表[名/卡片摘要描述]+依赖/入度，输出=wiki/{主语言}/index.md，仅主语言）；LLM 失败重试 1 次仍失败→降级确定性骨架（模块入度中心度降序、同入度名称字典序的链接列表，BTreeSet 边集+全序 sort_by，不依赖 HashMap 迭代序）；lib.rs run_pipeline Phase 3b 接线（create_provider 失败同样降级，与全局文档"失败只告警"策略一致）；文档 kind=TableOfContents（避免 WikiPage 空串模块归属污染反向同步），references 填模块引用
+- 摸到的文件：src/generate/index.rs（新建）、src/generate/mod.rs（+pub mod index）、src/lib.rs（Phase 3b 接线）、tests/test_index_guide.rs（新建，5 测试）
+- 是否改变了接口/契约：否（新增 pub 函数 generate_index_guide/fallback_index_guide，无既有接口变更；新产物 wiki/{lang}/index.md）
+- 验证：cargo build 通过；cargo test --test test_index_guide 5 passed；cargo clippy --all-targets -- -D warnings 0 告警；全量 cargo test 各二进制全绿（含 test_determinism 未受影响——Mock provider 下 index.md 内容确定性一致；test_determinism.rs 排除列表由主代理处理）
+- 测试覆盖：①LLM 失败→确定性降级（同输入两次输出一致+排序断言）②重试 1 次语义（恰好 2 次调用）③正常路径产物含模块链接+元数据 ④降级骨架入度排序/字典序/references ⑤pipeline 级仅主语言（expand_languages=["en"] 时 en 目录无 index.md）+ 产物含链接
+- 已知边界：index.md 不参与 plan 白名单过滤（lib.rs 在 filter_by_whitelist 之后 push，白名单用户会多出此页）；全量 cargo test 会把 mock 产物写入仓库根 wiki/（既有测试相对 output.dir 行为，与本次改动无关，跑完全量测试需 git checkout -- wiki/ 恢复）
+
+## 十六、wayfinder 建图:repo-wiki 差距实施(G1-G3)(2026-08-03,本会话)
+- 触发:v7 分析识别三项差距,用户启动 wayfinder 建决策地图
+- 用户拍板(question 两轮):Destination=G1-G4 实施但 G4 答"不要 CI"(歧义,见 fog);G1=AGENTS.md 引用段+install 命令;G2=lint 检查+生成期校验重试;G3=LLM 生成阅读指南+排除出确定性快照+自动纳入 generate/update;tracker=本地 markdown;交付=计划+地图,实施另起;兼容性完全自由
+- 研究子代理(并行 2 个,已 resolve):①AGENTS.md 注入—OpenWiki 用 `<!-- OPENWIKI:START/END -->` 标记对+indexOf 整块替换幂等,双写 CLAUDE.md 内容一致,建议 `<!-- REPO-WIKI:START -->` 自家标记;②Mermaid 校验—Rust 侧唯一候选 Merman(467★,纯 Rust,对齐 mermaid@11.15.0,alpha),OpenWiki 降级格式=注释+text fence,修复靠下次 run,错误可读性待 t03 POC
+- 本地核查:citation 重试先例 wiki.rs:32 CITATION_RETRY_MAX=2 + wiki.rs:96-127 循环 + citation.rs:166 retry_feedback(可对齐);test_determinism.rs:43 已有排除列表(加 index.md);install/uninstall 命令已存在(MCP 配置,非 AGENTS.md)
+- 产物:.scratch/wayfinder/map.md + tickets/t01-t06(2 research 已 resolve,1 prototype POC + 3 grilling open)+ IMPLEMENTATION-PLAN.md
+- 地图:Destination=G1-G3 落地;frontier=t03/t04/t05/t06;Blocking:t03←t05
+- 摸到的文件:STATUS.md、.scratch/wayfinder/*(新建 7 文件)
+
 ## 一、架构健康度
 - 当前模块总数：17（analysis 拆出 community/feature；incremental 拆出 change；新增 project 模块承载 ProjectRoot）
 - 违规跨模块调用：无（output→generate 反向依赖已消除——wiki_languages 移入 output 自持；generate 层依赖 ingest FileInsight 属既定边界，经 lib.rs 管线传入）
@@ -139,3 +163,11 @@
 - 遗留（已知边界，独立票）：watch 绝对路径混存（v4 已 strip_prefix 相对化，复核无问题）、sqlite-vec pre-1.0 breaking change 风险登记
 - 报告：.scratch/research/DECISIONS-v6-2026-08-02.md（决策记录）+ 本回复三张验证清单
 
+
+## 十八、G1+G2 实施完成(2026-08-03,本会话)
+- **G1 AGENTS.md 注入**:新命令 install-wiki/uninstall-wiki(commands.rs:331-487:WIKI_BLOCK_START/END/TEMPLATE + inject_wiki_block/remove_wiki_block/wiki_block_state + install_wiki/uninstall_wiki,复用 fs::write_file_atomic;main.rs:170-184 + 523-532 dispatch);标记 <!-- REPO-WIKI:START/END -->;幂等=完整标记对整块替换/无标记尾部追加/半标记报错;uninstall-wiki 无标记提示"未安装"exit 0;--also-claude 双写开关默认关;8 单测(commands.rs:526-650)+ 5 集成测试(tests/test_install_wiki.rs);真实冒烟:注入保留人工内容/幂等 START=1/卸载恢复/未安装提示
+- **G2 Mermaid 校验-重试-降级**:新 src/output/mermaid_check.rs(merman-core 0.7 权威解析;Engine::new()+parse_diagram_sync(strict);MERMAID_RETRY_MAX=2;validate_mermaid_blocks/mermaid_retry_feedback/degrade_mermaid_blocks(坏块→<!-- repo-wiki: mermaid parse failed: 单行 --> + ```text,好块保留);9 单测);generate_wiki_page 合并 citation+mermaid 双校验循环(引用耗尽仍 bail,mermaid 耗尽 degrade 页面保留);新 complete_with_mermaid_guard 供架构/概览(重试耗尽 degrade 不中断);lint 新增第6类检查 bad-mermaid(兜历史产物/人工编辑/增量遗留);真实冒烟:lint 报 Unterminated node label 完整错误,exit=1
+- t03 POC 结论:merman-core 0.7.0 错误消息人类可读(LexError message 直接可喂 LLM),已写入 tickets t03 RESOLVED
+- 摸到的文件:Cargo.toml(+merman-core="0.7")、Cargo.lock、src/output/mermaid_check.rs(新)、src/output/mod.rs、src/generate/wiki.rs、src/output/lint.rs、src/commands.rs、src/main.rs、tests/test_install_wiki.rs(新)
+- 验证基线:**292 lib + 集成全绿**(lib 271→292 新增21:mermaid_check 9 + wiki mermaid 3 + lint bad-mermaid 1 + G1 commands 8)、clippy --all-targets -D warnings 0、全量 cargo test 0 失败
+- 已知边界:测试跑完全量后需 git checkout -- wiki/ 恢复(mock 产物泄漏到仓库根 wiki/,既有行为);merman alpha 状态风险已登记(t05 拍板接受)

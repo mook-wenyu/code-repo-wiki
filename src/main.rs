@@ -158,6 +158,21 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
+    /// 向项目根 AGENTS.md 注入 wiki 引用块（标记对 <!-- REPO-WIKI:START/END --> 之间）
+    InstallWiki {
+        /// 同时将注入块写入 CLAUDE.md（与 AGENTS.md 同一套标记约定）
+        #[arg(long)]
+        also_claude: bool,
+        /// 项目根目录（默认当前目录）
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
+    /// 移除 AGENTS.md 中的 wiki 引用块（含标记本身；未安装时提示并退出码 0）
+    UninstallWiki {
+        /// 项目根目录（默认当前目录）
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
     /// 启动 MCP (Model Context Protocol) stdio server（供 Claude Code/Cline 等客户端连接）
     Mcp {
         /// 配置文件路径
@@ -501,6 +516,16 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
         }
         Commands::UninstallFromOpencode { force } => {
             repo_wiki::commands::uninstall(force)?;
+        }
+        Commands::InstallWiki { also_claude, root } => {
+            // AGENTS.md 注入 wiki 引用块（--also-claude 双写 CLAUDE.md）；
+            // 注入逻辑在 commands::install_wiki，此处只做 --root 解析与调用
+            let root = resolve_root(root.as_deref())?;
+            repo_wiki::commands::install_wiki(&root, also_claude)?;
+        }
+        Commands::UninstallWiki { root } => {
+            let root = resolve_root(root.as_deref())?;
+            repo_wiki::commands::uninstall_wiki(&root)?;
         }
         Commands::Mcp { config, root } => {
             // MCP stdio server：阻塞直到客户端断开。异步运行时由库内

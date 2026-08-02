@@ -184,8 +184,7 @@ pub fn lint(output_dir: &Path, source_roots: &[PathBuf]) -> Vec<LintIssue> {
             }
         }
 
-        // ---- 5. 实体覆盖率检查（P1-4 零成本评测）：模块页核心实体须存在于 api.md ----
-        // api.md 由 graph 权威渲染（markdown::render_api_reference），页面声称的实体若不在
+        // ---- 5. 实体覆盖率检查（P1-4 零成本评测）：模块页核心实体须存在于 api.md ----        // api.md 由 graph 权威渲染（markdown::render_api_reference），页面声称的实体若不在
         // api.md = LLM 编造实体名（防幻觉的第二道闸）。只检查主语言目录（api.md 仅主语言一份）。
         let api_path = output_dir.join("wiki").join(lang).join("api.md");
         if primary_language(output_dir) == *lang
@@ -219,6 +218,31 @@ pub fn lint(output_dir: &Path, source_roots: &[PathBuf]) -> Vec<LintIssue> {
                         });
                     }
                 }
+            }
+        }
+
+        // ---- 6. Mermaid 语法检查（G2）：产物中的 mermaid fence 必须可被
+        // merman 权威解析器解析 ----
+        // 生成层已做校验-重试-降级（坏块不会以 mermaid 形态落盘），此处兜住
+        // 三类来源：历史产物（降级机制上线前生成）、人工手工编辑的页面、
+        // 增量路径未重新生成的遗留页面。发现坏图即报 issue（CI 门禁，
+        // 与 bad-citation 同语义：不自动修复，只阻断）。
+        for page in &pages {
+            let content = std::fs::read_to_string(page).unwrap_or_default();
+            let file_name = page
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            for issue in crate::output::mermaid_check::validate_mermaid_blocks(&content) {
+                issues.push(LintIssue {
+                    kind: "bad-mermaid",
+                    path: format!("wiki/{lang}/{file_name}"),
+                    message: format!(
+                        "Mermaid 校验失败（第 {} 个块）: {}",
+                        issue.block_index + 1,
+                        issue.message
+                    ),
+                });
             }
         }
     }
@@ -620,5 +644,32 @@ mod tests {
         );
         assert!(!names.contains(&"fn".to_string()), "关键字不应被提取: {:?}", names);
         assert!(names.contains(&"foo_bar".to_string()));
+    }
+
+    /// G2：产物中的 mermaid fence 语法错误 → bad-mermaid；合法图不报
+    #[test]
+    fn test_lint_bad_mermaid_detects_broken_diagram() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_lint_mermaid_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        // 一个坏图页面 + 一个好图页面
+        std::fs::write(
+            wiki.join("bad.md"),
+            "# Bad\n\n```mermaid\nflowchart LR\nA[hello world\nB --> C\n```\n",
+        )
+        .unwrap();
+        std::fs::write(
+            wiki.join("good.md"),
+            "# Good\n\n```mermaid\nflowchart LR\nA[Start] --> B[End]\n```\n",
+        )
+        .unwrap();
+
+        let issues = lint(&dir, &[]);
+        let bad: Vec<_> = issues.iter().filter(|i| i.kind == "bad-mermaid").collect();
+        assert_eq!(bad.len(), 1, "只有坏图应报 bad-mermaid, 实际: {:?}", issues);
+        assert!(bad[0].path.ends_with("bad.md"), "应指向坏图页面: {}", bad[0].path);
+        assert!(bad[0].message.contains("Unterminated"), "错误消息应可读: {}", bad[0].message);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

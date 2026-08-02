@@ -289,7 +289,7 @@ pub fn run_pipeline_with_progress(
     on_progress(ProgressEvent { stage: "chunking", percent: 30 });
     let rt = get_global_runtime();
     let extra_edits = collect_manual_edits(old_state.as_ref());
-    let gen_output = if let Some(inc) = &inc_result {
+    let mut gen_output = if let Some(inc) = &inc_result {
         rt.block_on(generate::run_generation_filtered(
             &graph, &file_insights, &config, root, inc, &extra_edits,
         ))?
@@ -297,6 +297,24 @@ pub fn run_pipeline_with_progress(
         rt.block_on(generate::run_generation(&graph, &file_insights, &config, root, &extra_edits))?
     };
     on_progress(ProgressEvent { stage: "cards", percent: 60 });
+
+    // Phase 3b: 阅读指南 index.md（仅主语言，写盘路径 wiki/{主语言}/index.md）。
+    // LLM 失败重试 1 次仍失败 → 降级确定性骨架（模块入度中心度降序的链接列表）；
+    // provider 构建失败（理论不可达：run_generation 已保证 LLM 配置可用）同样降级。
+    // 错误处理与全局文档（架构/概览）一致：失败只告警，不中断主流程。
+    let index_doc = match generate::create_provider(&config) {
+        Ok(provider) => rt.block_on(generate::index::generate_index_guide(
+            &provider,
+            &graph,
+            &gen_output.cards,
+            &config,
+        )),
+        Err(e) => {
+            tracing::warn!("阅读指南 LLM 不可用，降级为确定性骨架: {e}");
+            generate::index::fallback_index_guide(&graph, &config)
+        }
+    };
+    gen_output.documents.push(index_doc);
 
     // Phase 4: 输出（render_all 内部同步写导出快照；产物集合 diff 清理
     // 全量/增量统一：旧状态记录过但本次未生成的产物（含已删模块的

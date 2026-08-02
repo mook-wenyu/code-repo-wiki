@@ -31,6 +31,12 @@ pub struct WikiGenerator<'a, P: LlmProvider> {
 /// 调用）。"总是重试"但必须有上限防死循环（每次重试消耗 LLM 调用）。
 pub const CITATION_RETRY_MAX: usize = 2;
 
+/// Mermaid 语法校验重试上限（G2）：与引用契约对齐——首次调用 + 每次
+/// 坏块反馈后重试，共 `MERMAID_RETRY_MAX + 1` 次调用；耗尽后降级
+/// （坏块转 text + 标记注释，见 output::mermaid_check::degrade_mermaid_blocks）。
+/// 与 CITATION_RETRY_MAX 合并进同一重试循环（上限取两者最大值）。
+pub const MERMAID_RETRY_MAX: usize = crate::output::mermaid_check::MERMAID_RETRY_MAX;
+
 impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
     /// 使用指定的 LLM Provider 创建 WikiGenerator
     ///
@@ -76,6 +82,9 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
     /// 引用无效时重试（最多 `CITATION_RETRY_MAX` 次，用户决策"总是重试"）。
     /// 重试注入错误反馈（无效引用清单），最后一次仍失败时返回错误——
     /// 由调用方失败隔离（record_failure）记录，不产出无引用的页面。
+    /// G2 Mermaid 契约：正文中的 Mermaid 代码块同样校验（merman 权威解析），
+    /// 坏块错误消息注入重试反馈；重试耗尽后**降级**而非失败——坏块替换为
+    /// text fence + 标记注释（OpenWiki degrade-and-repair），页面照常产出。
     pub async fn generate_wiki_page(
         &self,
         chunk: &Chunk,
@@ -92,9 +101,13 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
             prompt::wiki_page_prompt(chunk, card_summary, language, self.plan.as_ref());
         let mut content = String::new();
         let mut last_invalid = Vec::new();
+        let mut last_mermaid = Vec::new();
 
-        // 重试循环：首次调用 + 每次无效引用后追加反馈重试（共 CITATION_RETRY_MAX + 1 次调用）
-        for attempt in 0..=CITATION_RETRY_MAX {
+        // 重试循环：首次调用 + 每次校验失败后追加反馈重试（共 RETRY_MAX + 1 次调用）。
+        // 引用与 Mermaid 校验共享同一循环（上限取两者最大值——当前均为 2），
+        // 每次调用后两类校验都执行，任一失败都注入对应反馈。
+        let retry_max = CITATION_RETRY_MAX.max(MERMAID_RETRY_MAX);
+        for attempt in 0..=retry_max {
             self.call_count.fetch_add(1, Ordering::Relaxed);
             content = self.provider.complete(&messages).await?;
             // 空/纯空白内容同样视为校验失败（重试语义：不产出空白页面）
@@ -110,31 +123,60 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
             } else {
                 crate::output::citation::validate_citations(root.path(), &content)
             };
-            if last_invalid.is_empty() {
+            last_mermaid = crate::output::mermaid_check::validate_mermaid_blocks(&content);
+            if last_invalid.is_empty() && last_mermaid.is_empty() {
                 break;
             }
-            tracing::warn!(
-                "Wiki 页面引用校验失败（第 {} 次，无效 {} 条）: {}",
-                attempt + 1,
-                last_invalid.len(),
-                chunk.module_path.join("::")
-            );
-            // 重试机会已用完：跳出循环走失败路径（返回错误）
-            if attempt == CITATION_RETRY_MAX {
+            if !last_invalid.is_empty() {
+                tracing::warn!(
+                    "Wiki 页面引用校验失败（第 {} 次，无效 {} 条）: {}",
+                    attempt + 1,
+                    last_invalid.len(),
+                    chunk.module_path.join("::")
+                );
+            }
+            if !last_mermaid.is_empty() {
+                tracing::warn!(
+                    "Wiki 页面 Mermaid 校验失败（第 {} 次，坏块 {} 个）: {}",
+                    attempt + 1,
+                    last_mermaid.len(),
+                    chunk.module_path.join("::")
+                );
+            }
+            // 重试机会已用完：跳出循环走收尾路径
+            if attempt == retry_max {
                 break;
             }
-            messages.push(Message::user(
-                crate::output::citation::retry_feedback(&last_invalid),
-            ));
+            if !last_invalid.is_empty() {
+                messages.push(Message::user(
+                    crate::output::citation::retry_feedback(&last_invalid),
+                ));
+            }
+            if !last_mermaid.is_empty() {
+                messages.push(Message::user(
+                    crate::output::mermaid_check::mermaid_retry_feedback(&last_mermaid),
+                ));
+            }
         }
 
+        // 引用校验：重试耗尽仍无效 → 失败（不产出无引用的页面）
         if !last_invalid.is_empty() {
             anyhow::bail!(
                 "Wiki 页面引用校验失败（重试 {} 次仍无效，共 {} 条无效引用）: {}",
-                CITATION_RETRY_MAX,
+                retry_max,
                 last_invalid.len(),
                 chunk.module_path.join("::")
             );
+        }
+        // Mermaid 校验：重试耗尽仍坏 → 降级（坏块转 text + 注释），页面保留。
+        // 降级注释含错误消息，供人工与下次 LLM 生成时参考修复（repair 语义）。
+        if !last_mermaid.is_empty() {
+            tracing::warn!(
+                "Wiki 页面 Mermaid 重试耗尽（{} 个坏块），降级为 text 块: {}",
+                last_mermaid.len(),
+                chunk.module_path.join("::")
+            );
+            content = crate::output::mermaid_check::degrade_mermaid_blocks(&content, &last_mermaid);
         }
 
         let now = chrono::Utc::now().to_rfc3339();
@@ -154,6 +196,48 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
         })
     }
 
+    /// 带 Mermaid 校验的 LLM 调用（G2）：架构/概览等全局文档的专用路径
+    ///
+    /// 这些页面由 LLM 自由生成，可能包含 Mermaid 图（架构图等）。调用后校验
+    /// 正文 Mermaid 块，坏块错误消息注入重试反馈；重试耗尽后降级（坏块转
+    /// text + 注释）而非失败——页面照常产出，坏图不出现在产物中。
+    /// 与 generate_wiki_page 的区别：这里只校验 Mermaid（无引用契约——
+    /// 全局文档不强制源码引用，与既有行为一致）。
+    async fn complete_with_mermaid_guard(
+        &self,
+        mut messages: Vec<Message>,
+        label: &str,
+    ) -> Result<String> {
+        let mut content = String::new();
+        let mut last_mermaid = Vec::new();
+
+        for attempt in 0..=MERMAID_RETRY_MAX {
+            self.call_count.fetch_add(1, Ordering::Relaxed);
+            content = self.provider.complete(&messages).await?;
+            last_mermaid = crate::output::mermaid_check::validate_mermaid_blocks(&content);
+            if last_mermaid.is_empty() {
+                return Ok(content);
+            }
+            tracing::warn!(
+                "{label} Mermaid 校验失败（第 {} 次，坏块 {} 个）",
+                attempt + 1,
+                last_mermaid.len()
+            );
+            if attempt == MERMAID_RETRY_MAX {
+                break;
+            }
+            messages.push(Message::user(
+                crate::output::mermaid_check::mermaid_retry_feedback(&last_mermaid),
+            ));
+        }
+
+        tracing::warn!("{label} Mermaid 重试耗尽（{} 个坏块），降级为 text 块", last_mermaid.len());
+        Ok(crate::output::mermaid_check::degrade_mermaid_blocks(
+            &content,
+            &last_mermaid,
+        ))
+    }
+
     /// 生成架构概览页面
     ///
     /// 基于所有模块的生成输出和知识图谱，生成项目级的架构概览文档。
@@ -167,13 +251,12 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
         graph: &KnowledgeGraph,
         config: &WikiConfig,
     ) -> Result<WikiDocument> {
-        self.call_count.fetch_add(1, Ordering::Relaxed);
-
         let language = &config.wiki.language;
         let modules = self.describe_modules(graph, language).await;
         let messages =
             prompt::architecture_overview_prompt(&modules, graph, language, self.plan.as_ref());
-        let content = self.provider.complete(&messages).await?;
+        // LLM 调用计数在 complete_with_mermaid_guard 内部（含重试）
+        let content = self.complete_with_mermaid_guard(messages, "架构概览").await?;
         let now = chrono::Utc::now().to_rfc3339();
 
         Ok(WikiDocument {
@@ -288,14 +371,13 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
         graph: &KnowledgeGraph,
         config: &WikiConfig,
     ) -> Result<WikiDocument> {
-        self.call_count.fetch_add(1, Ordering::Relaxed);
-
         // 与 generate_architecture 一致：先补模块职责描述，概览内容才能
         // 表达"模块负责什么"；再叠加卡片摘要（自底向上合成：父概览基于
         // 子模块的职责描述 + 卡片摘要生成，而非仅模块名/节点数/边计数）
+        // LLM 调用计数在 complete_with_mermaid_guard 内部（含重试）
         let modules = self.describe_modules(graph, &config.wiki.language).await;
         let messages = vec![Message::user(overview_prompt(&modules, &output.cards, graph, config))];
-        let content = self.provider.complete(&messages).await?;
+        let content = self.complete_with_mermaid_guard(messages, "项目概览").await?;
         let now = chrono::Utc::now().to_rfc3339();
 
         Ok(WikiDocument {
@@ -589,6 +671,82 @@ mod tests {
         assert_eq!(provider.calls.load(std::sync::atomic::Ordering::Relaxed), 1, "无引用无需重试");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// G2 Mermaid 契约重试：坏图 → 重试注入错误反馈 → 第二次输出好图则成功
+    #[tokio::test]
+    async fn test_wiki_page_retries_on_bad_mermaid() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_test_mermaid_retry_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = crate::project::ProjectRoot::new(dir.clone());
+
+        // 第一次输出坏图（标签未闭合），第二次输出好图
+        let provider = ScriptedProvider::new(vec![
+            "```mermaid\nflowchart LR\nA[hello world\nB --> C\n```\n".to_string(),
+            "```mermaid\nflowchart LR\nA[Start] --> B[End]\n```\n".to_string(),
+        ]);
+        let generator = WikiGenerator::new(&provider, None, 0);
+        let config = WikiConfig::default();
+        let chunk = make_test_chunk();
+
+        let doc = generator.generate_wiki_page(&chunk, "摘要", &config, &root).await.unwrap();
+        assert!(doc.content.contains("A[Start] --> B[End]"), "重试后应保留好图");
+        assert_eq!(provider.calls.load(std::sync::atomic::Ordering::Relaxed), 2, "应调用 2 次（1 次坏图 + 1 次重试）");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// G2 Mermaid 契约重试耗尽：超过 MERMAID_RETRY_MAX 仍坏图 → 降级而非失败
+    /// （坏块替换为 text fence + 标记注释，页面照常产出）
+    #[tokio::test]
+    async fn test_wiki_page_degrades_when_mermaid_never_valid() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_test_mermaid_degrade_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = crate::project::ProjectRoot::new(dir.clone());
+
+        // 连续 3 次（MERMAID_RETRY_MAX + 1）都输出坏图
+        let provider = ScriptedProvider::new(vec![
+            "```mermaid\nflowchart LR\nA[hello world\nB --> C\n```\n".to_string(),
+            "```mermaid\nflowchart LR\nA[hello world\nB --> C\n```\n".to_string(),
+            "```mermaid\nflowchart LR\nA[hello world\nB --> C\n```\n".to_string(),
+        ]);
+        let generator = WikiGenerator::new(&provider, None, 0);
+        let config = WikiConfig::default();
+        let chunk = make_test_chunk();
+
+        let doc = generator.generate_wiki_page(&chunk, "摘要", &config, &root).await.unwrap();
+        assert!(!doc.content.contains("```mermaid"), "坏图不应再以 mermaid 块出现");
+        assert!(doc.content.contains("```text"), "坏块应降级为 text fence");
+        assert!(doc.content.contains("repo-wiki: mermaid parse failed"), "应含降级标记注释");
+        assert_eq!(
+            provider.calls.load(std::sync::atomic::Ordering::Relaxed),
+            MERMAID_RETRY_MAX + 1,
+            "应调用 MERMAID_RETRY_MAX+1 次后降级"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// G2 架构概览：坏图重试耗尽同样降级，页面正常产出
+    #[tokio::test]
+    async fn test_architecture_degrades_on_bad_mermaid() {
+        let provider = ScriptedProvider::new(vec![
+            "```mermaid\nflowchart LR\nA[hello world\n```\n".to_string(),
+            "```mermaid\nflowchart LR\nA[hello world\n```\n".to_string(),
+            "```mermaid\nflowchart LR\nA[hello world\n```\n".to_string(),
+        ]);
+        let generator = WikiGenerator::new(&provider, None, 0);
+        let config = WikiConfig::default();
+        let graph = crate::model::KnowledgeGraph::default();
+        let output = crate::generate::GenerationOutput {
+            cards: vec![],
+            documents: vec![],
+            generation_stats: crate::generate::GenerationStats::default(),
+        };
+
+        let doc = generator.generate_architecture(&output, &graph, &config).await.unwrap();
+        assert!(!doc.content.contains("```mermaid"), "坏图不应再以 mermaid 块出现");
+        assert!(doc.content.contains("repo-wiki: mermaid parse failed"), "应含降级标记注释");
     }
 
     #[test]

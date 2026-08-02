@@ -1,6 +1,7 @@
 pub mod card;
 pub mod chunk;
 pub mod embed;
+pub mod index;
 pub mod llm;
 pub mod prompt;
 pub mod schema;

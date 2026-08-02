@@ -5,6 +5,7 @@ pub mod citation;
 pub mod lint;
 pub mod markdown;
 pub mod mermaid;
+pub mod mermaid_check;
 pub mod html;
 
 use std::path::{Path, PathBuf};
