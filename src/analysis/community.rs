@@ -78,6 +78,9 @@ pub fn detect_communities(graph: &KnowledgeGraph) -> Vec<Vec<NodeId>> {
     // 聚合跨文件依赖边：同对文件间多条边权重相加
     let mut edge_weights: HashMap<(usize, usize), f64> = HashMap::new();
     for edge in graph.graph.edge_references() {
+        // 结构安全证据（R1 审计）：边权重由 build_graph 创建边时同步写入
+        //（StableDiGraph 的边权重不是 Option），此处仅做类型层面的取值；
+        // 若 graph 构造代码未来绕过权重初始化，本 expect 会立即失败暴露。
         let e = graph
             .graph
             .edge_weight(edge.id())
@@ -105,6 +108,9 @@ pub fn detect_communities(graph: &KnowledgeGraph) -> Vec<Vec<NodeId>> {
     }
 
     // 构建 Leiden 输入图（有向、加权；add_edge 校验权重有限且 ≥0，不会失败）
+    // 结构安全证据（R1 审计）：权重来源仅两处——常量 WEIGHT_IMPORTS/
+    // WEIGHT_CALLS（0.7/0.8，有限非负）与下方 edge_weights 的累加和；
+    // 不存在 NaN/Inf/负值注入路径，add_edge 的 Err 分支不可达。
     let mut builder = GraphDataBuilder::new(file_nodes.len()).directed();
     for ((s, t), w) in &edge_weights {
         builder
@@ -119,6 +125,10 @@ pub fn detect_communities(graph: &KnowledgeGraph) -> Vec<Vec<NodeId>> {
         seed: Some(LEIDEN_SEED),
         ..Default::default()
     };
+    // 结构安全证据（R1 审计）：leiden-rs 0.8.1 对用户输入从不 panic——
+    // 空图/单节点/无边图均提前安全返回（本函数在 edge_weights 为空时
+    // 已提前返回单文件社区，此处输入恒为有效图）；run() 仅返回
+    // internal-error 类 Result（图内部不变量破坏，不可由调用方触发）。
     let result = Leiden::new(config)
         .run(&data)
         .expect("Leiden 社区检测失败");

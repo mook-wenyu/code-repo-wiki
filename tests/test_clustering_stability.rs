@@ -61,7 +61,7 @@ fn test_clustering_stable_across_runs() {
     build_cluster_repo(&dir);
 
     std::env::set_current_dir(&dir).unwrap();
-    let insights = repo_wiki::ingest::scan_and_parse(&bench_config()).unwrap();
+    let insights = repo_wiki::ingest::scan_and_parse_at(&repo_wiki::project::ProjectRoot::from_cwd().unwrap(), &bench_config()).unwrap();
     let graph = repo_wiki::analysis::build_graph(&insights).unwrap();
 
     // 两次独立检测

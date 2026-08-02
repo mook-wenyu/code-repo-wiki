@@ -80,7 +80,10 @@ impl SearchStore {
                 node.kind.as_str(),
                 node.signature.as_deref().unwrap_or(""),
                 source,
-                node.file_path.as_deref().unwrap_or(""),
+                // file_path 列写入时统一归一化（票 08）：该列是删除/过滤的
+                // 索引键，全链路（写入、删除、比较）必须同基准。node_json
+                // 里的 file_path 保留平台原样（用于搜索结果展示与节点信息）。
+                crate::incremental::norm_sep(node.file_path.as_deref().unwrap_or("")).as_str(),
                 node_json,
             ]).context("插入 FTS5 条目失败")?;
         }
@@ -119,10 +122,13 @@ impl SearchStore {
     }
 
     /// 删除指定文件的所有 FTS5 条目
+    ///
+    /// 参数与 file_path 列同基准：写入时已归一化（票 08），删除键也归一化，
+    /// 保证 Windows 反斜杠路径（调用方传入）与入库正斜杠键精确匹配。
     pub fn delete_entities_by_file(&self, file_path: &str) -> Result<usize> {
         let count = self.conn.execute(
             "DELETE FROM entities WHERE file_path = ?1",
-            rusqlite::params![file_path],
+            rusqlite::params![crate::incremental::norm_sep(file_path)],
         ).context("删除 FTS5 条目失败")?;
         Ok(count)
     }
@@ -157,7 +163,8 @@ impl SearchStore {
                 .context("序列化 CodeNode 失败")?;
             let blob = f32_vec_to_blob(vector);
             stmt.execute(rusqlite::params![
-                node.file_path.as_deref().unwrap_or(""),
+                // file_path 列归一化与 entities 表同规则（票 08）
+                crate::incremental::norm_sep(node.file_path.as_deref().unwrap_or("")),
                 node_json,
                 blob,
             ]).context("插入向量条目失败")?;
@@ -188,10 +195,12 @@ impl SearchStore {
     }
 
     /// 删除指定文件的所有向量条目
+    ///
+    /// 参数归一化（票 08）：与 insert_vectors_batch 写入的 file_path 列同基准。
     pub fn delete_vectors_by_file(&self, file_path: &str) -> Result<usize> {
         let count = self.conn.execute(
             "DELETE FROM vectors WHERE file_path = ?1",
-            rusqlite::params![file_path],
+            rusqlite::params![crate::incremental::norm_sep(file_path)],
         ).context("删除向量条目失败")?;
         Ok(count)
     }

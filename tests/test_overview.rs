@@ -117,7 +117,6 @@ fn test_overview_protected() {
     let state = GenerationState {
         last_commit_hash: None,
         file_fingerprints: HashMap::new(),
-        module_fingerprints: HashMap::new(),
         doc_fingerprints,
         doc_modules: HashMap::new(),
         protected_docs: Vec::new(),

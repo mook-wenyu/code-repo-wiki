@@ -79,6 +79,11 @@ impl OpenCodeConfig {
 
         let output = serde_json::to_string_pretty(&value)
             .with_context(|| "序列化 opencode.json 失败")?;
+        // 父目录（如 ~/.config/opencode/）可能不存在（全新环境），写入前创建
+        if let Some(parent) = self.config_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("创建配置目录失败: {}", parent.display()))?;
+        }
         std::fs::write(&self.config_path, &output)
             .with_context(|| format!("写入配置文件失败: {}", self.config_path.display()))?;
 
@@ -126,6 +131,47 @@ impl OpenCodeConfig {
             .join("plugins")
             .join("repo-wiki.ts");
         Ok(plugin_file.exists())
+    }
+
+    /// 将插件模板写入 `{project_root}/.opencode/plugins/repo-wiki.ts`
+    ///
+    /// 已存在时不覆盖（保留人工修改），返回是否实际写入。
+    /// 模板以 include_str 内嵌（src/config/ 下经 ../../ 指向仓库根 .opencode/）。
+    pub fn install_plugin_file(&mut self) -> Result<bool> {
+        let plugin_path = self
+            .project_root
+            .join(".opencode")
+            .join("plugins")
+            .join("repo-wiki.ts");
+        if plugin_path.exists() {
+            tracing::info!("插件文件已存在，跳过覆盖: {}", plugin_path.display());
+            return Ok(false);
+        }
+        std::fs::create_dir_all(plugin_path.parent().unwrap())
+            .with_context(|| format!("创建插件目录失败: {}", plugin_path.display()))?;
+        std::fs::write(&plugin_path, include_str!("../../.opencode/plugins/repo-wiki.ts"))
+            .with_context(|| format!("写入插件文件失败: {}", plugin_path.display()))?;
+        tracing::info!("插件文件已写入: {}", plugin_path.display());
+        Ok(true)
+    }
+
+    /// 删除插件文件 `.opencode/plugins/repo-wiki.ts`
+    ///
+    /// 文件不存在时静默成功（幂等，与 uninstall_plugin 语义一致）。
+    pub fn uninstall_plugin_file(&mut self) -> Result<()> {
+        let plugin_path = self
+            .project_root
+            .join(".opencode")
+            .join("plugins")
+            .join("repo-wiki.ts");
+        match std::fs::remove_file(&plugin_path) {
+            Ok(()) => {
+                tracing::info!("插件文件已删除: {}", plugin_path.display());
+                Ok(())
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// 获取 OpenCode 配置的根目录 (~/.config/opencode/)

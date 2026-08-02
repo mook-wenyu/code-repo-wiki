@@ -66,7 +66,6 @@ pub fn sync_from_git(output_dir: &Path) -> Result<()> {
         GenerationState {
             last_commit_hash: None,
             file_fingerprints: HashMap::new(),
-            module_fingerprints: HashMap::new(),
             doc_fingerprints: HashMap::new(),
             doc_modules: HashMap::new(),
             protected_docs: Vec::new(),
@@ -181,7 +180,11 @@ pub fn install(agent: &str) -> Result<()> {
         let mut oc = crate::config::opencode::OpenCodeConfig::new()
             .context("读取 OpenCode 配置失败")?;
         oc.install_plugin()?;
-        println!("✓ OpenCode 插件已安装");
+        if oc.install_plugin_file()? {
+            println!("✓ OpenCode 插件文件已安装");
+        } else {
+            println!("✓ OpenCode 插件文件已存在，跳过");
+        }
     }
 
     // 2. 创建默认 .repo-wiki/config.toml (如果不存在)
@@ -195,7 +198,7 @@ pub fn install(agent: &str) -> Result<()> {
 
     // 3. 安装 git hooks
     let hooks_dir = project_root.join(".git").join("hooks");
-    let hook_content = "#!/bin/sh\n# repo-wiki: auto-update wiki on commit\ncd \"$(git rev-parse --show-toplevel)\"\nrepo-wiki update --quiet 2>/dev/null || true\n";
+    let hook_content = "#!/bin/sh\n# repo-wiki: auto-update wiki on commit\ncd \"$(git rev-parse --show-toplevel)\"\ncommand -v repo-wiki >/dev/null 2>&1 || exit 0\nrepo-wiki update 2>/dev/null || true\n";
     if hooks_dir.exists() {
         let post_commit = hooks_dir.join("post-commit");
         if !post_commit.exists() {
@@ -212,6 +215,8 @@ pub fn install(agent: &str) -> Result<()> {
             std::fs::set_permissions(&post_merge, std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
             println!("✓ git post-merge hook 已安装");
         }
+    } else {
+        println!("未检测到 .git 目录，跳过 git hook 安装");
     }
 
     println!("✓ repo-wiki 安装完成");
@@ -232,6 +237,7 @@ pub fn uninstall(force: bool) -> Result<()> {
     let mut oc = crate::config::opencode::OpenCodeConfig::new()
         .context("读取 OpenCode 配置失败")?;
     oc.uninstall_plugin()?;
+    oc.uninstall_plugin_file()?;
     println!("✓ OpenCode 插件已移除");
 
     // 2. 移除 git hooks

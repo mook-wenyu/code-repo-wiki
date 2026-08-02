@@ -122,7 +122,7 @@ fn test_incremental_git_diff_scenarios() {
 
     // ---- 首次提交 + 全量生成（建立基线） ----
     git_commit_all(&repo, "init");
-    let base = repo_wiki::run_pipeline(&config_path, None, false).expect("全量生成失败");
+    let base = repo_wiki::run_pipeline(&config_path, None, false, &repo_wiki::project::ProjectRoot::from_cwd().unwrap(), &repo_wiki::GenerationMode::Full).expect("全量生成失败");
     let base_api = read_api(&repo);
     assert!(base_api.contains("tcp_process"), "基线 api.md 应含 tcp_process 签名");
     // 社区划分护栏：net 与 http 应检出为独立模块（依赖传播断言的前提）
@@ -135,7 +135,7 @@ fn test_incremental_git_diff_scenarios() {
     // ---- 场景 A：实现级变化（函数体修改，签名不变） ----
     std::fs::write(&tcp_mod, "pub fn tcp_process(x: u32) -> u32 { udp_process(x) + 42 }\n").unwrap();
     git_commit_all(&repo, "change body");
-    let inc_a = repo_wiki::run_incremental_pipeline(&config_path, None, false, &[], None)
+    let inc_a = repo_wiki::run_pipeline(&config_path, None, false, &repo_wiki::project::ProjectRoot::from_cwd().unwrap(), &repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
         .expect("增量生成失败");
     let titles_a = doc_titles(&inc_a);
     assert!(
@@ -156,7 +156,7 @@ fn test_incremental_git_diff_scenarios() {
     // 签名变更 → api.md 反映新签名 + 调用方 http 社区文档被重生成（依赖传播接线）
     std::fs::write(&tcp_mod, "pub fn tcp_process(x: u32, y: u32) -> u32 { udp_process(x) + y }\n").unwrap();
     git_commit_all(&repo, "change signature");
-    let inc_b = repo_wiki::run_incremental_pipeline(&config_path, None, false, &[], None)
+    let inc_b = repo_wiki::run_pipeline(&config_path, None, false, &repo_wiki::project::ProjectRoot::from_cwd().unwrap(), &repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
         .expect("增量生成失败");
     let new_api = read_api(&repo);
     assert!(
@@ -170,7 +170,7 @@ fn test_incremental_git_diff_scenarios() {
     );
 
     // ---- 场景 C：无变更 → 增量跳过 ----
-    let inc_c = repo_wiki::run_incremental_pipeline(&config_path, None, false, &[], None)
+    let inc_c = repo_wiki::run_pipeline(&config_path, None, false, &repo_wiki::project::ProjectRoot::from_cwd().unwrap(), &repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
         .expect("无变更增量失败");
     assert!(
         inc_c.documents.is_empty(),

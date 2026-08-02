@@ -1,8 +1,8 @@
 use std::path::Path;
 use anyhow::Result;
-use tree_sitter::{Language, Parser};
+use tree_sitter::{Language, Node};
 
-use super::{Entity, FileInsight, ImportStmt, LanguageProcessor};
+use super::{Entity, FileInsight, ImportStmt, KindRule, LanguageProcessor, SharedProcessor};
 
 /// C# 语言处理器。
 ///
@@ -20,155 +20,86 @@ impl CSharpProcessor {
     fn node_name<'a>(node: &tree_sitter::Node, bytes: &'a [u8]) -> Option<&'a str> {
         node.child_by_field_name("name").and_then(|n| n.utf8_text(bytes).ok())
     }
+}
 
-    /// 使用 tree-sitter AST 遍历提取实体和导入语句。
-    ///
-    /// 支持的实体类型（按 C# 语言特性分类）：
-    /// - class_declaration / record_declaration → kind: "class"
-    /// - struct_declaration → kind: "struct"
-    /// - interface_declaration → kind: "interface"
-    /// - enum_declaration → kind: "enum"
-    /// - method_declaration / constructor_declaration → kind: "function"
-    /// - property_declaration → kind: "property"
-    /// - field_declaration → kind: "variable"
-    /// - namespace_declaration → kind: "mod"
-    ///
-    /// 支持的导入类型：
-    /// - using_directive → C# using 指令
-    fn walk(source: &str) -> (Vec<Entity>, Vec<ImportStmt>) {
-        let bytes = source.as_bytes();
-        let mut entities = Vec::new();
-        let mut imports = Vec::new();
+/// kind 映射表（差异点数据化，含原 kind_map 闭包的 class/record→class、
+/// struct/interface/enum 一一映射）：const item 保证 &'static 生命周期
+const KINDS: &[KindRule] = &[
+    KindRule::with_sig("class_declaration", "class", '{'),
+    KindRule::with_sig("record_declaration", "class", '{'),
+    KindRule::with_sig("struct_declaration", "struct", '{'),
+    KindRule::with_sig("interface_declaration", "interface", '{'),
+    KindRule::with_sig("enum_declaration", "enum", '{'),
+    KindRule::with_sig("method_declaration", "function", '{'),
+    KindRule::with_sig("constructor_declaration", "function", '{'),
+    KindRule::plain("property_declaration", "property"),
+    KindRule::plain("namespace_declaration", "mod"),
+];
 
-        let language: Language = tree_sitter_c_sharp::LANGUAGE.into();
-        let mut parser = Parser::new();
-        if parser.set_language(&language).is_err() {
-            return Self::fallback(source);
-        }
-        let tree = match parser.parse(source, None) {
-            Some(t) => t,
-            None => return Self::fallback(source),
-        };
+/// C# 差异点实现：语法常量、kinds 映射表（纯映射分支）、
+/// 无法表化的特殊分支（field_declaration 子遍历 / using_directive 文本解析）、
+/// 启发式正则 fallback。公共 walk/fallback 触发/FileInsight 组装走 SharedProcessor 默认实现。
+impl SharedProcessor for CSharpProcessor {
+    fn language() -> &'static str { "C#" }
+    fn grammar() -> Language { tree_sitter_c_sharp::LANGUAGE.into() }
 
-        let mut cursor = tree.walk();
-        if !cursor.goto_first_child() { return (entities, imports); }
+    fn kinds() -> &'static [KindRule] {
+        KINDS
+    }
 
-        'walk: loop {
-            let node = cursor.node();
-            match node.kind() {
-                "class_declaration" | "struct_declaration"
-                | "interface_declaration" | "enum_declaration" | "record_declaration" => {
-                    let kind_map = |k: &str| match k {
-                        "class_declaration" => "class",
-                        "record_declaration" => "class",
-                        "struct_declaration" => "struct",
-                        "interface_declaration" => "interface",
-                        "enum_declaration" => "enum",
-                        _ => "class",
-                    };
-                    if let Some(name) = Self::node_name(&node, bytes) {
-                        let sig = node.utf8_text(bytes).ok()
-                            .and_then(|t| t.split('{').next().map(|s| s.trim().to_string()));
-                        entities.push(Entity {
-                            name: name.to_string(),
-                            kind: kind_map(node.kind()).to_string(),
-                            line_start: node.start_position().row + 1,
-                            line_end: node.end_position().row + 1,
-                            doc_comment: None,
-                            signature: sig, summary: None,
-                        });
-                    }
-                }
-                "method_declaration" | "constructor_declaration" => {
-                    if let Some(name) = Self::node_name(&node, bytes) {
-                        let sig = node.utf8_text(bytes).ok()
-                            .and_then(|t| t.split('{').next().map(|s| s.trim().to_string()));
-                        entities.push(Entity {
-                            name: name.to_string(), kind: "function".to_string(),
-                            line_start: node.start_position().row + 1,
-                            line_end: node.end_position().row + 1,
-                            doc_comment: None, signature: sig, summary: None,
-                        });
-                    }
-                }
-                "property_declaration" => {
-                    if let Some(name) = Self::node_name(&node, bytes) {
-                        entities.push(Entity {
-                            name: name.to_string(), kind: "property".to_string(),
-                            line_start: node.start_position().row + 1,
-                            line_end: node.end_position().row + 1,
-                            doc_comment: None, signature: None, summary: None,
-                        });
-                    }
-                }
-                "field_declaration" => {
-                    // 遍历子节点查找变量名
-                    let mut sub_cursor = node.walk();
-                    if sub_cursor.goto_first_child() {
-                        loop {
-                            let child = sub_cursor.node();
-                            if child.kind() == "variable_declarator" {
-                                // tree-sitter-c-sharp 0.23 中 variable_declarator 可能不含 name 字段
-                                // 先尝试 node_name，失败则用节点全文作为名称
-                                let name = Self::node_name(&child, bytes)
-                                    .map(|s| s.to_string())
-                                    .or_else(|| child.utf8_text(bytes).ok()
-                                        .map(|s| s.trim().to_string()));
-                                if let Some(name) = name {
-                                    entities.push(Entity {
-                                        name: name.to_string(), kind: "variable".to_string(),
-                                        line_start: child.start_position().row + 1,
-                                        line_end: child.end_position().row + 1,
-                                        doc_comment: None, signature: None, summary: None,
-                                    });
-                                }
+    fn handle_special(node: Node, bytes: &[u8], entities: &mut Vec<Entity>, imports: &mut Vec<ImportStmt>) {
+        match node.kind() {
+            "field_declaration" => {
+                // 遍历子节点查找变量名
+                let mut sub_cursor = node.walk();
+                if sub_cursor.goto_first_child() {
+                    loop {
+                        let child = sub_cursor.node();
+                        if child.kind() == "variable_declarator" {
+                            // tree-sitter-c-sharp 0.23 中 variable_declarator 可能不含 name 字段
+                            // 先尝试 node_name，失败则用节点全文作为名称
+                            let name = Self::node_name(&child, bytes)
+                                .map(|s| s.to_string())
+                                .or_else(|| child.utf8_text(bytes).ok()
+                                    .map(|s| s.trim().to_string()));
+                            if let Some(name) = name {
+                                entities.push(Entity {
+                                    name: name.to_string(), kind: "variable".to_string(),
+                                    line_start: child.start_position().row + 1,
+                                    line_end: child.end_position().row + 1,
+                                    doc_comment: None, signature: None, summary: None,
+                                });
                             }
-                            if !sub_cursor.goto_next_sibling() { break; }
                         }
+                        if !sub_cursor.goto_next_sibling() { break; }
                     }
                 }
-                "namespace_declaration" => {
-                    if let Some(name) = Self::node_name(&node, bytes) {
-                        entities.push(Entity {
-                            name: name.to_string(), kind: "mod".to_string(),
-                            line_start: node.start_position().row + 1,
-                            line_end: node.end_position().row + 1,
-                            doc_comment: None, signature: None, summary: None,
-                        });
-                    }
-                }
-                "using_directive" => {
-                    // 使用 node 全文提取命名空间（tree-sitter-c-sharp 的 using_directive 没有 name 字段）
-                    if let Ok(text) = node.utf8_text(bytes) {
-                        let name = text
-                            .strip_prefix("using ")
-                            .and_then(|s| s.strip_suffix(';'))
-                            .map(|s| s.trim())
-                            .unwrap_or(text.trim());
-                        imports.push(ImportStmt {
-                            source: name.to_string(),
-                            alias: None,
-                            line: node.start_position().row + 1,
-                        });
-                    }
-                }
-                _ => {}
             }
-
-            if cursor.goto_first_child() { continue; }
-            loop {
-                if cursor.goto_next_sibling() { continue 'walk; }
-                if !cursor.goto_parent() { break 'walk; }
+            "using_directive" => {
+                // 使用 node 全文提取命名空间（tree-sitter-c-sharp 的 using_directive 没有 name 字段）
+                if let Ok(text) = node.utf8_text(bytes) {
+                    let name = text
+                        .strip_prefix("using ")
+                        .and_then(|s| s.strip_suffix(';'))
+                        .map(|s| s.trim())
+                        .unwrap_or(text.trim());
+                    imports.push(ImportStmt {
+                        source: name.to_string(),
+                        alias: None,
+                        line: node.start_position().row + 1,
+                    });
+                }
             }
+            _ => {}
         }
-
-        (entities, imports)
     }
 
     /// tree-sitter 解析失败时的正则降级方案。
     ///
-    /// 逐行扫描 C# 源码，使用字符串匹配合法提取关键信息。
+    /// 逐行扫描 C# 源码，使用字符串匹配和启发式识别合法提取关键信息。
     /// 在缺少 tree-sitter-c-sharp 依赖时保证基本功能可用。
+    /// 与其他语言不同，C# 的方法/属性识别是启发式规则（tokens 分析 + 关键字排除），
+    /// 无法表化为简单前缀规则，故保留为语言内实现。
     fn fallback(source: &str) -> (Vec<Entity>, Vec<ImportStmt>) {
         let mut entities = Vec::new();
         let mut imports = Vec::new();
@@ -275,23 +206,11 @@ impl CSharpProcessor {
 }
 
 impl LanguageProcessor for CSharpProcessor {
-    fn name(&self) -> &'static str { "C#" }
+    fn name(&self) -> &'static str { Self::language() }
     fn extensions(&self) -> &[&str] { &[".cs"] }
 
     fn parse(&self, source: &str, path: &Path) -> Result<FileInsight> {
-        if source.is_empty() {
-            return Ok(FileInsight {
-                path: path.to_path_buf(), language: "C#".into(),
-                entities: vec![], imports: vec![], doc_comments: vec![],
-                source: source.to_string(),
-            });
-        }
-        let (entities, imports) = Self::walk(source);
-        Ok(FileInsight {
-            path: path.to_path_buf(), language: "C#".into(),
-            entities, imports, doc_comments: vec![],
-            source: source.to_string(),
-        })
+        Self::parse_file(source, path)
     }
 }
 

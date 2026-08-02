@@ -11,8 +11,9 @@ use anyhow::Result;
 use crate::config::schema::WikiConfig;
 use crate::ingest::parser::FileInsight;
 use crate::model::KnowledgeGraph;
+use crate::project::ProjectRoot;
 
-use self::change::{classify_entity_changes, EntityChangeSet};
+use self::change::{classify_entity_changes_at, EntityChangeSet};
 use self::diff::analyze_git_diff;
 use self::impact::{propagate_impact, propagate_impact_semantic};
 use self::state::GenerationState;
@@ -43,17 +44,14 @@ pub struct IncrementalResult {
     pub entity_changes: EntityChangeSet,
 }
 
-/// 运行增量更新分析
+/// 在指定项目根下运行增量更新分析
 ///
-/// 1. 分析 Git diff 获取变更文件列表
-/// 2. 在知识图谱上传播变更影响
-/// 3. 返回包含变更文件路径和受影响模块的结果
-///
-/// `watch_paths` 为文件监听外部传入的事件路径（FileWatch 策略使用，
-/// 可为空；GitDiff 分支忽略）。
-///
-/// 无 Git 历史时跳过增量更新。
-pub fn run_incremental_update(
+/// root 注入链路：git 仓库定位（analyze_git_diff / classify_entity_changes_at）
+/// 全部以 root 为基准，不再依赖进程 cwd——测试可在临时目录构造
+/// ProjectRoot 验证增量逻辑，watch 常驻进程的 cwd 漂移不再改变
+/// git 仓库解析目标。
+pub fn run_incremental_update_at(
+    root: &ProjectRoot,
     insights: &[FileInsight],
     graph: &KnowledgeGraph,
     config: &WikiConfig,
@@ -69,7 +67,7 @@ pub fn run_incremental_update(
     // 按策略分发：GitDiff 或 FileWatch
     let (changed_files, affected_modules, entity_changes) = match config.incremental.strategy {
         IncrementalStrategy::GitDiff => {
-            run_git_diff_incremental(insights, graph, config, &state_dir, Path::new("."))?
+            run_git_diff_incremental(root, insights, graph, config, &state_dir)?
         }
         IncrementalStrategy::FileWatch => {
             let (files, modules) = run_file_watch_incremental(insights, graph, config, &state_dir, watch_paths)?;
@@ -87,18 +85,21 @@ fn fallback_to_full(insights: &[FileInsight]) -> (Vec<std::path::PathBuf>, Vec<S
 }
 
 /// Git diff 策略的增量更新
+///
+/// root 注入：git 仓库定位与实体变化分类的仓库根都由 root 显式给出
+/// （私有函数，签名由公开入口 run_incremental_update_at 统一约束）。
 fn run_git_diff_incremental(
+    root: &ProjectRoot,
     insights: &[FileInsight],
     graph: &KnowledgeGraph,
     config: &WikiConfig,
     state_dir: &Path,
-    repo_path: &Path,
 ) -> Result<(Vec<std::path::PathBuf>, Vec<String>, EntityChangeSet)> {
     // 1. 分析 Git diff
     let last_commit_hash = GenerationState::load(state_dir)
         .ok()
         .and_then(|s| s.last_commit_hash);
-    let diff_result = match analyze_git_diff(repo_path, last_commit_hash.as_deref()) {
+    let diff_result = match analyze_git_diff(root.path(), last_commit_hash.as_deref()) {
         Ok(result) => result,
         Err(e) => {
             // 非 Git 仓库：无法做增量，回退全量生成
@@ -162,7 +163,7 @@ fn run_git_diff_incremental(
     // 语义传播只让接口级变化（新增/删除/签名变更）影响依赖方，
     // 实现级变化（仅函数体修改）只重生成本模块——避免一次小改动
     // 触发全仓库级联重生成。分类失败时回退保守的双向传播。
-    let entity_changes = match classify_entity_changes(&diff_result, insights) {
+    let entity_changes = match classify_entity_changes_at(root, &diff_result, insights) {
         Ok(set) => set,
         Err(e) => {
             tracing::warn!("实体级变化分类失败，回退双向传播: {}", e);
@@ -269,7 +270,7 @@ mod tests {
         let state_dir = dir.join(".state");
 
         let (changed, affected, _entity_changes) =
-            run_git_diff_incremental(&insights, &graph, &config, &state_dir, &dir).unwrap();
+            run_git_diff_incremental(&ProjectRoot::new(dir.clone()), &insights, &graph, &config, &state_dir).unwrap();
         assert_eq!(changed.len(), 2);
         assert!(changed.iter().all(|p| insights.iter().any(|i| &i.path == p)));
         assert!(affected.is_empty());
@@ -312,7 +313,7 @@ mod tests {
         let state_dir = dir.join(".state");
 
         let (changed, affected, _entity_changes) =
-            run_git_diff_incremental(&insights, &graph, &config, &state_dir, &dir).unwrap();
+            run_git_diff_incremental(&ProjectRoot::new(dir.clone()), &insights, &graph, &config, &state_dir).unwrap();
         assert_eq!(changed.len(), 1);
         assert!(affected.is_empty());
 
@@ -358,7 +359,7 @@ mod tests {
         let state_dir = dir.join(".state");
 
         let (changed, _affected, _entity_changes) =
-            run_git_diff_incremental(&insights, &graph, &config, &state_dir, &dir).unwrap();
+            run_git_diff_incremental(&ProjectRoot::new(dir.clone()), &insights, &graph, &config, &state_dir).unwrap();
         assert!(
             changed.iter().any(|p| p == Path::new("src/foo.rs")),
             "被删文件路径应计入 changed_files（否则删除清理与索引清理永不触发）: {:?}",

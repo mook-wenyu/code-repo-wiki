@@ -64,11 +64,28 @@ impl EntityChangeSet {
     }
 }
 
-/// 对 Git diff 做实体级变化分类
+/// 对 Git diff 做实体级变化分类（兼容入口：委托 [`classify_entity_changes_at`]）
 ///
 /// `current_insights` 为当前工作区解析结果（scan_and_parse 产出，
 /// 避免重复解析已解析过的文件）。
+/// 主代理合入 --root 注入后切换调用点为 `classify_entity_changes_at` 并删除本委托。
 pub fn classify_entity_changes(
+    diff: &GitDiffResult,
+    current_insights: &[FileInsight],
+) -> Result<EntityChangeSet> {
+    classify_entity_changes_at(
+        &crate::project::ProjectRoot::from_cwd()?,
+        diff,
+        current_insights,
+    )
+}
+
+/// 在指定项目根下对 Git diff 做实体级变化分类
+///
+/// git 仓库定位基准显式注入（与 analyze_git_diff 同源，root 由
+/// run_incremental_update_at 统一传入）：不再依赖进程 cwd。
+pub fn classify_entity_changes_at(
+    root: &crate::project::ProjectRoot,
     diff: &GitDiffResult,
     current_insights: &[FileInsight],
 ) -> Result<EntityChangeSet> {
@@ -76,7 +93,7 @@ pub fn classify_entity_changes(
         // 无上次生成记录（首次生成）时无法读旧内容，视为无实体变化
         return Ok(EntityChangeSet::default());
     }
-    let repo = git2::Repository::open(".")
+    let repo = git2::Repository::open(root.path())
         .with_context(|| "实体级变化分类需要 Git 仓库")?;
     // commit/tree 只解析一次（避免每个文件重复 find_commit 的 ODB 开销）
     let from_commit = repo.find_commit(git2::Oid::from_str(&diff.from_commit)?)?;

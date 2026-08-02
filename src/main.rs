@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use anyhow::Context;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -25,6 +26,9 @@ enum Commands {
         /// 以 JSON 行输出流水线进度（供插件解析，如 {"stage":"scanning","progress":10}）
         #[arg(long)]
         progress_json: bool,
+        /// 项目根目录（扫描根/git 定位基准，默认当前目录）
+        #[arg(long)]
+        root: Option<PathBuf>,
     },
     /// 增量更新 Wiki 文档
     Update {
@@ -37,6 +41,9 @@ enum Commands {
         /// 清空人工修改保护集，强制覆盖所有文档（与 generate --force 语义一致）
         #[arg(long)]
         force: bool,
+        /// 项目根目录（扫描根/git 定位基准，默认当前目录）
+        #[arg(long)]
+        root: Option<PathBuf>,
     },
     /// 同步产物目录内容到指纹库（Git 内容合入，不触发 LLM 生成）
     Sync {
@@ -69,6 +76,15 @@ enum Commands {
         /// 配置文件路径
         #[arg(short, long, default_value = ".repo-wiki/config.toml")]
         config: PathBuf,
+        /// 输出目录（覆盖配置文件中的 output.dir，仅 skip_generate=false 时生效）
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// 跳过生成，直接从导出快照导出（需先运行过 generate/update 落盘快照）
+        #[arg(long)]
+        skip_generate: bool,
+        /// 项目根目录（扫描根/git 定位基准，默认当前目录）
+        #[arg(long)]
+        root: Option<PathBuf>,
     },
     /// 初始化配置文件
     Init {
@@ -81,6 +97,9 @@ enum Commands {
         /// 配置文件路径
         #[arg(short, long, default_value = ".repo-wiki/config.toml")]
         config: PathBuf,
+        /// 项目根目录（扫描根/监听根基准，默认当前目录）
+        #[arg(long)]
+        root: Option<PathBuf>,
     },
     /// 搜索代码实体
     Search {
@@ -99,6 +118,9 @@ enum Commands {
         /// 搜索引擎选择: text / semantic / hybrid（默认取配置文件中的 default_engine）
         #[arg(short, long)]
         engine: Option<String>,
+        /// 项目根目录（扫描根/git 定位基准，默认当前目录）
+        #[arg(long)]
+        root: Option<PathBuf>,
     },
     /// AST 精确符号查找：扫描源文件定位符号定义（文件+行号+签名，不依赖搜索索引）
     AstSearch {
@@ -113,11 +135,17 @@ enum Commands {
         /// 以 JSON 格式输出
         #[arg(long)]
         json: bool,
+        /// 项目根目录（扫描根/git 定位基准，默认当前目录）
+        #[arg(long)]
+        root: Option<PathBuf>,
     },
     /// 知识卡片操作（Qoder /knowledge 对等）
     Card {
         #[command(subcommand)]
         action: CardAction,
+        /// 项目根目录（扫描根/git 定位基准，默认当前目录）
+        #[arg(long)]
+        root: Option<PathBuf>,
     },
     /// 将 repo-wiki 注册为 OpenCode 插件
     InstallToOpencode,
@@ -184,8 +212,19 @@ enum CardAction {
     },
 }
 
-fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
+/// 解析 --root 参数（缺省当前目录）
+///
+/// ProjectRoot 是扫描根/git 定位/watch 根的注入载体（票 15）；
+/// output.dir 等产物路径仍按配置原样解析（相对 cwd），--root 只管
+/// "代码从哪扫"而非"产物写哪"。
+fn resolve_root(root: Option<&Path>) -> anyhow::Result<repo_wiki::project::ProjectRoot> {
+    match root {
+        Some(p) => Ok(repo_wiki::project::ProjectRoot::new(p.to_path_buf())),
+        None => repo_wiki::project::ProjectRoot::from_cwd(),
+    }
+}
+
+fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
@@ -195,14 +234,22 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Generate { config, output, force, progress_json } => {
+        Commands::Generate { config, output, force, progress_json, root } => {
+            let root = resolve_root(root.as_deref())?;
             let result = if progress_json {
                 // JSONL 进度输出：插件 wiki_generate 流式解析
-                repo_wiki::run_pipeline_with_progress(&config, output.as_deref(), force, &|evt| {
-                    println!(r#"{{"stage":"{}","progress":{}}}"#, evt.stage, evt.percent);
-                })?
+                repo_wiki::run_pipeline_with_progress(
+                    &config, output.as_deref(), force, &root,
+                    &repo_wiki::GenerationMode::Full,
+                    &|evt| {
+                        println!(r#"{{"stage":"{}","progress":{}}}"#, evt.stage, evt.percent);
+                    },
+                )?
             } else {
-                repo_wiki::run_pipeline(&config, output.as_deref(), force)?
+                repo_wiki::run_pipeline(
+                    &config, output.as_deref(), force, &root,
+                    &repo_wiki::GenerationMode::Full,
+                )?
             };
             tracing::info!(
                 "生成完成: 扫描 {} 个文件, 发现 {} 个实体",
@@ -210,9 +257,16 @@ fn main() -> anyhow::Result<()> {
                 result.stats.total_entities
             );
         }
-        Commands::Update { config, output, force } => {
+        Commands::Update { config, output, force, root } => {
             // update 命令无外部 watch 事件，watch_paths 传空、change_kind 传 None
-            let result = repo_wiki::run_incremental_pipeline(&config, output.as_deref(), force, &[], None)?;
+            let root = resolve_root(root.as_deref())?;
+            let result = repo_wiki::run_pipeline(
+                &config, output.as_deref(), force, &root,
+                &repo_wiki::GenerationMode::Incremental {
+                    watch_paths: Vec::new(),
+                    change_kind: None,
+                },
+            )?;
             tracing::info!(
                 "增量更新完成: 扫描 {} 个文件, {} 个模块受影响",
                 result.stats.files_scanned,
@@ -264,9 +318,10 @@ fn main() -> anyhow::Result<()> {
                 anyhow::bail!("lint: 发现 {} 个问题", issues.len());
             }
         }
-        Commands::AstSearch { symbol, language, config, json } => {
+        Commands::AstSearch { symbol, language, config, json, root } => {
             // AST 精确符号查找：不依赖搜索索引，直接扫描源文件解析 AST 定位定义
-            let results = repo_wiki::execute_ast_search(&config, &symbol, language.as_deref())?;
+            let root = resolve_root(root.as_deref())?;
+            let results = repo_wiki::execute_ast_search(&config, &root, &symbol, language.as_deref())?;
             if json {
                 let json_results: Vec<serde_json::Value> = results.iter().map(|hit| {
                     serde_json::json!({
@@ -294,10 +349,42 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Commands::Export { config } => {
+        Commands::Export { config, output, skip_generate, root } => {
+            let root = resolve_root(root.as_deref())?;
             let cfg = repo_wiki::config::load_config(&config)?;
-            let result = repo_wiki::run_pipeline(&config, None, false)?;
-            repo_wiki::output::html::export_html(&result.documents, &result.cards, &result.graph, &cfg)?;
+            if skip_generate {
+                // 从导出快照恢复导出（票 06）：不重跑生成流水线。
+                // render_all 每次写盘后同步写 .state/export_snapshot.json，
+                // 快照缺失时明确报错（不静默回退重生成——回退会掩盖
+                // 快照契约被破坏的事实）。
+                let snapshot_path =
+                    repo_wiki::output::export_snapshot_path(Path::new(&cfg.output.dir));
+                let content = std::fs::read_to_string(&snapshot_path).with_context(|| {
+                    format!(
+                        "导出快照不存在，请先运行 `repo-wiki generate` 或 `repo-wiki update`: {}",
+                        snapshot_path.display()
+                    )
+                })?;
+                let snapshot: repo_wiki::output::ExportSnapshot =
+                    serde_json::from_str(&content).with_context(|| "解析导出快照失败")?;
+                repo_wiki::output::html::export_html(
+                    &snapshot.documents,
+                    &snapshot.cards,
+                    &snapshot.modules,
+                    &cfg,
+                )?;
+            } else {
+                let result = repo_wiki::run_pipeline(
+                    &config, output.as_deref(), false, &root,
+                    &repo_wiki::GenerationMode::Full,
+                )?;
+                repo_wiki::output::html::export_html(
+                    &result.documents,
+                    &result.cards,
+                    &repo_wiki::output::export_modules(&result.graph, &result.cards),
+                    &cfg,
+                )?;
+            }
             tracing::info!("HTML 导出完成 (--config {})", config.display());
         }
         Commands::Note { text, config } => {
@@ -313,10 +400,11 @@ fn main() -> anyhow::Result<()> {
             repo_wiki::config::create_default_config(&path)?;
             tracing::info!("默认配置文件已创建: {}", path.display());
         }
-        Commands::Watch { config } => {
-            repo_wiki::run_watch(&config)?;
+        Commands::Watch { config, root } => {
+            let root = resolve_root(root.as_deref())?;
+            repo_wiki::run_watch(&config, &root)?;
         }
-        Commands::Search { query, top_k, config, json, engine } => {
+        Commands::Search { query, top_k, config, json, engine, root } => {
             // 解析引擎类型：优先用 CLI 参数，否则取配置文件中的 default_engine
             let cfg = repo_wiki::config::load_config(&config)?;
             let engine_type = match engine.as_deref() {
@@ -328,7 +416,8 @@ fn main() -> anyhow::Result<()> {
             };
             // CLI 显式 -k 优先，未传时回退配置 search.default_top_k
             let top_k = top_k.unwrap_or(cfg.search.default_top_k);
-            let results = repo_wiki::execute_search(&config, &query, top_k, &engine_type)?;
+            let root = resolve_root(root.as_deref())?;
+            let results = repo_wiki::execute_search(&config, &root, &query, top_k, &engine_type)?;
             if json {
                 // JSON 格式输出（供 OpenCode 插件解析）
                 let json_results: Vec<serde_json::Value> = results.iter().map(|hit| {
@@ -366,7 +455,7 @@ fn main() -> anyhow::Result<()> {
         Commands::UninstallFromOpencode { force } => {
             repo_wiki::commands::uninstall(force)?;
         }
-        Commands::Card { action } => {
+        Commands::Card { action, root } => {
             use repo_wiki::generate::card as card_cmd;
             // CLI 枚举转业务枚举（config 路径在匹配时提取，供 run_card_command 使用）
             let (config, action) = match action {
@@ -386,7 +475,8 @@ fn main() -> anyhow::Result<()> {
                     card_cmd::CardAction::Rewrite { module, instruction, references: reference },
                 ),
             };
-            repo_wiki::run_card_command(&config, &action)?;
+            let root = resolve_root(root.as_deref())?;
+            repo_wiki::run_card_command(&config, &root, &action)?;
         }
     }
 

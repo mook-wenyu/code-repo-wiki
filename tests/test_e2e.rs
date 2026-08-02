@@ -94,7 +94,7 @@ fn test_e2e_full_pipeline() {
     let config_path = repo.join("config.toml");
 
     // ---- 1. 全量生成：断言产物完整 ----
-    let result = repo_wiki::run_pipeline(&config_path, None, false).expect("全量生成失败");
+    let result = repo_wiki::run_pipeline(&config_path, None, false, &repo_wiki::project::ProjectRoot::from_cwd().unwrap(), &repo_wiki::GenerationMode::Full).expect("全量生成失败");
     assert!(result.stats.files_scanned >= 2, "应扫描到至少 2 个文件");
     assert!(result.stats.total_entities >= 2, "应解析出至少 2 个实体");
     assert!(!result.documents.is_empty(), "应生成文档");
@@ -141,7 +141,7 @@ impl Alpha {
     )
     .expect("修改 a/mod.rs 失败");
 
-    let inc = repo_wiki::run_incremental_pipeline(&config_path, None, false, &[], None)
+    let inc = repo_wiki::run_pipeline(&config_path, None, false, &repo_wiki::project::ProjectRoot::from_cwd().unwrap(), &repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
         .expect("增量更新失败");
     assert!(!inc.documents.is_empty(), "增量更新应重新生成文档");
 
@@ -157,12 +157,15 @@ impl Alpha {
     std::fs::remove_file(repo.join("src").join("a").join("mod.rs")).expect("删除 a/mod.rs 失败");
     let deleted_path = repo.join("src").join("a").join("mod.rs");
 
-    let del = repo_wiki::run_incremental_pipeline(
+    let del = repo_wiki::run_pipeline(
         &config_path,
         None,
         false,
-        &[deleted_path],
-        Some(repo_wiki::incremental::watch::ChangeKind::Deleted),
+        &repo_wiki::project::ProjectRoot::from_cwd().unwrap(),
+        &repo_wiki::GenerationMode::Incremental {
+            watch_paths: vec![deleted_path],
+            change_kind: Some(repo_wiki::incremental::watch::ChangeKind::Deleted),
+        },
     )
     .expect("删除增量更新失败");
 

@@ -13,9 +13,14 @@ use crate::model::{KnowledgeCard, KnowledgeGraph, WikiDocument};
 
 use self::markdown::write_document;
 
-/// 生效的 wiki 语言列表（主语言 + 扩展语言），与生成层保持一致
+/// 生效的 wiki 语言列表（主语言 + 扩展语言）
+///
+/// 由 generate::collect_languages 移入（消除 output→generate 反向依赖；
+/// generate 侧调用点改向本函数——generate→output 依赖本就存在，card.rs 已用）。
 pub fn wiki_languages(config: &WikiConfig) -> Vec<String> {
-    crate::generate::collect_languages(config)
+    let mut languages = vec![config.wiki.language.clone()];
+    languages.extend(config.wiki.expand_languages.iter().cloned());
+    languages
 }
 
 /// API 参考页写盘路径：`{}/wiki/{lang}/api.md`（每种语言独立一份）
@@ -69,12 +74,125 @@ pub(crate) fn wiki_page_path(output_dir: &Path, lang: &str, doc: &WikiDocument) 
     }
 }
 
-/// 由模块名派生的 wiki 页文件名（与 wiki_file_name 的 module_path.join("_") 等价）
+/// Wiki 页面 HTML 写盘路径：`{}/wiki/{lang}/{file}.html`
 ///
-/// 用于拿不到 WikiDocument 的场景（如删除清理时被删文件已不在图中），
-/// 只依赖模块名本身，保证与 render_all 的落盘命名规则一致。
-pub(crate) fn module_page_file_name(module: &str) -> String {
-    format!("{}.md", card_file_stem(module))
+/// 与 wiki_page_path 同构（命名规则完全一致，仅扩展名 .md → .html），
+/// 保证 HTML 导出与 markdown 产物一一对应（多语言同名标题不冲突）。
+pub fn wiki_page_html_path(output_dir: &Path, doc: &WikiDocument) -> PathBuf {
+    wiki_page_path(output_dir, &doc.language, doc).with_extension("html")
+}
+
+/// 导出快照中的模块摘要（快照 JSON 的 modules 项）
+///
+/// name/cohesion/coupling 直接来自 graph.modules；files 由模块节点反查
+/// file_path 派生（去重排序）；features 取同模块卡片的特征追溯列表
+/// （生成层 backfill_features 已按模块回填，无需重算交集）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ExportModuleSnapshot {
+    pub name: String,
+    pub files: Vec<String>,
+    pub cohesion: f64,
+    pub coupling: f64,
+    pub features: Vec<String>,
+}
+
+/// 导出快照（`{output_dir}/.state/export_snapshot.json`）
+///
+/// 对外契约：main.rs 的 export --skip-generate 直接消费本文件，
+/// 不再重跑生成流水线。documents/cards 为本次完整生成集（含受保护
+/// 跳过写盘的文档——磁盘保留人工版，快照记录的是生成意图集）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ExportSnapshot {
+    pub version: u32,
+    pub documents: Vec<WikiDocument>,
+    pub cards: Vec<KnowledgeCard>,
+    pub modules: Vec<ExportModuleSnapshot>,
+}
+
+/// 导出快照写盘路径：`{output_dir}/.state/export_snapshot.json`
+/// （与 generation_state.json 同目录，沿用既有状态目录约定）
+pub fn export_snapshot_path(output_dir: &Path) -> PathBuf {
+    output_dir.join(".state").join("export_snapshot.json")
+}
+
+/// 从图与卡片提取快照模块列表（按模块名排序保证确定性）
+pub fn export_modules(graph: &KnowledgeGraph, cards: &[KnowledgeCard]) -> Vec<ExportModuleSnapshot> {
+    let mut modules: Vec<ExportModuleSnapshot> = graph
+        .modules
+        .iter()
+        .map(|m| {
+            let mut files: Vec<String> = m
+                .node_ids
+                .iter()
+                .filter_map(|nid| graph.graph.node_weight(*nid).and_then(|n| n.file_path.clone()))
+                .collect();
+            files.sort();
+            files.dedup();
+            let features = cards
+                .iter()
+                .find(|c| c.module_name == m.name)
+                .map(|c| c.features.clone())
+                .unwrap_or_default();
+            ExportModuleSnapshot {
+                name: m.name.clone(),
+                files,
+                cohesion: m.cohesion,
+                coupling: m.coupling,
+                features,
+            }
+        })
+        .collect();
+    modules.sort_by(|a, b| a.name.cmp(&b.name));
+    modules
+}
+
+/// 写导出快照到 `.state/export_snapshot.json`
+fn write_export_snapshot(
+    output_dir: &Path,
+    documents: &[WikiDocument],
+    cards: &[KnowledgeCard],
+    graph: &KnowledgeGraph,
+) -> Result<()> {
+    let snapshot = ExportSnapshot {
+        version: 1,
+        documents: documents.to_vec(),
+        cards: cards.to_vec(),
+        modules: export_modules(graph, cards),
+    };
+    let path = export_snapshot_path(output_dir);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(&snapshot)?)?;
+    Ok(())
+}
+
+/// 本次生成的产物路径集合（供增量清理 diff 使用）
+///
+/// 语义：render_all 本次生成意图写入的全部文件路径，**含受保护跳过写盘
+/// 的文档**（保护文档属于生成集，磁盘上是人工版；清理 diff 以本集合
+/// 为准时，保护路径天然被排除在待删集合外，不会误删人工编辑内容）。
+/// 路径与 render_all 写盘规则逐一对应：wiki 页按 doc.language 落盘、
+/// 关联卡片同语言落盘（精确关联）、api.md 只写主语言、_toc.md 写产物根。
+pub fn rendered_paths(
+    documents: &[WikiDocument],
+    cards: &[KnowledgeCard],
+    config: &WikiConfig,
+) -> Vec<PathBuf> {
+    let output_dir = Path::new(&config.output.dir);
+    let mut paths: std::collections::BTreeSet<PathBuf> = Default::default();
+    for doc in documents {
+        paths.insert(wiki_page_path(output_dir, &doc.language, doc));
+        let doc_module = doc.module_path.join("::");
+        for card in cards {
+            if card.module_name == doc_module {
+                paths.insert(card_page_path(output_dir, &doc.language, &card.module_name));
+            }
+        }
+    }
+    paths.insert(api_doc_path(output_dir, &config.wiki.language));
+    paths.insert(toc_doc_path(output_dir));
+    paths.into_iter().collect()
 }
 
 /// 渲染所有文档到输出目录
@@ -110,9 +228,14 @@ pub fn render_all(
     for doc in documents {
         // 路径计算与 write_document 落盘共用 wiki_page_path（人工修改保护判定依据）
         let wiki_path = wiki_page_path(output_dir, &doc.language, doc);
+        // 精确关联：doc 的模块路径（join("::")）与卡片 module_name 精确相等
+        // （两者同源于 chunk.module_path）。子串匹配曾误关联 src::test2 与
+        // src::test（"src::test2".contains("test")）；无模块归属的全局文档
+        // （module_path 为空）join 后为空串，不匹配任何卡片。
+        let doc_module = doc.module_path.join("::");
         let doc_cards: Vec<&KnowledgeCard> = cards
             .iter()
-            .filter(|c| doc.module_path.iter().any(|p| c.module_name.contains(p)))
+            .filter(|c| c.module_name == doc_module)
             // 卡片与 wiki 页同规则保护：命中保护集的卡片跳过写盘，
             // 保留人工编辑版本（人工编辑过的卡片由指纹检测纳入保护集）
             .filter(|c| {
@@ -209,6 +332,13 @@ pub fn render_all(
 
     // AGENTS.md 引导文件：不存在才生成（幂等），人工已有 AGENTS.md 时跳过
     let _ = generate_agents_md(output_dir);
+
+    // 6. 写盘完成后同步导出快照（export --skip-generate 消费的对外契约）。
+    //    辅助产物：写入失败仅告警不中断——快照缺失时 export --skip-generate
+    //    会明确报错，属可观测性契约内，非兜底。
+    if let Err(e) = write_export_snapshot(output_dir, documents, cards, graph) {
+        tracing::warn!("导出快照写入失败: {}", e);
+    }
     Ok(())
 }
 
@@ -307,6 +437,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_collect_languages_default_single() {
+        let config = WikiConfig::default();
+        assert_eq!(wiki_languages(&config), vec!["zh"]);
+    }
+
+    #[test]
+    fn test_collect_languages_with_expand() {
+        let config = WikiConfig {
+            wiki: crate::config::schema::WikiSection {
+                language: "zh".into(),
+                expand_languages: vec!["en".into(), "ja".into()],
+            },
+            ..Default::default()
+        };
+        assert_eq!(wiki_languages(&config), vec!["zh", "en", "ja"]);
+    }
+
     /// A4：wiki 页与卡片的路径规则收敛后，路径计算必须与
     /// render_all/write_document 的落盘命名完全一致（单测锁死规则，防止漂移）
     #[test]
@@ -339,7 +487,6 @@ mod tests {
             card_page_path(Path::new("out"), "zh", "src::testmodule"),
             Path::new("out").join("cards").join("zh").join("src_testmodule.md")
         );
-        assert_eq!(module_page_file_name("src::testmodule"), "src_testmodule.md");
     }
 
     /// A3：人工编辑过的卡片进入保护集后，全量 generate 不覆盖（保留人工编辑版）

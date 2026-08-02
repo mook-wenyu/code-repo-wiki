@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 
 /// 生成状态
 ///
-/// 记录上一次生成时的 commit hash、文件指纹和模块指纹，
+/// 记录上一次生成时的 commit hash 和文件指纹，
 /// 用于增量更新时检测变更。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GenerationState {
@@ -14,8 +14,6 @@ pub struct GenerationState {
     pub last_commit_hash: Option<String>,
     /// 文件路径 → SHA256 指纹
     pub file_fingerprints: HashMap<String, String>,
-    /// 模块名 → SHA256 指纹
-    pub module_fingerprints: HashMap<String, String>,
     /// 生成时间（ISO 8601）
     pub generated_at: String,
     /// 已生成文档路径 → SHA256 指纹（用于检测人工修改）
@@ -74,34 +72,9 @@ impl GenerationState {
             }
         }
 
-        // 计算模块指纹
-        let mut module_entities: HashMap<String, Vec<String>> = HashMap::new();
-        for insight in insights {
-            let module_path = insight
-                .path
-                .strip_prefix(
-                    std::env::current_dir()
-                        .ok()
-                        .as_deref()
-                        .unwrap_or(std::path::Path::new("")),
-                )
-                .unwrap_or(&insight.path)
-                .with_extension("")
-                .to_string_lossy()
-                .replace(std::path::MAIN_SEPARATOR, "::");
-            let names: Vec<String> = insight.entities.iter().map(|e| e.name.clone()).collect();
-            module_entities.entry(module_path).or_default().extend(names);
-        }
-        let mut module_fingerprints = HashMap::new();
-        for (module, mut names) in module_entities {
-            names.sort();
-            module_fingerprints.insert(module, sha256_hex(names.join(",").as_bytes()));
-        }
-
         Ok(Self {
             last_commit_hash: Some(commit_hash.to_string()),
             file_fingerprints,
-            module_fingerprints,
             doc_fingerprints: HashMap::new(),
             doc_modules: HashMap::new(),
             protected_docs: Vec::new(),
@@ -267,7 +240,6 @@ mod tests {
                 m.insert("src/main.rs".into(), "deadbeef".into());
                 m
             },
-            module_fingerprints: HashMap::new(),
             doc_fingerprints: HashMap::new(),
             doc_modules: HashMap::new(),
             protected_docs: Vec::new(),
@@ -304,7 +276,6 @@ mod tests {
                 );
                 m
             },
-            module_fingerprints: HashMap::new(),
             doc_fingerprints: HashMap::new(),
             doc_modules: HashMap::new(),
             protected_docs: Vec::new(),
@@ -325,7 +296,6 @@ mod tests {
         let state = GenerationState {
             last_commit_hash: None,
             file_fingerprints: HashMap::new(),
-            module_fingerprints: HashMap::new(),
             doc_fingerprints: HashMap::new(),
             doc_modules: HashMap::new(),
             protected_docs: Vec::new(),

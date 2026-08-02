@@ -1,8 +1,8 @@
 use std::path::Path;
 use anyhow::Result;
-use tree_sitter::{Language, Parser};
+use tree_sitter::{Language, Node};
 
-use super::{Entity, FileInsight, ImportStmt, LanguageProcessor};
+use super::{Entity, FileInsight, ImportStmt, KindRule, LanguageProcessor, SharedProcessor};
 
 /// JavaScript 语言处理器。
 ///
@@ -15,110 +15,65 @@ impl JavaScriptProcessor {
     pub fn new() -> Result<Self> {
         Ok(Self)
     }
+}
 
-    /// 使用 tree-sitter AST 遍历提取实体和导入语句。
-    ///
-    /// 支持的实体类型：
-    /// - class_declaration → kind: "class"
-    /// - function_declaration → kind: "function"
-    /// - method_definition → kind: "function"（对象方法）
-    /// - variable_declarator + arrow_function → kind: "function"（箭头函数）
-    /// - variable_declarator → kind: "variable"（普通 const/let/var）
-    ///
-    /// 支持的导入类型：
-    /// - import_statement → 标准 ES module 导入
-    /// - export_statement（有 source 子节点）→ 重导出视为导入
-    fn walk(source: &str) -> (Vec<Entity>, Vec<ImportStmt>) {
-        let bytes = source.as_bytes();
-        let mut entities = Vec::new();
-        let mut imports = Vec::new();
+/// kind 映射表（差异点数据化）：const item 保证 &'static 生命周期
+const KINDS: &[KindRule] = &[
+    KindRule::plain("class_declaration", "class"),
+    KindRule::with_sig("function_declaration", "function", '{'),
+    KindRule::with_sig("method_definition", "function", '{'),
+];
 
-        let language: Language = tree_sitter_javascript::LANGUAGE.into();
-        let mut parser = Parser::new();
-        if parser.set_language(&language).is_err() {
-            return Self::fallback(source);
-        }
-        let tree = match parser.parse(source, None) {
-            Some(t) => t,
-            None => return Self::fallback(source),
-        };
+/// JavaScript 差异点实现：语法常量、kinds 映射表（纯映射分支）、
+/// 无法表化的特殊分支（variable_declarator 箭头函数动态 kind / import/export 文本解析）、
+/// 正则 fallback。公共 walk/fallback 触发/FileInsight 组装走 SharedProcessor 默认实现。
+impl SharedProcessor for JavaScriptProcessor {
+    fn language() -> &'static str { "JavaScript" }
+    fn grammar() -> Language { tree_sitter_javascript::LANGUAGE.into() }
 
-        let mut cursor = tree.walk();
-        if !cursor.goto_first_child() { return (entities, imports); }
+    fn kinds() -> &'static [KindRule] {
+        KINDS
+    }
 
-        'walk: loop {
-            let node = cursor.node();
-            match node.kind() {
-                "class_declaration" => {
-                    let name = node.child_by_field_name("name").and_then(|n| n.utf8_text(bytes).ok());
-                    if let Some(name) = name {
-                        entities.push(Entity {
-                            name: name.to_string(), kind: "class".to_string(),
-                            line_start: node.start_position().row + 1,
-                            line_end: node.end_position().row + 1,
-                            doc_comment: None, signature: None, summary: None,
-                        });
-                    }
+    fn handle_special(node: Node, bytes: &[u8], entities: &mut Vec<Entity>, imports: &mut Vec<ImportStmt>) {
+        match node.kind() {
+            "variable_declarator" => {
+                let name = node.child_by_field_name("name").and_then(|n| n.utf8_text(bytes).ok());
+                if let Some(name) = name {
+                    // 检查是否为箭头函数（const fn = () => {}）
+                    let is_arrow = node.child_by_field_name("value")
+                        .map(|v| v.kind() == "arrow_function").unwrap_or(false);
+                    let kind = if is_arrow { "function" } else { "variable" };
+                    entities.push(Entity {
+                        name: name.to_string(), kind: kind.to_string(),
+                        line_start: node.start_position().row + 1,
+                        line_end: node.end_position().row + 1,
+                        doc_comment: None, signature: None, summary: None,
+                    });
                 }
-                "function_declaration" | "method_definition" => {
-                    let name = node.child_by_field_name("name").and_then(|n| n.utf8_text(bytes).ok());
-                    if let Some(name) = name {
-                        let sig = node.utf8_text(bytes).ok()
-                            .and_then(|t| t.split('{').next().map(|s| s.trim().to_string()));
-                        entities.push(Entity {
-                            name: name.to_string(), kind: "function".to_string(),
-                            line_start: node.start_position().row + 1,
-                            line_end: node.end_position().row + 1,
-                            doc_comment: None, signature: sig, summary: None,
-                        });
-                    }
-                }
-                "variable_declarator" => {
-                    let name = node.child_by_field_name("name").and_then(|n| n.utf8_text(bytes).ok());
-                    if let Some(name) = name {
-                        // 检查是否为箭头函数（const fn = () => {}）
-                        let is_arrow = node.child_by_field_name("value")
-                            .map(|v| v.kind() == "arrow_function").unwrap_or(false);
-                        let kind = if is_arrow { "function" } else { "variable" };
-                        entities.push(Entity {
-                            name: name.to_string(), kind: kind.to_string(),
-                            line_start: node.start_position().row + 1,
-                            line_end: node.end_position().row + 1,
-                            doc_comment: None, signature: None, summary: None,
-                        });
-                    }
-                }
-                "import_statement" => {
-                    if let Some(src) = node.child_by_field_name("source").and_then(|n| n.utf8_text(bytes).ok()) {
-                        imports.push(ImportStmt {
-                            source: src.trim_matches(&['"', '\''][..]).to_string(),
-                            alias: None,
-                            line: node.start_position().row + 1,
-                        });
-                    }
-                }
-                "export_statement" => {
-                    // 处理重导出：export { x } from "mod" 或 export * from "mod"
-                    if let Some(src) = node.child_by_field_name("source").and_then(|n| n.utf8_text(bytes).ok()) {
-                        imports.push(ImportStmt {
-                            source: src.trim_matches(&['"', '\''][..]).to_string(),
-                            alias: None,
-                            line: node.start_position().row + 1,
-                        });
-                    }
-                    // 直接导出（export function/class）的子节点会通过 DFS 被常规匹配
-                }
-                _ => {}
             }
-
-            if cursor.goto_first_child() { continue; }
-            loop {
-                if cursor.goto_next_sibling() { continue 'walk; }
-                if !cursor.goto_parent() { break 'walk; }
+            "import_statement" => {
+                if let Some(src) = node.child_by_field_name("source").and_then(|n| n.utf8_text(bytes).ok()) {
+                    imports.push(ImportStmt {
+                        source: src.trim_matches(&['"', '\''][..]).to_string(),
+                        alias: None,
+                        line: node.start_position().row + 1,
+                    });
+                }
             }
+            "export_statement" => {
+                // 处理重导出：export { x } from "mod" 或 export * from "mod"
+                if let Some(src) = node.child_by_field_name("source").and_then(|n| n.utf8_text(bytes).ok()) {
+                    imports.push(ImportStmt {
+                        source: src.trim_matches(&['"', '\''][..]).to_string(),
+                        alias: None,
+                        line: node.start_position().row + 1,
+                    });
+                }
+                // 直接导出（export function/class）的子节点会通过 DFS 被常规匹配
+            }
+            _ => {}
         }
-
-        (entities, imports)
     }
 
     /// tree-sitter 解析失败时的正则降级方案。
@@ -194,23 +149,11 @@ impl JavaScriptProcessor {
 }
 
 impl LanguageProcessor for JavaScriptProcessor {
-    fn name(&self) -> &'static str { "JavaScript" }
+    fn name(&self) -> &'static str { Self::language() }
     fn extensions(&self) -> &[&str] { &[".js", ".jsx", ".mjs", ".cjs"] }
 
     fn parse(&self, source: &str, path: &Path) -> Result<FileInsight> {
-        if source.is_empty() {
-            return Ok(FileInsight {
-                path: path.to_path_buf(), language: "JavaScript".into(),
-                entities: vec![], imports: vec![], doc_comments: vec![],
-                source: source.to_string(),
-            });
-        }
-        let (entities, imports) = Self::walk(source);
-        Ok(FileInsight {
-            path: path.to_path_buf(), language: "JavaScript".into(),
-            entities, imports, doc_comments: vec![],
-            source: source.to_string(),
-        })
+        Self::parse_file(source, path)
     }
 }
 

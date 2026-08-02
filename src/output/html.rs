@@ -4,20 +4,24 @@ use anyhow::{Context, Result};
 use pulldown_cmark::{Options, Parser, html};
 
 use crate::config::schema::WikiConfig;
-use crate::model::{KnowledgeCard, KnowledgeGraph, WikiDocument};
+use crate::model::{KnowledgeCard, WikiDocument};
+use crate::output::{ExportModuleSnapshot, card_page_path, wiki_page_html_path};
 
 /// 将整个 Wiki 输出导出为 HTML 页面集合
 ///
-/// 输出结构：
-///   {output.dir}/wiki/{name}.html       — 每个文档的 HTML 页面
+/// 输出结构（与 markdown 产物同构，命名规则一致仅扩展名不同）：
+///   {output.dir}/wiki/{lang}/{stem}.html — 每个文档的 HTML 页面（按语言分目录）
 ///   {output.dir}/index.html             — 目录页
 ///   {output.dir}/style.css              — 基本样式
-///   {output.dir}/cards/{name}.html      — Knowledge Card 页面
+///   {output.dir}/cards/{lang}/{stem}.html — Knowledge Card 页面（随关联文档语言落盘）
 ///   {output.dir}/assets/module-deps.html — Mermaid 模块依赖图
+///
+/// `modules` 为快照形态的模块摘要（export_modules 产出），不依赖完整图，
+/// 使 export --skip-generate 可直接从导出快照构造调用。
 pub fn export_html(
     documents: &[WikiDocument],
     cards: &[KnowledgeCard],
-    graph: &KnowledgeGraph,
+    modules: &[ExportModuleSnapshot],
     config: &WikiConfig,
 ) -> Result<()> {
     let output_dir = Path::new(&config.output.dir);
@@ -32,16 +36,17 @@ pub fn export_html(
     std::fs::create_dir_all(&assets_dir)
         .with_context(|| format!("创建 assets 目录失败: {}", assets_dir.display()))?;
 
-    // 每个 WikiDocument → wiki/{name}.html
+    // 每个 WikiDocument → wiki/{lang}/{stem}.html（命名与 markdown 同构；
+    // 链接重写：正文中的内部 .md 相对链接在转换前改为 .html）
     for doc in documents {
-        let body = md_to_html(&doc.content);
-        let html = wrap_html(&doc.title, &body, "../style.css");
-        let file_name = sanitize_filename(&doc.title);
-        let path = wiki_dir.join(format!("{}.html", file_name));
+        let body = md_to_html(&rewrite_md_links_to_html(&doc.content));
+        let html = wrap_html(&doc.title, &body, "../../style.css");
+        let path = wiki_page_html_path(output_dir, doc);
         write_html_file(&path, &html)?;
     }
 
-    // 生成 index.html（目录页）：按模块分组（与 _toc.md 的 index 优先导航一致）
+    // 生成 index.html（目录页）：按模块分组（与 _toc.md 的 index 优先导航一致）。
+    // 链接指向 wiki/{doc.language}/{stem}.html（与页面落盘路径同一规则）。
     let mut module_groups: std::collections::BTreeMap<String, Vec<&WikiDocument>> = Default::default();
     let mut global_docs: Vec<&WikiDocument> = Vec::new();
     for doc in documents {
@@ -58,10 +63,9 @@ pub fn export_html(
     if !global_docs.is_empty() {
         toc_items.push_str("<h2>全局文档</h2>\n<ul>\n");
         for doc in &global_docs {
-            let file_name = sanitize_filename(&doc.title);
             toc_items.push_str(&format!(
-                "<li><a href=\"wiki/{}.html\">{}</a></li>\n",
-                file_name,
+                "<li><a href=\"{}\">{}</a></li>\n",
+                wiki_html_link(output_dir, doc),
                 escape_html(&doc.title)
             ));
         }
@@ -71,10 +75,9 @@ pub fn export_html(
     for (module, docs) in &module_groups {
         toc_items.push_str(&format!("<h3>{}</h3>\n<ul>\n", escape_html(module)));
         for doc in docs {
-            let file_name = sanitize_filename(&doc.title);
             toc_items.push_str(&format!(
-                "<li><a href=\"wiki/{}.html\">{}</a></li>\n",
-                file_name,
+                "<li><a href=\"{}\">{}</a></li>\n",
+                wiki_html_link(output_dir, doc),
                 escape_html(&doc.title)
             ));
         }
@@ -112,10 +115,10 @@ blockquote { border-left: 4px solid #ddd; margin: 0; padding: 0 16px; color: #66
     write_html_file(&output_dir.join("style.css"), css)?;
 
     // 生成 assets/module-deps.html（通过 CDN 嵌入 Mermaid）
-    if !graph.modules.is_empty() {
+    if !modules.is_empty() {
         let mut mermaid_lines = vec!["graph TD".to_string()];
-        for module in &graph.modules {
-            if let Some(_dep) = module.node_ids.first() {
+        for module in modules {
+            if !module.files.is_empty() {
                 // ponytail: 简化为模块级节点，不展开到每个实体
                 mermaid_lines.push(format!(
                     "    {}[\"{}\"]",
@@ -146,66 +149,117 @@ blockquote { border-left: 4px solid #ddd; margin: 0; padding: 0 16px; color: #66
         write_html_file(&assets_dir.join("module-deps.html"), &mermaid_html)?;
     }
 
-    // KnowledgeCard → cards/{name}.html
-    for card in cards {
-        let mut body = format!(
-            "<h1>{}</h1>\n<p><strong>类型:</strong> {}</p>\n<p>{}</p>\n",
-            escape_html(&card.module_name),
-            escape_html(&card.module_type),
-            escape_html(&card.summary)
-        );
-
-        if !card.key_entities.is_empty() {
-            body.push_str("<h2>关键实体</h2>\n<ul>\n");
-            for entity in &card.key_entities {
-                body.push_str(&format!(
-                    "  <li><strong>{}</strong> ({}) — {}</li>\n",
-                    escape_html(&entity.name),
-                    escape_html(&entity.kind),
-                    entity.doc.as_deref().unwrap_or("")
-                ));
+    // KnowledgeCard → cards/{lang}/{stem}.html（精确关联：卡片随其模块文档
+    // 的语言落盘，与 render_all 的写盘规则一致；无匹配文档的卡片不写盘）
+    for doc in documents {
+        let doc_module = doc.module_path.join("::");
+        for card in cards {
+            if card.module_name != doc_module {
+                continue;
             }
-            body.push_str("</ul>\n");
+            let html = wrap_html(&card.module_name, &render_card_body(card), "../../style.css");
+            let path = card_page_path(output_dir, &doc.language, &card.module_name).with_extension("html");
+            write_html_file(&path, &html)?;
         }
-
-        if !card.dependencies.is_empty() {
-            body.push_str(&format!(
-                "<h2>依赖</h2>\n<p>{}</p>\n",
-                card.dependencies
-                    .iter()
-                    .map(|d| escape_html(d))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
-
-        if !card.design_patterns.is_empty() {
-            body.push_str(&format!(
-                "<h2>设计模式</h2>\n<ul>\n<li>{}</li>\n</ul>\n",
-                card.design_patterns
-                    .iter()
-                    .map(|p| escape_html(p))
-                    .collect::<Vec<_>>()
-                    .join("</li>\n<li>")
-            ));
-        }
-
-        // 人工修改待同步（与 markdown 渲染对应，仅非空时输出）
-        if !card.pending_manual_edits.is_empty() {
-            body.push_str("<h2>人工修改待同步</h2>\n<ul>\n");
-            for note in &card.pending_manual_edits {
-                body.push_str(&format!("  <li>{}</li>\n", escape_html(note)));
-            }
-            body.push_str("</ul>\n");
-        }
-
-        let html = wrap_html(&card.module_name, &body, "../style.css");
-        let file_name = sanitize_filename(&card.module_name);
-        let path = cards_dir.join(format!("{}.html", file_name));
-        write_html_file(&path, &html)?;
     }
 
     Ok(())
+}
+
+/// 渲染卡片正文（标题、摘要、实体、依赖、模式、人工修改待同步）
+fn render_card_body(card: &KnowledgeCard) -> String {
+    let mut body = format!(
+        "<h1>{}</h1>\n<p><strong>类型:</strong> {}</p>\n<p>{}</p>\n",
+        escape_html(&card.module_name),
+        escape_html(&card.module_type),
+        escape_html(&card.summary)
+    );
+
+    if !card.key_entities.is_empty() {
+        body.push_str("<h2>关键实体</h2>\n<ul>\n");
+        for entity in &card.key_entities {
+            body.push_str(&format!(
+                "  <li><strong>{}</strong> ({}) — {}</li>\n",
+                escape_html(&entity.name),
+                escape_html(&entity.kind),
+                entity.doc.as_deref().unwrap_or("")
+            ));
+        }
+        body.push_str("</ul>\n");
+    }
+
+    if !card.dependencies.is_empty() {
+        body.push_str(&format!(
+            "<h2>依赖</h2>\n<p>{}</p>\n",
+            card.dependencies
+                .iter()
+                .map(|d| escape_html(d))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
+    if !card.design_patterns.is_empty() {
+        body.push_str(&format!(
+            "<h2>设计模式</h2>\n<ul>\n<li>{}</li>\n</ul>\n",
+            card.design_patterns
+                .iter()
+                .map(|p| escape_html(p))
+                .collect::<Vec<_>>()
+                .join("</li>\n<li>")
+        ));
+    }
+
+    // 人工修改待同步（与 markdown 渲染对应，仅非空时输出）
+    if !card.pending_manual_edits.is_empty() {
+        body.push_str("<h2>人工修改待同步</h2>\n<ul>\n");
+        for note in &card.pending_manual_edits {
+            body.push_str(&format!("  <li>{}</li>\n", escape_html(note)));
+        }
+        body.push_str("</ul>\n");
+    }
+
+    body
+}
+
+/// 文档的 HTML 页面相对链接（相对 output_dir，正斜杠分隔，供 index.html 使用）
+fn wiki_html_link(output_dir: &Path, doc: &WikiDocument) -> String {
+    wiki_page_html_path(output_dir, doc)
+        .strip_prefix(output_dir)
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default()
+}
+
+/// 将 markdown 文本中的内部 .md 相对链接重写为 .html（HTML 导出用，纯函数）
+///
+/// 只重写 `](target)` 形态的链接且 target 含 ".md"（相对链接，如
+/// `wiki/zh/a.md`、`a.md#锚点`——锚点保留）；外部链接（含 `://`，如
+/// `https://x.com/a.md`）与源码定位链接（`[源码:path]`，无 .md 后缀）不重写。
+pub fn rewrite_md_links_to_html(md: &str) -> String {
+    let mut out = String::new();
+    let mut rest = md;
+    while let Some(start) = rest.find("](") {
+        out.push_str(&rest[..start + 2]);
+        let after = &rest[start + 2..];
+        let end = after.find(')').unwrap_or(after.len());
+        let target = &after[..end];
+        if !target.contains("://") {
+            if let Some(md_end) = target.find(".md") {
+                out.push_str(&target[..md_end]);
+                out.push_str(".html");
+                out.push_str(&target[md_end + 3..]);
+            } else {
+                out.push_str(target);
+            }
+        } else {
+            out.push_str(target);
+        }
+        // 只移动搜索起点，剩余段由循环后的 out.push_str(rest) 统一收尾——
+        // 这里若再 push 剩余段会与最终收尾重复累积。
+        rest = &after[end..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// 生成完整 HTML 文档，包含 <!DOCTYPE>、<head> 和样式链接
@@ -253,15 +307,6 @@ fn write_html_file(path: &Path, content: &str) -> Result<()> {
         .with_context(|| format!("写入文件失败: {}", path.display()))
 }
 
-/// 将标题转为安全的文件名（去除非字母数字字符）
-fn sanitize_filename(name: &str) -> String {
-    name.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
-        .collect::<String>()
-        .trim_matches('_')
-        .to_string()
-}
-
 /// HTML 转义
 fn escape_html(s: &str) -> String {
     s.replace('&', "&amp;")
@@ -274,7 +319,7 @@ fn escape_html(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{EntitySummary, ModuleCluster, KnowledgeCard, KnowledgeGraph, WikiDocument};
+    use crate::model::{EntitySummary, KnowledgeCard, WikiDocument};
     use crate::config::schema::{WikiConfig, OutputSection};
 
     fn test_config() -> WikiConfig {
@@ -342,16 +387,22 @@ mod tests {
     }
 
     #[test]
-    fn test_sanitize_filename_replaces_special_chars() {
-        assert_eq!(sanitize_filename("Hello World"), "Hello_World");
-        assert_eq!(sanitize_filename("a/b:c"), "a_b_c");
-        assert_eq!(sanitize_filename("normal"), "normal");
-    }
-
-    #[test]
     fn test_escape_html_escapes_special_chars() {
         assert_eq!(escape_html("<>&'\""), "&lt;&gt;&amp;&#39;&quot;");
         assert_eq!(escape_html("plain text"), "plain text");
+    }
+
+    /// 链接重写纯函数：内部 .md 相对链接 → .html；外部链接与源码定位不重写
+    #[test]
+    fn test_rewrite_md_links_to_html() {
+        let md = "见 [B](wiki/zh/b.md) 与 [C](a.md#锚点)，外部 [D](https://x.com/a.md)，源码 [E](src/lib.rs:12)";
+        let rewritten = rewrite_md_links_to_html(md);
+        assert!(rewritten.contains("](wiki/zh/b.html)"), "wiki/zh/b.md 应重写为 .html, 实际: {rewritten}");
+        assert!(rewritten.contains("](a.html#锚点)"), "带锚点的 .md 链接应保留锚点, 实际: {rewritten}");
+        assert!(rewritten.contains("](https://x.com/a.md)"), "外部链接不应重写, 实际: {rewritten}");
+        assert!(rewritten.contains("](src/lib.rs:12)"), "源码定位链接不应重写, 实际: {rewritten}");
+        // 内部 .md 链接必须全部重写（外部/源码定位天然含 .md，不在此断言内）
+        assert!(!rewritten.contains("](wiki/zh/b.md)") && !rewritten.contains("](a.md"), "内部 .md 链接应全部重写, 实际: {rewritten}");
     }
 
     #[test]
@@ -362,19 +413,21 @@ mod tests {
         let mut config = test_config();
         config.output.dir = dir.to_str().unwrap().to_string();
 
+        // 文档与卡片同模块（精确关联的前提）：module_path ["核心","模块"] 与
+        // module_name "核心::模块" 精确相等，卡片随文档语言落盘 cards/zh/
         let doc = WikiDocument {
-            title: "测试模块".to_string(),
+            title: "核心模块".to_string(),
             kind: crate::model::DocumentKind::WikiPage,
             content: "# 测试\n\nHello world.".to_string(),
             language: "zh".to_string(),
-            module_path: vec!["test".to_string()],
+            module_path: vec!["核心".to_string(), "模块".to_string()],
             references: vec![],
             last_updated: "2025-01-01".to_string(),
             fingerprint: None,
         };
 
         let card = KnowledgeCard {
-            module_name: "核心模块".to_string(),
+            module_name: "核心::模块".to_string(),
             module_type: "库".to_string(),
             summary: "负责核心功能".to_string(),
             key_entities: vec![EntitySummary {
@@ -392,34 +445,41 @@ mod tests {
             coding_spec: None,
             tech_stack: vec![],
             architecture: None,
-            pending_manual_edits: vec!["人工修改待同步: wiki/zh/核心模块.md 内容摘要: 手动改".into()],
+            pending_manual_edits: vec!["人工修改待同步: wiki/zh/核心_模块.md 内容摘要: 手动改".into()],
             features: Vec::new(),
         };
 
-        let graph = KnowledgeGraph {
-            graph: petgraph::stable_graph::StableDiGraph::new(),
-            modules: vec![ModuleCluster {
-                name: "核心".to_string(),
-                node_ids: vec![],
-                cohesion: 0.8,
-                coupling: 0.2,
-                description: None,
-            }],
-            features: Vec::new(),
-        };
+        // 快照形态的模块摘要（含文件列表才会出现在 Mermaid 图中）
+        let modules = vec![ExportModuleSnapshot {
+            name: "核心::模块".to_string(),
+            files: vec!["src/core/mod.rs".to_string()],
+            cohesion: 0.8,
+            coupling: 0.2,
+            features: vec![],
+        }];
 
-        export_html(&[doc], &[card], &graph, &config)?;
+        export_html(&[doc], &[card], &modules, &config)?;
 
         assert!(dir.join("index.html").exists(), "index.html 应该存在");
         assert!(dir.join("style.css").exists(), "style.css 应该存在");
-        assert!(dir.join("wiki").join("测试模块.html").exists(), "wiki 页面应该存在");
-        assert!(dir.join("cards").join("核心模块.html").exists(), "card 页面应该存在");
+        assert!(
+            dir.join("wiki").join("zh").join("核心_模块.html").exists(),
+            "wiki 页面应写到 wiki/zh/ 语言目录（与 markdown 命名同构）"
+        );
+        assert!(
+            dir.join("cards").join("zh").join("核心_模块.html").exists(),
+            "card 页面应随文档语言写到 cards/zh/"
+        );
         assert!(dir.join("assets").join("module-deps.html").exists(), "Mermaid 页面应该存在");
 
         let index = std::fs::read_to_string(dir.join("index.html"))?;
-        assert!(index.contains("测试模块"), "目录页应该包含文档标题");
+        assert!(index.contains("核心模块"), "目录页应该包含文档标题");
+        assert!(
+            index.contains("wiki/zh/核心_模块.html"),
+            "目录页链接应指向语言目录下的 .html, 实际: {index}"
+        );
 
-        let card_html = std::fs::read_to_string(dir.join("cards").join("核心模块.html"))?;
+        let card_html = std::fs::read_to_string(dir.join("cards").join("zh").join("核心_模块.html"))?;
         assert!(card_html.contains("人工修改待同步"), "卡片 HTML 应包含人工修改待同步节");
         assert!(card_html.contains("手动改"), "卡片 HTML 应包含记录内容");
 

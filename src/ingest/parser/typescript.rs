@@ -1,106 +1,52 @@
 use std::path::Path;
 use anyhow::Result;
-use tree_sitter::{Language, Parser};
+use tree_sitter::{Language, Node, Parser};
 
-use super::{Entity, FileInsight, ImportStmt, LanguageProcessor};
+use super::{Entity, FileInsight, ImportStmt, KindRule, LanguageProcessor, SharedProcessor};
 
-pub struct TypeScriptProcessor {
-    ts_lang: Language,
-}
+pub struct TypeScriptProcessor;
 
 impl TypeScriptProcessor {
     pub fn new() -> Result<Self> {
-        let ts_lang: Language = tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
+        // 保持原行为：启动时校验 tree-sitter-typescript 语法可用
+        let lang: Language = tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
         let mut parser = Parser::new();
-        parser.set_language(&ts_lang)?;
-        Ok(Self { ts_lang })
+        parser.set_language(&lang)?;
+        Ok(Self)
+    }
+}
+
+/// kind 映射表（差异点数据化）：const item 保证 &'static 生命周期
+const KINDS: &[KindRule] = &[
+    KindRule::plain("class_declaration", "class"),
+    KindRule::plain("interface_declaration", "interface"),
+    KindRule::with_sig("function_declaration", "function", '{'),
+    KindRule::with_sig("method_definition", "function", '{'),
+    KindRule::plain("type_alias_declaration", "type"),
+    KindRule::plain("variable_declarator", "variable"),
+];
+
+/// TypeScript 差异点实现：语法常量、kinds 映射表（纯映射分支）、
+/// 无法表化的特殊分支（import_statement 文本解析）、正则 fallback。
+/// 公共 walk/fallback 触发/FileInsight 组装走 SharedProcessor 默认实现。
+impl SharedProcessor for TypeScriptProcessor {
+    fn language() -> &'static str { "TypeScript" }
+    fn grammar() -> Language { tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into() }
+
+    fn kinds() -> &'static [KindRule] {
+        KINDS
     }
 
-    fn walk(source: &str, lang: &Language) -> (Vec<Entity>, Vec<ImportStmt>) {
-        let bytes = source.as_bytes();
-        let mut entities = Vec::new();
-        let mut imports = Vec::new();
-
-        let mut parser = Parser::new();
-        if parser.set_language(lang).is_err() {
-            return Self::fallback(source);
+    fn handle_special(node: Node, bytes: &[u8], _entities: &mut Vec<Entity>, imports: &mut Vec<ImportStmt>) {
+        if node.kind() == "import_statement"
+            && let Some(src) = node.child_by_field_name("source").and_then(|n| n.utf8_text(bytes).ok())
+        {
+            imports.push(ImportStmt {
+                source: src.trim_matches(&['"', '\''][..]).to_string(),
+                alias: None,
+                line: node.start_position().row + 1,
+            });
         }
-        let tree = match parser.parse(source, None) {
-            Some(t) => t,
-            None => return Self::fallback(source),
-        };
-
-        let mut cursor = tree.walk();
-        if !cursor.goto_first_child() { return (entities, imports); }
-
-        'walk: loop {
-            let node = cursor.node();
-            match node.kind() {
-                "class_declaration" | "interface_declaration" => {
-                    let name = node.child_by_field_name("name").and_then(|n| n.utf8_text(bytes).ok());
-                    if let Some(name) = name {
-                        let kind = if node.kind() == "class_declaration" { "class" } else { "interface" };
-                        entities.push(Entity {
-                            name: name.to_string(), kind: kind.to_string(),
-                            line_start: node.start_position().row + 1,
-                            line_end: node.end_position().row + 1,
-                            doc_comment: None, signature: None, summary: None,
-                        });
-                    }
-                }
-                "function_declaration" | "method_definition" => {
-                    let name = node.child_by_field_name("name").and_then(|n| n.utf8_text(bytes).ok());
-                    if let Some(name) = name {
-                        let sig = node.utf8_text(bytes).ok().and_then(|t| t.split('{').next().map(|s| s.trim().to_string()));
-                        entities.push(Entity {
-                            name: name.to_string(), kind: "function".to_string(),
-                            line_start: node.start_position().row + 1,
-                            line_end: node.end_position().row + 1,
-                            doc_comment: None, signature: sig, summary: None,
-                        });
-                    }
-                }
-                "type_alias_declaration" => {
-                    let name = node.child_by_field_name("name").and_then(|n| n.utf8_text(bytes).ok());
-                    if let Some(name) = name {
-                        entities.push(Entity {
-                            name: name.to_string(), kind: "type".to_string(),
-                            line_start: node.start_position().row + 1,
-                            line_end: node.end_position().row + 1,
-                            doc_comment: None, signature: None, summary: None,
-                        });
-                    }
-                }
-                "variable_declarator" => {
-                    let name = node.child_by_field_name("name").and_then(|n| n.utf8_text(bytes).ok());
-                    if let Some(name) = name {
-                        entities.push(Entity {
-                            name: name.to_string(), kind: "variable".to_string(),
-                            line_start: node.start_position().row + 1,
-                            line_end: node.end_position().row + 1,
-                            doc_comment: None, signature: None, summary: None,
-                        });
-                    }
-                }
-                "import_statement" => {
-                    if let Some(src) = node.child_by_field_name("source").and_then(|n| n.utf8_text(bytes).ok()) {
-                        imports.push(ImportStmt {
-                            source: src.trim_matches(&['"', '\''][..]).to_string(),
-                            alias: None,
-                            line: node.start_position().row + 1,
-                        });
-                    }
-                }
-                _ => {}
-            }
-
-            if cursor.goto_first_child() { continue; }
-            loop {
-                if cursor.goto_next_sibling() { continue 'walk; }
-                if !cursor.goto_parent() { break 'walk; }
-            }
-        }
-        (entities, imports)
     }
 
     fn fallback(source: &str) -> (Vec<Entity>, Vec<ImportStmt>) {
@@ -129,15 +75,11 @@ impl TypeScriptProcessor {
 }
 
 impl LanguageProcessor for TypeScriptProcessor {
-    fn name(&self) -> &'static str { "TypeScript" }
+    fn name(&self) -> &'static str { Self::language() }
     fn extensions(&self) -> &[&str] { &[".ts", ".tsx"] }
 
     fn parse(&self, source: &str, path: &Path) -> Result<FileInsight> {
-        if source.is_empty() {
-            return Ok(FileInsight { path: path.to_path_buf(), language: "TypeScript".into(), entities: vec![], imports: vec![], doc_comments: vec![], source: source.to_string() });
-        }
-        let (entities, imports) = Self::walk(source, &self.ts_lang);
-        Ok(FileInsight { path: path.to_path_buf(), language: "TypeScript".into(), entities, imports, doc_comments: vec![], source: source.to_string() })
+        Self::parse_file(source, path)
     }
 }
 

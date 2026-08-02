@@ -7,6 +7,7 @@ pub mod output;
 pub mod incremental;
 pub mod search;
 pub mod commands;
+pub mod project;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -47,7 +48,11 @@ fn get_global_runtime() -> &'static Arc<Runtime> {
 ///
 /// 同时消费 wiki_plan.yaml 的 scope_override：生效计划存在且提供 scope 时
 /// 覆盖 config.scope（plan.enabled=false 或文件缺失时不影响）。
-fn load_config_with_output(config_path: &Path, output: Option<&Path>) -> anyhow::Result<config::schema::WikiConfig> {
+fn load_config_with_output(
+    config_path: &Path,
+    output: Option<&Path>,
+    root: &project::ProjectRoot,
+) -> anyhow::Result<config::schema::WikiConfig> {
     let config = config::load_config(config_path)?;
     let mut config = if let Some(out) = output {
         let mut c = config;
@@ -56,7 +61,8 @@ fn load_config_with_output(config_path: &Path, output: Option<&Path>) -> anyhow:
     } else {
         config
     };
-    if let Some(plan) = crate::config::plan::resolve_plan(&config)?
+    // wiki_plan.yaml 的 scope 覆盖相对项目根解析（不依赖进程 cwd）
+    if let Some(plan) = crate::config::plan::resolve_plan_at(root, &config)?
         && let Some(scope) = plan.scope_override
     {
         config.scope = scope;
@@ -128,13 +134,37 @@ pub struct ProgressEvent {
     pub percent: u8,
 }
 
+/// 生成模式（票 12：双流水线合并为单入口的 mode 区分）
+///
+/// - `Full`：全量扫描解析 + 全量 LLM 生成 + 全量索引重建（generate 命令）
+/// - `Incremental`：parse 层增量（解析缓存）+ 过滤生成 + 增量索引（update 命令）
+#[derive(Debug, Clone)]
+pub enum GenerationMode {
+    Full,
+    Incremental {
+        /// 外部监听事件路径（watch 传入；普通增量更新传空）
+        watch_paths: Vec<std::path::PathBuf>,
+        /// 监听事件携带的变更类型（Deleted 直入删除清理）
+        change_kind: Option<incremental::watch::ChangeKind>,
+    },
+}
+
 /// 运行完整的分析流水线（配置文件路径）
 ///
 /// `output` 非空时覆盖配置文件中的 output.dir（对应 CLI 的 --output 参数），
 /// 后续渲染、搜索索引、状态目录全部使用覆盖后的值。
 /// `force` 为 true 时清空人工修改保护集并覆盖所有文档（对应 CLI 的 --force）。
-pub fn run_pipeline(config_path: &Path, output: Option<&Path>, force: bool) -> anyhow::Result<AnalysisResult> {
-    run_pipeline_with_progress(config_path, output, force, &|_| {})
+/// `root` 为项目根（扫描根 + git 定位 + watch 根的注入载体，--root 参数）
+/// `mode` 区分全量生成与增量更新（两者共享本函数的主干，差异点在
+/// 扫描缓存、变更分析、生成过滤、索引更新四处）。
+pub fn run_pipeline(
+    config_path: &Path,
+    output: Option<&Path>,
+    force: bool,
+    root: &project::ProjectRoot,
+    mode: &GenerationMode,
+) -> anyhow::Result<AnalysisResult> {
+    run_pipeline_with_progress(config_path, output, force, root, mode, &|_| {})
 }
 
 /// 运行完整的分析流水线，并在各阶段边界回调进度事件
@@ -145,19 +175,41 @@ pub fn run_pipeline_with_progress(
     config_path: &Path,
     output: Option<&Path>,
     force: bool,
+    root: &project::ProjectRoot,
+    mode: &GenerationMode,
     on_progress: &dyn Fn(ProgressEvent),
 ) -> anyhow::Result<AnalysisResult> {
-    let config = load_config_with_output(config_path, output)?;
+    let config = load_config_with_output(config_path, output, root)?;
     let _span = tracing::info_span!("pipeline", config = %config_path.display());
     let _enter = _span.enter();
     let start = std::time::Instant::now();
+    let is_incremental = matches!(mode, GenerationMode::Incremental { .. });
 
     // 保护集：旧 state 的 protected_docs + 检测出的人工修改；force 时清空。
     // old_state 同时供人工修改反向同步组装（collect_manual_edits → 生成前注入）
     let (protected, old_state) = load_protection(&config, force);
 
-    // Phase 1: 扫描
-    let file_insights = ingest::scan_and_parse(&config)?;
+    // Phase 1: 扫描。增量模式启用解析缓存（parse 层增量：内容指纹未变复用
+    // 缓存结果，仅变更文件重新 tree-sitter 解析）；全量模式直接全量解析。
+    let watch_list: Vec<std::path::PathBuf> = match mode {
+        GenerationMode::Incremental { watch_paths, .. } => watch_paths.clone(),
+        GenerationMode::Full => Vec::new(),
+    };
+    // 事件路径统一相对化（相对项目根）：scan 产出的 insight 路径已是相对
+    // 扫描根，watch 层外部传入的路径必须对齐同一基准，否则路径比较
+    // （缓存判定/变更集判定）对绝对路径恒不命中。
+    let watch_paths: Vec<std::path::PathBuf> = watch_list
+        .iter()
+        .map(|p| p.strip_prefix(root.path()).map(|r| r.to_path_buf()).unwrap_or_else(|_| p.clone()))
+        .collect();
+    let watch_set: std::collections::HashSet<std::path::PathBuf> =
+        watch_paths.iter().cloned().collect();
+    let file_insights = if is_incremental {
+        let cache_path = Path::new(&config.output.dir).join(".state").join("insights_cache.json");
+        ingest::scan_and_parse_cached_at(root, &config, &Some(cache_path), &watch_set)?
+    } else {
+        ingest::scan_and_parse_at(root, &config)?
+    };
     on_progress(ProgressEvent { stage: "scanning", percent: 10 });
     if file_insights.is_empty() {
         bail!("未找到任何源文件");
@@ -177,28 +229,87 @@ pub fn run_pipeline_with_progress(
     stats.total_edges = graph.graph.edge_count();
     stats.modules_detected = graph.modules.len();
 
+    // Phase 2b: 增量变更分析（git diff + 实体级变化分类 + 语义传播；
+    // 全量模式跳过。diff 超限/非 git 仓库时内部回退全量语义）
+    let inc_result = if is_incremental {
+        Some(incremental::run_incremental_update_at(root, &file_insights, &graph, &config, &watch_paths)?)
+    } else {
+        None
+    };
+
+    // 无代码变更短路：仅增量模式存在；此时若有新检测的人工修改仍需
+    // 反向同步到卡片文件（生成路径跳过时此处的直接写盘是唯一落卡途径，
+    // 记录在下次有变更的生成时经 extract_pending_manual_edits 注入 LLM 输入）
+    if let Some(inc) = &inc_result
+        && inc.changed_files.is_empty()
+    {
+        if let Some(state) = &old_state {
+            let synced = sync_manual_edits_to_cards(&config, state)?;
+            if synced > 0 {
+                tracing::info!("人工修改已反向同步到 {} 张卡片", synced);
+            }
+        }
+        tracing::info!("无变更，跳过生成");
+        let stats = AnalysisStats {
+            files_scanned: file_insights.len(),
+            generation_time_ms: start.elapsed().as_millis() as u64,
+            ..Default::default()
+        };
+        return Ok(AnalysisResult {
+            graph,
+            documents: Vec::new(),
+            cards: Vec::new(),
+            stats,
+        });
+    }
+
     // Phase 3: 生成（需要 tokio 运行时）。人工修改记录在生成前注入
-    // LLM 输入（collect_manual_edits：旧状态指纹比对 + 模块归属精确匹配）
+    // LLM 输入（collect_manual_edits：旧状态指纹比对 + 模块归属精确匹配）。
+    // 增量模式只对变更文件 + 语义传播判定的受影响模块过滤生成
+    //（run_generation_filtered），全量模式全量生成。
     on_progress(ProgressEvent { stage: "chunking", percent: 30 });
     let rt = get_global_runtime();
     let extra_edits = collect_manual_edits(old_state.as_ref());
-    let gen_output = rt.block_on(generate::run_generation(&graph, &file_insights, &config, &extra_edits))?;
+    let gen_output = if let Some(inc) = &inc_result {
+        rt.block_on(generate::run_generation_filtered(
+            &graph, &file_insights, &config, root, inc, &extra_edits,
+        ))?
+    } else {
+        rt.block_on(generate::run_generation(&graph, &file_insights, &config, root, &extra_edits))?
+    };
     on_progress(ProgressEvent { stage: "cards", percent: 60 });
 
-    // Phase 4: 输出
+    // Phase 4: 输出（render_all 内部同步写导出快照；产物集合 diff 清理
+    // 全量/增量统一：旧状态记录过但本次未生成的产物（含已删模块的
+    // 旧页面/卡片）一律清理，module_{n} 档不再漏删）
     on_progress(ProgressEvent { stage: "wiki", percent: 90 });
     output::render_all(&gen_output.documents, &gen_output.cards, &graph, &config, &protected)?;
+    cleanup_stale_outputs(
+        old_state.as_ref(),
+        &output::rendered_paths(&gen_output.documents, &gen_output.cards, &config),
+    );
     on_progress(ProgressEvent { stage: "output", percent: 95 });
 
-    // Phase 5: 构建搜索索引
-    if config.search.enabled && let Err(e) = build_search_index(&graph, &file_insights, &config) {
-        tracing::warn!("搜索索引构建失败（不影响主流程）: {}", e);
+    // Phase 5: 构建/增量更新搜索索引
+    if config.search.enabled {
+        let index_result = if is_incremental {
+            let changed_set: std::collections::HashSet<std::path::PathBuf> = inc_result
+                .as_ref()
+                .map(|i| i.changed_files.iter().cloned().collect())
+                .unwrap_or_default();
+            update_search_index_incremental(&graph, &file_insights, &config, &changed_set)
+        } else {
+            build_search_index(&graph, &file_insights, &config)
+        };
+        if let Err(e) = index_result {
+            tracing::warn!("搜索索引构建失败（不影响主流程）: {}", e);
+        }
     }
     on_progress(ProgressEvent { stage: "index", percent: 98 });
 
     // Phase 6: 保存增量状态（含文档指纹用于人工修改保护）
     if config.incremental.enabled {
-        let head_hash = incremental::diff::get_head_commit_hash().unwrap_or_default();
+        let head_hash = incremental::diff::get_head_commit_hash_at(root).unwrap_or_default();
         save_generation_state(&config, &file_insights, &gen_output.documents, &gen_output.cards, &protected, &head_hash);
     }
 
@@ -217,8 +328,12 @@ pub fn run_pipeline_with_progress(
 }
 
 /// 执行知识卡片操作（CLI card 子命令与 Qoder /knowledge 对等）
-pub fn run_card_command(config_path: &Path, action: &generate::card::CardAction) -> anyhow::Result<()> {
-    let config = load_config_with_output(config_path, None)?;
+pub fn run_card_command(
+    config_path: &Path,
+    root: &project::ProjectRoot,
+    action: &generate::card::CardAction,
+) -> anyhow::Result<()> {
+    let config = load_config_with_output(config_path, None, root)?;
     // 编辑类动作要求卡片已存在：先校验（错误信息优先于 LLM API Key 检查）
     match action {
         generate::card::CardAction::Generate { .. } => {}
@@ -234,7 +349,7 @@ pub fn run_card_command(config_path: &Path, action: &generate::card::CardAction)
     let rt = get_global_runtime();
     match action {
         generate::card::CardAction::Generate { module } => {
-            rt.block_on(generate::card::generate_module_card(&provider, &config, module))
+            rt.block_on(generate::card::generate_module_card(&provider, &config, root, module))
         }
         generate::card::CardAction::Modify { module, instruction, references } => {
             rt.block_on(generate::card::edit_card(
@@ -257,172 +372,50 @@ pub fn run_card_command(config_path: &Path, action: &generate::card::CardAction)
     }
 }
 
-/// 运行增量更新流水线
+
+/// 清理过期产物（票 10：产物集合 diff 语义，全量/增量统一）
 ///
-/// `output` 非空时覆盖配置文件中的 output.dir（对应 CLI 的 --output 参数）。
-/// `force` 为 true 时清空人工修改保护集（与 run_pipeline 的 --force 语义一致，
-/// 经由 load_protection 统一处理，force=false 保留保护语义）。
-/// `watch_paths` 为文件监听外部传入的事件路径（FileWatch 策略使用，
-/// 普通增量更新传 &[]）。
-/// `change_kind` 为监听事件携带的变更类型（普通增量更新传 None）；
-/// Deleted 事件直入删除清理路径，不再依赖下游对路径做 exists() 推断。
-pub fn run_incremental_pipeline(
-    config_path: &Path,
-    output: Option<&Path>,
-    force: bool,
-    watch_paths: &[std::path::PathBuf],
-    change_kind: Option<incremental::watch::ChangeKind>,
-) -> anyhow::Result<AnalysisResult> {
-    let config = load_config_with_output(config_path, output)?;
-    let start = std::time::Instant::now();
-
-    // 事件路径统一相对化（相对 cwd）：scan_and_parse 产出的 insight 路径
-    // 已是相对扫描根（== cwd），watch 层外部传入的路径必须对齐同一基准，
-    // 否则删除清理的模块名派生（module_name_from_path 取 Normal 组件）
-    // 会对绝对路径取出机器路径，清理不到任何产物。
-    let cwd = std::env::current_dir()?;
-    let watch_paths: Vec<std::path::PathBuf> = watch_paths
-        .iter()
-        .map(|p| p.strip_prefix(&cwd).map(|r| r.to_path_buf()).unwrap_or_else(|_| p.clone()))
-        .collect();
-
-    // 保护集必须在增量分析之前加载（增量分析内部会重写 state 文件）
-    let (protected, old_state) = load_protection(&config, force);
-
-    // Deleted 事件直入删除清理：watch 层已显式标记删除，直接清理
-    // 对应产物（wiki 页 + 卡片）。删除路径随后仍进入增量流程
-    // （FileWatch 策略并入 changed_files），驱动搜索索引清理与状态保存。
-    if change_kind == Some(incremental::watch::ChangeKind::Deleted) {
-        cleanup_deleted_outputs(&config, &watch_paths);
-    }
-
-    // Phase 1: 扫描
-    let file_insights = ingest::scan_and_parse(&config)?;
-
-    // Phase 2: 分析（build_graph 内部完成模块检测并写回 graph.modules）
-    let mut graph = analysis::build_graph(&file_insights)?;
-    attach_features(&mut graph, &config);
-
-    // 检查增量变更（watch_paths 透传：FileWatch 策略下删除事件路径
-    // 由此进入 changed_files，驱动下游删除清理）
-    let inc_result = incremental::run_incremental_update(&file_insights, &graph, &config, &watch_paths)?;
-
-    // 回退全量时 changed_files 非空但 affected_modules 为空，仅凭 changed_files 判断是否跳过
-    if inc_result.changed_files.is_empty() {
-        // 无代码变更时若存在人工修改，仍需将其反向同步到卡片文件
-        //（生成路径跳过时此处的直接写盘是唯一落卡途径；记录在下次
-        // 有变更的生成时经 extract_pending_manual_edits 注入 LLM 输入）
-        if let Some(state) = &old_state {
-            let synced = sync_manual_edits_to_cards(&config, state)?;
-            if synced > 0 {
-                tracing::info!("人工修改已反向同步到 {} 张卡片", synced);
-            }
-        }
-        tracing::info!("无变更，跳过生成");
-        let stats = AnalysisStats {
-            files_scanned: file_insights.len(),
-            generation_time_ms: start.elapsed().as_millis() as u64,
-            ..Default::default()
-        };
-        return Ok(AnalysisResult {
-            graph,
-            documents: Vec::new(),
-            cards: Vec::new(),
-            stats,
-        });
-    }
-
-    // Phase 3: 增量生成。人工修改记录在生成前注入 LLM 输入
-    //（collect_manual_edits 基于旧状态指纹比对；受保护页面本身不被覆盖）
-    let rt = get_global_runtime();
-    let changed_set: std::collections::HashSet<std::path::PathBuf> = inc_result.changed_files.iter().cloned().collect();
-    let extra_edits = collect_manual_edits(old_state.as_ref());
-    let gen_output = rt.block_on(
-        generate::run_generation_filtered(&graph, &file_insights, &config, &changed_set, &extra_edits, Some(&inc_result.entity_changes), &inc_result.affected_modules)
-    )?;
-
-    // Phase 4: 全量输出（保持索引一致）
-    output::render_all(&gen_output.documents, &gen_output.cards, &graph, &config, &protected)?;
-
-    // Phase 4b: 清理已删除文件对应的输出文档（wiki 页 + 卡片）
-    cleanup_deleted_outputs(&config, &inc_result.changed_files);
-
-    // Phase 5: 增量更新搜索索引
-    if config.search.enabled && let Err(e) = update_search_index_incremental(&graph, &file_insights, &config, &changed_set) {
-        tracing::warn!("搜索索引增量更新失败: {}", e);
-    }
-
-    // Phase 6: 保存最终状态（protected_docs 合并写回；doc_fingerprints 只记录实际写盘的文档）
-    if config.incremental.enabled {
-        let head_hash = incremental::diff::get_head_commit_hash().unwrap_or_default();
-        save_generation_state(&config, &file_insights, &gen_output.documents, &gen_output.cards, &protected, &head_hash);
-    }
-
-    let stats = AnalysisStats {
-        files_scanned: file_insights.len(),
-        files_parsed: file_insights.iter().filter(|f| !f.entities.is_empty()).count(),
-        total_entities: graph.graph.node_count(),
-        total_edges: graph.graph.edge_count(),
-        modules_detected: graph.modules.len(),
-        generation_time_ms: start.elapsed().as_millis() as u64,
-    };
-
-    Ok(AnalysisResult {
-        graph,
-        documents: gen_output.documents,
-        cards: gen_output.cards,
-        stats,
-    })
-}
-
-/// 清理已删除源文件对应的旧输出（wiki 页 + 卡片）
+/// 语义：状态中记录过的旧产物路径（doc_fingerprints/doc_modules 键，即
+/// 上次生成写盘的 wiki 页与卡片全集）减去本次实际生成的产物集合
+/// （output::rendered_paths：含受保护文档路径——受保护文档属于生成集，
+/// 磁盘上是人工版，diff 后天然不在待删集合，不会误删人工编辑内容）。
+/// 差集 = 已消失模块/重命名模块的旧产物，一律删除。
 ///
-/// 只清理"已不存在"的变更文件（deleted 与 renamed 旧路径由
-/// incremental::run_incremental_update 计入 changed_files）；
-/// wiki 页与卡片路径复用 output 层的统一命名规则，并遍历全部语言目录
-/// （主语言 + 扩展语言），与 render_all 的写盘规则一致。
-/// 现存文件、已保护文档的路径不在变更集内，不受影响。
-pub(crate) fn cleanup_deleted_outputs(
-    config: &config::schema::WikiConfig,
-    changed_files: &[std::path::PathBuf],
+/// 与旧实现（cleanup_deleted_outputs 按被删文件路径推导模块名）相比：
+/// 不依赖模块名路径推导，module_{n}（无目录社区）档不再漏删；全量
+/// generate 也清理旧产物（旧实现仅增量路径调用）。
+///
+/// 删除失败显式告警（文件被占用等），不静默吞错。
+pub(crate) fn cleanup_stale_outputs(
+    old_state: Option<&incremental::state::GenerationState>,
+    rendered: &[std::path::PathBuf],
 ) {
-    let output_dir = Path::new(&config.output.dir);
-    let languages = output::wiki_languages(config);
-    for f in changed_files {
-        if f.exists() {
+    let Some(state) = old_state else {
+        return; // 无旧状态（首次生成）：不存在可清理的旧产物
+    };
+    let mut stale: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    stale.extend(state.doc_fingerprints.keys().map(String::as_str));
+    stale.extend(state.doc_modules.keys().map(String::as_str));
+    let rendered_set: std::collections::BTreeSet<String> = rendered
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+    let mut removed = 0usize;
+    for path in stale {
+        if rendered_set.contains(path) {
             continue;
         }
-        // 候选模块名 = 被删文件父目录的每一级前缀。社区检测的模块名档 1
-        // （最长公共父目录）必是某级前缀，档 2（文件数最多目录）亦然；
-        // 档 3（module_{n}，无目录时）无法由路径推导，漏删为已知限制。
-        // 逐一尝试删除，覆盖跨目录合并社区的公共前缀名（如 "src"）——
-        // 仅用完整父目录名（"src::a"）在跨目录社区下会清理不到。
-        let segments = path_normal_segments(f);
-        let mut candidates: Vec<String> = Vec::new();
-        for len in 1..=segments.len() {
-            candidates.push(segments[..len].join("::"));
-        }
-        for module in candidates {
-            let file_name = output::module_page_file_name(&module);
-            for lang in &languages {
-                // 被删文件的旧页面/旧卡片逐一尝试删除，失败静默（文件可能本就不存在）
-                let _ = std::fs::remove_file(output_dir.join("wiki").join(lang).join(&file_name));
-                let _ = std::fs::remove_file(output::card_page_path(output_dir, lang, &module));
+        let p = Path::new(path);
+        if p.exists() {
+            match std::fs::remove_file(p) {
+                Ok(()) => removed += 1,
+                Err(e) => tracing::warn!("清理过期产物失败 {}: {}", p.display(), e),
             }
         }
     }
-}
-
-/// 提取路径的目录 Normal 组件序列（过滤盘符/根目录，与模块名派生规则一致）
-fn path_normal_segments(path: &std::path::Path) -> Vec<String> {
-    path.parent()
-        .map(|p| {
-            p.components()
-                .filter(|c| matches!(c, std::path::Component::Normal(_)))
-                .map(|c| c.as_os_str().to_string_lossy().to_string())
-                .collect()
-        })
-        .unwrap_or_default()
+    if removed > 0 {
+        tracing::info!("清理过期产物 {} 个", removed);
+    }
 }
 
 /// 组装"人工修改 → 卡片记录"映射（模块名 → 记录文本列表）
@@ -501,16 +494,20 @@ pub fn sync_manual_edits_to_cards(
 }
 
 /// 启动文件监听模式
-pub fn run_watch(config_path: &Path) -> anyhow::Result<()> {
+///
+/// `root` 为注入的项目根：首次全量生成与监听根均以它为基准
+/// （扫描根一致，watch 常驻进程的 cwd 漂移不影响监听范围）。
+pub fn run_watch(config_path: &Path, root: &project::ProjectRoot) -> anyhow::Result<()> {
     let config = config::load_config(config_path)?;
     tracing::info!("首次全量生成...");
-    run_pipeline(config_path, None, false)?;
+    run_pipeline(config_path, None, false, root, &GenerationMode::Full)?;
     tracing::info!("全量生成完成，开始监听文件变更...");
 
     let config_path = config_path.to_path_buf();
-    // 监听根与 scan_and_parse 的扫描根保持一致（config 无项目根字段，均取当前目录）
-    let root = std::env::current_dir()?;
-    incremental::watch::run_watch_loop(&root, &config, move |events| {
+    // 监听根 = 注入的项目根（与 scan_and_parse_at 的扫描根一致）
+    let watch_root = root.path().to_path_buf();
+    let watch_root_for_loop = watch_root.clone();
+    incremental::watch::run_watch_loop(&watch_root_for_loop, &config, move |events| {
         for event in events {
             tracing::info!(
                 "检测到 {:?} {} 个文件变更，触发增量更新...",
@@ -521,9 +518,12 @@ pub fn run_watch(config_path: &Path) -> anyhow::Result<()> {
             // 其余 kind 走常规增量更新
             let change_kind = (event.kind == incremental::watch::ChangeKind::Deleted)
                 .then_some(event.kind);
-            if let Err(e) =
-                run_incremental_pipeline(&config_path, None, false, &event.paths, change_kind)
-            {
+            let root = project::ProjectRoot::new(watch_root.clone());
+            let mode = GenerationMode::Incremental {
+                watch_paths: event.paths.clone(),
+                change_kind,
+            };
+            if let Err(e) = run_pipeline(&config_path, None, false, &root, &mode) {
                 tracing::error!("增量更新失败: {}", e);
             } else {
                 tracing::info!("增量更新完成");
@@ -663,7 +663,12 @@ fn update_search_index_incremental(
             }
             // 只索引属于变更文件的实体
             let node_file = node.file_path.as_deref()?;
-            if !changed_files.iter().any(|f| f.to_string_lossy() == node_file) {
+            // 比较前归一化路径分隔符（票 08）：node.file_path 可能是反斜杠
+            // 平台路径，changed_files 来自 git diff/watch（正斜杠或相对路径）。
+            // 库内 file_path 键已统一正斜杠，比较点必须同基准，否则增量
+            // 索引删除/重索引在 Windows 上永不命中。
+            let node_file_norm = incremental::norm_sep(node_file);
+            if !changed_files.iter().any(|f| incremental::norm_sep(&f.to_string_lossy()) == node_file_norm) {
                 return None;
             }
             let source = extract_entity_source(node, &source_map);
@@ -733,6 +738,7 @@ fn extract_entity_source(
 /// - Hybrid: 两者结果经 RRF 合并
 pub fn execute_search(
     config_path: &Path,
+    root: &project::ProjectRoot,
     query: &str,
     top_k: usize,
     engine_type: &config::schema::SearchEngineType,
@@ -765,6 +771,11 @@ pub fn execute_search(
             Ok(search::hybrid::semantic_results_to_hits(results))
         }
         config::schema::SearchEngineType::Hybrid => {
+            // 与 Text/Semantic 分支一致：text 索引是混合检索的必需底座
+            //（RRF 至少一路有效），缺失时明确报错而非打开空库。
+            if !text_path.exists() {
+                anyhow::bail!("搜索索引不存在，请先运行 `repo-wiki generate` 构建索引");
+            }
             let text_engine = search::text::TextEngine::open(&text_path)?;
             let semantic_engine = if semantic_path.exists() && config.embed.enabled {
                 generate::embed::EmbeddingEngine::new(&config.embed, get_global_runtime().handle().clone())
@@ -775,7 +786,7 @@ pub fn execute_search(
             // 调用链补全：重建知识图谱以获得 Calls 边，构建调用索引注入 agent。
             // CLI 场景单次搜索的重建开销可接受（实测本项目约 1.2s）；
             // 失败时静默降级为无补全（索引缺失等，搜索主功能不受影响）。
-            if let Ok(insights) = ingest::scan_and_parse(&config)
+            if let Ok(insights) = ingest::scan_and_parse_at(root, &config)
                 && let Ok(graph) = analysis::build_graph(&insights)
             {
                 let index = search::callgraph::CallGraph::new(&graph).build_call_index();
@@ -796,6 +807,7 @@ pub fn execute_search(
 /// `language` 为源语言（rust/python/go/...），传入 None 时由文件扩展名自动推断。
 pub fn execute_ast_search(
     config_path: &Path,
+    root: &project::ProjectRoot,
     symbol: &str,
     language: Option<&str>,
 ) -> anyhow::Result<Vec<search::hybrid::SearchHit>> {
@@ -803,7 +815,7 @@ pub fn execute_ast_search(
         return Ok(Vec::new());
     }
     let config = config::load_config(config_path)?;
-    let insights = ingest::scan_and_parse(&config)?;
+    let insights = ingest::scan_and_parse_at(root, &config)?;
 
     let mut hits = Vec::new();
     for insight in &insights {
@@ -868,113 +880,108 @@ pub fn execute_ast_search(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::schema::WikiSection;
-    use std::path::PathBuf;
 
-    /// A1 集成测试：已删除源文件对应的 wiki 页与卡片在全部语言目录下被清理，
-    /// 现存文件的输出不受影响。
+    /// 产物集合 diff 清理（票 10）：旧状态记录过、但本次渲染集合之外的
+    /// 产物路径被删除（全语言目录），本次渲染集合内的路径（含受保护文档）
+    /// 一律保留。
     #[test]
-    fn test_cleanup_deleted_outputs_removes_all_languages() {
+    fn test_cleanup_stale_outputs_removes_unrendered_across_languages() {
         let dir = std::env::temp_dir()
-            .join(format!("repo_wiki_test_cleanup_{}", std::process::id()));
+            .join(format!("repo_wiki_test_stale_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
-        let mut config = crate::config::schema::WikiConfig::default();
-        config.output.dir = dir.to_string_lossy().into_owned();
-        // 双语言：主语言 zh + 扩展语言 en
-        config.wiki = WikiSection {
-            language: "zh".into(),
-            expand_languages: vec!["en".into()],
+        // 旧状态记录两个产物：src.md（双语言）与 lib.md（双语言）
+        let mut state = incremental::state::GenerationState {
+            last_commit_hash: None,
+            file_fingerprints: std::collections::HashMap::new(),
+            doc_fingerprints: std::collections::HashMap::new(),
+            doc_modules: std::collections::HashMap::new(),
+            protected_docs: vec![],
+            generated_at: String::new(),
         };
-
-        // 预置被删文件 src/foo.rs 的旧输出：模块 "src" → wiki 页 src.md、卡片 src.md
-        // （deleted 用仓库内相对路径构造，与 git diff 的路径形态一致）
-        let deleted = PathBuf::from("src/foo.rs");
         for lang in ["zh", "en"] {
-            let wiki = dir.join("wiki").join(lang).join("src.md");
-            let card = dir.join("cards").join(lang).join("src.md");
-            std::fs::create_dir_all(wiki.parent().unwrap()).unwrap();
-            std::fs::create_dir_all(card.parent().unwrap()).unwrap();
-            std::fs::write(&wiki, "旧页面").unwrap();
-            std::fs::write(&card, "旧卡片").unwrap();
+            let stale = dir.join("wiki").join(lang).join("src.md");
+            let keep = dir.join("wiki").join(lang).join("lib.md");
+            std::fs::create_dir_all(stale.parent().unwrap()).unwrap();
+            std::fs::create_dir_all(keep.parent().unwrap()).unwrap();
+            std::fs::write(&stale, "旧页面").unwrap();
+            std::fs::write(&keep, "保留页面").unwrap();
+            state
+                .doc_fingerprints
+                .insert(stale.to_string_lossy().to_string(), "fp".into());
+            state
+                .doc_fingerprints
+                .insert(keep.to_string_lossy().to_string(), "fp".into());
         }
 
-        // 现存文件（绝对路径，存在于磁盘）不得被清理
-        let alive = dir.join("lib").join("util.rs");
-        std::fs::create_dir_all(alive.parent().unwrap()).unwrap();
-        std::fs::write(&alive, "存活").unwrap();
-        let alive_wiki = dir.join("wiki").join("zh").join("lib.md");
-        std::fs::create_dir_all(alive_wiki.parent().unwrap()).unwrap();
-        std::fs::write(&alive_wiki, "存活页面").unwrap();
+        // 本次渲染集合只含 lib.md（src.md 对应模块已消失，不在渲染集）
+        let rendered: Vec<std::path::PathBuf> = ["zh", "en"]
+            .iter()
+            .map(|lang| dir.join("wiki").join(lang).join("lib.md"))
+            .collect();
 
-        cleanup_deleted_outputs(&config, &[deleted, alive]);
+        cleanup_stale_outputs(Some(&state), &rendered);
 
         for lang in ["zh", "en"] {
             assert!(
                 !dir.join("wiki").join(lang).join("src.md").exists(),
-                "已删文件的 wiki 页应被清理（{lang}）"
+                "未渲染的旧产物应被清理（{lang}）"
             );
             assert!(
-                !dir.join("cards").join(lang).join("src.md").exists(),
-                "已删文件的卡片应被清理（{lang}）"
+                dir.join("wiki").join(lang).join("lib.md").exists(),
+                "本次渲染集合内的产物应保留（{lang}）"
             );
         }
-        assert!(dir.join("wiki").join("zh").join("lib.md").exists(), "现存文件的输出不应被清理");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 跨目录合并社区的删除清理：社区名是公共父目录前缀（如 "src"）时，
-    /// 被删文件 src/a/x.rs 的完整父目录名是 "src::a"——仅按完整父目录清理
-    /// 会漏删社区页 src.md，因此候选模块名必须包含每一级前缀。
+    /// 受保护文档在渲染集合内（rendered_paths 含受保护路径），diff 后
+    /// 不会被误删——人工编辑内容由保护语义而非清理语义保障。
     #[test]
-    fn test_cleanup_deleted_outputs_covers_community_prefix() {
+    fn test_cleanup_stale_outputs_keeps_rendered_protected() {
         let dir = std::env::temp_dir()
-            .join(format!("repo_wiki_test_cleanup_prefix_{}", std::process::id()));
+            .join(format!("repo_wiki_test_stale_protected_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
-        let mut config = crate::config::schema::WikiConfig::default();
-        config.output.dir = dir.to_string_lossy().into_owned();
+        let mut state = incremental::state::GenerationState {
+            last_commit_hash: None,
+            file_fingerprints: std::collections::HashMap::new(),
+            doc_fingerprints: std::collections::HashMap::new(),
+            doc_modules: std::collections::HashMap::new(),
+            protected_docs: vec![],
+            generated_at: String::new(),
+        };
+        // 受保护页面被人工编辑过（指纹不匹配）——doc_fingerprints 仍记录其路径
+        let manual = dir.join("wiki").join("zh").join("manual.md");
+        std::fs::create_dir_all(manual.parent().unwrap()).unwrap();
+        std::fs::write(&manual, "人工编辑内容").unwrap();
+        state
+            .doc_fingerprints
+            .insert(manual.to_string_lossy().to_string(), "旧指纹".into());
+        state
+            .doc_modules
+            .insert(manual.to_string_lossy().to_string(), "manual".into());
 
-        // 预置两个可能由同一社区产出的页面：完整父目录名（src_a）与公共前缀（src）
-        let deleted = PathBuf::from("src/a/x.rs");
-        for name in ["src_a", "src"] {
-            let wiki = dir.join("wiki").join("zh").join(format!("{name}.md"));
-            let card = dir.join("cards").join("zh").join(format!("{name}.md"));
-            std::fs::create_dir_all(wiki.parent().unwrap()).unwrap();
-            std::fs::create_dir_all(card.parent().unwrap()).unwrap();
-            std::fs::write(&wiki, "旧页面").unwrap();
-            std::fs::write(&card, "旧卡片").unwrap();
-        }
+        // 本次渲染集合包含该路径（受保护文档属于生成集）
+        let rendered = vec![manual.clone()];
+        cleanup_stale_outputs(Some(&state), &rendered);
 
-        cleanup_deleted_outputs(&config, &[deleted]);
-
-        for name in ["src_a", "src"] {
-            assert!(
-                !dir.join("wiki").join("zh").join(format!("{name}.md")).exists(),
-                "社区公共前缀页面也应被清理: {name}"
-            );
-            assert!(
-                !dir.join("cards").join("zh").join(format!("{name}.md")).exists(),
-                "社区公共前缀卡片也应被清理: {name}"
-            );
-        }
-
+        assert!(
+            manual.exists(),
+            "渲染集合内的人工编辑文档不应被清理"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 模块名候选段提取（不含文件名，盘符不进段）
+    /// 无旧状态（首次生成）时清理为空操作
     #[test]
-    fn test_path_normal_segments() {
-        assert_eq!(path_normal_segments(Path::new("src/config.rs")), vec!["src"]);
-        assert_eq!(
-            path_normal_segments(Path::new("src/foo/bar.rs")),
-            vec!["src".to_string(), "foo".to_string()]
-        );
-        // Windows 盘符不进入段（与 chunk_by_file 的 Normal 组件过滤一致）
-        assert_eq!(path_normal_segments(Path::new("C:/src/config.rs")), vec!["src"]);
-        // 根目录文件无目录段
-        assert!(path_normal_segments(Path::new("config.rs")).is_empty());
+    fn test_cleanup_stale_outputs_noop_without_state() {
+        let dir = std::env::temp_dir()
+            .join(format!("repo_wiki_test_stale_noop_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        cleanup_stale_outputs(None, &[]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A2：force=true 清空保护集（含旧 protected_docs 与人工修改检测），
@@ -997,7 +1004,6 @@ mod tests {
         let mut state = incremental::state::GenerationState {
             last_commit_hash: None,
             file_fingerprints: std::collections::HashMap::new(),
-            module_fingerprints: std::collections::HashMap::new(),
             doc_fingerprints: std::collections::HashMap::new(),
             doc_modules: std::collections::HashMap::new(),
             protected_docs: vec![],

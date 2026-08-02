@@ -69,7 +69,7 @@ fn test_community_detection_and_features() {
     let prev = std::env::current_dir().unwrap();
     std::env::set_current_dir(&tmp).unwrap();
     let result = (|| -> anyhow::Result<()> {
-        let insights = ingest::scan_and_parse(&repo_wiki::config::schema::WikiConfig::default())?;
+        let insights = ingest::scan_and_parse_at(&repo_wiki::project::ProjectRoot::from_cwd().unwrap(), &repo_wiki::config::schema::WikiConfig::default())?;
         assert!(!insights.is_empty(), "应扫描到源文件");
         let mut graph = analysis::build_graph(&insights)?;
         // features 由 lib 层 attach_features 填充（lib 私有函数），

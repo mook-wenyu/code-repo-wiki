@@ -1,8 +1,8 @@
 use std::path::Path;
 use anyhow::Result;
-use tree_sitter::{Language, Node, Parser};
+use tree_sitter::{Language, Node};
 
-use super::{Entity, FileInsight, ImportStmt, LanguageProcessor};
+use super::{Entity, FileInsight, ImportStmt, KindRule, LanguageProcessor, SharedProcessor};
 
 pub struct RustProcessor;
 
@@ -11,74 +11,7 @@ impl RustProcessor {
         Ok(Self)
     }
 
-    fn extract(source: &str) -> (Vec<Entity>, Vec<ImportStmt>) {
-        let bytes = source.as_bytes();
-        let mut entities = Vec::new();
-        let mut imports = Vec::new();
-
-        let language: Language = tree_sitter_rust::LANGUAGE.into();
-        let mut parser = Parser::new();
-        if parser.set_language(&language).is_err() {
-            return Self::fallback(source);
-        }
-        let tree = match parser.parse(source, None) {
-            Some(t) => t,
-            None => return Self::fallback(source),
-        };
-
-        let mut cursor = tree.walk();
-        if !cursor.goto_first_child() { return (entities, imports); }
-
-        'walk: loop {
-            let node = cursor.node();
-            match node.kind() {
-                "struct_item" => Self::record_entity(node, bytes, "struct", &mut entities, None),
-                "function_item" => {
-                    let sig = node.utf8_text(bytes).ok().and_then(|t| t.split('{').next().map(|s| s.trim().to_string()));
-                    Self::record_entity(node, bytes, "function", &mut entities, sig);
-                }
-                "trait_item" => Self::record_entity(node, bytes, "trait", &mut entities, None),
-                "impl_item" => {
-                    let sig = node.utf8_text(bytes).ok().and_then(|t| t.lines().next().map(|s| s.to_string()));
-                    if let Some(name) = node.child_by_field_name("type").and_then(|n| n.utf8_text(bytes).ok()) {
-                        entities.push(Entity {
-                            name: name.to_string(), kind: "impl".to_string(),
-                            line_start: node.start_position().row + 1,
-                            line_end: node.end_position().row + 1,
-                            doc_comment: None, signature: sig, summary: None,
-                        });
-                    }
-                }
-                "enum_item" => Self::record_entity(node, bytes, "enum", &mut entities, None),
-                "type_item" => Self::record_entity(node, bytes, "type", &mut entities, None),
-                "const_item" => Self::record_entity(node, bytes, "const", &mut entities, None),
-                "static_item" => Self::record_entity(node, bytes, "static", &mut entities, None),
-                "use_declaration" => {
-                    if let Ok(text) = node.utf8_text(bytes) {
-                        Self::parse_use_stmt(text, node.start_position().row + 1, &mut imports);
-                    }
-                }
-                "mod_item"
-                    if node.child_by_field_name("body").is_none() => {
-                        Self::record_entity(node, bytes, "mod", &mut entities, None);
-                    }
-                _ => {}
-            }
-
-            if cursor.goto_first_child() { continue; }
-            loop {
-                if cursor.goto_next_sibling() { continue 'walk; }
-                if !cursor.goto_parent() { break 'walk; }
-            }
-        }
-
-        let doc_comments = Self::collect_doc_comments(source);
-        for entity in &mut entities {
-            Self::associate_doc(entity, &doc_comments);
-        }
-        (entities, imports)
-    }
-
+    /// 通用实体提取辅助：name 字段 + 实体 kind
     fn record_entity(node: Node, bytes: &[u8], kind: &str, entities: &mut Vec<Entity>, signature: Option<String>) {
         let name = node.child_by_field_name("name").and_then(|n| n.utf8_text(bytes).ok());
         if let Some(name) = name {
@@ -122,6 +55,62 @@ impl RustProcessor {
             entity.doc_comment = Some(collected.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>().join("\n"));
         }
     }
+}
+
+/// kind 映射表（差异点数据化）：const item 保证 &'static 生命周期
+const KINDS: &[KindRule] = &[
+    KindRule::plain("struct_item", "struct"),
+    KindRule::with_sig("function_item", "function", '{'),
+    KindRule::plain("trait_item", "trait"),
+    KindRule::plain("enum_item", "enum"),
+    KindRule::plain("type_item", "type"),
+    KindRule::plain("const_item", "const"),
+    KindRule::plain("static_item", "static"),
+];
+
+/// Rust 差异点实现：语法常量、kinds 映射表（纯映射分支）、
+/// 无法表化的特殊分支（impl_item / use_declaration / mod_item）、
+/// /// 注释关联钩子、正则 fallback。公共 walk/fallback 触发/FileInsight 组装走 SharedProcessor 默认实现。
+impl SharedProcessor for RustProcessor {
+    fn language() -> &'static str { "Rust" }
+    fn grammar() -> Language { tree_sitter_rust::LANGUAGE.into() }
+
+    fn kinds() -> &'static [KindRule] {
+        KINDS
+    }
+
+    fn handle_special(node: Node, bytes: &[u8], entities: &mut Vec<Entity>, imports: &mut Vec<ImportStmt>) {
+        match node.kind() {
+            "impl_item" => {
+                let sig = node.utf8_text(bytes).ok().and_then(|t| t.lines().next().map(|s| s.to_string()));
+                if let Some(name) = node.child_by_field_name("type").and_then(|n| n.utf8_text(bytes).ok()) {
+                    entities.push(Entity {
+                        name: name.to_string(), kind: "impl".to_string(),
+                        line_start: node.start_position().row + 1,
+                        line_end: node.end_position().row + 1,
+                        doc_comment: None, signature: sig, summary: None,
+                    });
+                }
+            }
+            "use_declaration" => {
+                if let Ok(text) = node.utf8_text(bytes) {
+                    Self::parse_use_stmt(text, node.start_position().row + 1, imports);
+                }
+            }
+            "mod_item"
+                if node.child_by_field_name("body").is_none() => {
+                    Self::record_entity(node, bytes, "mod", entities, None);
+                }
+            _ => {}
+        }
+    }
+
+    fn post_process(source: &str, entities: &mut Vec<Entity>) {
+        let doc_comments = Self::collect_doc_comments(source);
+        for entity in entities.iter_mut() {
+            Self::associate_doc(entity, &doc_comments);
+        }
+    }
 
     fn fallback(source: &str) -> (Vec<Entity>, Vec<ImportStmt>) {
         let mut entities = Vec::new();
@@ -146,18 +135,21 @@ impl RustProcessor {
 }
 
 impl LanguageProcessor for RustProcessor {
-    fn name(&self) -> &'static str { "Rust" }
+    fn name(&self) -> &'static str { Self::language() }
     fn extensions(&self) -> &[&str] { &[".rs"] }
 
     fn parse(&self, source: &str, path: &Path) -> Result<FileInsight> {
         if source.is_empty() {
-            return Ok(FileInsight { path: path.to_path_buf(), language: "Rust".into(), entities: vec![], imports: vec![], doc_comments: vec![], source: source.to_string() });
+            return Self::parse_file(source, path);
         }
         let (entities, imports) = Self::extract(source);
+        // Rust 特有行为保留：tree-sitter 提取为空时再跑一次 fallback
+        // （原实现重复调用 fallback(source) 两次，此处收敛为一次，输出不变）
         if entities.is_empty() && !source.trim().is_empty() {
-            return Ok(FileInsight { path: path.to_path_buf(), language: "Rust".into(), entities: Self::fallback(source).0, imports: Self::fallback(source).1, doc_comments: vec![], source: source.to_string() });
+            let (fb_entities, fb_imports) = Self::fallback(source);
+            return Ok(FileInsight { path: path.to_path_buf(), language: Self::language().into(), entities: fb_entities, imports: fb_imports, doc_comments: vec![], source: source.to_string() });
         }
-        Ok(FileInsight { path: path.to_path_buf(), language: "Rust".into(), entities, imports, doc_comments: vec![], source: source.to_string() })
+        Ok(FileInsight { path: path.to_path_buf(), language: Self::language().into(), entities, imports, doc_comments: vec![], source: source.to_string() })
     }
 }
 

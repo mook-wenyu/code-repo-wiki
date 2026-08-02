@@ -78,6 +78,8 @@ pub fn detect_features(
     let mut neighbors: HashMap<NodeId, HashSet<NodeId>> = HashMap::new();
     let mut cross_edges: Vec<(NodeId, NodeId)> = Vec::new();
     for edge in graph.graph.edge_references() {
+        // 结构安全证据（R1 审计）：边权重由 build_graph 创建边时同步写入，
+        // 非 Option 类型；此处 expect 仅暴露未来构造代码的回归。
         let e = graph
             .graph
             .edge_weight(edge.id())
@@ -111,6 +113,8 @@ pub fn detect_features(
         let texts: Vec<String> = involved
             .iter()
             .map(|nid| {
+                // 结构安全证据（R1 审计）：involved 来自 cross_edges 的端点
+                //（从 graph 边引用收集，端点必然有节点权重）。
                 let n = graph.graph.node_weight(*nid).expect("实体节点必然存在");
                 format!(
                     "{} {:?} {}",
@@ -153,11 +157,19 @@ pub fn detect_features(
     }
 
     // 6. Leiden CPM 聚类
+    // 结构安全证据（R1 审计）：structural 是 0.5~1.0 的 Jaccard 变换
+    //（jaccard 本身 ∈[0,1]）；semantic 来自 embedder.cosine_similarity——
+    // **契约：Embedder 实现必须返回有限值**（唯一实现 EmbeddingEngine
+    // 对零范数向量返回 0.0 并 clamp，恒满足）。若未来新增 Embedder
+    // 实现返回 NaN/Inf，此处 add_edge 会失败并触发 panic——这是有意
+    // 的 fail-loud 契约校验（票 07 裁决：信任边界违约必须暴露，而非
+    // 静默降级掩盖 bug）。常量权重 STRUCTURE_WEIGHT=0.5/SEMANTIC_WEIGHT=0.5
+    // 有限非负，无其他注入路径。
     let mut builder = GraphDataBuilder::new(funcs.len()).directed();
     for ((s, t), w) in &weights {
         builder
             .add_edge(*s, *t, *w)
-            .expect("边权重均为有限非负数");
+            .expect("边权重均为有限非负数（Embedder 契约：余弦相似度必须有限）");
     }
     let data = builder.build().expect("图数据构造失败");
     let config = LeidenConfig {
@@ -166,6 +178,8 @@ pub fn detect_features(
         seed: Some(FEATURE_LEIDEN_SEED),
         ..Default::default()
     };
+    // 结构安全证据（R1 审计）：leiden-rs 0.8.1 对用户输入从不 panic
+    //（空图/单节点/无边图安全返回），run() 仅内部不变量可失败。
     let result = Leiden::new(config)
         .run(&data)
         .expect("Leiden 特征聚类失败");

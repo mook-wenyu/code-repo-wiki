@@ -23,17 +23,23 @@ pub struct SearchHit {
 /// 导致同一文档在不同引擎的排名权重被引擎顺序污染——已修正为标准实现。
 pub fn rrf_merge(results: &[Vec<SearchHit>], top_k: usize, k: f64) -> Vec<SearchHit> {
     use std::collections::HashMap;
-    // 名称 → 累计 RRF 分数
-    let mut scores: HashMap<String, (f64, CodeNode)> = HashMap::new();
+    // (名称, 文件路径) → 累计 RRF 分数。去重键必须含 file_path：同名函数
+    // 在不同文件（不同模块）是不同实体，仅按名称去重会把它们折叠成一条
+    // 结果，语义检索的"定位"价值被破坏（N2 修复）。
+    let mut scores: HashMap<(String, String), (f64, CodeNode)> = HashMap::new();
     for list in results {
         for (rank, hit) in list.iter().enumerate() {
-            let entry = scores.entry(hit.node.name.clone()).or_insert_with(|| (0.0, hit.node.clone()));
+            let key = (
+                hit.node.name.clone(),
+                hit.node.file_path.clone().unwrap_or_default(),
+            );
+            let entry = scores.entry(key).or_insert_with(|| (0.0, hit.node.clone()));
             // 标准 RRF: k / (k + rank)
             entry.0 += k / (k + rank as f64);
         }
     }
     let mut merged: Vec<SearchHit> = scores.into_iter()
-        .map(|(_name, (score, node))| SearchHit {
+        .map(|(_key, (score, node))| SearchHit {
             node, score, source: "hybrid".into(),
             callers: vec![], callees: vec![],
         })
@@ -93,6 +99,24 @@ mod tests {
         ];
         let result = rrf_merge(&[t, s], 5, 60.0);
         assert_eq!(result.len(), 1);
+    }
+
+    /// 同名不同文件是不同实体：去重键含 file_path，两引擎命中不同文件的
+    /// 同名函数必须保留两条结果（N2 防回归）。
+    #[test]
+    fn test_rrf_merge_keeps_same_name_different_file() {
+        let mut a = make_node("foo");
+        a.file_path = Some("src/a.rs".into());
+        let mut b = make_node("foo");
+        b.file_path = Some("src/b.rs".into());
+        let text = vec![
+            SearchHit { node: a.clone(), score: 1.0, source: "text".into(), callers: vec![], callees: vec![] },
+        ];
+        let semantic = vec![
+            SearchHit { node: b, score: 0.9, source: "semantic".into(), callers: vec![], callees: vec![] },
+        ];
+        let result = rrf_merge(&[text, semantic], 5, 60.0);
+        assert_eq!(result.len(), 2, "同名不同文件的实体不应被折叠");
     }
 
     /// 双引擎交叉排名：同一文档在两引擎排名不同时，融合排序只由各引擎

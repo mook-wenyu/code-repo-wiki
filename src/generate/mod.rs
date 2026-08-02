@@ -14,7 +14,6 @@ use anyhow::Result;
 use crate::config::plan::ResolvedPlan;
 use crate::config::schema::WikiConfig;
 use crate::ingest::parser::FileInsight;
-use crate::incremental::change::EntityChangeSet;
 use crate::model::{KnowledgeCard, KnowledgeGraph, WikiDocument};
 
 use self::card::CardGenerator;
@@ -58,15 +57,6 @@ pub fn create_provider(config: &WikiConfig) -> Result<Provider> {
     }
 }
 
-/// 生效的语言列表（主语言 + 扩展语言）
-///
-/// Knowledge Card 只按主语言生成一次，Wiki 页面按本列表逐语言独立生成。
-pub fn collect_languages(config: &WikiConfig) -> Vec<String> {
-    let mut languages = vec![config.wiki.language.clone()];
-    languages.extend(config.wiki.expand_languages.iter().cloned());
-    languages
-}
-
 /// 运行完整的生成流水线
 ///
 /// 1. AST 感知分块（按模块分组）
@@ -81,6 +71,7 @@ pub async fn run_generation(
     graph: &KnowledgeGraph,
     insights: &[FileInsight],
     config: &WikiConfig,
+    root: &crate::project::ProjectRoot,
     extra_edits: &HashMap<String, Vec<String>>,
 ) -> Result<GenerationOutput> {
     let start = Instant::now();
@@ -100,8 +91,9 @@ pub async fn run_generation(
     // 2. 创建 LLM Provider
     let provider = create_provider(config)?;
 
-    // 2.3 解析 wiki_plan.yaml 生效计划（禁用或文件缺失 → None；坏文件中断）
-    let plan = crate::config::plan::resolve_plan(config)?;
+    // 2.3 解析 wiki_plan.yaml 生效计划（禁用或文件缺失 → None；坏文件中断；
+    // 路径相对项目根解析，不依赖进程 cwd）
+    let plan = crate::config::plan::resolve_plan_at(root, config)?;
 
     // 2.5 Level 0 实体摘要（并行，演进计划 T3.1）：为每个实体生成摘要
     generate_entity_summaries(
@@ -131,14 +123,14 @@ pub async fn run_generation(
 
     // 4. 按语言独立生成 Wiki 页面（并行，演进计划 T3.1；卡片仅主语言生成一次，
     // 各语言页面复用主语言卡片摘要）
-    let languages = collect_languages(config);
+    let languages = crate::output::wiki_languages(config);
     let wiki_gen = WikiGenerator::new(&provider, plan.clone(), config.llm.max_concurrent);
     let mut documents =
         generate_wiki_pages(&wiki_gen, &chunks, &cards, &languages, config, config.llm.max_concurrent).await;
     tracing::info!("生成进度: 90% - Wiki 页面生成完成，共 {} 个页面", documents.len());
 
     // 5. 生成全局文档（架构概览 + 数据库 Schema，全量/增量共用同一辅助函数）
-    generate_global_documents(&wiki_gen, &provider, graph, config, plan.as_ref(), &cards, &mut documents).await?;
+    generate_global_documents(&wiki_gen, &provider, graph, config, root, plan.as_ref(), &cards, &mut documents).await?;
 
     // 6. 按计划文档白名单过滤（严格只输出列出的页面）
     documents = filter_by_whitelist(documents, plan.as_ref());
@@ -165,19 +157,22 @@ pub async fn run_generation(
 
 /// 增量更新的过滤生成流水线
 ///
-/// 与 `run_generation` 类似，但仅处理 `changed_files` 中列出的文件，
-/// 用于增量更新场景。未变更的文件使用已有缓存，不触发新的 LLM 调用。
+/// 与 `run_generation` 类似，但仅处理 `inc`（增量分析结果）中列出的变更
+/// 文件 + 语义传播判定的受影响模块，用于增量更新场景。未变更的文件
+/// 使用已有缓存，不触发新的 LLM 调用。
 /// extra_edits 语义同 run_generation（本次新检测的人工修改记录）。
 pub async fn run_generation_filtered(
     graph: &KnowledgeGraph,
     insights: &[FileInsight],
     config: &WikiConfig,
-    changed_files: &std::collections::HashSet<std::path::PathBuf>,
+    root: &crate::project::ProjectRoot,
+    inc: &crate::incremental::IncrementalResult,
     extra_edits: &HashMap<String, Vec<String>>,
-    entity_changes: Option<&EntityChangeSet>,
-    affected_modules: &[String],
 ) -> Result<GenerationOutput> {
     let start = Instant::now();
+    let changed_files = &inc.changed_files;
+    let entity_changes = &inc.entity_changes;
+    let affected_modules = &inc.affected_modules;
 
     // 过滤出变更文件的 Insight（克隆为拥有数据）。
     // T2 传播闭环接线：除变更文件外，语义传播判定的受影响模块文件也
@@ -216,15 +211,16 @@ pub async fn run_generation_filtered(
     // 2. 创建 LLM Provider
     let provider = create_provider(config)?;
 
-    // 2.5 解析 wiki_plan.yaml 生效计划（禁用或文件缺失 → None；坏文件中断）
-    let plan = crate::config::plan::resolve_plan(config)?;
+    // 2.5 解析 wiki_plan.yaml 生效计划（禁用或文件缺失 → None；坏文件中断；
+    // 路径相对项目根解析，不依赖进程 cwd）
+    let plan = crate::config::plan::resolve_plan_at(root, config)?;
 
     // 2.5 增量实体摘要（演进计划 T2.3 实体级过滤 + T3.1 并行化）：
     // 仅对**接口级变化文件**中的实体重新生成摘要（新增/删除/签名变更），
     // 纯实现级变化（函数体修改）与未变化实体保留旧摘要，不浪费 LLM 调用。
-    // 未提供实体变化信息（FileWatch 策略）时跳过本步骤（保持现状行为）。
-    if let Some(changes) = entity_changes {
-        let interface_files: std::collections::HashSet<std::path::PathBuf> = changes
+    // 变化集合为空（FileWatch 策略或无接口级变化）时跳过本步骤。
+    if !entity_changes.changes.is_empty() {
+        let interface_files: std::collections::HashSet<std::path::PathBuf> = entity_changes
             .changes
             .iter()
             .filter(|c| {
@@ -270,7 +266,7 @@ pub async fn run_generation_filtered(
 
     // 4. 按语言独立生成 Wiki 页面（并行，演进计划 T3.1；仅变更块；卡片仅主语言生成一次，
     // 各语言页面复用主语言卡片摘要）
-    let languages = collect_languages(config);
+    let languages = crate::output::wiki_languages(config);
     let wiki_gen = WikiGenerator::new(&provider, plan.clone(), config.llm.max_concurrent);
     let mut documents =
         generate_wiki_pages(&wiki_gen, &chunks, &cards, &languages, config, config.llm.max_concurrent).await;
@@ -280,7 +276,7 @@ pub async fn run_generation_filtered(
     // Schema 文档基于全量 .sql 文件，都反映全仓库状态。
     // 因此即使增量只改了 1 个模块，这两类文档也必须重新生成，否则增量输出
     // 会比全量输出缺少页面，行为不一致。
-    generate_global_documents(&wiki_gen, &provider, graph, config, plan.as_ref(), &cards, &mut documents).await?;
+    generate_global_documents(&wiki_gen, &provider, graph, config, root, plan.as_ref(), &cards, &mut documents).await?;
 
     // 6. 按计划文档白名单过滤（严格只输出列出的页面）
     documents = filter_by_whitelist(documents, plan.as_ref());
@@ -481,11 +477,20 @@ async fn generate_wiki_pages<P: LlmProvider>(
 /// 这三类文档反映全仓库状态：架构概览与项目概览基于完整 KnowledgeGraph 的模块列表，
 /// Schema 文档基于全量 .sql 文件，与"本次变更了哪些模块"无关，
 /// 因此增量路径也必须重新生成，否则增量输出会比全量输出缺少这三类页面。
+/// 全局文档生成（架构概览 + 项目概览 + 数据库 Schema）
+///
+/// 参数为生成上下文的完整输入集（8 个）：wiki_gen 与 provider 是两条独立
+/// LLM 通道（页面 vs 全局文档）、graph/config/root/plan/cards 是生成所需的
+/// 图结构、配置、项目根、计划与卡片摘要、documents 是输出累加器。
+/// 引入上下文结构体需新增类型仅服务本函数两处调用，YAGNI——保留平铺
+/// 参数并在此说明，属明确的例外。
+#[allow(clippy::too_many_arguments)]
 async fn generate_global_documents(
     wiki_gen: &WikiGenerator<'_, Provider>,
     provider: &Provider,
     graph: &KnowledgeGraph,
     config: &WikiConfig,
+    root: &crate::project::ProjectRoot,
     plan: Option<&ResolvedPlan>,
     cards: &[KnowledgeCard],
     documents: &mut Vec<WikiDocument>,
@@ -519,7 +524,7 @@ async fn generate_global_documents(
     }
 
     // 数据库 Schema 文档：无 .sql 文件时内部直接返回空列表，不调用 LLM
-    match schema::generate_schema_documents(provider, config, plan).await {
+    match schema::generate_schema_documents_at(root, provider, config, plan).await {
         Ok(mut schema_docs) => documents.append(&mut schema_docs),
         Err(e) => tracing::warn!("数据库 Schema 文档生成跳过: {}", e),
     }
@@ -531,7 +536,6 @@ async fn generate_global_documents(
 mod tests {
     use super::*;
     use crate::config::plan::PlanDocument;
-    use crate::config::schema::WikiSection;
     use crate::model::DocumentKind;
 
     /// 构造指定标题的 WikiDocument（测试辅助，其余字段留空）
@@ -593,23 +597,5 @@ mod tests {
         ];
         let filtered = filter_by_whitelist(documents, None);
         assert_eq!(filtered.len(), 3);
-    }
-
-    #[test]
-    fn test_collect_languages_default_single() {
-        let config = WikiConfig::default();
-        assert_eq!(collect_languages(&config), vec!["zh"]);
-    }
-
-    #[test]
-    fn test_collect_languages_with_expand() {
-        let config = WikiConfig {
-            wiki: WikiSection {
-                language: "zh".into(),
-                expand_languages: vec!["en".into(), "ja".into()],
-            },
-            ..Default::default()
-        };
-        assert_eq!(collect_languages(&config), vec!["zh", "en", "ja"]);
     }
 }

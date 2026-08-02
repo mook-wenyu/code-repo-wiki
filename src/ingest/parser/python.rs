@@ -1,8 +1,8 @@
 use std::path::Path;
 use anyhow::Result;
-use tree_sitter::{Language, Parser};
+use tree_sitter::{Language, Node};
 
-use super::{Entity, FileInsight, ImportStmt, LanguageProcessor};
+use super::{Entity, FileInsight, ImportStmt, KindRule, LanguageProcessor, SharedProcessor};
 
 pub struct PythonProcessor;
 
@@ -10,83 +10,71 @@ impl PythonProcessor {
     pub fn new() -> Result<Self> {
         Ok(Self)
     }
+}
 
-    fn walk(source: &str) -> (Vec<Entity>, Vec<ImportStmt>) {
-        let bytes = source.as_bytes();
-        let mut entities = Vec::new();
-        let mut imports = Vec::new();
+/// kind 映射表（差异点数据化）：const item 保证 &'static 生命周期
+const KINDS: &[KindRule] = &[
+    KindRule::plain("class_definition", "class"),
+    // Python 函数签名以冒号结尾（def foo(a: int) -> str:），截断符用 ':'
+    KindRule::with_sig("function_definition", "function", ':'),
+];
 
-        let language: Language = tree_sitter_python::LANGUAGE.into();
-        let mut parser = Parser::new();
-        if parser.set_language(&language).is_err() {
-            return Self::fallback(source);
-        }
-        let tree = match parser.parse(source, None) {
-            Some(t) => t,
-            None => return Self::fallback(source),
-        };
+/// Python 差异点实现：语法常量、kinds 映射表（纯映射分支）、
+/// 无法表化的特殊分支（import/import_from 文本解析）、docstring 关联钩子、正则 fallback。
+/// 公共 walk/fallback 触发/FileInsight 组装走 SharedProcessor 默认实现。
+impl SharedProcessor for PythonProcessor {
+    fn language() -> &'static str { "Python" }
+    fn grammar() -> Language { tree_sitter_python::LANGUAGE.into() }
 
-        let mut cursor = tree.walk();
-        if !cursor.goto_first_child() { return (entities, imports); }
-
-        'walk: loop {
-            let node = cursor.node();
-            match node.kind() {
-                "class_definition" => {
-                    let name = node.child_by_field_name("name").and_then(|n| n.utf8_text(bytes).ok());
-                    if let Some(name) = name {
-                        entities.push(Entity {
-                            name: name.to_string(), kind: "class".to_string(),
-                            line_start: node.start_position().row + 1,
-                            line_end: node.end_position().row + 1,
-                            doc_comment: None, signature: None, summary: None,
-                        });
-                    }
-                }
-                "function_definition" => {
-                    let name = node.child_by_field_name("name").and_then(|n| n.utf8_text(bytes).ok());
-                    if let Some(name) = name {
-                        let sig = node.utf8_text(bytes).ok().and_then(|t| t.split(':').next().map(|s| s.trim().to_string()));
-                        entities.push(Entity {
-                            name: name.to_string(), kind: "function".to_string(),
-                            line_start: node.start_position().row + 1,
-                            line_end: node.end_position().row + 1,
-                            doc_comment: None, signature: sig, summary: None,
-                        });
-                    }
-                }
-                "import_statement" => {
-                    if let Ok(text) = node.utf8_text(bytes) {
-                        imports.push(ImportStmt {
-                            source: text.trim().strip_prefix("import ").unwrap_or(text.trim()).to_string(),
-                            alias: None,
-                            line: node.start_position().row + 1,
-                        });
-                    }
-                }
-                "import_from_statement" => {
-                    if let Ok(text) = node.utf8_text(bytes) {
-                        imports.push(ImportStmt {
-                            source: text.trim().to_string(),
-                            alias: None,
-                            line: node.start_position().row + 1,
-                        });
-                    }
-                }
-                _ => {}
-            }
-
-            if cursor.goto_first_child() { continue; }
-            loop {
-                if cursor.goto_next_sibling() { continue 'walk; }
-                if !cursor.goto_parent() { break 'walk; }
-            }
-        }
-
-        Self::associate_docstrings(source, &mut entities);
-        (entities, imports)
+    fn kinds() -> &'static [KindRule] {
+        KINDS
     }
 
+    fn handle_special(node: Node, bytes: &[u8], _entities: &mut Vec<Entity>, imports: &mut Vec<ImportStmt>) {
+        match node.kind() {
+            "import_statement" => {
+                if let Ok(text) = node.utf8_text(bytes) {
+                    imports.push(ImportStmt {
+                        source: text.trim().strip_prefix("import ").unwrap_or(text.trim()).to_string(),
+                        alias: None,
+                        line: node.start_position().row + 1,
+                    });
+                }
+            }
+            "import_from_statement" => {
+                if let Ok(text) = node.utf8_text(bytes) {
+                    imports.push(ImportStmt {
+                        source: text.trim().to_string(),
+                        alias: None,
+                        line: node.start_position().row + 1,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn post_process(source: &str, entities: &mut Vec<Entity>) {
+        Self::associate_docstrings(source, entities);
+    }
+
+    fn fallback(source: &str) -> (Vec<Entity>, Vec<ImportStmt>) {
+        let mut entities = Vec::new();
+        let mut imports = Vec::new();
+        for (i, line) in source.lines().enumerate() {
+            let line_no = i + 1; let t = line.trim();
+            if let Some(rest) = t.strip_prefix("import ") { imports.push(ImportStmt { source: rest.to_string(), alias: None, line: line_no }); }
+            else if let Some(rest) = t.strip_prefix("from ") { imports.push(ImportStmt { source: rest.to_string(), alias: None, line: line_no }); }
+            else if let Some(name) = t.strip_prefix("class ").and_then(|s| s.split(&['(', ':', ' '][..]).next()) { entities.push(Entity { name: name.to_string(), kind: "class".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: None, summary: None }); }
+            else if let Some(name) = t.strip_prefix("def ").and_then(|s| s.split(&['(', ':', ' '][..]).next()) { entities.push(Entity { name: name.to_string(), kind: "function".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: Some(t.to_string()), summary: None }); }
+            else if let Some(name) = t.strip_prefix("async def ").and_then(|s| s.split(&['(', ':', ' '][..]).next()) { entities.push(Entity { name: name.to_string(), kind: "function".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: Some(t.to_string()), summary: None }); }
+        }
+        (entities, imports)
+    }
+}
+
+impl PythonProcessor {
+    /// 扫描实体起始行后 5 行内的 docstring 并关联为 doc_comment
     fn associate_docstrings(source: &str, entities: &mut [Entity]) {
         let lines: Vec<&str> = source.lines().collect();
         for e in entities.iter_mut() {
@@ -108,32 +96,14 @@ impl PythonProcessor {
             }
         }
     }
-
-    fn fallback(source: &str) -> (Vec<Entity>, Vec<ImportStmt>) {
-        let mut entities = Vec::new();
-        let mut imports = Vec::new();
-        for (i, line) in source.lines().enumerate() {
-            let line_no = i + 1; let t = line.trim();
-            if let Some(rest) = t.strip_prefix("import ") { imports.push(ImportStmt { source: rest.to_string(), alias: None, line: line_no }); }
-            else if let Some(rest) = t.strip_prefix("from ") { imports.push(ImportStmt { source: rest.to_string(), alias: None, line: line_no }); }
-            else if let Some(name) = t.strip_prefix("class ").and_then(|s| s.split(&['(', ':', ' '][..]).next()) { entities.push(Entity { name: name.to_string(), kind: "class".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: None, summary: None }); }
-            else if let Some(name) = t.strip_prefix("def ").and_then(|s| s.split(&['(', ':', ' '][..]).next()) { entities.push(Entity { name: name.to_string(), kind: "function".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: Some(t.to_string()), summary: None }); }
-            else if let Some(name) = t.strip_prefix("async def ").and_then(|s| s.split(&['(', ':', ' '][..]).next()) { entities.push(Entity { name: name.to_string(), kind: "function".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: Some(t.to_string()), summary: None }); }
-        }
-        (entities, imports)
-    }
 }
 
 impl LanguageProcessor for PythonProcessor {
-    fn name(&self) -> &'static str { "Python" }
+    fn name(&self) -> &'static str { Self::language() }
     fn extensions(&self) -> &[&str] { &[".py"] }
 
     fn parse(&self, source: &str, path: &Path) -> Result<FileInsight> {
-        if source.is_empty() {
-            return Ok(FileInsight { path: path.to_path_buf(), language: "Python".into(), entities: vec![], imports: vec![], doc_comments: vec![], source: source.to_string() });
-        }
-        let (entities, imports) = Self::walk(source);
-        Ok(FileInsight { path: path.to_path_buf(), language: "Python".into(), entities, imports, doc_comments: vec![], source: source.to_string() })
+        Self::parse_file(source, path)
     }
 }
 

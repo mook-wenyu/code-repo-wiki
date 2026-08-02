@@ -1,8 +1,8 @@
 use std::path::Path;
 use anyhow::Result;
-use tree_sitter::{Language, Parser};
+use tree_sitter::{Language, Node};
 
-use super::{Entity, FileInsight, ImportStmt, LanguageProcessor};
+use super::{Entity, FileInsight, ImportStmt, KindRule, LanguageProcessor, SharedProcessor};
 
 pub struct GoProcessor;
 
@@ -10,86 +10,52 @@ impl GoProcessor {
     pub fn new() -> Result<Self> {
         Ok(Self)
     }
+}
 
-    fn walk(source: &str) -> (Vec<Entity>, Vec<ImportStmt>) {
-        let bytes = source.as_bytes();
-        let mut entities = Vec::new();
-        let mut imports = Vec::new();
+/// kind 映射表（差异点数据化）：const item 保证 &'static 生命周期
+const KINDS: &[KindRule] = &[
+    KindRule::with_sig("function_declaration", "function", '{'),
+    KindRule::with_sig("method_declaration", "function", '{'),
+];
 
-        let language: Language = tree_sitter_go::LANGUAGE.into();
-        let mut parser = Parser::new();
-        if parser.set_language(&language).is_err() {
-            return Self::fallback(source);
-        }
-        let tree = match parser.parse(source, None) {
-            Some(t) => t,
-            None => return Self::fallback(source),
-        };
+/// Go 差异点实现：语法常量、kinds 映射表（纯映射分支）、
+/// 无法表化的特殊分支（type_spec 动态 kind / import_spec）、正则 fallback。
+/// 公共 walk/fallback 触发/FileInsight 组装走 SharedProcessor 默认实现。
+impl SharedProcessor for GoProcessor {
+    fn language() -> &'static str { "Go" }
+    fn grammar() -> Language { tree_sitter_go::LANGUAGE.into() }
 
-        let mut cursor = tree.walk();
-        if !cursor.goto_first_child() { return (entities, imports); }
+    fn kinds() -> &'static [KindRule] {
+        KINDS
+    }
 
-        'walk: loop {
-            let node = cursor.node();
-            match node.kind() {
-                "type_spec" => {
-                    let name = node.child_by_field_name("name").and_then(|n| n.utf8_text(bytes).ok());
-                    if let Some(name) = name {
-                        let kind = if node.child_by_field_name("type").map(|t| t.kind()) == Some("struct_type") { "struct" }
-                            else if node.child_by_field_name("type").map(|t| t.kind()) == Some("interface_type") { "interface" }
-                            else { "type" };
-                        entities.push(Entity {
-                            name: name.to_string(), kind: kind.to_string(),
-                            line_start: node.start_position().row + 1,
-                            line_end: node.end_position().row + 1,
-                            doc_comment: None, signature: None, summary: None,
-                        });
-                    }
+    fn handle_special(node: Node, bytes: &[u8], entities: &mut Vec<Entity>, imports: &mut Vec<ImportStmt>) {
+        match node.kind() {
+            "type_spec" => {
+                let name = node.child_by_field_name("name").and_then(|n| n.utf8_text(bytes).ok());
+                if let Some(name) = name {
+                    let kind = if node.child_by_field_name("type").map(|t| t.kind()) == Some("struct_type") { "struct" }
+                        else if node.child_by_field_name("type").map(|t| t.kind()) == Some("interface_type") { "interface" }
+                        else { "type" };
+                    entities.push(Entity {
+                        name: name.to_string(), kind: kind.to_string(),
+                        line_start: node.start_position().row + 1,
+                        line_end: node.end_position().row + 1,
+                        doc_comment: None, signature: None, summary: None,
+                    });
                 }
-                "function_declaration" => {
-                    let name = node.child_by_field_name("name").and_then(|n| n.utf8_text(bytes).ok());
-                    if let Some(name) = name {
-                        let sig = node.utf8_text(bytes).ok().and_then(|t| t.split('{').next().map(|s| s.trim().to_string()));
-                        entities.push(Entity {
-                            name: name.to_string(), kind: "function".to_string(),
-                            line_start: node.start_position().row + 1,
-                            line_end: node.end_position().row + 1,
-                            doc_comment: None, signature: sig, summary: None,
-                        });
-                    }
-                }
-                "method_declaration" => {
-                    let name = node.child_by_field_name("name").and_then(|n| n.utf8_text(bytes).ok());
-                    if let Some(name) = name {
-                        let sig = node.utf8_text(bytes).ok().and_then(|t| t.split('{').next().map(|s| s.trim().to_string()));
-                        entities.push(Entity {
-                            name: name.to_string(), kind: "function".to_string(),
-                            line_start: node.start_position().row + 1,
-                            line_end: node.end_position().row + 1,
-                            doc_comment: None, signature: sig, summary: None,
-                        });
-                    }
-                }
-                "import_spec" => {
-                    if let Some(path) = node.child_by_field_name("path").and_then(|n| n.utf8_text(bytes).ok()) {
-                        imports.push(ImportStmt {
-                            source: path.trim_matches('"').to_string(),
-                            alias: None,
-                            line: node.start_position().row + 1,
-                        });
-                    }
-                }
-                _ => {}
             }
-
-            if cursor.goto_first_child() { continue; }
-            loop {
-                if cursor.goto_next_sibling() { continue 'walk; }
-                if !cursor.goto_parent() { break 'walk; }
+            "import_spec" => {
+                if let Some(path) = node.child_by_field_name("path").and_then(|n| n.utf8_text(bytes).ok()) {
+                    imports.push(ImportStmt {
+                        source: path.trim_matches('"').to_string(),
+                        alias: None,
+                        line: node.start_position().row + 1,
+                    });
+                }
             }
+            _ => {}
         }
-
-        (entities, imports)
     }
 
     fn fallback(source: &str) -> (Vec<Entity>, Vec<ImportStmt>) {
@@ -120,15 +86,11 @@ impl GoProcessor {
 }
 
 impl LanguageProcessor for GoProcessor {
-    fn name(&self) -> &'static str { "Go" }
+    fn name(&self) -> &'static str { Self::language() }
     fn extensions(&self) -> &[&str] { &[".go"] }
 
     fn parse(&self, source: &str, path: &Path) -> Result<FileInsight> {
-        if source.is_empty() {
-            return Ok(FileInsight { path: path.to_path_buf(), language: "Go".into(), entities: vec![], imports: vec![], doc_comments: vec![], source: source.to_string() });
-        }
-        let (entities, imports) = Self::walk(source);
-        Ok(FileInsight { path: path.to_path_buf(), language: "Go".into(), entities, imports, doc_comments: vec![], source: source.to_string() })
+        Self::parse_file(source, path)
     }
 }
 

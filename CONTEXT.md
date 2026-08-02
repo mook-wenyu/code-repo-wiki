@@ -32,15 +32,15 @@
 |----|------|------|------|
 | **ingest** | 文件扫描 + AST 解析 | 源码文件 | `Vec<FileInsight>` |
 | **analysis** | 知识图谱构建 + 模块检测 | `Vec<FileInsight>` | `KnowledgeGraph` |
-| **generate** | LLM 生成知识卡片和 wiki 页面 | `KnowledgeGraph` + config | `Vec<KnowledgeCard>` + `Vec<WikiDocument>` |
-| **output** | 渲染为 Markdown/HTML | `Vec<WikiDocument>` + graph | 文件系统上的 wiki 目录 |
+| **generate** | LLM 生成知识卡片和 wiki 页面 | `KnowledgeGraph` + config + `Vec<FileInsight>` | `Vec<KnowledgeCard>` + `Vec<WikiDocument>` |
+| **output** | 渲染为 Markdown/HTML + 导出快照 | `Vec<WikiDocument>` + cards + graph | 文件系统上的 wiki 目录 + `.state/export_snapshot.json` |
 | **incremental** | 变更检测 + 影响传播 | git diff / 文件事件 | `IncrementalResult` |
 | **search** | 代码搜索智能体（符号+文本+语义三引擎） | 查询字符串 + KnowledgeGraph | `Vec<SearchHit>` |
 
 ## 边界规则
 
 - **analysis** 层只读访问 **ingest** 层输出
-- **generate** 层只依赖 **analysis** 层结果（不直接访问 parser）
+- **generate** 层依赖 **analysis** 层结果与 **ingest** 层 `FileInsight`（经 lib.rs 管线传入，不直接调用 parser 注册表）
 - **incremental** 层可跳过 **analysis** 层的全量重建（仅影响传播需图结构）
-- **output** 层是纯渲染，不含业务逻辑
+- **output** 层是纯渲染，不含业务逻辑（不反向依赖 generate——语言列表由本层 `wiki_languages` 自持）
 - **search** 层是默认只读的聚合层，可组合访问 ingestion / analysis / generate 三层的索引和数据

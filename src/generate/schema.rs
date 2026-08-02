@@ -12,6 +12,7 @@ use crate::config::schema::WikiConfig;
 use crate::generate::llm::{LlmProvider, Provider};
 use crate::generate::prompt;
 use crate::model::{DocumentKind, WikiDocument};
+use crate::project::ProjectRoot;
 
 /// 切分 SQL 中的 CREATE TABLE 语句块（仅定位，不解析）
 ///
@@ -38,10 +39,10 @@ pub fn extract_create_table_blocks(sql: &str) -> Vec<&str> {
     blocks
 }
 
-/// 收集项目内 .sql 文件（复用 Scanner 的 include/exclude 过滤）
-pub fn collect_sql_files(config: &WikiConfig) -> Result<Vec<PathBuf>> {
-    let root = std::env::current_dir()?;
-    let scanner = crate::ingest::scanner::Scanner::new(&root, &config.scope);
+
+/// 在指定项目根下收集 .sql 文件（复用 Scanner 的 include/exclude 过滤）
+pub fn collect_sql_files_at(root: &ProjectRoot, config: &WikiConfig) -> Result<Vec<PathBuf>> {
+    let scanner = crate::ingest::scanner::Scanner::new(root.path(), &config.scope);
     let files = scanner.scan()?;
     Ok(files
         .into_iter()
@@ -49,15 +50,17 @@ pub fn collect_sql_files(config: &WikiConfig) -> Result<Vec<PathBuf>> {
         .collect())
 }
 
-/// 并行生成所有 .sql 文件的 Schema 文档（Semaphore 控制并发，与卡片生成一致）
+/// 在指定项目根下并行生成所有 .sql 文件的 Schema 文档
 ///
-/// 无 .sql 文件时不调用 LLM，直接返回空列表。
-pub async fn generate_schema_documents(
+/// root 注入链路：generate_schema_documents_at → collect_sql_files_at，
+/// SQL 扫描基准全程显式传递，与进程 cwd 解耦。
+pub async fn generate_schema_documents_at(
+    root: &ProjectRoot,
     provider: &Provider,
     config: &WikiConfig,
     plan: Option<&ResolvedPlan>,
 ) -> Result<Vec<WikiDocument>> {
-    let files = collect_sql_files(config)?;
+    let files = collect_sql_files_at(root, config)?;
     if files.is_empty() {
         return Ok(Vec::new());
     }

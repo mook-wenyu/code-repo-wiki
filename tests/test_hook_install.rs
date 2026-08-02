@@ -1,0 +1,220 @@
+//! git hook 安装/卸载集成测试（票 04）
+//!
+//! 通过 env!("CARGO_BIN_EXE_repo-wiki") 调用真实二进制，覆盖：
+//! 1. install 在 git 仓库中写入 post-commit/post-merge hook，
+//!    内容含 `repo-wiki update` 且不含已废弃的 --quiet（clap 会报错被 || true 吞掉）
+//! 2. hook 内容解析出的命令合法（防 --quiet 回归）
+//! 3. 非 git 仓库 install 打印提示而非静默
+//! 4. uninstall 只删除含 repo-wiki 标记的 hook（人工 hook 保留）
+//!
+//! 每个测试使用独立临时目录（进程 pid + 自增序号）避免并行冲突；
+//! install/uninstall 会读写 opencode 配置，一律隔离 HOME/USERPROFILE
+//! （参照 test_cli.rs 手法）。
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// 进程内自增序号：同一进程内多个测试并行时临时目录互不冲突
+static DIR_SEQ: AtomicUsize = AtomicUsize::new(0);
+
+/// 生成唯一临时目录（进程 id + 自增序号）
+fn unique_dir(name: &str) -> PathBuf {
+    let seq = DIR_SEQ.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("repo_wiki_hook_{}_{}_{}", name, std::process::id(), seq))
+}
+
+/// 在指定目录下执行 repo-wiki 二进制（额外环境变量可选），返回完整输出
+fn run_bin(dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_repo-wiki"));
+    cmd.args(args)
+        .current_dir(dir)
+        .env("RUST_LOG", "off") // 关闭 tracing 日志，保证 stdout 只有业务输出
+        .env_remove("OPENAI_API_KEY"); // 避免宿主机真实 Key 被误用
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    cmd.output().expect("执行 repo-wiki 二进制失败")
+}
+
+/// 隔离 HOME/USERPROFILE（install/uninstall 会读写 opencode 全局配置）
+fn home_envs(home: &Path) -> Vec<(&'static str, String)> {
+    vec![
+        ("HOME", home.to_string_lossy().into_owned()),
+        ("USERPROFILE", home.to_string_lossy().into_owned()),
+    ]
+}
+
+/// 初始化 git 仓库（hooks 安装的前置条件），返回 .git/hooks 目录
+fn init_git_repo(dir: &Path) -> PathBuf {
+    let git = git2::Repository::init(dir).expect("git init 失败");
+    let mut cfg = git.config().unwrap();
+    cfg.set_str("user.name", "test").unwrap();
+    cfg.set_str("user.email", "test@test.com").unwrap();
+    dir.join(".git").join("hooks")
+}
+
+/// 从 hook 内容解析出 repo-wiki 命令（取首个 `repo-wiki ...` 行，剥掉重定向与兜底尾缀）
+fn parse_hook_command(content: &str) -> String {
+    content
+        .lines()
+        .find(|l| l.starts_with("repo-wiki "))
+        .expect("hook 应包含 repo-wiki 命令行")
+        .split("2>/dev/null")
+        .next()
+        .unwrap()
+        .trim()
+        .trim_end_matches("|| true")
+        .trim()
+        .to_string()
+}
+
+// ==================== 测试用例 ====================
+
+/// install 在 git 仓库中写入 post-commit/post-merge hook：
+/// 内容含 `repo-wiki update` 与 `command -v repo-wiki`，不含已废弃的 --quiet
+#[test]
+fn test_install_writes_git_hooks() {
+    let work_dir = unique_dir("writes_hooks");
+    let _ = std::fs::remove_dir_all(&work_dir);
+    std::fs::create_dir_all(&work_dir).unwrap();
+    let hooks_dir = init_git_repo(&work_dir);
+    let home = unique_dir("writes_hooks_home");
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let envs: Vec<(&str, String)> = home_envs(&home);
+    let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
+
+    let out = run_bin(&work_dir, &["install-to-opencode"], &envs_ref);
+    assert!(
+        out.status.success(),
+        "install 应成功，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    for hook_name in ["post-commit", "post-merge"] {
+        let hook_path = hooks_dir.join(hook_name);
+        let content = std::fs::read_to_string(&hook_path)
+            .unwrap_or_else(|e| panic!("{} hook 应写入 {}: {}", hook_name, hook_path.display(), e));
+        assert!(
+            content.contains("repo-wiki update"),
+            "{hook_name} 应含 update 命令，实际: {content}"
+        );
+        assert!(
+            !content.contains("--quiet"),
+            "{hook_name} 不应含已废弃的 --quiet（clap 会报错被 || true 吞掉），实际: {content}"
+        );
+        assert!(
+            content.contains("command -v repo-wiki"),
+            "{hook_name} 应含 PATH 探测，实际: {content}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// 从 hook 内容解析出的命令必须等于 `repo-wiki update`（防 --quiet 回归：
+/// 若 install 写入带 --quiet 的旧模板，解析结果不匹配即失败）
+#[test]
+fn test_hook_command_succeeds() {
+    let work_dir = unique_dir("cmd_valid");
+    let _ = std::fs::remove_dir_all(&work_dir);
+    std::fs::create_dir_all(&work_dir).unwrap();
+    let hooks_dir = init_git_repo(&work_dir);
+    let home = unique_dir("cmd_valid_home");
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let envs: Vec<(&str, String)> = home_envs(&home);
+    let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
+
+    let out = run_bin(&work_dir, &["install-to-opencode"], &envs_ref);
+    assert!(out.status.success(), "install 应成功");
+
+    let content = std::fs::read_to_string(hooks_dir.join("post-commit")).unwrap();
+    assert_eq!(
+        parse_hook_command(&content),
+        "repo-wiki update",
+        "hook 命令应为 repo-wiki update（无 --quiet），实际 hook:\n{content}"
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// 非 git 仓库（无 .git/hooks）：install 成功退出且 stdout 打印提示而非静默
+#[test]
+fn test_install_non_git_repo_prints_hint() {
+    let work_dir = unique_dir("no_git");
+    let _ = std::fs::remove_dir_all(&work_dir);
+    std::fs::create_dir_all(&work_dir).unwrap();
+    let home = unique_dir("no_git_home");
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let envs: Vec<(&str, String)> = home_envs(&home);
+    let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
+
+    let out = run_bin(&work_dir, &["install-to-opencode"], &envs_ref);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "非 git 仓库 install 应成功退出，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("未检测到 .git 目录"),
+        "应打印跳过提示，实际 stdout: {stdout}"
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// uninstall --force 只删除含 repo-wiki 标记的 hook：
+/// post-commit（标记）被删，人工 post-merge（无标记）保留
+#[test]
+fn test_uninstall_removes_only_own_hooks() {
+    let work_dir = unique_dir("rm_own");
+    let _ = std::fs::remove_dir_all(&work_dir);
+    std::fs::create_dir_all(&work_dir).unwrap();
+    let hooks_dir = init_git_repo(&work_dir);
+    // 预置两个 hook：post-commit 带 repo-wiki 标记，post-merge 为人工内容
+    std::fs::write(
+        hooks_dir.join("post-commit"),
+        "#!/bin/sh\n# repo-wiki: auto-update wiki on commit\nrepo-wiki update 2>/dev/null || true\n",
+    )
+    .unwrap();
+    std::fs::write(
+        hooks_dir.join("post-merge"),
+        "#!/bin/sh\necho '人工合并后处理'\n",
+    )
+    .unwrap();
+    let home = unique_dir("rm_own_home");
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let envs: Vec<(&str, String)> = home_envs(&home);
+    let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
+
+    let out = run_bin(&work_dir, &["uninstall-from-opencode", "--force"], &envs_ref);
+    assert!(
+        out.status.success(),
+        "uninstall --force 应成功，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !hooks_dir.join("post-commit").exists(),
+        "含 repo-wiki 标记的 post-commit 应被删除"
+    );
+    assert!(
+        hooks_dir.join("post-merge").exists(),
+        "人工 post-merge（无 repo-wiki 标记）应保留"
+    );
+    assert_eq!(
+        std::fs::read_to_string(hooks_dir.join("post-merge")).unwrap(),
+        "#!/bin/sh\necho '人工合并后处理'\n",
+        "保留的 hook 内容不应被改动"
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+    let _ = std::fs::remove_dir_all(&home);
+}

@@ -119,9 +119,13 @@ pub fn analyze_git_diff(repo_path: &std::path::Path, last_commit_hash: Option<&s
     Ok(result)
 }
 
-/// 获取当前 HEAD commit hash
-pub fn get_head_commit_hash() -> Result<String> {
-    let repo = git2::Repository::open(".")?;
+
+/// 在指定项目根下获取当前 HEAD commit hash
+///
+/// git 仓库定位基准显式注入：不再依赖进程 cwd（watch 常驻进程的
+/// cwd 漂移不再改变仓库解析目标）。
+pub fn get_head_commit_hash_at(root: &crate::project::ProjectRoot) -> Result<String> {
+    let repo = git2::Repository::open(root.path())?;
     let head = repo.head()?;
     let oid = head.target().ok_or_else(|| anyhow::anyhow!("HEAD 没有目标"))?;
     Ok(oid.to_string())

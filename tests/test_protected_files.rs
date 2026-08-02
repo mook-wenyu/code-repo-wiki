@@ -9,7 +9,6 @@ fn test_doc_fingerprints_default_empty() {
     let state = GenerationState {
         last_commit_hash: None,
         file_fingerprints: HashMap::new(),
-        module_fingerprints: HashMap::new(),
         doc_fingerprints: HashMap::new(),
         doc_modules: HashMap::new(),
         protected_docs: Vec::new(),
@@ -74,7 +73,6 @@ fn test_detect_manual_edit() {
     let state = GenerationState {
         last_commit_hash: None,
         file_fingerprints: fps,  // is_file_changed 检查 file_fingerprints
-        module_fingerprints: HashMap::new(),
         doc_fingerprints: HashMap::new(),
         doc_modules: HashMap::new(),
         protected_docs: Vec::new(),
@@ -117,7 +115,6 @@ fn test_detect_manually_modified() {
     let state = GenerationState {
         last_commit_hash: None,
         file_fingerprints: HashMap::new(),
-        module_fingerprints: HashMap::new(),
         doc_fingerprints: doc_fps,
         doc_modules: HashMap::new(),
         protected_docs: Vec::new(),
@@ -363,7 +360,6 @@ fn test_manual_edit_recorded_in_card() {
     let state = GenerationState {
         last_commit_hash: None,
         file_fingerprints: HashMap::new(),
-        module_fingerprints: HashMap::new(),
         doc_fingerprints: {
             let mut m = HashMap::new();
             m.insert(page_str.clone(), "与磁盘内容不同的指纹".into());
@@ -420,7 +416,6 @@ fn test_manual_edit_synced_to_card_without_code_change() {
     let state = GenerationState {
         last_commit_hash: None,
         file_fingerprints: HashMap::new(),
-        module_fingerprints: HashMap::new(),
         doc_fingerprints: {
             let mut m = HashMap::new();
             m.insert(page_str.clone(), "与磁盘内容不同的指纹".into());

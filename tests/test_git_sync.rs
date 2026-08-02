@@ -19,7 +19,6 @@ fn save_state(dir: &Path, doc_fps: HashMap<String, String>, protected: Vec<Strin
     let state = GenerationState {
         last_commit_hash: None,
         file_fingerprints: HashMap::new(),
-        module_fingerprints: HashMap::new(),
         doc_fingerprints: doc_fps,
         doc_modules: HashMap::new(),
         protected_docs: protected,

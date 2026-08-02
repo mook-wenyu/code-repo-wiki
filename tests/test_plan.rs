@@ -3,9 +3,7 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use repo_wiki::config::plan::{
-    WikiPlan, load_plan, resolve_plan, PlanDocument, PlanSection, PlanTemplateType,
-};
+use repo_wiki::config::plan::{WikiPlan, load_plan_at, resolve_plan_at, PlanDocument, PlanSection, PlanTemplateType};
 use repo_wiki::config::schema::WikiConfig;
 
 /// 串行化依赖当前工作目录的用例（cargo 并行跑测试时互斥 cwd）
@@ -105,18 +103,18 @@ fn test_load_plan_cwd_and_version_validation() {
     with_cwd(&dir, || {
         // version=1 通过
         std::fs::write("wiki_plan.yaml", "version: 1\nnotes: \"v1\"").unwrap();
-        let plan = load_plan("wiki_plan.yaml").unwrap().unwrap();
+        let plan = load_plan_at(&repo_wiki::project::ProjectRoot::from_cwd().unwrap(), "wiki_plan.yaml").unwrap().unwrap();
         assert_eq!(plan.version, Some(1));
         assert_eq!(plan.notes.as_deref(), Some("v1"));
 
         // 缺 version 通过（视为 1）
         std::fs::write("wiki_plan.yaml", "notes: \"no-version\"").unwrap();
-        let plan = load_plan("wiki_plan.yaml").unwrap().unwrap();
+        let plan = load_plan_at(&repo_wiki::project::ProjectRoot::from_cwd().unwrap(), "wiki_plan.yaml").unwrap().unwrap();
         assert_eq!(plan.version, None);
 
         // version=2 报错
         std::fs::write("wiki_plan.yaml", "version: 2\nnotes: \"v2\"").unwrap();
-        let err = load_plan("wiki_plan.yaml").unwrap_err();
+        let err = load_plan_at(&repo_wiki::project::ProjectRoot::from_cwd().unwrap(), "wiki_plan.yaml").unwrap_err();
         assert!(err.to_string().contains("不受支持"), "错误信息应含版本提示: {}", err);
     });
     let _ = std::fs::remove_dir_all(&dir);
@@ -127,7 +125,7 @@ fn test_load_plan_cwd_and_version_validation() {
 fn test_load_plan_missing() {
     let dir = temp_dir("missing");
     with_cwd(&dir, || {
-        let result = load_plan("wiki_plan.yaml");
+        let result = load_plan_at(&repo_wiki::project::ProjectRoot::from_cwd().unwrap(), "wiki_plan.yaml");
         assert!(result.is_ok());
         assert!(result.unwrap().is_none());
     });
@@ -151,7 +149,7 @@ documents:
     include_patterns: ["src/api/**"]
 "#;
         std::fs::write("wiki_plan.yaml", yaml_content).unwrap();
-        let plan = load_plan("wiki_plan.yaml").unwrap().unwrap();
+        let plan = load_plan_at(&repo_wiki::project::ProjectRoot::from_cwd().unwrap(), "wiki_plan.yaml").unwrap().unwrap();
         assert_eq!(plan.notes.unwrap(), "请重点关注安全设计");
         assert_eq!(plan.sections.len(), 1);
         assert_eq!(plan.sections[0].module_pattern, "src/config/**");
@@ -165,7 +163,7 @@ documents:
 #[test]
 fn test_resolve_plan_disabled() {
     let config = WikiConfig::default(); // 默认 plan.enabled=false
-    let resolved = resolve_plan(&config).unwrap();
+    let resolved = resolve_plan_at(&repo_wiki::project::ProjectRoot::from_cwd().unwrap(), &config).unwrap();
     assert!(resolved.is_none());
 }
 
@@ -176,7 +174,7 @@ fn test_resolve_plan_file_missing() {
     with_cwd(&dir, || {
         let mut config = WikiConfig::default();
         config.plan.enabled = true;
-        assert!(resolve_plan(&config).unwrap().is_none());
+        assert!(resolve_plan_at(&repo_wiki::project::ProjectRoot::from_cwd().unwrap(), &config).unwrap().is_none());
     });
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -189,7 +187,7 @@ fn test_resolve_plan_bad_yaml() {
         std::fs::write("wiki_plan.yaml", "notes: [未闭合列表").unwrap();
         let mut config = WikiConfig::default();
         config.plan.enabled = true;
-        let err = resolve_plan(&config).unwrap_err();
+        let err = resolve_plan_at(&repo_wiki::project::ProjectRoot::from_cwd().unwrap(), &config).unwrap_err();
         assert!(err.to_string().contains("解析 wiki_plan.yaml 失败"), "错误信息应含解析上下文: {}", err);
     });
     let _ = std::fs::remove_dir_all(&dir);
@@ -218,7 +216,7 @@ documents:
         let mut config = WikiConfig::default();
         config.plan.enabled = true;
 
-        let resolved = resolve_plan(&config).unwrap().unwrap();
+        let resolved = resolve_plan_at(&repo_wiki::project::ProjectRoot::from_cwd().unwrap(), &config).unwrap().unwrap();
         assert_eq!(resolved.notes.as_deref(), Some("全局 notes"));
         assert_eq!(resolved.card_notes.as_deref(), Some("卡片 notes"));
         // 非空白名单保留
@@ -229,7 +227,7 @@ documents:
         let PlanDocument { title, .. } = &whitelist[0];
         assert_eq!(title, "架构概览");
         let PlanSection { template_type, .. } = &resolved.sections[0];
-        assert_eq!(template_type, &PlanTemplateType::Prd);
+        assert_eq!(*template_type, PlanTemplateType::Prd);
         assert!(resolved.scope_override.is_some());
     });
     let _ = std::fs::remove_dir_all(&dir);

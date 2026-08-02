@@ -116,6 +116,8 @@ default_top_k = 10
             Path::new("config.toml"),
             None,
             true,
+            &repo_wiki::project::ProjectRoot::from_cwd().unwrap(),
+            &repo_wiki::GenerationMode::Full,
             &|evt| events.lock().unwrap().push(evt),
         );
         assert!(result.is_ok(), "流水线应成功（LLM 失败被容错跳过）: {:?}", result.err());

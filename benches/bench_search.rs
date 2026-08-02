@@ -63,7 +63,7 @@ fn build_bench_repo(dir: &Path) -> Vec<FileInsight> {
         };
         std::fs::write(sub.join(name), content).unwrap();
     }
-    repo_wiki::ingest::scan_and_parse(&bench_config()).unwrap()
+    repo_wiki::ingest::scan_and_parse_at(&repo_wiki::project::ProjectRoot::from_cwd().unwrap(), &bench_config()).unwrap()
 }
 
 /// 500 条索引下 BM25 搜索平均耗时
@@ -266,7 +266,7 @@ fn bench_clustering_detection() {
         }
     }
 
-    let insights = repo_wiki::ingest::scan_and_parse(&bench_config()).unwrap();
+    let insights = repo_wiki::ingest::scan_and_parse_at(&repo_wiki::project::ProjectRoot::from_cwd().unwrap(), &bench_config()).unwrap();
     std::env::set_current_dir(old).unwrap();
     eprintln!(
         "debug: insights={} first_entities={:?} first_source={:?}",

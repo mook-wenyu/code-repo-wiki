@@ -111,7 +111,7 @@ default_top_k = 10
         );
         std::fs::write("config.toml", config).unwrap();
 
-        let result = repo_wiki::run_pipeline(Path::new("config.toml"), Some(&out_dir), false);
+        let result = repo_wiki::run_pipeline(Path::new("config.toml"), Some(&out_dir), false, &repo_wiki::project::ProjectRoot::from_cwd().unwrap(), &repo_wiki::GenerationMode::Full);
         assert!(result.is_ok(), "流水线应成功（LLM 失败被容错跳过）: {:?}", result.err());
 
         // 输出落在覆盖目录下：wiki 页面目录（主语言 zh）+ 全局文档

@@ -285,8 +285,13 @@ fn extract_pending_manual_edits(content: &str) -> Vec<String> {
 ///
 /// 仅写主语言目录的卡片文件（与其他语言目录由全量 generate 统一刷新）。
 /// 旧卡片上的"人工修改待同步"记录会被恢复为本次 LLM 输入，并保留在新卡片中。
-pub async fn generate_module_card(provider: &Provider, config: &WikiConfig, module: &str) -> Result<()> {
-    let insights = crate::ingest::scan_and_parse(config)?;
+pub async fn generate_module_card(
+    provider: &Provider,
+    config: &WikiConfig,
+    root: &crate::project::ProjectRoot,
+    module: &str,
+) -> Result<()> {
+    let insights = crate::ingest::scan_and_parse_at(root, config)?;
     let graph = crate::analysis::build_graph(&insights)?;
     let chunks = crate::generate::chunk::chunk_by_module(&insights, &graph.modules, &graph);
     let chunk = chunks
@@ -301,7 +306,7 @@ pub async fn generate_module_card(provider: &Provider, config: &WikiConfig, modu
         .map(|content| extract_pending_manual_edits(&content))
         .unwrap_or_default();
 
-    let plan = crate::config::plan::resolve_plan(config)?;
+    let plan = crate::config::plan::resolve_plan_at(root, config)?;
     let generator = CardGenerator::new(provider, config.clone(), 1, config.wiki.language.clone(), plan);
     let card = generator.generate_card(&chunk, &pending).await?;
     let content = crate::output::markdown::render_knowledge_card(&card);

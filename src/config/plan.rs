@@ -10,6 +10,10 @@
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
+use std::path::Path;
+
+use crate::project::ProjectRoot;
+
 /// wiki_plan.yaml 根结构（对齐 Qoder 官方语义，平铺）
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WikiPlan {
@@ -78,14 +82,13 @@ pub struct PlanDocument {
     pub hints: Option<String>,
 }
 
-/// 从项目根（当前工作目录）加载 wiki_plan.yaml
+
+/// 在指定项目根下加载 wiki_plan.yaml
 ///
-/// path 为相对项目根的路径（默认 "wiki_plan.yaml"）。
-/// 文件缺失返回 Ok(None)；读取/解析失败或版本不受支持返回 Err。
-pub fn load_plan(path: &str) -> Result<Option<WikiPlan>> {
-    let plan_path = std::env::current_dir()
-        .with_context(|| "获取当前工作目录失败")?
-        .join(path);
+/// 计划文件定位基准显式注入：不依赖进程 cwd，watch 常驻进程的
+/// cwd 漂移不再改变计划文件解析目标。
+pub fn load_plan_at(root: &ProjectRoot, path: &str) -> Result<Option<WikiPlan>> {
+    let plan_path = root.join(Path::new(path));
     if !plan_path.exists() {
         return Ok(None);
     }
@@ -119,16 +122,19 @@ pub struct ResolvedPlan {
     pub scope_override: Option<crate::config::schema::ScopeSection>,
 }
 
-/// 解析生效计划
+
+/// 在指定项目根下解析生效计划
 ///
-/// - config.plan.enabled == false → Ok(None)
-/// - 计划文件缺失 → Ok(None)
-/// - 文件存在但解析失败或版本不受支持 → Err（调用方应中断生成）
-pub fn resolve_plan(config: &crate::config::schema::WikiConfig) -> Result<Option<ResolvedPlan>> {
+/// root 注入链路：resolve_plan_at → load_plan_at，计划文件的
+/// 解析基准全程显式传递，与进程 cwd 解耦。
+pub fn resolve_plan_at(
+    root: &ProjectRoot,
+    config: &crate::config::schema::WikiConfig,
+) -> Result<Option<ResolvedPlan>> {
     if !config.plan.enabled {
         return Ok(None);
     }
-    let Some(plan) = load_plan(&config.plan.path)? else {
+    let Some(plan) = load_plan_at(root, &config.plan.path)? else {
         return Ok(None);
     };
     Ok(Some(ResolvedPlan {
