@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "documents": [
+    {
+      "title": "src",
+      "kind": "WikiPage",
+      "content": "mock",
+      "language": "zh",
+      "module_path": [
+        "src"
+      ],
+      "references": [],
+      "last_updated": "2026-08-02T16:11:47.818836600+00:00",
+      "fingerprint": null
+    },
+    {
+      "title": "src::storage",
+      "kind": "WikiPage",
+      "content": "mock",
+      "language": "zh",
+      "module_path": [
+        "src",
+        "storage"
+      ],
+      "references": [],
+      "last_updated": "2026-08-02T16:11:47.819533100+00:00",
+      "fingerprint": null
+    }
+  ],
+  "cards": [],
+  "modules": [
+    {
+      "name": "src",
+      "files": [
+        "src\\auth.rs",
+        "src\\main.rs"
+      ],
+      "cohesion": 0.5,
+      "coupling": 0.5,
+      "features": []
+    },
+    {
+      "name": "src::storage",
+      "files": [
+        "src\\storage.rs"
+      ],
+      "cohesion": 0.0,
+      "coupling": 1.0,
+      "features": []
+    }
+  ]
+}

@@ -1,110 +1,186 @@
-//! 语义搜索引擎——SQLite 持久化向量存储
+//! 语义搜索引擎——sqlite-vec vec0 向量存储 + 余弦距离 KNN
 //!
-//! 向量数据存储在 SQLite BLOB 列中，搜索时加载到内存执行余弦相似度计算。
-//! 支持并发读取（WAL 模式）。
+//! ## 职责边界（高内聚低耦合）
+//!
+//! - `SemanticEngine`：对外语义搜索门面。负责 embedding 生成
+//!   （EmbeddingEngine 调用）与 CodeNode 序列化（node_json），
+//!   向量存储细节全部委托 `VecDb`（src/search/vecdb.rs）。
+//! - `SemanticSearch` trait：语义引擎的抽象接口，供 SearchAgent
+//!   依赖抽象（可注入 mock 测试混合检索路径）。
+//!
+//! ## 阈值语义（v6 决策 4：保持硬编码 0.3）
+//!
+//! 相似度阈值 0.3 硬编码（OpenAI 官方 cosine 参考线），换算为余弦
+//! 距离 `MAX_COSINE_DISTANCE = 0.7`（vecdb 常量）下推到存储层过滤。
 
-use std::sync::Arc;
 use std::path::Path;
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
 use tokio::runtime::Runtime;
 
-use crate::model::CodeNode;
 use crate::generate::embed::EmbeddingEngine;
-use super::store::SearchStore;
+use crate::model::CodeNode;
+use crate::search::vecdb::VecDb;
+
+/// 语义搜索抽象接口（SearchAgent 依赖抽象，可注入 mock）
+///
+/// 方法集与 SemanticEngine 公开面一致。**不要求 Send/Sync**：rusqlite
+/// Connection 非 Sync（RefCell 内部），而 SearchAgent 是单线程调用
+/// （lib.rs execute_search 同步执行）；若未来需要跨线程共享语义引擎，
+/// 由调用方用 Mutex 包装（trait 不应为此牺牲可测试性）。
+pub trait SemanticSearch {
+    /// 索引单个实体（生成 embedding 并持久化）
+    fn index(&mut self, node: &CodeNode, source_code: &str) -> Result<()>;
+    /// 批量索引多个实体
+    fn index_batch(&mut self, items: &[(CodeNode, String)]) -> Result<()>;
+    /// 搜索最相似的 k 个实体（0.3 相似度阈值过滤）
+    fn search(&self, query: &str, limit: usize) -> Result<Vec<(CodeNode, f32)>>;
+    /// 删除指定文件路径关联的所有向量条目
+    fn remove_by_file(&mut self, file_path: &str) -> Result<usize>;
+    /// 清空所有向量数据
+    fn clear(&mut self) -> Result<()>;
+    /// 当前向量条目数
+    fn entry_count(&self) -> usize;
+}
 
 /// 语义搜索引擎
 ///
-/// 内部委托 SearchStore（SQLite）完成向量持久化，
-/// 搜索时从 SQLite 加载所有向量到内存，执行余弦相似度排序。
+/// 内部委托 VecDb（sqlite-vec vec0 虚表）完成向量持久化与 KNN，
+/// 自身只做 embedding 生成与 CodeNode 序列化。
 pub struct SemanticEngine {
-    store: SearchStore,
+    db: VecDb,
     embedder: Arc<EmbeddingEngine>,
     rt: Arc<Runtime>,
 }
 
 impl SemanticEngine {
-    /// 打开或创建持久化向量搜索数据库。
+    /// 打开或创建语义搜索数据库
+    ///
+    /// vec0 虚表延迟到首次插入时创建（维度首次探测）。
     pub fn open(path: impl AsRef<Path>, embedder: Arc<EmbeddingEngine>, rt: Arc<Runtime>) -> Result<Self> {
-        let store = SearchStore::open(path)?;
-        Ok(Self { store, embedder, rt })
+        let db = VecDb::open(path)?;
+        Ok(Self { db, embedder, rt })
     }
 
-    /// 索引一个实体：生成 embedding 并持久化。
+    // ============ 固有方法（薄封装，委托 trait 实现） ============
+    // 库内调用点（lib.rs build_search_index/update_search_index_incremental）
+    // 以具体类型调用，不走 trait object；这里直接转发到 trait impl，
+    // 避免调用点改用 Box<dyn> 语法，同时保证两处行为一致。
+
     pub fn index(&mut self, node: &CodeNode, source_code: &str) -> Result<()> {
-        let text = format!(
+        SemanticSearch::index(self, node, source_code)
+    }
+
+    pub fn index_batch(&mut self, items: &[(CodeNode, String)]) -> Result<()> {
+        SemanticSearch::index_batch(self, items)
+    }
+
+    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<(CodeNode, f32)>> {
+        SemanticSearch::search(self, query, limit)
+    }
+
+    pub fn remove_by_file(&mut self, file_path: &str) -> Result<usize> {
+        SemanticSearch::remove_by_file(self, file_path)
+    }
+
+    pub fn clear(&mut self) -> Result<()> {
+        SemanticSearch::clear(self)
+    }
+
+    pub fn entry_count(&self) -> usize {
+        SemanticSearch::entry_count(self)
+    }
+
+    /// 组装实体索引文本（与旧实现一致，保持索引兼容性）
+    fn index_text(node: &CodeNode, source_code: &str) -> String {
+        format!(
             "{} {:?} {} {}",
             node.name, node.kind,
             node.signature.as_deref().unwrap_or(""), source_code
-        );
-        let vector = self.rt.block_on(self.embedder.embed(&text))
+        )
+    }
+}
+
+impl SemanticSearch for SemanticEngine {
+    fn index(&mut self, node: &CodeNode, source_code: &str) -> Result<()> {
+        let text = Self::index_text(node, source_code);
+        let vector = self
+            .rt
+            .block_on(self.embedder.embed(&text))
             .context("生成 embedding 失败")?;
-        self.store.insert_vectors_batch(&[(node.clone(), vector)])
+        let node_json = serde_json::to_string(node).context("序列化 CodeNode 失败")?;
+        let file = node.file_path.as_deref().unwrap_or("").to_string();
+        self.db.insert_batch(&[(file, node_json, vector)])
     }
 
-    /// 批量索引多个实体：一次性生成所有 embedding 并持久化。
-    ///
-    /// 内部调用 `EmbeddingEngine::embed_batch` 批量获取向量，
-    /// 避免逐条创建 tokio Runtime 的开销。
-    pub fn index_batch(&mut self, items: &[(CodeNode, String)]) -> Result<()> {
+    fn index_batch(&mut self, items: &[(CodeNode, String)]) -> Result<()> {
         if items.is_empty() {
             return Ok(());
         }
-        // 组装批量嵌入文本
-        let texts: Vec<String> = items.iter().map(|(node, source)| {
-            format!(
-                "{} {:?} {} {}",
-                node.name, node.kind,
-                node.signature.as_deref().unwrap_or(""), source
-            )
-        }).collect();
-
-        // 一次性获取所有向量
-        let vectors = self.rt.block_on(self.embedder.embed_batch(&texts))
+        // 组装批量嵌入文本（一次 API 调用，避免逐条创建 tokio Runtime 开销）
+        let texts: Vec<String> = items
+            .iter()
+            .map(|(node, source)| Self::index_text(node, source))
+            .collect();
+        let vectors = self
+            .rt
+            .block_on(self.embedder.embed_batch(&texts))
             .context("批量生成 embedding 失败")?;
 
-        // 组装 (node, vector) 对并写入 SQLite
-        let pairs: Vec<(CodeNode, Vec<f32>)> = items.iter()
+        // 组装 (file_path, node_json, vector) 三元组一次性入库
+        let rows: Vec<(String, String, Vec<f32>)> = items
+            .iter()
             .zip(vectors)
-            .map(|((node, _), vector)| (node.clone(), vector))
+            .map(|((node, _), vector)| {
+                let node_json = serde_json::to_string(node).unwrap_or_default();
+                let file = node.file_path.as_deref().unwrap_or("").to_string();
+                (file, node_json, vector)
+            })
             .collect();
-        self.store.insert_vectors_batch(&pairs)
+        self.db.insert_batch(&rows)
     }
 
-    /// 搜索最相似的 k 个实体。
-    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<(CodeNode, f32)>> {
-        let all_vectors = self.store.load_all_vectors()?;
-        if all_vectors.is_empty() {
+    fn search(&self, query: &str, limit: usize) -> Result<Vec<(CodeNode, f32)>> {
+        // 空表短路：无候选时直接返回空，避免对空索引发起 embedding 请求
+        //（embedding API 有成本与延迟，空库查询无意义；与旧实现
+        // load_all_vectors 空集早退的语义一致）
+        if self.db.entry_count().unwrap_or(0) == 0 {
             return Ok(Vec::new());
         }
-
         let q_vec = self.rt.block_on(self.embedder.embed(query))?;
-
-        let mut scores: Vec<(usize, f32)> = all_vectors.iter().enumerate()
-            .map(|(i, (_, v))| (i, EmbeddingEngine::cosine_similarity(&q_vec, v)))
-            .collect();
-        scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        let results = scores.into_iter()
-            .filter(|(_, s)| *s > 0.3)
-            .take(limit)
-            .map(|(i, s)| (all_vectors[i].0.clone(), s))
-            .collect();
+        let query_json = vec_to_json(&q_vec);
+        // 阈值换算：相似度 0.3 ↔ 距离 0.7（vecdb 常量，见模块头）
+        let rows = self
+            .db
+            .knn(&query_json, limit, crate::search::vecdb::MAX_COSINE_DISTANCE)?;
+        let mut results = Vec::with_capacity(rows.len());
+        for row in rows {
+            if let Ok(node) = serde_json::from_str::<CodeNode>(&row.node_json) {
+                // 距离 → 相似度（1 - distance），与旧实现返回语义一致
+                results.push((node, (1.0 - row.distance) as f32));
+            }
+        }
         Ok(results)
     }
 
-    /// 删除指定文件路径关联的所有向量条目。
-    pub fn remove_by_file(&mut self, file_path: &str) -> Result<usize> {
-        self.store.delete_vectors_by_file(file_path)
+    fn remove_by_file(&mut self, file_path: &str) -> Result<usize> {
+        self.db.remove_by_file(file_path)
     }
 
-    /// 清空所有向量数据。
-    pub fn clear(&mut self) -> Result<()> {
-        self.store.clear_vectors()
+    fn clear(&mut self) -> Result<()> {
+        self.db.clear()
     }
 
-    /// 当前向量条目数。
-    pub fn entry_count(&self) -> usize {
-        self.store.vector_count().unwrap_or(0)
+    fn entry_count(&self) -> usize {
+        self.db.entry_count().unwrap_or(0)
     }
+}
+
+/// f32 向量 → vec0 查询向量 JSON（与 VecDb 内部序列化同格式）
+fn vec_to_json(v: &[f32]) -> String {
+    let parts: Vec<String> = v.iter().map(|f| format!("{f}")).collect();
+    format!("[{}]", parts.join(","))
 }
 
 #[cfg(test)]
@@ -125,7 +201,6 @@ mod tests {
     fn mock_embedder() -> Arc<EmbeddingEngine> {
         let config = EmbedSection {
             enabled: false,
-            provider: crate::config::schema::EmbedProviderType::OpenAI,
             model: "text-embedding-3-small".into(),
             api_key: Some("test-key".into()),
             api_key_env: "OPENAI_API_KEY".into(),
@@ -135,12 +210,10 @@ mod tests {
         Arc::new(EmbeddingEngine::new(&config, test_runtime().handle().clone()).unwrap())
     }
 
-    /// 构造指向本地 mock 的 Embedding 引擎（base_url 带 /v1 前缀）。
-    /// rt 由调用方持有引用，保证 block_on 期间 runtime 存活。
+    /// 构造指向本地 mock 的 Embedding 引擎（base_url 带 /v1 前缀）
     fn embedder_with_server(base_url: &str, rt: &Arc<Runtime>) -> Arc<EmbeddingEngine> {
         let config = EmbedSection {
             enabled: false,
-            provider: crate::config::schema::EmbedProviderType::OpenAI,
             model: "text-embedding-3-small".into(),
             api_key: Some("test-key".into()),
             api_key_env: "OPENAI_API_KEY".into(),
@@ -176,6 +249,7 @@ mod tests {
     // ============ 伪 Embedding mock server ============
     // 语义引擎的 Embedder 是具体类型 EmbeddingEngine（非 trait object），
     // 无法注入 FakeEmbedder，因此用本地 mock HTTP 返回确定性伪向量。
+    // 维度统一为 3（vec0 虚表固定维度契约，v6 决策 1）。
 
     /// 缓冲区中是否已出现完整请求头（含 \r\n\r\n 分隔符，其后可能还有请求体）
     fn header_complete(buf: &[u8]) -> bool {
@@ -200,7 +274,6 @@ mod tests {
             .find(|(k, _)| k.trim().eq_ignore_ascii_case("content-length"))
             .and_then(|(_, v)| v.trim().parse::<usize>().ok())
             .unwrap_or(0);
-        // 请求体从头部结束标记 \r\n\r\n 之后开始（head_end 指向标记起始，+4 偏移）
         const HEADER_SEP: usize = 4;
         while buf.len() < head_end + HEADER_SEP + content_length {
             match stream.read(&mut tmp) {
@@ -211,11 +284,11 @@ mod tests {
         String::from_utf8_lossy(&buf[head_end + HEADER_SEP..head_end + HEADER_SEP + content_length]).to_string()
     }
 
-    /// 关键词 → 确定性伪向量：
+    /// 关键词 → 确定性伪向量（统一 3 维）：
     /// - 已知关键词（alpha/beta/gamma）：固定向量，相似度受控
     ///   （alpha↔beta≈0.707、alpha↔gamma=-1.0），用于验证排序正确性；
-    /// - 未知关键词：按首次出现顺序分配单位基向量（同词同向量、异词正交），
-    ///   用于确定性验证 0.3 阈值过滤。
+    /// - 未知关键词：按首次出现顺序分配 3 维单位基向量（同词同向量、
+    ///   异词正交），用于确定性验证 0.3 阈值过滤。
     fn pseudo_vector(keyword: &str, seen: &mut HashMap<String, usize>) -> Vec<f32> {
         match keyword {
             "alpha" => vec![1.0, 0.0, 0.0],
@@ -224,8 +297,8 @@ mod tests {
             _ => {
                 let next = seen.len();
                 let idx = *seen.entry(keyword.to_string()).or_insert(next);
-                let mut v = vec![0.0f32; 16];
-                v[idx % 16] = 1.0;
+                let mut v = vec![0.0f32; 3];
+                v[idx % 3] = 1.0;
                 v
             }
         }
@@ -244,7 +317,6 @@ mod tests {
                 let seen = seen.clone();
                 std::thread::spawn(move || {
                     let body = read_request_body(&mut stream);
-                    // 解析 input 数组，为每个文本分配伪向量
                     let inputs: Vec<String> = serde_json::from_str::<serde_json::Value>(&body)
                         .ok()
                         .and_then(|v| v["input"].as_array().map(|a| {
@@ -325,5 +397,37 @@ mod tests {
 
         let results = engine.search("q", 10).unwrap();
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_semantic_remove_by_file() {
+        let base_url = spawn_pseudo_embed_server();
+        let rt = test_runtime();
+        let embedder = embedder_with_server(&base_url, &rt);
+        let mut engine = SemanticEngine::open(tmp_path("rm"), embedder, rt.clone()).unwrap();
+
+        let items = vec![
+            (make_node("a1", "src/a.rs"), "fn a1()".to_string()),
+            (make_node("b1", "src/b.rs"), "fn b1()".to_string()),
+        ];
+        engine.index_batch(&items).unwrap();
+        assert_eq!(engine.entry_count(), 2);
+
+        let removed = engine.remove_by_file("src/a.rs").unwrap();
+        assert_eq!(removed, 1);
+        assert_eq!(engine.entry_count(), 1);
+    }
+
+    #[test]
+    fn test_semantic_clear() {
+        let base_url = spawn_pseudo_embed_server();
+        let rt = test_runtime();
+        let embedder = embedder_with_server(&base_url, &rt);
+        let mut engine = SemanticEngine::open(tmp_path("clr"), embedder, rt.clone()).unwrap();
+        engine.index_batch(&[(make_node("a", "src/a.rs"), "fn a()".to_string())]).unwrap();
+        assert_eq!(engine.entry_count(), 1);
+
+        engine.clear().unwrap();
+        assert_eq!(engine.entry_count(), 0);
     }
 }

@@ -19,15 +19,14 @@ pub fn load_config(path: &Path) -> Result<schema::WikiConfig> {
     Ok(config)
 }
 
-/// 创建默认配置文件
+/// 创建默认配置文件（写入 install 模板 default-config.toml，非 schema 默认值序列化）。
+/// 模板含注释与生产默认值（如 DeepSeek base_url），serde 序列化会丢失这些信息。
 pub fn create_default_config(path: &Path) -> Result<schema::WikiConfig> {
-    let config = schema::WikiConfig::default();
-    let content = toml::to_string_pretty(&config)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, content)?;
-    Ok(config)
+    std::fs::write(path, include_str!("../../default-config.toml"))?;
+    load_config(path)
 }
 
 /// 校验配置合法性

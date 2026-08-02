@@ -5,9 +5,8 @@
 //! 覆盖计划 Phase 3.1：generate 产物完整性 → 增量 update 只重写受影响页 →
 //! 删除源文件后产物清理。
 //!
-//! 注意：`scan_and_parse` 以 `std::env::current_dir()` 为扫描根，
-//! 因此本文件全部断言集中在**单个顺序测试函数**内（先切 cwd，
-//! 结束时恢复），避免 Rust 并行测试之间的 cwd 竞态。
+//! 注意：root 通过 `ProjectRoot` 显式注入（替代进程级 cwd 切换），
+//! 本文件全部断言集中在**单个顺序测试函数**内，无 cwd 竞态。
 
 use std::path::Path;
 
@@ -83,18 +82,17 @@ fn list_wiki_pages(repo: &Path) -> Vec<String> {
 /// 端到端全流程：产物 → 增量 → 删除清理
 #[test]
 fn test_e2e_full_pipeline() {
-    let orig_cwd = std::env::current_dir().expect("读取当前目录失败");
     let repo = std::env::temp_dir().join(format!("repo_wiki_e2e_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&repo);
     std::fs::create_dir_all(&repo).expect("创建临时仓库失败");
     build_fixture_repo(&repo).expect("构造测试仓库失败");
 
-    // 切到仓库根（scan_and_parse 以 cwd 为扫描根）
-    std::env::set_current_dir(&repo).expect("切换 cwd 失败");
+    // root 显式注入替代进程级 cwd 切换
+    let root = repo_wiki::project::ProjectRoot::new(repo.clone());
     let config_path = repo.join("config.toml");
 
     // ---- 1. 全量生成：断言产物完整 ----
-    let result = repo_wiki::run_pipeline(&config_path, None, false, &repo_wiki::project::ProjectRoot::from_cwd().unwrap(), &repo_wiki::GenerationMode::Full).expect("全量生成失败");
+    let result = repo_wiki::run_pipeline(&config_path, None, false, &root, &repo_wiki::GenerationMode::Full).expect("全量生成失败");
     assert!(result.stats.files_scanned >= 2, "应扫描到至少 2 个文件");
     assert!(result.stats.total_entities >= 2, "应解析出至少 2 个实体");
     assert!(!result.documents.is_empty(), "应生成文档");
@@ -141,7 +139,7 @@ impl Alpha {
     )
     .expect("修改 a/mod.rs 失败");
 
-    let inc = repo_wiki::run_pipeline(&config_path, None, false, &repo_wiki::project::ProjectRoot::from_cwd().unwrap(), &repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
+    let inc = repo_wiki::run_pipeline(&config_path, None, false, &root, &repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
         .expect("增量更新失败");
     assert!(!inc.documents.is_empty(), "增量更新应重新生成文档");
 
@@ -161,7 +159,7 @@ impl Alpha {
         &config_path,
         None,
         false,
-        &repo_wiki::project::ProjectRoot::from_cwd().unwrap(),
+        &root,
         &repo_wiki::GenerationMode::Incremental {
             watch_paths: vec![deleted_path],
             change_kind: Some(repo_wiki::incremental::watch::ChangeKind::Deleted),
@@ -184,6 +182,59 @@ impl Alpha {
     );
 
     // ---- 清理 ----
-    std::env::set_current_dir(&orig_cwd).expect("恢复 cwd 失败");
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+/// 边界：删除**模块唯一文件**（影响传播后 changed_insights 为空）时，
+/// 其他模块的产物必须保留——旧实现 run_generation_filtered 在
+/// changed_insights 为空时返回空 documents，render_all(空) +
+/// cleanup_stale_outputs 的差集语义会把全部旧产物误删（包括无关模块）。
+/// 现有 test_e2e_full_pipeline 的删除断言恰好被空结果满足（vacuously
+/// true），未覆盖此边界。
+#[test]
+fn test_e2e_delete_only_module_keeps_other_modules() {
+    let repo = std::env::temp_dir().join(format!("repo_wiki_e2e_delonly_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&repo);
+    std::fs::create_dir_all(&repo).expect("创建临时仓库失败");
+    build_fixture_repo(&repo).expect("构造测试仓库失败");
+
+    let root = repo_wiki::project::ProjectRoot::new(repo.clone());
+    let config_path = repo.join("config.toml");
+
+    // 1. 全量生成：a、b 两模块页面均落盘
+    repo_wiki::run_pipeline(&config_path, None, false, &root, &repo_wiki::GenerationMode::Full)
+        .expect("全量生成失败");
+    let before = list_wiki_pages(&repo);
+    let b_page = repo.join(".repo-wiki").join("wiki").join("zh").join("src_b.md");
+    assert!(b_page.exists(), "模块 b 页面应存在: {:?}", before);
+
+    // 2. 删除模块 a 的唯一文件（b 无依赖不受影响）
+    let a_file = repo.join("src").join("a").join("mod.rs");
+    std::fs::remove_file(&a_file).expect("删除 a/mod.rs 失败");
+
+    repo_wiki::run_pipeline(
+        &config_path,
+        None,
+        false,
+        &root,
+        &repo_wiki::GenerationMode::Incremental {
+            watch_paths: vec![a_file],
+            change_kind: Some(repo_wiki::incremental::watch::ChangeKind::Deleted),
+        },
+    )
+    .expect("删除增量更新失败");
+
+    // 3. 无关模块 b 的产物必须保留
+    assert!(
+        b_page.exists(),
+        "模块 b 页面不应被删除（仅删除模块 a 的唯一文件）"
+    );
+    let after = list_wiki_pages(&repo);
+    assert!(
+        after.iter().any(|n| n == "src_b.md"),
+        "删除后模块 b 页面应仍在: {:?}",
+        after
+    );
+
     let _ = std::fs::remove_dir_all(&repo);
 }

@@ -44,3 +44,7 @@
 - **incremental** 层可跳过 **analysis** 层的全量重建（仅影响传播需图结构）
 - **output** 层是纯渲染，不含业务逻辑（不反向依赖 generate——语言列表由本层 `wiki_languages` 自持）
 - **search** 层是默认只读的聚合层，可组合访问 ingestion / analysis / generate 三层的索引和数据
+
+## 单进程契约
+
+同一输出目录并发运行 repo-wiki 不被支持：`.state/` 状态文件、导出快照、搜索缓存均无锁，最后写入者胜。CI、编辑器、插件集成必须串行调用（多个进程写同一 `output.dir` 是未定义行为）。

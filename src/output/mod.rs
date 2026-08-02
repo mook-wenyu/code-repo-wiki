@@ -1,4 +1,7 @@
+//! 渲染与导出层（单进程契约：export_snapshot.json 等状态文件无锁，
+//! 同一输出目录并发运行不被支持，见 README 限制项）
 pub mod crossref;
+pub mod citation;
 pub mod lint;
 pub mod markdown;
 pub mod mermaid;
@@ -115,6 +118,39 @@ pub fn export_snapshot_path(output_dir: &Path) -> PathBuf {
     output_dir.join(".state").join("export_snapshot.json")
 }
 
+/// 全部语言目录下 wiki 页的最新修改时间（票 04 陈旧检测用）
+///
+/// 遍历 `wiki/{lang}/*.md`（主语言 + 扩展语言），返回最新 mtime；
+/// 无任何页面时返回 None（此时快照也必然不存在，陈旧检测不适用）。
+pub fn latest_wiki_page_mtime(output_dir: &Path) -> Option<std::time::SystemTime> {
+    let wiki_root = output_dir.join("wiki");
+    let mut latest: Option<std::time::SystemTime> = None;
+    let Ok(entries) = std::fs::read_dir(&wiki_root) else {
+        return None;
+    };
+    for lang in entries.flatten() {
+        if !lang.path().is_dir() {
+            continue;
+        }
+        let Ok(pages) = std::fs::read_dir(lang.path()) else {
+            continue;
+        };
+        for page in pages.flatten() {
+            let path = page.path();
+            if path.extension().is_some_and(|e| e == "md")
+                && let Ok(meta) = std::fs::metadata(&path)
+                && let Ok(mtime) = meta.modified()
+            {
+                latest = Some(match latest {
+                    Some(prev) => prev.max(mtime),
+                    None => mtime,
+                });
+            }
+        }
+    }
+    latest
+}
+
 /// 从图与卡片提取快照模块列表（按模块名排序保证确定性）
 pub fn export_modules(graph: &KnowledgeGraph, cards: &[KnowledgeCard]) -> Vec<ExportModuleSnapshot> {
     let mut modules: Vec<ExportModuleSnapshot> = graph
@@ -160,10 +196,9 @@ fn write_export_snapshot(
         modules: export_modules(graph, cards),
     };
     let path = export_snapshot_path(output_dir);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(&path, serde_json::to_string_pretty(&snapshot)?)?;
+    // 原子写（fs::write_file_atomic）：写入失败不残留半截快照；
+    // 陈旧检测（mtime 比对）在 export --skip-generate 侧，见票 04
+    crate::fs::write_file_atomic(&path, &serde_json::to_string_pretty(&snapshot)?)?;
     Ok(())
 }
 

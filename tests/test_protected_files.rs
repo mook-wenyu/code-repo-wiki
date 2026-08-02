@@ -80,12 +80,16 @@ fn test_detect_manual_edit() {
     };
 
     // 未修改 —— 不应标记为变更
-    let is_changed = state.is_file_changed(&file_path).unwrap();
+    let is_changed = state
+        .is_file_changed(&repo_wiki::project::ProjectRoot::new(dir.clone()), &file_path)
+        .unwrap();
     assert!(!is_changed);
 
     // 手动修改
     std::fs::write(&file_path, "modified by user").unwrap();
-    let is_changed = state.is_file_changed(&file_path).unwrap();
+    let is_changed = state
+        .is_file_changed(&repo_wiki::project::ProjectRoot::new(dir.clone()), &file_path)
+        .unwrap();
     assert!(is_changed);
 
     let _ = std::fs::remove_dir_all(&dir);

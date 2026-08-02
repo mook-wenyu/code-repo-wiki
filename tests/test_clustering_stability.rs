@@ -7,11 +7,8 @@
 //! 用合成模块化仓库（10 簇完全图 + 单条跨簇边，对齐 bench 语义）。
 
 use std::path::Path;
-use std::sync::Mutex;
 
 use repo_wiki::config::schema::{ScopeSection, WikiConfig};
-
-static CWD_LOCK: Mutex<()> = Mutex::new(());
 
 fn bench_config() -> WikiConfig {
     WikiConfig {
@@ -53,15 +50,13 @@ fn build_cluster_repo(dir: &Path) {
 /// 同图两次检测结果逐项一致（模块名、node_ids 集合、特征划分）
 #[test]
 fn test_clustering_stable_across_runs() {
-    let _guard = CWD_LOCK.lock().unwrap();
-    let orig_cwd = std::env::current_dir().expect("读取当前目录失败");
     let dir = std::env::temp_dir().join(format!("repo_wiki_cluster_stab_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     build_cluster_repo(&dir);
 
-    std::env::set_current_dir(&dir).unwrap();
-    let insights = repo_wiki::ingest::scan_and_parse_at(&repo_wiki::project::ProjectRoot::from_cwd().unwrap(), &bench_config()).unwrap();
+    let root = repo_wiki::project::ProjectRoot::new(dir.clone());
+    let insights = repo_wiki::ingest::scan_and_parse_at(&root, &bench_config()).unwrap();
     let graph = repo_wiki::analysis::build_graph(&insights).unwrap();
 
     // 两次独立检测
@@ -109,6 +104,5 @@ fn test_clustering_stable_across_runs() {
         modules_1.len()
     );
 
-    std::env::set_current_dir(&orig_cwd).expect("恢复 cwd 失败");
     let _ = std::fs::remove_dir_all(&dir);
 }

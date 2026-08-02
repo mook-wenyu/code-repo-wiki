@@ -1,3 +1,5 @@
+//! 扫描与解析层（单进程契约：insights_cache.json 无文件锁，
+//! 同一输出目录并发运行不被支持，见 README 限制项）
 pub mod scanner;
 pub mod parser;
 
@@ -148,8 +150,9 @@ fn save_insights_cache(cache_path: &std::path::Path, cache: &std::collections::H
     }
     let mut list: Vec<&CachedInsight> = cache.values().collect();
     list.sort_by(|a, b| a.path.cmp(&b.path));
-    std::fs::write(cache_path, serde_json::to_string_pretty(&list)?)?;
-    Ok(())
+    // 原子写（fs::write_file_atomic）：缓存损坏的后果只是全量重建
+    // （warn 路径），但半截文件会增加损坏概率，原子写消除此来源
+    crate::fs::write_file_atomic(cache_path, &serde_json::to_string_pretty(&list)?)
 }
 
 /// 文件内容 SHA256 指纹（与 GenerationState::compute_file_fingerprint 同款算法，
@@ -159,4 +162,105 @@ fn fingerprint_of(source: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(source.as_bytes());
     hex::encode(hasher.finalize())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// 构造临时项目根：src/a.rs + src/b.rs，返回 (root, config)
+    fn temp_project(tag: &str) -> (ProjectRoot, crate::config::schema::WikiConfig) {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_cache_{}_{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src").join("a.rs"), "pub fn alpha() {}\n").unwrap();
+        std::fs::write(dir.join("src").join("b.rs"), "pub fn beta() {}\n").unwrap();
+        let mut config = crate::config::schema::WikiConfig::default();
+        config.scope.include = vec!["**/*.rs".to_string()];
+        (ProjectRoot::new(dir), config)
+    }
+
+    fn cache_path(root: &ProjectRoot) -> std::path::PathBuf {
+        root.path().join(".state").join("insights_cache.json")
+    }
+
+    /// 首次扫描写缓存：缓存文件存在且为合法 JSON（可反序列化为 CachedInsight 列表）
+    #[test]
+    fn test_cached_scan_writes_cache_file() {
+        let (root, config) = temp_project("write");
+        let cp = Some(cache_path(&root));
+        let insights = scan_and_parse_cached_at(&root, &config, &cp, &std::collections::HashSet::new()).unwrap();
+        assert_eq!(insights.len(), 2, "两个 .rs 文件都应解析");
+
+        let content = std::fs::read_to_string(cache_path(&root)).unwrap();
+        let list: Vec<CachedInsight> = serde_json::from_str(&content).unwrap();
+        assert_eq!(list.len(), 2, "缓存应含两个条目");
+        let _ = std::fs::remove_dir_all(root.path());
+    }
+
+    /// 指纹失效重解析：修改文件内容后再次扫描，返回的 insight.source 是新内容
+    ///（若缓存错误地命中旧指纹，source 会是旧内容——source 字段是复用的直接证据）
+    #[test]
+    fn test_cached_scan_reparses_on_fingerprint_change() {
+        let (root, config) = temp_project("invalidate");
+        let cp = Some(cache_path(&root));
+        let first = scan_and_parse_cached_at(&root, &config, &cp, &std::collections::HashSet::new()).unwrap();
+        let alpha_source = first.iter().find(|i| i.path.ends_with("a.rs")).unwrap().source.clone();
+        assert!(alpha_source.contains("alpha"), "初始内容含 alpha");
+
+        // 修改 a.rs 内容（新函数 alpha_v2）
+        std::fs::write(root.path().join("src").join("a.rs"), "pub fn alpha_v2() {}\n").unwrap();
+        let second = scan_and_parse_cached_at(&root, &config, &cp, &std::collections::HashSet::new()).unwrap();
+        let alpha2_source = second.iter().find(|i| i.path.ends_with("a.rs")).unwrap().source.clone();
+        assert!(
+            alpha2_source.contains("alpha_v2") && !alpha2_source.contains("alpha()"),
+            "指纹变化后应重解析出新内容, 实际: {alpha2_source}"
+        );
+        // b.rs 未变化：缓存命中（复用路径——source 仍为初始内容）
+        let beta_source = second.iter().find(|i| i.path.ends_with("b.rs")).unwrap().source.clone();
+        assert!(beta_source.contains("beta"), "未变更文件应正常复用");
+
+        let _ = std::fs::remove_dir_all(root.path());
+    }
+
+    /// 缓存损坏重建：缓存文件写入垃圾后扫描仍返回正确结果（warn + 全量重建）
+    #[test]
+    fn test_cached_scan_rebuilds_on_corrupt_cache() {
+        let (root, config) = temp_project("corrupt");
+        let cp = Some(cache_path(&root));
+        // 先正常扫一次（写缓存），再破坏缓存
+        scan_and_parse_cached_at(&root, &config, &cp, &std::collections::HashSet::new()).unwrap();
+        std::fs::write(cache_path(&root), "{ 垃圾内容").unwrap();
+
+        let insights = scan_and_parse_cached_at(&root, &config, &cp, &std::collections::HashSet::new()).unwrap();
+        assert_eq!(insights.len(), 2, "损坏缓存应触发全量重建而非失败");
+        assert!(insights.iter().any(|i| i.source.contains("alpha")));
+
+        let _ = std::fs::remove_dir_all(root.path());
+    }
+
+    /// 缓存路径为 None（全量模式）时不读写缓存文件
+    #[test]
+    fn test_cached_scan_without_cache_path() {
+        let (root, config) = temp_project("nocache");
+        let insights = scan_and_parse_cached_at(&root, &config, &None, &std::collections::HashSet::new()).unwrap();
+        assert_eq!(insights.len(), 2);
+        assert!(!root.path().join(".state").exists(), "无缓存路径时不应创建 .state 目录");
+        let _ = std::fs::remove_dir_all(root.path());
+    }
+
+    /// changed_files 强制重解析：变更集内的文件即使指纹一致也重解析
+    ///（watch 语义：事件路径是变更的直接证据，不受指纹缓存影响）
+    #[test]
+    fn test_cached_scan_forced_reparse_by_changed_set() {
+        let (root, config) = temp_project("forced");
+        let cp = Some(cache_path(&root));
+        let _ = scan_and_parse_cached_at(&root, &config, &cp, &std::collections::HashSet::new()).unwrap();
+
+        let mut changed = std::collections::HashSet::new();
+        changed.insert(PathBuf::from("src/a.rs"));
+        let insights = scan_and_parse_cached_at(&root, &config, &cp, &changed).unwrap();
+        assert_eq!(insights.len(), 2, "强制重解析不改变结果集合");
+        let _ = std::fs::remove_dir_all(root.path());
+    }
 }

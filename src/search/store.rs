@@ -1,10 +1,12 @@
-//! SQLite 存储层：为搜索引擎提供 FTS5 全文索引和向量持久化
+//! SQLite 存储层：为搜索引擎提供 FTS5 全文索引
 //!
 //! 设计要点：
 //! - WAL 模式：支持多读单写并发
 //! - busy_timeout 5s：写锁等待而非立即失败
 //! - FTS5 虚拟表：BM25 排序由 SQLite 内置完成
-//! - 向量表：BLOB 存储 f32 数组，余弦相似度在 Rust 侧计算
+//!
+//! 向量持久化已迁出（v6）：语义检索改用 sqlite-vec 扩展
+//! （src/search/vecdb.rs），本文件只承载 FTS5 全文搜索。
 
 use std::path::Path;
 
@@ -17,7 +19,6 @@ use crate::model::CodeNode;
 ///
 /// 管理一个 SQLite 数据库文件，包含：
 /// - `entities` FTS5 虚拟表（全文搜索）
-/// - `vectors` 普通表（向量存储）
 pub struct SearchStore {
     conn: Connection,
 }
@@ -48,17 +49,6 @@ impl SearchStore {
                 node_json
             );"
         ).context("创建 FTS5 表失败")?;
-
-        // 创建向量存储表
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS vectors (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                file_path TEXT NOT NULL,
-                node_json TEXT NOT NULL,
-                embedding BLOB NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_vectors_file ON vectors(file_path);"
-        ).context("创建向量表失败")?;
 
         Ok(Self { conn })
     }
@@ -149,94 +139,6 @@ impl SearchStore {
             .context("清空 FTS5 表失败")?;
         Ok(())
     }
-
-    // ==================== 向量存储 ====================
-
-    /// 批量插入向量条目
-    pub fn insert_vectors_batch(&self, items: &[(CodeNode, Vec<f32>)]) -> Result<()> {
-        let mut stmt = self.conn.prepare(
-            "INSERT INTO vectors (file_path, node_json, embedding) VALUES (?1, ?2, ?3)"
-        ).context("准备向量插入语句失败")?;
-
-        for (node, vector) in items {
-            let node_json = serde_json::to_string(node)
-                .context("序列化 CodeNode 失败")?;
-            let blob = f32_vec_to_blob(vector);
-            stmt.execute(rusqlite::params![
-                // file_path 列归一化与 entities 表同规则（票 08）
-                crate::incremental::norm_sep(node.file_path.as_deref().unwrap_or("")),
-                node_json,
-                blob,
-            ]).context("插入向量条目失败")?;
-        }
-        Ok(())
-    }
-
-    /// 加载所有向量条目到内存（用于余弦相似度计算）
-    pub fn load_all_vectors(&self) -> Result<Vec<(CodeNode, Vec<f32>)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT node_json, embedding FROM vectors"
-        ).context("准备向量查询语句失败")?;
-
-        let rows = stmt.query_map([], |row| {
-            let node_json: String = row.get(0)?;
-            let blob: Vec<u8> = row.get(1)?;
-            Ok((node_json, blob))
-        }).context("执行向量查询失败")?;
-
-        let mut results = Vec::new();
-        for row in rows {
-            let (node_json, blob) = row.context("读取向量结果行失败")?;
-            if let Ok(node) = serde_json::from_str::<CodeNode>(&node_json) {
-                results.push((node, blob_to_f32_vec(&blob)));
-            }
-        }
-        Ok(results)
-    }
-
-    /// 删除指定文件的所有向量条目
-    ///
-    /// 参数归一化（票 08）：与 insert_vectors_batch 写入的 file_path 列同基准。
-    pub fn delete_vectors_by_file(&self, file_path: &str) -> Result<usize> {
-        let count = self.conn.execute(
-            "DELETE FROM vectors WHERE file_path = ?1",
-            rusqlite::params![crate::incremental::norm_sep(file_path)],
-        ).context("删除向量条目失败")?;
-        Ok(count)
-    }
-
-    /// 获取向量表中的条目总数
-    pub fn vector_count(&self) -> Result<usize> {
-        let count: usize = self.conn.query_row(
-            "SELECT COUNT(*) FROM vectors",
-            [],
-            |row| row.get(0),
-        ).context("查询向量数失败")?;
-        Ok(count)
-    }
-
-    /// 清空向量表
-    pub fn clear_vectors(&self) -> Result<()> {
-        self.conn.execute("DELETE FROM vectors", [])
-            .context("清空向量表失败")?;
-        Ok(())
-    }
-}
-
-/// 将 f32 向量序列化为字节数组（小端序）
-fn f32_vec_to_blob(v: &[f32]) -> Vec<u8> {
-    let mut blob = Vec::with_capacity(v.len() * 4);
-    for &f in v {
-        blob.extend_from_slice(&f.to_le_bytes());
-    }
-    blob
-}
-
-/// 将字节数组反序列化为 f32 向量（小端序）
-fn blob_to_f32_vec(blob: &[u8]) -> Vec<f32> {
-    blob.chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect()
 }
 
 #[cfg(test)]
@@ -291,40 +193,5 @@ mod tests {
         let removed = store.delete_entities_by_file("src/a.rs").unwrap();
         assert_eq!(removed, 1);
         assert_eq!(store.entity_count().unwrap(), 1);
-    }
-
-    #[test]
-    fn test_vector_insert_and_load() {
-        let store = SearchStore::open(tmp_db_path("vec")).unwrap();
-        let node = make_node("embed_test", "src/e.rs");
-        let vector = vec![1.0f32, 2.0, 3.0, 4.0];
-        store.insert_vectors_batch(&[(node.clone(), vector.clone())]).unwrap();
-
-        let loaded = store.load_all_vectors().unwrap();
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].0.name, "embed_test");
-        assert_eq!(loaded[0].1, vector);
-    }
-
-    #[test]
-    fn test_vector_delete_by_file() {
-        let store = SearchStore::open(tmp_db_path("vec_del")).unwrap();
-        let items = vec![
-            (make_node("v1", "src/x.rs"), vec![1.0f32]),
-            (make_node("v2", "src/y.rs"), vec![2.0f32]),
-        ];
-        store.insert_vectors_batch(&items).unwrap();
-
-        let removed = store.delete_vectors_by_file("src/x.rs").unwrap();
-        assert_eq!(removed, 1);
-        assert_eq!(store.vector_count().unwrap(), 1);
-    }
-
-    #[test]
-    fn test_blob_roundtrip() {
-        let original = vec![0.1f32, -0.5, std::f32::consts::PI, 0.0];
-        let blob = f32_vec_to_blob(&original);
-        let restored = blob_to_f32_vec(&blob);
-        assert_eq!(original, restored);
     }
 }

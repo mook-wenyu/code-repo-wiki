@@ -1,3 +1,5 @@
+//! 生成状态持久化（单进程契约：本文件与 generation_state.json 无文件锁，
+//! 同一输出目录并发运行 repo-wiki 不被支持，最后写入者胜——见 README 限制项）
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
@@ -42,19 +44,46 @@ impl GenerationState {
         Ok(state)
     }
 
-    /// 保存生成状态到目录
+    /// 保存生成状态到目录（原子写：fs::write_file_atomic 临时文件 +
+    /// rename 覆盖，防止崩溃留下半截 JSON——半截状态会被 load 判为
+    /// 损坏，进而触发调用方的 fail-loud 路径，见 lib.rs load_protection）
     pub fn save(&self, state_dir: &Path) -> Result<()> {
         std::fs::create_dir_all(state_dir)
             .with_context(|| format!("创建状态目录失败: {}", state_dir.display()))?;
         let state_path = state_dir.join("generation_state.json");
         let content = serde_json::to_string_pretty(self)?;
-        std::fs::write(&state_path, content)
-            .with_context(|| format!("写入状态文件失败: {}", state_path.display()))?;
-        Ok(())
+        crate::fs::write_file_atomic(&state_path, &content)
+    }
+
+    /// 生成前中途存盘的保护字段保留（票 03）
+    ///
+    /// from_insights 构造的新状态只含 file_fingerprints/commit hash——
+    /// 若在 LLM 生成（流水线 Phase 3，最常见失败点）之前直接落盘，
+    /// doc_fingerprints/protected_docs/doc_modules 全空；一旦生成失败，
+    /// 磁盘状态即"无保护"版本，下次运行的人工修改保护失效。
+    /// 本方法把旧状态中的保护字段合并进新状态，使中途存盘只推进
+    /// 代码侧状态（commit hash/文件指纹），产物侧保护信息不因中途
+    /// 失败而丢失。新状态保护字段非空时保留新值（正常全量完成后
+    /// Phase 6 的最终保存不受影响）。
+    pub fn preserve_protection(&mut self, old: &GenerationState) {
+        if self.protected_docs.is_empty() {
+            self.protected_docs = old.protected_docs.clone();
+        }
+        if self.doc_fingerprints.is_empty() {
+            self.doc_fingerprints = old.doc_fingerprints.clone();
+        }
+        if self.doc_modules.is_empty() {
+            self.doc_modules = old.doc_modules.clone();
+        }
     }
 
     /// 从文件解析结果和 commit hash 构建新的生成状态
+    ///
+    /// root 注入：insight.path 是相对项目根的路径，指纹计算必须先与
+    /// root 拼接——直接相对 cwd 打开会随进程 cwd 漂移而错读（watch
+    /// 常驻进程的 cwd 漂移不再影响指纹基准）。
     pub fn from_insights(
+        root: &crate::project::ProjectRoot,
         insights: &[crate::ingest::parser::FileInsight],
         commit_hash: &str,
     ) -> Result<Self> {
@@ -62,12 +91,13 @@ impl GenerationState {
 
         for insight in insights {
             let path_str = insight.path.to_string_lossy().to_string();
-            match Self::compute_file_fingerprint(&insight.path) {
+            let abs = root.path().join(&insight.path);
+            match Self::compute_file_fingerprint(&abs) {
                 Ok(fp) => {
                     file_fingerprints.insert(path_str, fp);
                 }
                 Err(e) => {
-                    tracing::warn!("计算文件指纹失败 {}: {}", insight.path.display(), e);
+                    tracing::warn!("计算文件指纹失败 {}: {}", abs.display(), e);
                 }
             }
         }
@@ -191,14 +221,16 @@ impl GenerationState {
     /// 检查文件是否已变更
     ///
     /// 如果文件不在指纹表中（新增文件）或指纹不匹配，返回 true。
-    pub fn is_file_changed(&self, path: &Path) -> Result<bool> {
+    /// root 注入：path 是相对项目根的路径，与 root 拼接后计算
+    /// （同 from_insights，不依赖进程 cwd）。
+    pub fn is_file_changed(&self, root: &crate::project::ProjectRoot, path: &Path) -> Result<bool> {
         let path_str = path.to_string_lossy().to_string();
         let old_fingerprint = match self.file_fingerprints.get(&path_str) {
             Some(fp) => fp,
             None => return Ok(true), // 新文件
         };
 
-        let new_fingerprint = Self::compute_file_fingerprint(path)?;
+        let new_fingerprint = Self::compute_file_fingerprint(&root.path().join(path))?;
         Ok(&new_fingerprint != old_fingerprint)
     }
 }
@@ -214,6 +246,7 @@ fn sha256_hex(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::project::ProjectRoot;
     use std::path::PathBuf;
 
     #[test]
@@ -282,11 +315,11 @@ mod tests {
             generated_at: String::new(),
         };
 
-        assert!(!state.is_file_changed(&file_path).unwrap());
+        assert!(!state.is_file_changed(&ProjectRoot::new(dir.clone()), &file_path).unwrap());
 
         // 修改文件
         std::fs::write(&file_path, "world").unwrap();
-        assert!(state.is_file_changed(&file_path).unwrap());
+        assert!(state.is_file_changed(&ProjectRoot::new(dir.clone()), &file_path).unwrap());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -304,7 +337,9 @@ mod tests {
 
         let path = PathBuf::from("nonexistent.rs");
         // 新文件（不在指纹表中）应视为"已变更"
-        assert!(state.is_file_changed(&path).unwrap());
+        assert!(state
+            .is_file_changed(&ProjectRoot::new(std::env::temp_dir()), &path)
+            .unwrap());
     }
 
     /// A3：卡片指纹与 wiki 页指纹一起记录，人工编辑的卡片可被检测保护
@@ -392,5 +427,58 @@ mod tests {
         assert!(modules2.is_empty(), "文件不存在时不应记录模块归属");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 票 03：preserve_protection 把旧状态保护字段合并进新状态
+    ///（生成前中途存盘时调用，防 LLM 失败后保护丢失）
+    #[test]
+    fn test_preserve_protection_merges_from_old() {
+        let old = GenerationState {
+            last_commit_hash: Some("old".into()),
+            file_fingerprints: HashMap::new(),
+            doc_fingerprints: HashMap::from([("a.md".to_string(), "fp".to_string())]),
+            doc_modules: HashMap::from([("a.md".to_string(), "src".to_string())]),
+            protected_docs: vec!["a.md".to_string()],
+            generated_at: String::new(),
+        };
+        let mut fresh = GenerationState {
+            last_commit_hash: Some("new".into()),
+            file_fingerprints: HashMap::new(),
+            doc_fingerprints: HashMap::new(),
+            doc_modules: HashMap::new(),
+            protected_docs: vec![],
+            generated_at: String::new(),
+        };
+        fresh.preserve_protection(&old);
+        assert_eq!(fresh.protected_docs, vec!["a.md"]);
+        assert_eq!(fresh.doc_fingerprints.get("a.md").map(String::as_str), Some("fp"));
+        assert_eq!(fresh.doc_modules.get("a.md").map(String::as_str), Some("src"));
+        // commit hash 不被旧值覆盖（只合并保护字段）
+        assert_eq!(fresh.last_commit_hash.as_deref(), Some("new"));
+    }
+
+    /// 票 03：新状态保护字段非空时不覆盖（最终保存语义优先）
+    #[test]
+    fn test_preserve_protection_keeps_new_when_present() {
+        let old = GenerationState {
+            last_commit_hash: None,
+            file_fingerprints: HashMap::new(),
+            doc_fingerprints: HashMap::from([("old.md".to_string(), "old".to_string())]),
+            doc_modules: HashMap::new(),
+            protected_docs: vec!["old.md".to_string()],
+            generated_at: String::new(),
+        };
+        let mut fresh = GenerationState {
+            last_commit_hash: None,
+            file_fingerprints: HashMap::new(),
+            doc_fingerprints: HashMap::from([("new.md".to_string(), "new".to_string())]),
+            doc_modules: HashMap::new(),
+            protected_docs: vec!["new.md".to_string()],
+            generated_at: String::new(),
+        };
+        fresh.preserve_protection(&old);
+        assert_eq!(fresh.protected_docs, vec!["new.md"], "新状态保护字段非空时应保留新值");
+        assert_eq!(fresh.doc_fingerprints.get("new.md").map(String::as_str), Some("new"));
+        assert!(!fresh.doc_fingerprints.contains_key("old.md"));
     }
 }

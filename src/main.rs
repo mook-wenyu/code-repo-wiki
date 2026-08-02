@@ -41,6 +41,9 @@ enum Commands {
         /// 清空人工修改保护集，强制覆盖所有文档（与 generate --force 语义一致）
         #[arg(long)]
         force: bool,
+        /// 以 JSON 行输出流水线进度（供插件解析，如 {"stage":"scanning","progress":10}）
+        #[arg(long)]
+        progress_json: bool,
         /// 项目根目录（扫描根/git 定位基准，默认当前目录）
         #[arg(long)]
         root: Option<PathBuf>,
@@ -155,6 +158,15 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
+    /// 启动 MCP (Model Context Protocol) stdio server（供 Claude Code/Cline 等客户端连接）
+    Mcp {
+        /// 配置文件路径
+        #[arg(short, long, default_value = ".repo-wiki/config.toml")]
+        config: PathBuf,
+        /// 项目根目录（扫描根/git 定位基准，默认当前目录）
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
 }
 
 /// 知识卡片操作子命令（业务动作定义在 lib 的 generate::card::CardAction）
@@ -175,8 +187,8 @@ enum CardAction {
         /// 修改指令
         #[arg(long)]
         instruction: String,
-        /// 参考文件路径（逗号分隔，可选）
-        #[arg(long, value_delimiter = ',')]
+        /// 参考文件路径（可重复传 --reference，可选）
+        #[arg(long)]
         reference: Vec<PathBuf>,
         /// 配置文件路径
         #[arg(long, default_value = ".repo-wiki/config.toml")]
@@ -189,8 +201,8 @@ enum CardAction {
         /// 补充指令
         #[arg(long)]
         instruction: String,
-        /// 参考文件路径（逗号分隔，可选）
-        #[arg(long, value_delimiter = ',')]
+        /// 参考文件路径（可重复传 --reference，可选）
+        #[arg(long)]
         reference: Vec<PathBuf>,
         /// 配置文件路径
         #[arg(long, default_value = ".repo-wiki/config.toml")]
@@ -203,8 +215,8 @@ enum CardAction {
         /// 重写指令
         #[arg(long)]
         instruction: String,
-        /// 参考文件路径（逗号分隔，可选）
-        #[arg(long, value_delimiter = ',')]
+        /// 参考文件路径（可重复传 --reference，可选）
+        #[arg(long)]
         reference: Vec<PathBuf>,
         /// 配置文件路径
         #[arg(long, default_value = ".repo-wiki/config.toml")]
@@ -257,16 +269,30 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
                 result.stats.total_entities
             );
         }
-        Commands::Update { config, output, force, root } => {
+        Commands::Update { config, output, force, progress_json, root } => {
             // update 命令无外部 watch 事件，watch_paths 传空、change_kind 传 None
             let root = resolve_root(root.as_deref())?;
-            let result = repo_wiki::run_pipeline(
-                &config, output.as_deref(), force, &root,
-                &repo_wiki::GenerationMode::Incremental {
-                    watch_paths: Vec::new(),
-                    change_kind: None,
-                },
-            )?;
+            let result = if progress_json {
+                // JSONL 进度输出：与 generate --progress-json 同构，供插件流式解析
+                repo_wiki::run_pipeline_with_progress(
+                    &config, output.as_deref(), force, &root,
+                    &repo_wiki::GenerationMode::Incremental {
+                        watch_paths: Vec::new(),
+                        change_kind: None,
+                    },
+                    &|evt| {
+                        println!(r#"{{"stage":"{}","progress":{}}}"#, evt.stage, evt.percent);
+                    },
+                )?
+            } else {
+                repo_wiki::run_pipeline(
+                    &config, output.as_deref(), force, &root,
+                    &repo_wiki::GenerationMode::Incremental {
+                        watch_paths: Vec::new(),
+                        change_kind: None,
+                    },
+                )?
+            };
             tracing::info!(
                 "增量更新完成: 扫描 {} 个文件, {} 个模块受影响",
                 result.stats.files_scanned,
@@ -359,6 +385,18 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
                 // 快照契约被破坏的事实）。
                 let snapshot_path =
                     repo_wiki::output::export_snapshot_path(Path::new(&cfg.output.dir));
+                // 票 04 陈旧检测：快照 mtime 早于任一 wiki 页 mtime = 产物在
+                // 快照之后被更新（快照写入失败/被外部改动/产物被手动编辑），
+                // 继续导出会静默输出过期内容——显式报错引导重新生成。
+                if let (Ok(snapshot_mtime), Some(latest_page)) = (
+                    std::fs::metadata(&snapshot_path).and_then(|m| m.modified()),
+                    repo_wiki::output::latest_wiki_page_mtime(Path::new(&cfg.output.dir)),
+                ) && snapshot_mtime < latest_page
+                {
+                    anyhow::bail!(
+                        "导出快照过期（快照写入时间早于最新 wiki 页），请重新运行 `repo-wiki generate` 或 `repo-wiki update` 后再导出"
+                    );
+                }
                 let content = std::fs::read_to_string(&snapshot_path).with_context(|| {
                     format!(
                         "导出快照不存在，请先运行 `repo-wiki generate` 或 `repo-wiki update`: {}",
@@ -367,6 +405,15 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
                 })?;
                 let snapshot: repo_wiki::output::ExportSnapshot =
                     serde_json::from_str(&content).with_context(|| "解析导出快照失败")?;
+                // 票 10：快照版本契约校验——未来格式演进时旧版本可被
+                // 显式拒绝（当前仅版本 1；缺失字段的旧文件会被 serde
+                // 默认值补齐后误读，故版本不符必须硬性报错而非容错）
+                if snapshot.version != 1 {
+                    anyhow::bail!(
+                        "导出快照版本 {} 不受支持（当前支持: 1），请重新运行 `repo-wiki generate` 或 `repo-wiki update`",
+                        snapshot.version
+                    );
+                }
                 repo_wiki::output::html::export_html(
                     &snapshot.documents,
                     &snapshot.cards,
@@ -454,6 +501,13 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
         }
         Commands::UninstallFromOpencode { force } => {
             repo_wiki::commands::uninstall(force)?;
+        }
+        Commands::Mcp { config, root } => {
+            // MCP stdio server：阻塞直到客户端断开。异步运行时由库内
+            // get_global_runtime 提供（与流水线共用，避免二次初始化）。
+            let root = resolve_root(root.as_deref())?;
+            let rt = repo_wiki::get_global_runtime();
+            rt.block_on(repo_wiki::mcp::serve_stdio(config, root))?;
         }
         Commands::Card { action, root } => {
             use repo_wiki::generate::card as card_cmd;

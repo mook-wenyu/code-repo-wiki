@@ -64,22 +64,6 @@ impl EntityChangeSet {
     }
 }
 
-/// 对 Git diff 做实体级变化分类（兼容入口：委托 [`classify_entity_changes_at`]）
-///
-/// `current_insights` 为当前工作区解析结果（scan_and_parse 产出，
-/// 避免重复解析已解析过的文件）。
-/// 主代理合入 --root 注入后切换调用点为 `classify_entity_changes_at` 并删除本委托。
-pub fn classify_entity_changes(
-    diff: &GitDiffResult,
-    current_insights: &[FileInsight],
-) -> Result<EntityChangeSet> {
-    classify_entity_changes_at(
-        &crate::project::ProjectRoot::from_cwd()?,
-        diff,
-        current_insights,
-    )
-}
-
 /// 在指定项目根下对 Git diff 做实体级变化分类
 ///
 /// git 仓库定位基准显式注入（与 analyze_git_diff 同源，root 由

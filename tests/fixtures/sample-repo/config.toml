@@ -8,7 +8,7 @@ dir = "wiki"
 format = "markdown"
 
 [llm]
-provider = "openai"
+provider = "mock"
 model = "gpt-4o"
 api_key = "mock"
 api_key_env = "OPENAI_API_KEY"

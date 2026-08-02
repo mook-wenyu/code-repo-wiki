@@ -249,17 +249,13 @@ fn extract_markdown(text: &str) -> &str {
     }
 }
 
-/// 原子写回卡片文件：先写临时文件，再替换目标（避免写一半留下残缺卡片）
+/// 原子写回卡片文件：统一走 fs::write_file_atomic（同目录临时文件 +
+/// rename 原子覆盖）。rustc 1.84+ 的 rename 在 Windows 已是 POSIX 语义
+/// 原子替换，无需先删目标（删掉旧实现的 remove_file 前置，消除
+/// "目标已删、临时文件未就位"的中间窗口）。
 fn write_card_atomic(config: &WikiConfig, module: &str, content: &str) -> Result<()> {
     let path = card_path(config, module);
-    std::fs::create_dir_all(path.parent().expect("卡片文件路径必须包含父目录"))?;
-    let tmp = path.with_extension("md.tmp");
-    std::fs::write(&tmp, content)?;
-    if path.exists() {
-        std::fs::remove_file(&path)?;
-    }
-    std::fs::rename(&tmp, &path)?;
-    Ok(())
+    crate::fs::write_file_atomic(&path, content)
 }
 
 /// 从卡片 markdown 中提取"人工修改待同步"节内容（无该节时返回空）
@@ -326,7 +322,7 @@ pub async fn edit_card(
     mode: CardEditMode,
 ) -> Result<()> {
     let existing = read_card(config, module)?.ok_or_else(|| anyhow::anyhow!(
-        "模块 {module} 的卡片不存在（{}），请先运行 `repo-wiki generate` 全量生成",
+        "模块 {module} 的卡片不存在（{}），请先运行 `repo-wiki generate` 或 `repo-wiki card generate <module>` 生成",
         card_path(config, module).display()
     ))?;
     let reference_block = read_references(references)?;

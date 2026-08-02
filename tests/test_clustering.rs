@@ -6,18 +6,13 @@
 //! （graph.modules）+ 特征聚类（graph.features），并断言模块命名确定性
 //! （杜绝 "src::a.rs" 式把文件名当目录段的错误命名）。
 //!
-//! 注意：`scan_and_parse` 以 `std::env::current_dir()` 为扫描根，本文件
-//! 全部断言集中在单个顺序测试函数内（先切 cwd，结束时恢复），避免
-//! Rust 并行测试之间的 cwd 竞态。
+//! 注意：`scan_and_parse_at` 通过显式注入的 `ProjectRoot` 指定扫描根，
+//! 本文件不依赖进程级 cwd，可与其它测试并行。
 
 use std::path::Path;
-use std::sync::Mutex;
 
 use repo_wiki::analysis;
 use repo_wiki::ingest;
-
-/// 串行化 cwd 切换（与 test_e2e 同一模式）
-static CWD_LOCK: Mutex<()> = Mutex::new(());
 
 /// 构造临时仓库：
 /// - src/a/ 内两个文件通过跨文件调用协作（lib.rs 调用 helper.rs 的函数）
@@ -58,7 +53,6 @@ pub fn beta() -> &'static str { "beta" }
 
 #[test]
 fn test_community_detection_and_features() {
-    let _guard = CWD_LOCK.lock().unwrap();
     let tmp = std::env::temp_dir().join(format!(
         "repo_wiki_clustering_test_{}",
         std::process::id()
@@ -66,10 +60,9 @@ fn test_community_detection_and_features() {
     let _ = std::fs::remove_dir_all(&tmp);
     build_fixture_repo(&tmp).expect("构造测试仓库失败");
 
-    let prev = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&tmp).unwrap();
+    let root = repo_wiki::project::ProjectRoot::new(tmp.clone());
     let result = (|| -> anyhow::Result<()> {
-        let insights = ingest::scan_and_parse_at(&repo_wiki::project::ProjectRoot::from_cwd().unwrap(), &repo_wiki::config::schema::WikiConfig::default())?;
+        let insights = ingest::scan_and_parse_at(&root, &repo_wiki::config::schema::WikiConfig::default())?;
         assert!(!insights.is_empty(), "应扫描到源文件");
         let mut graph = analysis::build_graph(&insights)?;
         // features 由 lib 层 attach_features 填充（lib 私有函数），
@@ -139,7 +132,6 @@ fn test_community_detection_and_features() {
 
         Ok(())
     })();
-    std::env::set_current_dir(&prev).unwrap();
     let _ = std::fs::remove_dir_all(&tmp);
     result.expect("集成断言失败");
 }

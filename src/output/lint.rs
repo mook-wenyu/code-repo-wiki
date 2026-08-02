@@ -12,6 +12,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::output::citation;
+
 /// 单条 lint 问题
 #[derive(Debug, Clone)]
 pub struct LintIssue {
@@ -143,9 +145,146 @@ pub fn lint(output_dir: &Path, source_roots: &[PathBuf]) -> Vec<LintIssue> {
                 }
             }
         }
+        // ---- 4. 引用存在性检查（P1-4 零成本评测）：正文中的 `path:line` 引用必须可验证 ----
+        // LLM 正文的源码引用契约（生成层校验 + 重试，见 generate/wiki.rs），此处对磁盘产物
+        // 做静态复核：引用文件必须存在且行号不越界。基准根用 resolve_source_path 逐根尝试
+        //（与过时检查同一路径解析约定），引用相对项目根，source_roots 即项目根下源码目录。
+        for page in &pages {
+            let content = std::fs::read_to_string(page).unwrap_or_default();
+            let file_name = page
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            for citation in citation::extract_citations(&content) {
+                // 引用相对项目根：output_dir（.repo-wiki/ 或 wiki/）的上级即项目根
+                // （AGENTS.md 生成同约定）；source_roots 兜底逐根尝试
+                let project_root = output_dir.parent().unwrap_or_else(|| Path::new("."));
+                let abs = project_root.join(&citation.path);
+                let total_lines = std::fs::read_to_string(&abs)
+                    .map(|s| s.lines().count())
+                    .ok()
+                    .or_else(|| {
+                        std::fs::read_to_string(resolve_source_path(source_roots, &citation.path))
+                            .map(|s| s.lines().count())
+                            .ok()
+                    });
+                let message = match total_lines {
+                    None => format!("引用不存在: `{}` 指向的文件找不到", citation.path),
+                    Some(n) if citation.end > n => format!(
+                        "引用越界: `{}` 的 {}-{} 行超出文件总行数 {}",
+                        citation.path, citation.start, citation.end, n
+                    ),
+                    _ => continue,
+                };
+                issues.push(LintIssue {
+                    kind: "bad-citation",
+                    path: format!("wiki/{lang}/{file_name}"),
+                    message,
+                });
+            }
+        }
+
+        // ---- 5. 实体覆盖率检查（P1-4 零成本评测）：模块页核心实体须存在于 api.md ----
+        // api.md 由 graph 权威渲染（markdown::render_api_reference），页面声称的实体若不在
+        // api.md = LLM 编造实体名（防幻觉的第二道闸）。只检查主语言目录（api.md 仅主语言一份）。
+        let api_path = output_dir.join("wiki").join(lang).join("api.md");
+        if primary_language(output_dir) == *lang
+            && let Ok(api_content) = std::fs::read_to_string(&api_path)
+        {
+            let known: std::collections::HashSet<String> = api_content
+                .lines()
+                .filter(|l| l.trim_start().starts_with("- `"))
+                .filter_map(|l| {
+                    // 签名如 `pub fn authenticate(username: &str) -> Option<User>`：
+                    // 取第一个 '(' 前的最后标识符（跳过 pub/fn 等关键字前缀）
+                    let inner = &l[l.find('`').unwrap() + 1..];
+                    inner
+                        .split('`')
+                        .next()
+                        .and_then(entity_name_from_signature)
+                })
+                .collect();
+            for page in &pages {
+                let content = std::fs::read_to_string(page).unwrap_or_default();
+                let file_name = page
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                for entity in extract_entity_names(&content) {
+                    if !known.contains(&entity) {
+                        issues.push(LintIssue {
+                            kind: "entity-coverage",
+                            path: format!("wiki/{lang}/{file_name}"),
+                            message: format!("实体覆盖率: 页面声称的实体 `{entity}` 不在 api.md 清单中（可能是编造或已删除）"),
+                        });
+                    }
+                }
+            }
+        }
     }
 
     issues
+}
+
+/// 主语言目录名：api.md 只写主语言一份（render_all 规则），实体覆盖检查以它为权威
+fn primary_language(output_dir: &Path) -> String {
+    // 遍历 wiki/ 下的语言目录，取含 api.md 的那个（主语言）；无则返回空串（跳过检查）
+    let wiki_root = output_dir.join("wiki");
+    if let Ok(entries) = std::fs::read_dir(&wiki_root) {
+        for entry in entries.flatten() {
+            if entry.path().is_dir()
+                && entry.path().join("api.md").is_file()
+                && let Some(name) = entry.file_name().to_str()
+            {
+                return name.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+/// 从签名/实体文本中提取实体真名
+///
+/// 签名形态：`pub fn authenticate(username: &str) -> Option<User>`（函数）、
+/// `Foo`（struct/enum 裸名）、`def foo()`（Python）、`func Foo()`（Go）。
+/// 规则：有 '(' 时取第一个 '(' 前最后一个标识符（跳过 pub/fn/def 等
+/// 关键字前缀）；无 '(' 时取最后一个标识符（裸名/类型）。页面侧与
+/// api.md 权威侧共用同一提取，保证两侧命名口径一致。
+pub fn entity_name_from_signature(sig: &str) -> Option<String> {
+    let trimmed = sig.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let tokens = trimmed
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+    if let Some(open) = trimmed.find('(') {
+        // 第一个 '(' 前最后标识符 = 函数/方法名
+        trimmed[..open]
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .filter(|s| !s.is_empty())
+            .rfind(|_| true)
+            .map(|s| s.to_string())
+    } else {
+        // 无括号：裸名（struct/enum）或纯类型 → 最后标识符
+        tokens.into_iter().rfind(|_| true).map(|s| s.to_string())
+    }
+}
+
+/// 从模块页内容提取声称的实体名：`- `Name`` 核心实体行（反引号内实体真名）
+fn extract_entity_names(content: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with("- `") && let Some(end) = line[3..].find('`') {
+            let inner = &line[3..3 + end];
+            if let Some(name) = entity_name_from_signature(inner) {
+                out.push(name);
+            }
+        }
+    }
+    out
 }
 
 /// 收集 wiki 根下的语言目录（zh/en/...）
@@ -388,5 +527,98 @@ mod tests {
         let issues = lint(&dir, &[]);
         assert!(issues.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// P1-4 引用存在性：产物中的 `path:line` 引用指向不存在的文件 → bad-citation
+    #[test]
+    fn test_lint_bad_citation_missing_file() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_lint_cite_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let out = dir.join(".repo-wiki"); // output_dir 的父目录 = 项目根
+        let wiki = out.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        // 页面引用不存在的文件
+        std::fs::write(
+            wiki.join("m.md"),
+            "# M\n\n核心逻辑见 `src/ghost.rs:10`\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+
+        let issues = lint(&out, &[]);
+        assert!(
+            issues.iter().any(|i| i.kind == "bad-citation"),
+            "引用不存在的文件应报 bad-citation, 实际: {:?}",
+            issues
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// P1-4 引用存在性：引用真实存在的文件且行号合法 → 无 bad-citation
+    #[test]
+    fn test_lint_bad_citation_valid_passes() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_lint_cite_ok_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let out = dir.join(".repo-wiki");
+        let wiki = out.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src").join("real.rs"), "line1\nline2\n").unwrap();
+        // 页面引用真实文件（相对项目根路径,output_dir 父目录解析命中）
+        std::fs::write(
+            wiki.join("m.md"),
+            "# M\n\n核心逻辑见 `src/real.rs:1`\n",
+        )
+        .unwrap();
+
+        let issues = lint(&out, &[]);
+        assert!(
+            !issues.iter().any(|i| i.kind == "bad-citation"),
+            "有效引用不应报错, 实际: {:?}",
+            issues
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// P1-4 实体覆盖率：页面声称的实体不在 api.md → entity-coverage
+    #[test]
+    fn test_lint_entity_coverage_detects_fake() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_lint_cov_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        // api.md 权威清单只有 Foo
+        std::fs::write(
+            wiki.join("api.md"),
+            "# API 参考\n\n## m\n\n- `Foo` — 描述 — m.rs:1\n",
+        )
+        .unwrap();
+        // 模块页声称 FakeEntity（不在 api.md）
+        std::fs::write(
+            wiki.join("m.md"),
+            "# M\n\n## 核心实体\n\n- `FakeEntity` — 编造的实体\n- `Foo` — 真实实体\n",
+        )
+        .unwrap();
+
+        let issues = lint(&dir, &[]);
+        let cov: Vec<_> = issues.iter().filter(|i| i.kind == "entity-coverage").collect();
+        assert_eq!(cov.len(), 1, "只应报编造实体, 实际: {:?}", issues);
+        assert!(cov[0].message.contains("FakeEntity"), "应指向 FakeEntity: {}", cov[0].message);
+        assert!(!cov[0].message.contains("Foo"), "真实实体不应误报");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_extract_entity_names() {
+        let content = "## 核心实体\n\n- `Server`（struct）— HTTP 服务\n- `fn connect()` — 连接\n- `foo_bar` — 下划线\n";
+        let names = extract_entity_names(content);
+        assert!(names.contains(&"Server".to_string()));
+        assert!(
+            names.contains(&"connect".to_string()),
+            "签名应提取实体真名（跳过 fn 关键字）: {:?}",
+            names
+        );
+        assert!(!names.contains(&"fn".to_string()), "关键字不应被提取: {:?}", names);
+        assert!(names.contains(&"foo_bar".to_string()));
     }
 }

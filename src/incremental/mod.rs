@@ -70,8 +70,7 @@ pub fn run_incremental_update_at(
             run_git_diff_incremental(root, insights, graph, config, &state_dir)?
         }
         IncrementalStrategy::FileWatch => {
-            let (files, modules) = run_file_watch_incremental(insights, graph, config, &state_dir, watch_paths)?;
-            (files, modules, EntityChangeSet::default())
+            run_file_watch_incremental(root, insights, graph, config, &state_dir, watch_paths)?
         }
     };
     Ok(IncrementalResult { changed_files, affected_modules, entity_changes })
@@ -177,8 +176,15 @@ fn run_git_diff_incremental(
     };
 
     // 4. 保存新的状态
-    if let Ok(new_state) = GenerationState::from_insights(insights, &diff_result.to_commit) && let Err(e) = new_state.save(state_dir) {
-        tracing::warn!("保存生成状态失败: {}", e);
+    // from_insights 的新状态保护字段为空，LLM 生成（Phase 3）失败时若已落盘
+    // 会丢失人工修改保护——此处合并旧状态保护字段后再存，中途失败不丢保护）
+    if let Ok(mut new_state) = GenerationState::from_insights(root, insights, &diff_result.to_commit) {
+        if let Ok(old_state) = GenerationState::load(state_dir) {
+            new_state.preserve_protection(&old_state);
+        }
+        if let Err(e) = new_state.save(state_dir) {
+            tracing::warn!("保存生成状态失败: {}", e);
+        }
     }
 
     tracing::info!("增量更新分析完成: {} 个模块受影响", affected_modules.len());
@@ -187,18 +193,19 @@ fn run_git_diff_incremental(
 
 /// FileWatch 策略的增量更新（变更文件来自外部事件 + 指纹比对）
 fn run_file_watch_incremental(
+    root: &ProjectRoot,
     insights: &[FileInsight],
     graph: &KnowledgeGraph,
     config: &WikiConfig,
     state_dir: &Path,
     watch_paths: &[PathBuf],
-) -> Result<(Vec<PathBuf>, Vec<String>)> {
+) -> Result<(Vec<PathBuf>, Vec<String>, EntityChangeSet)> {
     // 重新加载状态，比较文件指纹
     let state = GenerationState::load(state_dir).ok();
     let mut changed_files: Vec<PathBuf> = Vec::new();
 
     for insight in insights {
-        if let Ok(true) = state.as_ref().map(|s| s.is_file_changed(&insight.path)).unwrap_or(Ok(true)) {
+        if let Ok(true) = state.as_ref().map(|s| s.is_file_changed(root, &insight.path)).unwrap_or(Ok(true)) {
             changed_files.push(insight.path.clone());
         }
     }
@@ -215,25 +222,67 @@ fn run_file_watch_incremental(
 
     if changed_files.is_empty() {
         tracing::info!("无文件变更");
-        return Ok((Vec::new(), Vec::new()));
+        return Ok((Vec::new(), Vec::new(), EntityChangeSet::default()));
     }
 
-    // BFS 传播影响
-    let affected_modules = propagate_impact(&changed_files, graph, config.incremental.max_depth);
+    // 实体级变化分类（修复：FileWatch 路径原为空集，接口级变化无法驱动
+    // 语义传播与实体级摘要过滤，README 声称与实现差距）。FileWatch 无
+    // Git diff，但 classify_entity_changes_at 需要旧内容做对比——用状态里
+    // 记录的 last_commit_hash 作基准从 Git 树读旧内容；变更集中磁盘上
+    // 仍存在的文件视为 modified（新增文件对比旧树为空 → 全部 Added），
+    // 磁盘上已不存在的视为 deleted。非 Git 仓库或无上次 commit 时分类
+    // 内部返回空集，回退保守的双向传播（与 GitDiff 路径失败回退一致）。
+    let entity_changes = if let Some(state) = &state {
+        let diff = crate::incremental::diff::GitDiffResult {
+            modified: changed_files
+                .iter()
+                .filter(|p| p.exists())
+                .cloned()
+                .collect(),
+            deleted: changed_files
+                .iter()
+                .filter(|p| !p.exists())
+                .cloned()
+                .collect(),
+            from_commit: state.last_commit_hash.clone().unwrap_or_default(),
+            ..Default::default()
+        };
+        match classify_entity_changes_at(root, &diff, insights) {
+            Ok(set) => set,
+            Err(e) => {
+                tracing::warn!("FileWatch 实体级变化分类失败，回退双向传播: {}", e);
+                EntityChangeSet::default()
+            }
+        }
+    } else {
+        EntityChangeSet::default()
+    };
+    let affected_modules = if entity_changes.changes.is_empty() {
+        propagate_impact(&changed_files, graph, config.incremental.max_depth)
+    } else {
+        propagate_impact_semantic(&changed_files, &entity_changes, graph, config.incremental.max_depth)
+    };
 
     // 保存新状态
-    if let Ok(new_state) = GenerationState::from_insights(insights, "file-watch") && let Err(e) = new_state.save(state_dir) {
-        tracing::warn!("保存生成状态失败: {}", e);
+    // 同上（票 03）：FileWatch 中途存盘同样合并旧状态保护字段
+    if let Ok(mut new_state) = GenerationState::from_insights(root, insights, "file-watch") {
+        if let Ok(old_state) = GenerationState::load(state_dir) {
+            new_state.preserve_protection(&old_state);
+        }
+        if let Err(e) = new_state.save(state_dir) {
+            tracing::warn!("保存生成状态失败: {}", e);
+        }
     }
 
     tracing::info!("FileWatch 增量分析完成: {} 个模块受影响", affected_modules.len());
-    Ok((changed_files, affected_modules))
+    Ok((changed_files, affected_modules, entity_changes))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::schema::IncrementalSection;
+    use crate::project::ProjectRoot;
 
     fn make_insight(path: &str) -> FileInsight {
         FileInsight {
@@ -383,7 +432,8 @@ mod tests {
         // 先保存状态：a.rs 内容未变，指纹比对不命中
         let insight = make_insight(src.join("a.rs").to_string_lossy().as_ref());
         let state_dir = dir.join(".state");
-        let state = GenerationState::from_insights(std::slice::from_ref(&insight), "test").unwrap();
+        let root = crate::project::ProjectRoot::new(dir.clone());
+        let state = GenerationState::from_insights(&root, std::slice::from_ref(&insight), "test").unwrap();
         state.save(&state_dir).unwrap();
 
         // watch 事件传入已删除路径（磁盘上不存在）
@@ -391,8 +441,8 @@ mod tests {
         let graph = KnowledgeGraph::default();
         let config = make_config();
 
-        let (changed, _affected) =
-            run_file_watch_incremental(std::slice::from_ref(&insight), &graph, &config, &state_dir, std::slice::from_ref(&deleted)).unwrap();
+        let (changed, _affected, _entity_changes) =
+            run_file_watch_incremental(&root, std::slice::from_ref(&insight), &graph, &config, &state_dir, std::slice::from_ref(&deleted)).unwrap();
         assert_eq!(
             changed,
             vec![deleted],
@@ -415,7 +465,8 @@ mod tests {
         // 保存状态（a.rs 指纹 v1），随后修改内容 → 指纹比对命中
         let insight = make_insight(src.join("a.rs").to_string_lossy().as_ref());
         let state_dir = dir.join(".state");
-        let state = GenerationState::from_insights(std::slice::from_ref(&insight), "test").unwrap();
+        let root = crate::project::ProjectRoot::new(dir.clone());
+        let state = GenerationState::from_insights(&root, std::slice::from_ref(&insight), "test").unwrap();
         state.save(&state_dir).unwrap();
         std::fs::write(src.join("a.rs"), "v2").unwrap();
 
@@ -424,8 +475,8 @@ mod tests {
         let graph = KnowledgeGraph::default();
         let config = make_config();
 
-        let (changed, _affected) =
-            run_file_watch_incremental(std::slice::from_ref(&insight), &graph, &config, &state_dir, std::slice::from_ref(&deleted)).unwrap();
+        let (changed, _affected, _entity_changes) =
+            run_file_watch_incremental(&root, std::slice::from_ref(&insight), &graph, &config, &state_dir, std::slice::from_ref(&deleted)).unwrap();
         assert!(
             changed.contains(&insight.path),
             "指纹命中的文件应计入: {:?}",
@@ -437,6 +488,43 @@ mod tests {
             changed
         );
         assert_eq!(changed.len(), 2, "指纹与 watch 路径取并集，不应重复");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 票 03：中途存盘必须保留旧状态保护字段（LLM 生成失败场景的防回归）。
+    /// 构造带 protected_docs/doc_fingerprints 的旧状态 → 跑 FileWatch 增量
+    /// （其内部 from_insights + preserve_protection 后落盘）→ 断言磁盘状态
+    /// 保护字段仍在（生成失败后下次运行保护不丢）。
+    #[test]
+    fn test_file_watch_midway_save_preserves_protection() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_test_watch_protect_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let src = dir.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.rs"), "v1").unwrap();
+
+        let insight = make_insight(src.join("a.rs").to_string_lossy().as_ref());
+        let state_dir = dir.join(".state");
+
+        // 旧状态：带人工保护（模拟上次生成完成后的状态）
+        let root = crate::project::ProjectRoot::new(dir.clone());
+        let mut old = GenerationState::from_insights(&root, std::slice::from_ref(&insight), "old").unwrap();
+        old.protected_docs = vec!["wiki/zh/manual.md".to_string()];
+        old.doc_fingerprints = std::collections::HashMap::from([("wiki/zh/manual.md".to_string(), "fp".to_string())]);
+        old.save(&state_dir).unwrap();
+
+        // 触发 FileWatch 增量（内容变更 → 中途存盘路径执行）
+        std::fs::write(src.join("a.rs"), "v2").unwrap();
+        let changed = src.join("b.rs");
+        let graph = KnowledgeGraph::default();
+        let config = make_config();
+        run_file_watch_incremental(&root, std::slice::from_ref(&insight), &graph, &config, &state_dir, std::slice::from_ref(&changed)).unwrap();
+
+        // 磁盘状态必须保留保护字段（中途失败后人工修改保护不失效）
+        let saved = GenerationState::load(&state_dir).unwrap();
+        assert_eq!(saved.protected_docs, vec!["wiki/zh/manual.md"], "中途存盘不得清空保护集");
+        assert_eq!(saved.doc_fingerprints.get("wiki/zh/manual.md").map(String::as_str), Some("fp"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

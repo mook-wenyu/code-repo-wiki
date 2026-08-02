@@ -12,13 +12,9 @@
 //! 证明断言工具本身能捕获差异（防测试恒真）。
 
 use std::path::Path;
-use std::sync::Mutex;
 
 use repo_wiki::config::schema::{LlmProviderType, LlmSection, WikiConfig};
 use repo_wiki::config::schema::{OutputSection, WikiSection};
-
-/// 串行化依赖 cwd 的测试
-static CWD_LOCK: Mutex<()> = Mutex::new(());
 
 fn build_fixture_repo(repo: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(repo.join("src").join("a"))?;
@@ -99,18 +95,17 @@ fn content_hash(path: &Path, is_wiki_page: bool) -> String {
 /// 两次全量生成产物逐文件一致 + 反向验证断言工具能捕获差异
 #[test]
 fn test_full_generate_artifact_set_deterministic() {
-    let _guard = CWD_LOCK.lock().unwrap();
-    let orig_cwd = std::env::current_dir().expect("读取当前目录失败");
     let repo = std::env::temp_dir().join(format!("repo_wiki_determinism_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&repo);
     std::fs::create_dir_all(&repo).expect("构造临时仓库失败");
     build_fixture_repo(&repo).expect("构造 fixture 失败");
 
-    std::env::set_current_dir(&repo).expect("切换 cwd 失败");
+    // root 显式注入替代进程级 cwd 切换
+    let root = repo_wiki::project::ProjectRoot::new(repo.clone());
     let config_path = repo.join("config.toml");
 
     // 第一次全量生成
-    let first = repo_wiki::run_pipeline(&config_path, None, false, &repo_wiki::project::ProjectRoot::from_cwd().unwrap(), &repo_wiki::GenerationMode::Full).expect("第一次生成失败");
+    let first = repo_wiki::run_pipeline(&config_path, None, false, &root, &repo_wiki::GenerationMode::Full).expect("第一次生成失败");
     let out_dir = repo.join(".repo-wiki");
     let paths_a = artifact_paths(&out_dir);
     assert!(!paths_a.is_empty(), "产物集合不应为空");
@@ -152,7 +147,7 @@ fn test_full_generate_artifact_set_deterministic() {
         .to_string();
 
     // 第二次全量生成（force=false 保留人工修改保护）
-    let second = repo_wiki::run_pipeline(&config_path, None, false, &repo_wiki::project::ProjectRoot::from_cwd().unwrap(), &repo_wiki::GenerationMode::Full).expect("第二次生成失败");
+    let second = repo_wiki::run_pipeline(&config_path, None, false, &root, &repo_wiki::GenerationMode::Full).expect("第二次生成失败");
     let paths_b = artifact_paths(&out_dir);
     let hashes_b = hash_all(&paths_b);
 
@@ -196,6 +191,5 @@ fn test_full_generate_artifact_set_deterministic() {
         "人工修改后内容必须与首次生成不同"
     );
 
-    std::env::set_current_dir(&orig_cwd).expect("恢复 cwd 失败");
     let _ = std::fs::remove_dir_all(&repo);
 }

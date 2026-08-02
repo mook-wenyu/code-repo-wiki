@@ -15,13 +15,9 @@
 //! （跨社区 Calls 边）。
 
 use std::path::Path;
-use std::sync::Mutex;
 
 use repo_wiki::config::schema::{LlmProviderType, LlmSection, WikiConfig};
 use repo_wiki::config::schema::{OutputSection, WikiSection};
-
-/// 串行化依赖 cwd 的测试（scan_and_parse / git 操作以 cwd 为根）
-static CWD_LOCK: Mutex<()> = Mutex::new(());
 
 /// 构造带跨社区调用的临时 git 仓库：
 ///
@@ -109,20 +105,20 @@ fn doc_titles(result: &repo_wiki::AnalysisResult) -> Vec<String> {
 /// 全流程：全量生成 → 真实 git 提交 → 修改 → 增量 → 断言
 #[test]
 fn test_incremental_git_diff_scenarios() {
-    let _guard = CWD_LOCK.lock().unwrap();
-    let orig_cwd = std::env::current_dir().expect("读取当前目录失败");
+
     let repo = std::env::temp_dir().join(format!("repo_wiki_git_e2e_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&repo);
     std::fs::create_dir_all(&repo).expect("构造临时仓库失败");
     build_git_repo(&repo).expect("构造 fixture 失败");
 
-    std::env::set_current_dir(&repo).expect("切换 cwd 失败");
+    // root 显式注入替代进程级 cwd 切换
+    let root = repo_wiki::project::ProjectRoot::new(repo.clone());
     let config_path = repo.join("config.toml");
     let tcp_mod = repo.join("src").join("net").join("tcp.rs");
 
     // ---- 首次提交 + 全量生成（建立基线） ----
     git_commit_all(&repo, "init");
-    let base = repo_wiki::run_pipeline(&config_path, None, false, &repo_wiki::project::ProjectRoot::from_cwd().unwrap(), &repo_wiki::GenerationMode::Full).expect("全量生成失败");
+    let base = repo_wiki::run_pipeline(&config_path, None, false, &root, &repo_wiki::GenerationMode::Full).expect("全量生成失败");
     let base_api = read_api(&repo);
     assert!(base_api.contains("tcp_process"), "基线 api.md 应含 tcp_process 签名");
     // 社区划分护栏：net 与 http 应检出为独立模块（依赖传播断言的前提）
@@ -135,7 +131,7 @@ fn test_incremental_git_diff_scenarios() {
     // ---- 场景 A：实现级变化（函数体修改，签名不变） ----
     std::fs::write(&tcp_mod, "pub fn tcp_process(x: u32) -> u32 { udp_process(x) + 42 }\n").unwrap();
     git_commit_all(&repo, "change body");
-    let inc_a = repo_wiki::run_pipeline(&config_path, None, false, &repo_wiki::project::ProjectRoot::from_cwd().unwrap(), &repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
+    let inc_a = repo_wiki::run_pipeline(&config_path, None, false, &root, &repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
         .expect("增量生成失败");
     let titles_a = doc_titles(&inc_a);
     assert!(
@@ -156,7 +152,7 @@ fn test_incremental_git_diff_scenarios() {
     // 签名变更 → api.md 反映新签名 + 调用方 http 社区文档被重生成（依赖传播接线）
     std::fs::write(&tcp_mod, "pub fn tcp_process(x: u32, y: u32) -> u32 { udp_process(x) + y }\n").unwrap();
     git_commit_all(&repo, "change signature");
-    let inc_b = repo_wiki::run_pipeline(&config_path, None, false, &repo_wiki::project::ProjectRoot::from_cwd().unwrap(), &repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
+    let inc_b = repo_wiki::run_pipeline(&config_path, None, false, &root, &repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
         .expect("增量生成失败");
     let new_api = read_api(&repo);
     assert!(
@@ -170,7 +166,7 @@ fn test_incremental_git_diff_scenarios() {
     );
 
     // ---- 场景 C：无变更 → 增量跳过 ----
-    let inc_c = repo_wiki::run_pipeline(&config_path, None, false, &repo_wiki::project::ProjectRoot::from_cwd().unwrap(), &repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
+    let inc_c = repo_wiki::run_pipeline(&config_path, None, false, &root, &repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
         .expect("无变更增量失败");
     assert!(
         inc_c.documents.is_empty(),
@@ -178,6 +174,71 @@ fn test_incremental_git_diff_scenarios() {
         doc_titles(&inc_c)
     );
 
-    std::env::set_current_dir(&orig_cwd).expect("恢复 cwd 失败");
+
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+/// 场景 E（边界回归）：删除**孤立模块的唯一文件**（无依赖方，删除后
+/// 影响传播不命中任何现存文件）→ changed_insights 为空 → 旧实现返回空
+/// documents → cleanup 差集把**全部**旧产物误删（包括无关社区）。
+/// 断言：删除 standalone.rs 后 net/http 社区产物必须保留。
+#[test]
+fn test_incremental_git_delete_isolated_file_keeps_others() {
+    let repo = std::env::temp_dir().join(format!("repo_wiki_git_delisol_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&repo);
+    std::fs::create_dir_all(&repo).expect("构造临时仓库失败");
+    build_git_repo(&repo).expect("构造 fixture 失败");
+
+    // 追加孤立文件：仓库根独立文件，无任何调用/导入关系
+    let isolated = repo.join("standalone.rs");
+    std::fs::write(&isolated, "pub fn isolated_helper() -> u32 { 7 }\n").unwrap();
+
+    let root = repo_wiki::project::ProjectRoot::new(repo.clone());
+    let config_path = repo.join("config.toml");
+
+    // ---- 首次提交 + 全量生成（基线） ----
+    git_commit_all(&repo, "init with standalone");
+    repo_wiki::run_pipeline(&config_path, None, false, &root, &repo_wiki::GenerationMode::Full)
+        .expect("全量生成失败");
+    let wiki_dir = repo.join(".repo-wiki").join("wiki").join("zh");
+    let pages_before: Vec<String> = std::fs::read_dir(&wiki_dir)
+        .map(|es| {
+            es.flatten()
+                .filter(|e| e.path().extension().is_some_and(|x| x == "md"))
+                .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        pages_before.iter().any(|p| p.contains("net") || p.contains("http")),
+        "基线应含 net/http 社区页: {pages_before:?}"
+    );
+
+    // ---- 删除孤立文件 → 增量 ----
+    std::fs::remove_file(&isolated).expect("删除 standalone.rs 失败");
+    git_commit_all(&repo, "delete standalone");
+    repo_wiki::run_pipeline(
+        &config_path,
+        None,
+        false,
+        &root,
+        &repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None },
+    )
+    .expect("删除增量失败");
+
+    // ---- 无关社区产物必须保留 ----
+    let pages_after: Vec<String> = std::fs::read_dir(&wiki_dir)
+        .map(|es| {
+            es.flatten()
+                .filter(|e| e.path().extension().is_some_and(|x| x == "md"))
+                .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        pages_after.iter().any(|p| p.contains("net") || p.contains("http")),
+        "删除孤立文件后 net/http 社区产物不得被清空，实际: {pages_after:?}"
+    );
+
     let _ = std::fs::remove_dir_all(&repo);
 }

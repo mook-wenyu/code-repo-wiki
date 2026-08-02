@@ -51,16 +51,22 @@ AI 驱动的代码仓库 Wiki 自动生成工具。分析源码结构，通过 L
 
 | 命令 | 用途 |
 |------|------|
-| `generate` | 全量生成 Wiki 文档（支持 `-o` 输出覆盖、`--force` 强制重写、`--progress-json` 进度输出）|
-| `update` | 增量更新（基于 git diff，支持 `-o` 输出覆盖）|
+| `generate` | 全量生成 Wiki 文档（支持 `-o` 输出覆盖、`--force` 强制重写、`--progress-json` 进度输出、`--root` 项目根）|
+| `update` | 增量更新（基于 git diff，支持 `-o` 输出覆盖、`--root` 项目根）|
+| `sync` | 以 Git 工作区内容同步指纹库（不触发 LLM 生成）|
 | `status` | 查看 Wiki 状态 |
-| `export` | 导出为 HTML |
+| `lint` | 产物健康检查（孤儿页/断链/过时），供 CI 使用；发现问题退出码非 0 |
+| `export` | 导出为 HTML（支持 `-o` 输出目录、`--skip-generate` 从快照直接导出不重新生成）|
 | `init` | 初始化配置文件 |
 | `watch` | 监听文件变更并自动更新 |
 | `search` | 搜索代码实体 |
+| `ast-search` | AST 精确符号查找（文件+行号+签名，不依赖搜索索引）|
 | `card` | 知识卡片操作（generate/modify/supplement/rewrite，对应 Qoder `/knowledge`）|
+| `note` | 知识沉淀记录（追加到 `_log.md`）|
 | `install-to-opencode` | 注册为 OpenCode 插件 |
 | `uninstall-from-opencode` | 移除 OpenCode 插件（需 `--force`）|
+
+`generate`/`update`/`export`/`search`/`ast-search`/`watch` 支持 `--root` 指定项目根（扫描根/git 定位基准，默认当前目录）。
 
 ## 技术栈
 
@@ -128,6 +134,7 @@ documents:                         # 页面白名单（提供时严格只输出�
 - 单项目最多扫描 10,000 个文件，超限显式报错
 - 增量更新仅支持 Git 仓库（非 Git 目录自动回退全量生成）
 - 单次变更超过 10,000 行自动回退全量生成
+- 同一输出目录并发运行 repo-wiki 不被支持：状态/快照/缓存文件无锁，最后写入者胜（CI/编辑器/插件集成请串行调用）
 
 ## 人工修改保护
 

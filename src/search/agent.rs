@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use crate::model::CodeNode;
 use super::text::TextEngine;
-use super::semantic::SemanticEngine;
+use super::semantic::SemanticSearch;
 use super::ast::AstQuery;
 use super::hybrid::{self, SearchHit, rrf_merge};
 
@@ -16,14 +16,15 @@ type CallIndex = HashMap<String, (Vec<String>, Vec<String>)>;
 /// 做调用者/被调用者补全。
 pub struct SearchAgent {
     text: TextEngine,
-    semantic: Option<SemanticEngine>,
+    /// 语义引擎抽象（v6：trait object 可注入 mock，语义分支可测试）
+    semantic: Option<Box<dyn SemanticSearch>>,
     rrf_k: f64,
     /// 符号名 → (调用者列表, 被调用者列表) 预计算表，None 表示不做调用链补全
     call_index: Option<CallIndex>,
 }
 
 impl SearchAgent {
-    pub fn new(text: TextEngine, semantic: Option<SemanticEngine>, rrf_k: f64) -> Self {
+    pub fn new(text: TextEngine, semantic: Option<Box<dyn SemanticSearch>>, rrf_k: f64) -> Self {
         Self { text, semantic, rrf_k, call_index: None }
     }
 
@@ -138,6 +139,94 @@ mod tests {
     fn make_text_empty() -> TextEngine {
         let path = unique_db_path("agent_empty");
         TextEngine::open(&path).unwrap()
+    }
+
+    /// 可编程 mock 语义引擎（v6：SemanticSearch trait 抽象使语义分支可测试）
+    ///
+    /// 固定返回预置结果；无需真实 embedding 与向量库。
+    struct MockSemantic {
+        results: Vec<(CodeNode, f32)>,
+    }
+
+    impl SemanticSearch for MockSemantic {
+        fn index(&mut self, _node: &CodeNode, _source_code: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn index_batch(&mut self, _items: &[(CodeNode, String)]) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn search(&self, _query: &str, _limit: usize) -> anyhow::Result<Vec<(CodeNode, f32)>> {
+            Ok(self.results.clone())
+        }
+        fn remove_by_file(&mut self, _file_path: &str) -> anyhow::Result<usize> {
+            Ok(0)
+        }
+        fn clear(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn entry_count(&self) -> usize {
+            self.results.len()
+        }
+    }
+
+    fn mock_node(name: &str) -> CodeNode {
+        CodeNode {
+            id: NodeId::new(0), kind: NodeKind::Function, name: name.into(),
+            file_path: Some(format!("src/{name}.rs")), line_range: None,
+            doc_comment: None, signature: None, module_path: vec![],
+        }
+    }
+
+    /// 语义回溯分支（v5 报告 P1 缺口补测）：FTS 结果不足 3 条且语义引擎在场时，
+    /// 语义结果经 RRF 合并后返回；无语义引擎时仅返回 FTS 结果。
+    #[test]
+    fn test_agent_auto_backtrack_with_semantic() {
+        // 文本引擎空（无 FTS 命中）→ 触发回溯，语义结果应进入最终结果
+        let text = make_text_empty();
+        let semantic = Box::new(MockSemantic {
+            results: vec![(mock_node("sem_hit"), 0.95)],
+        });
+        let agent = SearchAgent::new(text, Some(semantic), 60.0);
+        let results = agent.search("zzz_not_in_fts", 5, true);
+        assert_eq!(results.len(), 1, "语义命中应经回溯进入结果");
+        assert_eq!(results[0].node.name, "sem_hit");
+    }
+
+    /// auto_backtrack=false 时不触发语义回溯（即使语义引擎在场）
+    #[test]
+    fn test_agent_no_backtrack_when_disabled() {
+        let text = make_text_empty();
+        let semantic = Box::new(MockSemantic {
+            results: vec![(mock_node("sem_hit"), 0.95)],
+        });
+        let agent = SearchAgent::new(text, Some(semantic), 60.0);
+        let results = agent.search("zzz_not_in_fts", 5, false);
+        assert!(results.is_empty(), "回溯关闭时不应使用语义结果");
+    }
+
+    /// FTS 命中足够（≥3 条）时不触发语义回溯（分层搜索的成本控制语义）
+    #[test]
+    fn test_agent_skips_semantic_when_text_sufficient() {
+        let text = make_text_engine(); // add_user + delete_user 只有 2 条……
+        // 补充第 3 条使 FTS 命中 ≥3，验证不触发回溯
+        let path = unique_db_path("agent_text3");
+        let mut t = TextEngine::open(&path).unwrap();
+        let _ = t.index(&mock_node("add_user"), "fn add_user(name: &str)");
+        let _ = t.index(&mock_node("delete_user"), "fn delete_user(id: u64)");
+        let _ = t.index(&mock_node("update_user"), "fn update_user(id: u64)");
+        let _ = text;
+        let semantic = Box::new(MockSemantic {
+            results: vec![(mock_node("sem_hit"), 0.95)],
+        });
+        let agent = SearchAgent::new(t, Some(semantic), 60.0);
+        // 查询 "user"：FTS 命中 3 条 → 不回溯，语义结果不应混入
+        let results = agent.search("user", 5, true);
+        assert!(
+            results.iter().all(|h| h.node.name != "sem_hit"),
+            "FTS 足够时不应触发语义回溯: {:?}",
+            results.iter().map(|h| h.node.name.clone()).collect::<Vec<_>>()
+        );
+        assert!(results.len() >= 3, "FTS 应有 3 条命中: {:?}", results.len());
     }
 
     #[test]

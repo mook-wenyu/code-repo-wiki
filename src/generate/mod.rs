@@ -7,6 +7,7 @@ pub mod schema;
 pub mod wiki;
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::time::Instant;
 
 use anyhow::Result;
@@ -126,11 +127,11 @@ pub async fn run_generation(
     let languages = crate::output::wiki_languages(config);
     let wiki_gen = WikiGenerator::new(&provider, plan.clone(), config.llm.max_concurrent);
     let mut documents =
-        generate_wiki_pages(&wiki_gen, &chunks, &cards, &languages, config, config.llm.max_concurrent).await;
+        generate_wiki_pages(&wiki_gen, &chunks, &cards, &languages, config, config.llm.max_concurrent, root).await;
     tracing::info!("生成进度: 90% - Wiki 页面生成完成，共 {} 个页面", documents.len());
 
     // 5. 生成全局文档（架构概览 + 数据库 Schema，全量/增量共用同一辅助函数）
-    generate_global_documents(&wiki_gen, &provider, graph, config, root, plan.as_ref(), &cards, &mut documents).await?;
+    generate_global_documents(&wiki_gen, &provider, graph, config, root, plan.as_ref(), &cards, &mut documents, &GlobalDocAffected::all()).await?;
 
     // 6. 按计划文档白名单过滤（严格只输出列出的页面）
     documents = filter_by_whitelist(documents, plan.as_ref());
@@ -174,27 +175,75 @@ pub async fn run_generation_filtered(
     let entity_changes = &inc.entity_changes;
     let affected_modules = &inc.affected_modules;
 
+    // 2.5 解析 wiki_plan.yaml 生效计划（禁用或文件缺失 → None；坏文件中断；
+    // 路径相对项目根解析，不依赖进程 cwd）。提前到纯删除分支之前：
+    // 该分支的产物回填同样需要白名单过滤（与正常路径一致）。
+    let plan = crate::config::plan::resolve_plan_at(root, config)?;
+
     // 过滤出变更文件的 Insight（克隆为拥有数据）。
     // T2 传播闭环接线：除变更文件外，语义传播判定的受影响模块文件也
     // 并入生成范围——签名/删除等接口级变化会重生成依赖方模块的文档，
     // 实现级变化（body-only）传播结果只含本模块，行为不变。
     let affected_files = crate::incremental::impact::module_files(affected_modules, graph);
-    let changed_insights: Vec<FileInsight> = insights
+    let mut changed_insights: Vec<FileInsight> = insights
         .iter()
         .filter(|f| changed_files.contains(&f.path) || affected_files.contains(&f.path))
         .cloned()
         .collect();
 
     if changed_insights.is_empty() {
-        tracing::info!("增量生成: 无变更文件，跳过");
-        return Ok(GenerationOutput {
-            cards: vec![],
-            documents: vec![],
-            generation_stats: GenerationStats::default(),
-        });
+        // 纯删除场景（P1 数据丢失修复）：changed_files 非空（删除事件）
+        // 但无现存文件命中影响集（孤立模块唯一文件被删）时，旧实现直接
+        // 返回空输出 → render_all 不写任何产物 → cleanup_stale_outputs
+        // 差集语义把**全部**旧产物清空（无关模块页也被删）。
+        // 修复：从导出快照回填未删除模块的旧产物（零 LLM 成本）；
+        // 快照缺失（异常）时回退全量生成，宁可多生成也不丢数据。
+        if let Ok(content) = std::fs::read_to_string(crate::output::export_snapshot_path(Path::new(&config.output.dir)))
+            && let Ok(snapshot) = serde_json::from_str::<crate::output::ExportSnapshot>(&content)
+        {
+            // 已删除模块 = 快照卡片中相关源文件全部不存在的模块。
+            // related_files 为空（旧版本快照缺字段 serde 默认值）时
+            // all() 恒真 → 误判全删，故要求非空才参与判定。
+            let deleted_modules: std::collections::HashSet<String> = snapshot
+                .cards
+                .iter()
+                .filter(|c| {
+                    !c.related_files.is_empty()
+                        && c.related_files.iter().all(|f| !root.path().join(f).exists())
+                })
+                .map(|c| c.module_name.clone())
+                .collect();
+            let cards: Vec<KnowledgeCard> = snapshot
+                .cards
+                .into_iter()
+                .filter(|c| !deleted_modules.contains(&c.module_name))
+                .collect();
+            let documents: Vec<WikiDocument> = snapshot
+                .documents
+                .into_iter()
+                .filter(|d| !deleted_modules.contains(&d.title))
+                .collect();
+            tracing::info!(
+                "增量生成: 纯删除场景（{} 个变更文件），从快照回填 {} 文档 {} 卡片（跳过已删模块 {} 个）",
+                changed_files.len(),
+                documents.len(),
+                cards.len(),
+                deleted_modules.len()
+            );
+            // 与正常路径一致：回填产物同样过白名单过滤（严格只输出列出的页面）
+            let documents = filter_by_whitelist(documents, plan.as_ref());
+            return Ok(GenerationOutput {
+                cards,
+                documents,
+                generation_stats: GenerationStats::default(),
+            });
+        }
+        tracing::warn!("增量生成: 纯删除场景但导出快照缺失，回退全量生成防止产物误清");
+        // 回退全量：所有现存文件视为变更，走下方正常生成路径
+        changed_insights = insights.to_vec();
+    } else {
+        tracing::info!("增量生成: {} 个文件变更", changed_insights.len());
     }
-
-    tracing::info!("增量生成: {} 个文件变更", changed_insights.len());
 
     // 1. AST 感知分块（仅变更文件）
     let mut chunks: Vec<_> = if graph.modules.is_empty() {
@@ -210,10 +259,6 @@ pub async fn run_generation_filtered(
 
     // 2. 创建 LLM Provider
     let provider = create_provider(config)?;
-
-    // 2.5 解析 wiki_plan.yaml 生效计划（禁用或文件缺失 → None；坏文件中断；
-    // 路径相对项目根解析，不依赖进程 cwd）
-    let plan = crate::config::plan::resolve_plan_at(root, config)?;
 
     // 2.5 增量实体摘要（演进计划 T2.3 实体级过滤 + T3.1 并行化）：
     // 仅对**接口级变化文件**中的实体重新生成摘要（新增/删除/签名变更），
@@ -269,14 +314,21 @@ pub async fn run_generation_filtered(
     let languages = crate::output::wiki_languages(config);
     let wiki_gen = WikiGenerator::new(&provider, plan.clone(), config.llm.max_concurrent);
     let mut documents =
-        generate_wiki_pages(&wiki_gen, &chunks, &cards, &languages, config, config.llm.max_concurrent).await;
+        generate_wiki_pages(&wiki_gen, &chunks, &cards, &languages, config, config.llm.max_concurrent, root).await;
 
     // 5. 生成全局文档（架构概览 + 数据库 Schema）
-    // 全局文档与"变更了哪些模块"无关：架构概览基于完整 KnowledgeGraph 的模块列表，
-    // Schema 文档基于全量 .sql 文件，都反映全仓库状态。
-    // 因此即使增量只改了 1 个模块，这两类文档也必须重新生成，否则增量输出
-    // 会比全量输出缺少页面，行为不一致。
-    generate_global_documents(&wiki_gen, &provider, graph, config, root, plan.as_ref(), &cards, &mut documents).await?;
+    // P1-2 全局文档增量（受影响判断）：架构/概览只在接口级实体变化
+    // （新增/删除/签名变更）时重生成——纯实现级（body-only）变化不改变
+    // 模块间依赖视图；Schema 只在本次变更含 .sql 文件时重生成。未受影响的
+    // 全局文档从导出快照回填旧版（零 LLM 成本，渲染幂等不误判人工修改），
+    // 快照不可用时回退生成保证页面存在性。全量路径恒全受影响（all()）。
+    let global_affected = GlobalDocAffected {
+        architecture: entity_changes.has_interface_change(),
+        schema: changed_files
+            .iter()
+            .any(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("sql"))),
+    };
+    generate_global_documents(&wiki_gen, &provider, graph, config, root, plan.as_ref(), &cards, &mut documents, &global_affected).await?;
 
     // 6. 按计划文档白名单过滤（严格只输出列出的页面）
     documents = filter_by_whitelist(documents, plan.as_ref());
@@ -432,6 +484,7 @@ async fn generate_wiki_pages<P: LlmProvider>(
     languages: &[String],
     config: &WikiConfig,
     max_concurrent: usize,
+    root: &crate::project::ProjectRoot,
 ) -> Vec<WikiDocument> {
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(max_concurrent.max(1)));
     let mut handles = Vec::with_capacity(chunks.len() * languages.len());
@@ -450,7 +503,9 @@ async fn generate_wiki_pages<P: LlmProvider>(
                     .acquire()
                     .await
                     .map_err(|_| anyhow::anyhow!("信号量已关闭"))?;
-                wiki_gen.generate_wiki_page(chunk, &card_summary, &lang_cfg).await
+                wiki_gen
+                    .generate_wiki_page(chunk, &card_summary, &lang_cfg, root)
+                    .await
             });
         }
     }
@@ -469,6 +524,25 @@ async fn generate_wiki_pages<P: LlmProvider>(
             }
         })
         .collect()
+}
+
+/// 全局文档受影响标记（P1-2 全局文档增量：受影响判断）
+///
+/// 增量模式按信号决定是否重生成全局文档，未受影响时从导出快照回填
+/// 旧文档（零 LLM 成本）。全量模式恒为全受影响。
+#[derive(Debug, Clone, Default)]
+pub struct GlobalDocAffected {
+    /// 架构概览/项目概览：接口级实体变化（新增/删除/签名）才受影响
+    pub architecture: bool,
+    /// 数据库 Schema 文档：本次变更含 .sql 文件才受影响
+    pub schema: bool,
+}
+
+impl GlobalDocAffected {
+    /// 全受影响（全量生成路径）
+    pub fn all() -> Self {
+        Self { architecture: true, schema: true }
+    }
 }
 
 /// 生成与具体模块无关的全局文档（架构概览 + 项目概览 + 数据库 Schema），追加到 `documents`
@@ -494,14 +568,42 @@ async fn generate_global_documents(
     plan: Option<&ResolvedPlan>,
     cards: &[KnowledgeCard],
     documents: &mut Vec<WikiDocument>,
+    affected: &GlobalDocAffected,
 ) -> Result<()> {
     // 文档类型决策：DocumentKind 是纯枚举（无 architecture 等可复用字段），
     // 且 output::wiki_page_path 按 kind 特判文件名（架构概览→architecture.md，
     // 项目概览→overview.md），因此新增 ProjectOverview 变体而非复用
     // ArchitectureOverview——复用会把概览写进 architecture.md，路径语义错位。
-    // 架构概览与项目概览：没有卡片（本次没有模块被生成）时跳过，避免对空仓库发无意义的 LLM 调用
-    if !cards.is_empty() {
-        // generate_architecture / generate_overview 需要 GenerationOutput 快照（内部只用 cards 构建引用列表）
+    if affected.architecture {
+        // 架构概览与项目概览：没有卡片（本次没有模块被生成）时跳过，避免对空仓库发无意义的 LLM 调用
+        if !cards.is_empty() {
+            // generate_architecture / generate_overview 需要 GenerationOutput 快照（内部只用 cards 构建引用列表）
+            let output_snapshot = GenerationOutput {
+                cards: cards.to_vec(),
+                documents: documents.clone(),
+                generation_stats: GenerationStats::default(),
+            };
+            match wiki_gen
+                .generate_architecture(&output_snapshot, graph, config)
+                .await
+            {
+                Ok(arch) => documents.push(arch),
+                Err(e) => tracing::warn!("架构概览生成跳过: {}", e),
+            }
+            match wiki_gen
+                .generate_overview(&output_snapshot, graph, config)
+                .await
+            {
+                Ok(overview) => documents.push(overview),
+                Err(e) => tracing::warn!("项目概览生成跳过: {}", e),
+            }
+        }
+    } else if !backfill_global_docs(config, documents, &[
+        crate::model::DocumentKind::ArchitectureOverview,
+        crate::model::DocumentKind::ProjectOverview,
+    ]) {
+        // 快照不可用（首次增量/快照损坏）→ 回退生成，保证页面存在性
+        tracing::info!("全局文档快照回填不可用，回退重新生成");
         let output_snapshot = GenerationOutput {
             cards: cards.to_vec(),
             documents: documents.clone(),
@@ -524,12 +626,63 @@ async fn generate_global_documents(
     }
 
     // 数据库 Schema 文档：无 .sql 文件时内部直接返回空列表，不调用 LLM
-    match schema::generate_schema_documents_at(root, provider, config, plan).await {
-        Ok(mut schema_docs) => documents.append(&mut schema_docs),
-        Err(e) => tracing::warn!("数据库 Schema 文档生成跳过: {}", e),
+    if affected.schema {
+        match schema::generate_schema_documents_at(root, provider, config, plan).await {
+            Ok(mut schema_docs) => documents.append(&mut schema_docs),
+            Err(e) => tracing::warn!("数据库 Schema 文档生成跳过: {}", e),
+        }
+    } else if !backfill_global_docs(config, documents, &[crate::model::DocumentKind::DatabaseSchema]) {
+        tracing::info!("Schema 快照回填不可用，回退重新生成");
+        match schema::generate_schema_documents_at(root, provider, config, plan).await {
+            Ok(mut schema_docs) => documents.append(&mut schema_docs),
+            Err(e) => tracing::warn!("数据库 Schema 文档生成跳过: {}", e),
+        }
     }
 
     Ok(())
+}
+
+/// 从导出快照回填指定类型的全局文档到 `documents`（P1-2 全局文档增量）
+///
+/// 快照是 render_all 每次写盘后的产物快照（.state/export_snapshot.json），
+/// 内含完整 WikiDocument 对象。未受影响的全局文档从快照回填：
+/// 渲染幂等（内容与上次一致 → 指纹一致 → 不误判人工修改）、不触发 LLM、
+/// 且路径仍在 rendered_paths 中（不被陈旧清理误删）。
+/// 返回是否至少回填一个（快照缺失/损坏/无该类文档 → false，调用方回退生成）。
+///
+/// 语言一致性：快照文档语言是上次生成时的配置语言，若当前配置
+/// `wiki.language` 已切换（如 zh→en），回填的旧语言文档会写进旧语言
+/// 目录，新语言目录缺失该页——视为受影响（不匹配即不回填），
+/// 由调用方回退到新语言的 LLM 生成。
+fn backfill_global_docs(
+    config: &WikiConfig,
+    documents: &mut Vec<WikiDocument>,
+    kinds: &[crate::model::DocumentKind],
+) -> bool {
+    let snapshot_path = crate::output::export_snapshot_path(Path::new(&config.output.dir));
+    let Ok(content) = std::fs::read_to_string(&snapshot_path) else {
+        return false;
+    };
+    let Ok(snapshot) = serde_json::from_str::<crate::output::ExportSnapshot>(&content) else {
+        tracing::warn!("导出快照解析失败（将回退重新生成全局文档）: {}", snapshot_path.display());
+        return false;
+    };
+    let mut filled = false;
+    for doc in snapshot.documents {
+        if kinds.contains(&doc.kind)
+            // 语言一致性：快照语言 ≠ 当前主语言 → 语言配置已切换，
+            // 旧语言内容不能回填（写盘目录错位），回退生成
+            && doc.language == config.wiki.language
+            // 去重锚定 title（写盘路径由 title 派生）而非 kind：Schema 文档
+            // 按 .sql 文件每份（title 含路径），按 kind 去重会把多份同名
+            // kind 的其余页丢弃 → cleanup 差集误删磁盘上的其余 schema 页
+            && !documents.iter().any(|d| d.title == doc.title && d.language == doc.language)
+        {
+            documents.push(doc);
+            filled = true;
+        }
+    }
+    filled
 }
 
 #[cfg(test)]
@@ -597,5 +750,216 @@ mod tests {
         ];
         let filtered = filter_by_whitelist(documents, None);
         assert_eq!(filtered.len(), 3);
+    }
+
+    /// P1-2：导出快照回填——未受影响的全局文档从快照恢复，且不与
+    /// 本次已生成文档重复（同一类型只保留一个）
+    #[test]
+    fn test_backfill_global_docs_from_snapshot() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_test_backfill_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".state")).unwrap();
+
+        let arch = WikiDocument {
+            title: "架构概览".into(),
+            kind: DocumentKind::ArchitectureOverview,
+            content: "架构内容".into(),
+            language: "zh".into(),
+            module_path: vec![],
+            references: vec![],
+            last_updated: "2025-01-01T00:00:00Z".into(),
+            fingerprint: None,
+        };
+        let overview = WikiDocument {
+            title: "项目概览".into(),
+            kind: DocumentKind::ProjectOverview,
+            content: "概览内容".into(),
+            language: "zh".into(),
+            module_path: vec![],
+            references: vec![],
+            last_updated: "2025-01-01T00:00:00Z".into(),
+            fingerprint: None,
+        };
+        let snapshot = crate::output::ExportSnapshot {
+            version: 1,
+            documents: vec![arch.clone(), overview.clone()],
+            cards: vec![],
+            modules: vec![],
+        };
+        crate::fs::write_file_atomic(
+            &dir.join(".state").join("export_snapshot.json"),
+            &serde_json::to_string(&snapshot).unwrap(),
+        )
+        .unwrap();
+
+        let mut config = WikiConfig::default();
+        config.output.dir = dir.to_string_lossy().to_string();
+
+        // 本次已生成 overview（模拟模块页变化触发概览重生成）→ 只回填架构
+        let mut documents = vec![overview.clone()];
+        let filled = backfill_global_docs(
+            &config,
+            &mut documents,
+            &[DocumentKind::ArchitectureOverview, DocumentKind::ProjectOverview],
+        );
+        assert!(filled, "快照存在时应回填");
+        assert_eq!(documents.len(), 2, "回填架构（概览已存在不重复）");
+        assert_eq!(documents[1].kind, DocumentKind::ArchitectureOverview);
+        assert_eq!(documents[1].content, "架构内容");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// P1-2：快照缺失 → 回填失败（调用方据此回退生成）
+    #[test]
+    fn test_backfill_global_docs_missing_snapshot() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_test_backfill_miss_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut config = WikiConfig::default();
+        config.output.dir = dir.to_string_lossy().to_string();
+
+        let mut documents = Vec::new();
+        let filled = backfill_global_docs(&config, &mut documents, &[DocumentKind::ArchitectureOverview]);
+        assert!(!filled, "快照缺失时回填失败（回退生成）");
+        assert!(documents.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 语言切换（zh→en）：快照文档语言与当前配置不一致 → 不回填，
+    /// 调用方回退到新语言的 LLM 生成（旧语言内容写盘目录错位会丢页）
+    #[test]
+    fn test_backfill_global_docs_skips_on_language_mismatch() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_test_backfill_lang_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut arch = make_document("架构概览");
+        arch.kind = DocumentKind::ArchitectureOverview;
+        arch.language = "zh".into(); // 快照为旧配置语言
+        let snapshot = crate::output::ExportSnapshot {
+            version: 1,
+            documents: vec![arch],
+            cards: vec![],
+            modules: vec![],
+        };
+        crate::fs::write_file_atomic(
+            &dir.join(".state").join("export_snapshot.json"),
+            &serde_json::to_string(&snapshot).unwrap(),
+        )
+        .unwrap();
+
+        let mut config = WikiConfig::default();
+        config.output.dir = dir.to_string_lossy().to_string();
+        config.wiki.language = "en".into(); // 当前配置已切换为 en
+
+        let mut documents = Vec::new();
+        let filled = backfill_global_docs(&config, &mut documents, &[DocumentKind::ArchitectureOverview]);
+        assert!(!filled, "语言不匹配时不得回填（回退生成新语言内容）");
+        assert!(documents.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// P1-2：受影响判断——接口级实体变化 → 架构受影响；纯 .sql 变更 → 仅 schema 受影响
+    #[test]
+    fn test_global_affected_signal() {
+        use crate::incremental::change::{EntityChange, EntityChangeKind};
+
+        let mut changes = Vec::new();
+        changes.push(EntityChange {
+            file: std::path::PathBuf::from("src/a.rs"),
+            entity_name: "foo".into(),
+            kind: EntityChangeKind::BodyChanged,
+            old_range: None,
+            new_range: None,
+        });
+        let affected = GlobalDocAffected {
+            architecture: crate::incremental::change::EntityChangeSet { changes: changes.clone() }.has_interface_change(),
+            schema: false,
+        };
+        assert!(!affected.architecture, "纯实现级变化不应触发架构重生成");
+
+        changes.push(EntityChange {
+            file: std::path::PathBuf::from("src/a.rs"),
+            entity_name: "bar".into(),
+            kind: EntityChangeKind::Added,
+            old_range: None,
+            new_range: None,
+        });
+        let affected2 = GlobalDocAffected {
+            architecture: crate::incremental::change::EntityChangeSet { changes }.has_interface_change(),
+            schema: false,
+        };
+        assert!(affected2.architecture, "接口级变化应触发架构重生成");
+    }
+
+    /// P1 回归：Schema 文档按 .sql 文件每份（title 含路径），回填去重必须
+    /// 锚定 title+language 而非 kind——按 kind 去重会把多份 schema 页丢弃，
+    /// cleanup 差集随后误删磁盘上的其余 schema 页。
+    #[test]
+    fn test_backfill_global_docs_dedup_by_title_not_kind() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_test_backfill_schema_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let schema_a = WikiDocument {
+            title: "Database Schema: db/a.sql".into(),
+            kind: DocumentKind::DatabaseSchema,
+            content: "A 表结构".into(),
+            language: "zh".into(),
+            module_path: vec![],
+            references: vec![],
+            last_updated: "2025-01-01T00:00:00Z".into(),
+            fingerprint: None,
+        };
+        let schema_b = WikiDocument {
+            title: "Database Schema: db/b.sql".into(),
+            kind: DocumentKind::DatabaseSchema,
+            content: "B 表结构".into(),
+            language: "zh".into(),
+            module_path: vec![],
+            references: vec![],
+            last_updated: "2025-01-01T00:00:00Z".into(),
+            fingerprint: None,
+        };
+        let snapshot = crate::output::ExportSnapshot {
+            version: 1,
+            documents: vec![schema_a.clone(), schema_b.clone()],
+            cards: vec![],
+            modules: vec![],
+        };
+        crate::fs::write_file_atomic(
+            &dir.join(".state").join("export_snapshot.json"),
+            &serde_json::to_string(&snapshot).unwrap(),
+        )
+        .unwrap();
+
+        let mut config = WikiConfig::default();
+        config.output.dir = dir.to_string_lossy().to_string();
+
+        let mut documents = Vec::new();
+        let filled = backfill_global_docs(&config, &mut documents, &[DocumentKind::DatabaseSchema]);
+        assert!(filled, "快照存在时应回填");
+        assert_eq!(
+            documents.len(),
+            2,
+            "两份 schema 文档都应回填（按 title 去重，非按 kind）"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// P1-4 回归：entity-coverage 的签名实体名提取——`pub fn foo(x: i32)` 应提取
+    /// foo（跳过 pub/fn 关键字），裸名 `Foo` 提取 Foo，与 api.md 权威口径一致。
+    #[test]
+    fn test_entity_name_from_signature() {
+        use crate::output::lint::entity_name_from_signature;
+        assert_eq!(entity_name_from_signature("pub fn foo(x: i32) -> u32").as_deref(), Some("foo"));
+        assert_eq!(entity_name_from_signature("fn main()").as_deref(), Some("main"));
+        assert_eq!(entity_name_from_signature("def bar()").as_deref(), Some("bar"));
+        assert_eq!(entity_name_from_signature("func Baz()").as_deref(), Some("Baz"));
+        assert_eq!(entity_name_from_signature("Foo").as_deref(), Some("Foo"));
+        assert_eq!(entity_name_from_signature("pub struct Alpha").as_deref(), Some("Alpha"));
+        assert_eq!(entity_name_from_signature(""), None);
+        assert_eq!(entity_name_from_signature("   "), None);
     }
 }

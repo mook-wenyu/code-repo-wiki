@@ -25,16 +25,39 @@
 - 摸到的文件：43 个（src 27 + tests 14 + benches 1 + CONTEXT.md/STATUS.md）
 - 是否改变了接口/契约：是（未上线无存量用户，已批准不向后兼容）——run_pipeline/run_incremental_pipeline（删除）→ run_pipeline(config_path, output, force, root, mode)；run_generation/run_generation_filtered 加 root；execute_search/execute_ast_search/run_card_command 加 root；CLI 各子命令加 --root；Export 加 --skip-generate/-o；ExportSnapshot 新契约；GenerationMode 新枚举
 
+### root 化改造收尾（2026-08-02，本次会话）
+- 修改的功能：tests/progress_test.rs 与 tests/output_override_test.rs 两个集成测试从"切 cwd"模式（CWD_LOCK 全局互斥锁 + set_current_dir + with_cwd 包裹）改为显式 ProjectRoot 注入——删除 CWD_LOCK/with_cwd、config 路径与 config.toml 写入绝对化（work_dir.join）、run_pipeline(_with_progress) 传 &root；断言语义与 mock server 行为零改动；测试现可并行（无 cwd 互斥）
+- 摸到的文件：tests/progress_test.rs、tests/output_override_test.rs、STATUS.md
+- 是否改变了接口/契约：否（纯测试机制改造，cargo test --test progress_test --test output_override_test 全绿：2 passed）
+- 说明：src/ 下 project 模块与既有 root 化入口未动；其余测试仍用 from_cwd 委托（兼容路径，主代理后续轮换）
+
+### root 化改造收尾·第三批（2026-08-02，本次会话）
+- 修改的功能：tests/test_plan.rs 同样改造——删除 CWD_LOCK/Mutex/with_cwd（含仅被 with_cwd 使用的 std::path::Path 导入），6 处 with_cwd 块改为显式 ProjectRoot::new(dir.clone()) 注入 + dir.join 绝对路径写文件 + load_plan_at/resolve_plan_at 传 &root；断言与临时目录清理零改动；test_resolve_plan_disabled 无文件系统访问（enabled=false）保留 from_cwd
+- 摸到的文件：tests/test_plan.rs、STATUS.md
+- 是否改变了接口/契约：否（纯测试机制改造）；验证：cargo test --test test_plan 11 passed；cargo clippy --all-targets -- -D warnings 0 告警
+
+### root 化改造收尾·第四批（2026-08-02，本次会话）
+- 修改的功能：tests/test_clustering.rs、tests/test_clustering_stability.rs、tests/test_determinism.rs、tests/test_plan.rs 四处 cwd 残留收尾——删除全部 CWD_LOCK/_guard/set_current_dir/恢复 cwd 逻辑及 Mutex 导入；scan_and_parse_at/from_cwd 改为显式 ProjectRoot::new(tmp/dir.clone()) 注入传 &root；test_plan.rs:148 resolve_plan_at 改用 ProjectRoot::new(temp_dir.join("unused"))（enabled=false 不碰文件系统，resolve_plan_at 入口早退已确认）；test_determinism.rs 删纯死代码 CWD_LOCK；文件顶部失实 doc 注释同步修正；断言逻辑零改动
+- 摸到的文件：tests/test_clustering.rs、tests/test_clustering_stability.rs、tests/test_determinism.rs、tests/test_plan.rs、STATUS.md
+- 是否改变了接口/契约：否（纯测试机制改造）；验证：cargo test --test test_clustering --test test_clustering_stability --test test_determinism --test test_plan 全绿 14 passed；cargo clippy --all-targets -- -D warnings 0 告警
+- 说明：全仓库测试已无 CWD_LOCK/set_current_dir 残留（grep 验证）；src/ 下 from_cwd 委托入口保留为兼容路径
+
 ### 历史记录（T0-T5 深度演进 + 航图前两轮，已完成）
 - T0-T4 全部 15 项实现完成（社区检测聚类/实体级变化分类与语义传播/生成并行化/失败隔离/反向链接/CoT/评测基准/测试缺口/文档修正）；T5 清零计划全完成
 - 航图第一轮：hook/插件闭环（04/05）+ provider 统一（13）
 
+### 票 14 本地方案验证（2026-08-02，本次会话，仅新建测试不碰 src/）
+- 修改的功能：新建 tests/test_watch_e2e.rs 三项验证——①watch 端到端（spawn 线程跑 run_watch，改 src 文件后 api.md 出现新函数名，实测通过）；②insights 缓存占用（10 文件实测 7,952 bytes，60 文件外推 ≈ 47,712 bytes）；③./ 前缀路径边界（固化当前行为：strip_prefix 组件比较失败 → `./src/foo.rs` 未相对化原样透传，传播子串匹配不命中，由指纹比对兜底，无功能损失，候选修复方向已注释）
+- 摸到的文件：tests/test_watch_e2e.rs（新建）、STATUS.md
+- 是否改变了接口/契约：否；验证：cargo check --test test_watch_e2e 通过，cargo test --test test_watch_e2e 3 passed（0.78s）
+- 诚实边界：watch e2e 未 join 线程（run_watch 死循环无停止接口，进程退出即终止）；FileWatch 指纹比对相对路径读盘依赖 cwd，测试进程 cwd 非临时仓库 → 全量生成时指纹表为空 → 事件触发后为全量重生成，测试验证"事件→重跑→产物变化"链路而非纯增量短路
+
 ## 三、已知风险点（由AI诚实自曝）
 - CPM 分辨率 γ=0.5/0.4 由小仓库与合成图实测选定，真实大仓库（万级文件）社区粒度未验证，需实测调参
 - 特征聚类的 embedding 注入路径（0.5 语义权重）无 API key 未真实验证，仅验证纯结构降级路径
-- 真实 LLM 全量生成（大仓库）端到端产物未验证；watch 端到端未验证
+- 真实 LLM 全量生成（大仓库）端到端产物未验证；watch 端到端已在小仓库（2 文件）验证通过（票 14）
 - tests/fixtures/sample-repo/config.toml 是真实 provider（无 base_url）——直接复用跑 generate 会触网（现有测试均在临时副本改写为 mock，无测试触网）
-- insights 缓存（票 12）体积 = 全仓库实体元数据 + 源码文本，超大仓库磁盘占用未实测；缓存损坏自动全量重建（可观测性契约内）
+- insights 缓存（票 12）体积 = 全仓库实体元数据 + 源码文本，超大仓库磁盘占用未实测（票 14 已实测 10 文件 7.9KB，60 文件外推 ≈ 47.7KB，万级文件仍需实测）；缓存损坏自动全量重建（可观测性契约内）
 - 导出快照（票 06）写入失败仅告警——快照缺失时 export --skip-generate 明确报错（契约内，非兜底）
 
 ## 四、下次最该做的事（AI建议）
@@ -47,3 +70,72 @@
 ## 五、航图收尾
 - 18 票状态：01/02（研究）/03（失败语义总则）/17（MCP 移除，YAGNI）已解析；04-16 全部实现；18 评估后收窄。map 与 tickets 存档于 .scratch/repo-wiki-complete/
 - 防回归契约生效：test_determinism 锁产物集合、test_clustering_stability 锁聚类确定性、test_incremental_git_e2e 锁真实 git 增量、test_parser_dedup_7lang 锁 7 语言解析一致性、test_hook_install/test_install_opencode 锁安装闭环
+
+## 六、审计收尾（2026-08-02 第二轮未完成项审计）
+- 本轮新修复：第 8 个漏删委托 classify_entity_changes（含生产 from_cwd 残留）；project.rs 过时注释；7 个测试文件 CWD_LOCK/set_current_dir 全部清除（显式 ProjectRoot::new）；src 层 cwd 依赖归零（from_cwd 仅剩 CLI 默认）
+- 剩余 P2：fixture config 触网隐患（一行改 mock）；插件 wiki_export 未用 --skip-generate（每次导出全量重生成）
+- 剩余 P3：update 无 --progress-json；insights 缓存/export 快照恢复无直接单测；watch 端到端未验证
+- 未验证：真实 LLM 大仓库端到端、CPM γ 大仓库调参、embedding 注入路径、缓存磁盘占用
+- 审计报告：INCOMPLETE_REPORT-v2.md
+
+## 七、审计收尾（2026-08-02 第三轮：插件对齐 + 状态契约 + 竞态）
+- P1×5：①load_protection .ok() 静默损坏状态→人工保护失效（lib.rs:82，与 sync 显式拒绝不一致）②Phase 2b 中途存盘清空保护集（incremental/mod.rs:180,225，纯推证未复现）③export_snapshot 写失败仅 warn→陈旧快照静默导出④插件 readExistingCards 读 cards/ 顶层与实际 cards/{lang}/ 不符→wiki_query/module_info 恒空⑤插件 wiki_export 缺 --skip-generate→每次导出全量重生成
+- P2×15：fixture 触网/update 无 progress/缓存快照无单测/write_card_atomic 非原子/README 滞后/version 死契约/embed.provider 死字段/init vs install 双默认配置/语义索引先删后失败误导/插件 --config 硬编码/reference 逗号/插件能力未暴露/跨进程无锁/引导措辞
+- 审计报告：INCOMPLETE_REPORT-v3.md
+- 验证基线：305 测试全绿、clippy 0 告警、machete 干净
+
+## 八、v3-fix 航图实施完成（2026-08-02，14 票全部落地）
+- **P1 状态可靠性**：01 原子写（新 src/fs.rs write_file_atomic，state/快照/缓存/卡片四处统一，3 单测）；02 损坏 fail-loud（load_protection 区分不存在/损坏，2 测试）；03 中途存盘保护保留（state.rs preserve_protection + 两处 save 合并，2 测试）；04 快照陈旧检测（latest_wiki_page_mtime + export 报错，1 测试）
+- **P1 插件**：05 读卡递归 cards/{lang}/；06 wiki_export --skip-generate；12 打磨（root 逃生口/reference 多参/force/engine/init）
+- **P2**：07 fixture mock + README 补全；08 update --progress-json；09 缓存 5 测试 + export CLI 3 测试；10 config 清理（embed.provider 删/version 校验/索引时序/引导措辞）；11 init/install 统一模板；13 单进程契约（README/CONTEXT/3 模块头）；14 watch e2e 3 测试 + 缓存实测 7,952B/10 文件
+- 验证基线：324 测试全绿（229 lib + 95 集成，新增 19）、clippy -D warnings 0、machete 干净
+- 新发现（子代理 C）：compute_file_fingerprint 相对路径读盘依赖 cwd——FileWatch 指纹比对路径的生产隐患，已固化行为测试并标注，未修（需独立票）
+
+## 九、外部对标深度评估 v4（2026-08-02，本轮）
+- 方法：本地 17,516 行全量审计 + 权威检索（ACL 2026 CodeWiki/arXiv MemDocAgent/Anthropic 上下文工程/DeepWiki/repowise/RepoDocs/Google Code Wiki/Karpathy llm-wiki）
+- **4 项结构性差距**：P0-1 LLM 正文无强制源码引用契约（业界全部标配"禁止编造+强制引用"，OpenDeepWiki GATHER-THINK-WRITE、RepoDocs 纠正重试）；P1-1 semantic 全量暴力余弦 O(N) 无 ANN（应换 sqlite-vec）；P1-2 全局文档每次增量全量重生成（mod.rs:279 确认，增量承诺被吃掉）；P1-3 插件绑定 OpenCode 非 MCP 标准
+- 确认领先项：增量三层机制/人工保护/混合检索+AST 补全/确定性测试/单二进制——业界第一梯队
+- 路线建议：P0-1 引用契约（1-2 天）→ P1-3 MCP（2-3 天）→ P1-2 全局文档增量（1-2 天）→ P1-4 引用/实体覆盖评测（1 天）→ P1-1 sqlite-vec（2-3 天）；不做重多智能体/向量服务化/自动重编译（论文与工程双证伪）
+- 报告：.scratch/research/ANALYSIS-v4-benchmark-2026-08-02.md
+
+## 十、v4 实施完成（2026-08-02，P0-1/P1-2/P1-3/P1-4 + 2 遗留修复）
+- **P0-1 引用契约**：新 src/output/citation.rs（extract/validate/retry_feedback，8 测试，含 Windows 反斜杠与盘符排除）；wiki_page_system_prompt 加"源码引用契约"约束段（每节至少一条 file:line）；generate_wiki_page 生成后校验 + 重试（CITATION_RETRY_MAX=2，注入 retry_feedback，耗尽报错）；3 测试（重试成功/耗尽报错/无引用放行）
+- **P1-2 全局文档增量**：GlobalDocAffected{architecture, schema} 影响信号；architecture=entity_changes.has_interface_change()、schema=changed_files 含 .sql；未受影响时从 export_snapshot.json 回填旧文档（backfill_global_docs，零 LLM 调用），回填失败回退生成；3 测试
+- **P1-3 MCP server**：新 src/mcp.rs（rmcp 3.1.0 官方 SDK，stdio transport）；5 工具 search/ast_search/read_wiki_page/read_card/status，全部复用 lib 入口不复制逻辑；main.rs 加 `repo-wiki mcp --root .` 子命令；get_global_runtime 转 pub；tokio 加 process feature；tests/test_mcp.rs 进程级 stdio JSON-RPC 全链路测试（握手/list/call）
+- **P1-4 零成本评测**：lint 新增 2 类检查——bad-citation（产物引用存在性，output_dir.parent() 项目根解析）、entity-coverage（页面核心实体须在 api.md 权威清单中，仅主语言）；5 测试
+- **遗留修复**：①compute_file_fingerprint cwd 依赖——from_insights/is_file_changed 加 root 参数（root.path().join 解析相对路径），lib.rs save_generation_state 同步，测试全更新；②FileWatch 实体级分类——run_file_watch_incremental 用 state.last_commit_hash 构造伪 GitDiffResult 接 classify_entity_changes_at（非 git 回退空集），传播升级为语义传播
+- 验证基线：**343 测试全绿**（247 lib + 96 集成，新增 19）、clippy -D warnings 0、machete 干净
+- 未做（按路线延后）：P1-1 sqlite-vec ANN（P1-1 保留为下一优先级）
+
+## 十一、v5 审计（2026-08-02，未完成项全面复查）
+- **新修复 P1×3**：①删除孤立模块唯一文件 → cleanup 差集清空全部旧产物（run_generation_filtered 空集短路，v4 前既有 bug，既有测试被空结果满足）→ 快照回填未删模块 + 快照缺失回退全量，新增 git e2e 测试；②backfill_global_docs 按 kind 去重 → 多 .sql 仓库丢页 → 锚定 title+language；③lint entity-coverage 提取首个标识符取到 pub/fn 关键字 → 系统性误报 → entity_name_from_signature（'(' 前最后标识符）两侧统一
+- **新修复 P2×4**：wiki 空内容放行→重试；MCP 路径穿越净化；related_files 空误判全删；纯删除回填补白名单
+- 验证基线：**347 测试全绿**（249 lib + 98 集成，本轮新增 4）、clippy 0、machete 干净
+- 未完成项清单（详见 INCOMPLETE_REPORT-v5.md）：P1-1 sqlite-vec ANN（改动面已评估收敛于 store.rs+semantic.rs，风险=vec0 固定维度 vs 混合维度测试/换模型重建）；agent.rs 语义分支零测试；语义 0.3 阈值硬编码；MCP 便捷接入（写 opencode.json 有 Unrecognized key 风险，需实测 schema）；mcp top_k 无上限；watch 绝对路径混存；citation P3 边缘×4
+- 报告：.scratch/research/INCOMPLETE_REPORT-v5.md
+
+## 十二、v6 决策分析（2026-08-02，待拍板项全部裁定）
+- **决策 1**：P1-1 ANN → sqlite-vector-rs **0.3.1**（用户拍板；版本修正：0.2.2 非最新，0.3.0 yanked）。理由：rusqlite >=0.32 显式兼容、exact+hnsw 双模式同库、DELETE/事务完整；对比 sqlite-vec pre-v1 breaking change 与 DiskANN 仍在 alpha。迁移 6 要点：虚表 dim 固定需维度校验/换模型重建、0.3 相似度阈值→distance 语义转换（现有测试锚定）、伪向量混合维度（3+16）统一、借迁移抽象 SemanticSearch trait 补 agent 语义分支零测试、arrow×4+usearch 依赖重量实测记录、pre-1.0 风险登记
+- **决策 2**：MCP 便捷接入 → install 写项目根 **.mcp.json**（Claude Code 官方 mcpServers 标准，跨 Cursor/VS Code 复用，首次使用需批准为安全网）；opencode 用户走文档（opencode2 `mcp add` CLI，1.x opencode.json mcp 键）；opencode 不读 .mcp.json（getmcp 指南确认）
+- **决策 3**：citation 4 个 P3 边缘**全修**（C:/ 正斜杠盘符、v2.0 版本号、-src 连字符吸收、../ 逃逸）——lint bad-citation 已是 CI 门禁，误报直接阻断 CI
+- **决策 4**：语义 0.3 阈值**保持硬编码**（OpenAI 官方参考线，YAGNI）；仅做迁移时相似度→距离语义保真转换
+- 附带：mcp top_k clamp ≤50；watch 路径混存/语言切换回填错位留独立票
+- 实施顺序：①citation 4 项 ②.mcp.json+top_k ③sqlite-vector-rs 迁移
+- 报告：.scratch/research/DECISIONS-v6-2026-08-02.md
+
+## 十三、citation 4 个 P3 边缘修复（2026-08-02，本轮，决策 3 实施）
+- 修改的功能：src/output/citation.rs 四项边缘缺陷修复——①盘符识别扩展为 `^[A-Za-z]:[\\/]` 两种形态（原仅 `C:\`；补"连字符剔除后路径以盘符开头"的形态判定）；②新增最后一段扩展名规则（has_valid_extension，点后字母开头非空扩展名），排除 v2.0/1.2 版本号误报，src/v1.5.rs 正常放行；③回溯后剔除前导连字符（-src/fs.rs 列表项形态，my-file.rs 中间连字符不受影响）；④validate_citations 层拒绝含 .. 段引用（reason="路径含越界段 .."），extract 层保留完整路径
+- 摸到的文件：src/output/citation.rs、STATUS.md
+- 是否改变了接口/契约：否（Vec<Citation>/Vec<InvalidCitation> 结构不变，仅内部逻辑）；验证：citation 12 passed（原 8 + 新 4）、lint 10 passed、generate 62 passed、全量 lib 260 passed、clippy --all-targets -- -D warnings 0 告警
+- 证据：红-绿流程——新增 4 测试先行，修复前 3 个失败（连字符/版本号/越界），修复后全绿；正斜杠盘符测试修复前已通过（该形态恰被前导 `/` 拒绝规则意外拦截），仍按决策补语义化识别
+- 说明：任务开始时遇到的 src/mcp.rs clamp_top_k E0425 为瞬态增量编译问题，二次编译即消失，未修改该文件
+
+## 十四、v6 实施完成（2026-08-02，决策 1/2/3 落地 + 遗留修复）
+- **决策 1 修正（关键转折）**：sqlite-vector-rs 依赖链 Windows/MSVC 三重阻断实测不可编译——sqlite3_ext 0.2.1 `cfg!(unix)` 运行时宏门控编译期 `use std::os::unix`（connection.rs:195-202，纯 Rust 问题 gcc 不可解）；numkong 7.7.1 `-std:c99` MSVC 不认 + serial.h:890 C99 混合声明 C2059；→ 按用户裁决改 **sqlite-vec 0.1.9**（纯 C 静态嵌入 cc 编译，无 usearch/numkong/sqlite3_ext 链，Windows 编译通过，探针实测全链路）
+- **③sqlite-vec 迁移**：新 src/search/vecdb.rs（vec0 虚表封装：OnceLock 进程级扩展注册/延迟建表（维度首探）/KNN 循环扩样+node_json 去重（阈值语义与旧全量余弦完全等价）/维度不匹配重建/remove/clear/count，8 测试）；semantic.rs 重写（SemanticSearch trait 抽象 + SemanticEngine 固有方法薄封装委托，空表短路免空库 embed 请求，相似度 0.3↔距离 0.7 换算保真）；agent.rs 改依赖 Box<dyn SemanticSearch>（补语义回溯分支 3 测试，原 P1 缺口）；store.rs 删向量死代码（回归纯 FTS5，4 测试删）；阈值换算锚定测试（MAX_COSINE_DISTANCE==0.7）
+- **④语言切换回填错位修复**：backfill_global_docs 加语言一致性校验（快照语言 ≠ 当前主语言 → 不回填回退生成，防旧语言写盘目录错位丢页），新增测试
+- **决策 2/3**：.mcp.json install/uninstall 生成移除 + mcp top_k clamp≤50（工作区已有未提交实现，审查质量达标接受，6+1 测试）；citation 4 项（见十三节）
+- 验证基线：**369 测试全绿**（271 lib + 98 集成，本轮新增 21）、clippy -D warnings 0、machete 干净、release 构建通过
+- 遗留（已知边界，独立票）：watch 绝对路径混存（v4 已 strip_prefix 相对化，复核无问题）、sqlite-vec pre-1.0 breaking change 风险登记
+- 报告：.scratch/research/DECISIONS-v6-2026-08-02.md（决策记录）+ 本回复三张验证清单
+

@@ -26,6 +26,11 @@ pub struct WikiGenerator<'a, P: LlmProvider> {
     semaphore: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
+/// 引用契约重试上限（P0-1）：生成后校验源码引用，无效时重试注入
+/// 反馈，最多重试 CITATION_RETRY_MAX 次（共 CITATION_RETRY_MAX + 1 次
+/// 调用）。"总是重试"但必须有上限防死循环（每次重试消耗 LLM 调用）。
+pub const CITATION_RETRY_MAX: usize = 2;
+
 impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
     /// 使用指定的 LLM Provider 创建 WikiGenerator
     ///
@@ -66,21 +71,72 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
     /// * `chunk` — 模块的代码数据块
     /// * `card_summary` — 之前生成的 Knowledge Card 摘要，作为上下文参考
     /// * `config` — Wiki 配置（用于获取语言设置等）
+    ///
+    /// P0-1 引用契约：生成后校验源码引用（文件存在 + 行号有效），
+    /// 引用无效时重试（最多 `CITATION_RETRY_MAX` 次，用户决策"总是重试"）。
+    /// 重试注入错误反馈（无效引用清单），最后一次仍失败时返回错误——
+    /// 由调用方失败隔离（record_failure）记录，不产出无引用的页面。
     pub async fn generate_wiki_page(
         &self,
         chunk: &Chunk,
         card_summary: &str,
         config: &WikiConfig,
+        root: &crate::project::ProjectRoot,
     ) -> Result<WikiDocument> {
         if chunk.is_empty() {
             anyhow::bail!("空块，跳过 Wiki 页面生成");
         }
 
-        self.call_count.fetch_add(1, Ordering::Relaxed);
-
         let language = &config.wiki.language;
-        let messages = prompt::wiki_page_prompt(chunk, card_summary, language, self.plan.as_ref());
-        let content = self.provider.complete(&messages).await?;
+        let mut messages =
+            prompt::wiki_page_prompt(chunk, card_summary, language, self.plan.as_ref());
+        let mut content = String::new();
+        let mut last_invalid = Vec::new();
+
+        // 重试循环：首次调用 + 每次无效引用后追加反馈重试（共 CITATION_RETRY_MAX + 1 次调用）
+        for attempt in 0..=CITATION_RETRY_MAX {
+            self.call_count.fetch_add(1, Ordering::Relaxed);
+            content = self.provider.complete(&messages).await?;
+            // 空/纯空白内容同样视为校验失败（重试语义：不产出空白页面）
+            last_invalid = if content.trim().is_empty() {
+                vec![crate::output::citation::InvalidCitation {
+                    citation: crate::output::citation::Citation {
+                        path: String::new(),
+                        start: 0,
+                        end: 0,
+                    },
+                    reason: "输出为空（未生成任何内容）".into(),
+                }]
+            } else {
+                crate::output::citation::validate_citations(root.path(), &content)
+            };
+            if last_invalid.is_empty() {
+                break;
+            }
+            tracing::warn!(
+                "Wiki 页面引用校验失败（第 {} 次，无效 {} 条）: {}",
+                attempt + 1,
+                last_invalid.len(),
+                chunk.module_path.join("::")
+            );
+            // 重试机会已用完：跳出循环走失败路径（返回错误）
+            if attempt == CITATION_RETRY_MAX {
+                break;
+            }
+            messages.push(Message::user(
+                crate::output::citation::retry_feedback(&last_invalid),
+            ));
+        }
+
+        if !last_invalid.is_empty() {
+            anyhow::bail!(
+                "Wiki 页面引用校验失败（重试 {} 次仍无效，共 {} 条无效引用）: {}",
+                CITATION_RETRY_MAX,
+                last_invalid.len(),
+                chunk.module_path.join("::")
+            );
+        }
+
         let now = chrono::Utc::now().to_rfc3339();
 
         Ok(WikiDocument {
@@ -389,6 +445,32 @@ mod tests {
     
     use std::path::PathBuf;
 
+    /// 可编程 mock：按调用次数依次返回预设响应（引用重试测试用）
+    struct ScriptedProvider {
+        responses: std::sync::Mutex<std::vec::IntoIter<String>>,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl ScriptedProvider {
+        fn new(responses: Vec<String>) -> Self {
+            Self {
+                responses: std::sync::Mutex::new(responses.into_iter()),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl LlmProvider for ScriptedProvider {
+        async fn complete(&self, _messages: &[Message]) -> Result<String> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.responses
+                .lock()
+                .unwrap()
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("预设响应耗尽"))
+        }
+    }
+
     fn make_test_chunk() -> Chunk {
         let entity = Entity {
             name: "Server".into(),
@@ -419,6 +501,7 @@ mod tests {
         let provider = MockProvider::new();
         let generator = WikiGenerator::new(&provider, None, 0);
         let config = WikiConfig::default();
+        let root = crate::project::ProjectRoot::new(std::env::temp_dir());
         let empty_chunk = Chunk {
             module_path: vec![],
             entities: vec![],
@@ -428,8 +511,84 @@ mod tests {
             entity_sources: vec![],
         };
 
-        let result = generator.generate_wiki_page(&empty_chunk, "", &config).await;
+        let result = generator.generate_wiki_page(&empty_chunk, "", &config, &root).await;
         assert!(result.is_err());
+    }
+
+    /// 引用契约重试：无效引用 → 重试注入反馈 → 第二次输出有效引用则成功
+    #[tokio::test]
+    async fn test_wiki_page_retries_on_invalid_citation() {
+        // 临时目录放一个真实文件 src/server.rs（3 行），使有效引用通过校验
+        let dir = std::env::temp_dir().join(format!("repo_wiki_test_cite_retry_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let src = dir.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("server.rs"), "pub struct Server;\n// comment\n").unwrap();
+        let root = crate::project::ProjectRoot::new(dir.clone());
+
+        // 第一次输出引用不存在的文件，第二次输出有效引用
+        let provider = ScriptedProvider::new(vec![
+            "模块职责是管理连接。核心实体 `Server` 定义见 nonexistent.rs:99。".to_string(),
+            "模块职责是管理连接。核心实体 `Server` 定义见 src/server.rs:1。".to_string(),
+        ]);
+        let generator = WikiGenerator::new(&provider, None, 0);
+        let config = WikiConfig::default();
+        let chunk = make_test_chunk();
+
+        let doc = generator.generate_wiki_page(&chunk, "摘要", &config, &root).await.unwrap();
+        assert!(doc.content.contains("src/server.rs:1"), "重试后应使用有效引用");
+        assert_eq!(provider.calls.load(std::sync::atomic::Ordering::Relaxed), 2, "应调用 2 次（1 次失败 + 1 次重试）");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 引用契约重试耗尽：超过 CITATION_RETRY_MAX 仍无效 → 报错
+    #[tokio::test]
+    async fn test_wiki_page_bails_when_citations_never_valid() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_test_cite_fail_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = crate::project::ProjectRoot::new(dir.clone());
+
+        // 全部输出无效引用（文件不存在）
+        let provider = ScriptedProvider::new(vec![
+            "引用 nonexistent.rs:99".to_string(),
+            "引用 nonexistent.rs:99".to_string(),
+            "引用 nonexistent.rs:99".to_string(),
+        ]);
+        let generator = WikiGenerator::new(&provider, None, 0);
+        let config = WikiConfig::default();
+        let chunk = make_test_chunk();
+
+        let result = generator.generate_wiki_page(&chunk, "摘要", &config, &root).await;
+        assert!(result.is_err(), "重试耗尽后应报错");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("引用校验失败"), "错误信息应说明引用校验失败: {err}");
+        assert_eq!(
+            provider.calls.load(std::sync::atomic::Ordering::Relaxed),
+            CITATION_RETRY_MAX + 1,
+            "应调用 CITATION_RETRY_MAX+1 次后放弃"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 引用契约放行：无引用的输出直接通过（契约只惩罚编造引用，不强制必须有）
+    #[tokio::test]
+    async fn test_wiki_page_without_citations_passes() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_test_cite_ok_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = crate::project::ProjectRoot::new(dir.clone());
+
+        let provider = ScriptedProvider::new(vec!["模块职责是管理连接。".to_string()]);
+        let generator = WikiGenerator::new(&provider, None, 0);
+        let config = WikiConfig::default();
+        let chunk = make_test_chunk();
+
+        let doc = generator.generate_wiki_page(&chunk, "摘要", &config, &root).await.unwrap();
+        assert_eq!(doc.content, "模块职责是管理连接。");
+        assert_eq!(provider.calls.load(std::sync::atomic::Ordering::Relaxed), 1, "无引用无需重试");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

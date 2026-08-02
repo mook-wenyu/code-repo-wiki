@@ -9,10 +9,12 @@
 //! - 不可并行：多实例（并行子代理、多输出目录）共享同一 cwd 时
 //!   相互干扰。
 //!
-//! 方案：CLI 显式 --root 参数（main.rs 由主代理接入）→ 本类型全链路
-//! 注入。各模块公开入口保留原签名并委托 [`ProjectRoot::from_cwd`]
-//! （兼容现有调用点，保证 lib.rs/main.rs 编译不冲突），主代理合入时
-//! 把调用点切换为 *_at 变体并移除委托，届时 current_dir 依赖归零。
+//! 方案：CLI 显式 --root 参数（main.rs）→ 本类型全链路注入。各模块
+//! 的 *_at 变体以 root 为首参（scan_and_parse_at / resolve_plan_at /
+//! get_head_commit_hash_at / run_incremental_update_at / classify_
+//! entity_changes_at / generate_schema_documents_at），生产代码不再
+//! 直接调用 `std::env::current_dir()`。[`ProjectRoot::from_cwd`] 仅保留
+//! 为 CLI 未传 --root 时的默认值（main.rs resolve_root）。
 
 use std::path::{Path, PathBuf};
 
@@ -25,10 +27,7 @@ pub struct ProjectRoot {
 }
 
 impl ProjectRoot {
-    /// 默认根：当前工作目录
-    ///
-    /// 仅供兼容委托使用；主代理合入 --root 注入后此方法不再被调用，
-    /// 届时删除。
+    /// 默认根：当前工作目录（仅 main.rs 在 --root 缺省时调用）
     pub fn from_cwd() -> Result<Self> {
         let path = std::env::current_dir().context("获取当前工作目录失败")?;
         Ok(Self::new(path))

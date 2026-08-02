@@ -119,20 +119,11 @@ impl Default for OutputSection {
     }
 }
 
-/// 嵌入模型提供商类型
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub enum EmbedProviderType {
-    #[default]
-    #[serde(rename = "openai")]
-    OpenAI,
-}
-
 /// 嵌入模型配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbedSection {
     /// 是否启用嵌入生成
     pub enabled: bool,
-    pub provider: EmbedProviderType,
     pub model: String,
     pub base_url: Option<String>,
     pub api_key: Option<String>,
@@ -145,7 +136,6 @@ impl Default for EmbedSection {
     fn default() -> Self {
         Self {
             enabled: false,
-            provider: EmbedProviderType::OpenAI,
             model: "text-embedding-3-small".to_string(),
             base_url: None,
             api_key: None,

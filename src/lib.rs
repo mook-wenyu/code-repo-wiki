@@ -7,6 +7,8 @@ pub mod output;
 pub mod incremental;
 pub mod search;
 pub mod commands;
+pub mod fs;
+pub mod mcp;
 pub mod project;
 
 use std::collections::HashMap;
@@ -15,7 +17,7 @@ use std::path::Path;
 use std::sync::{Arc, OnceLock};
 use tokio::runtime::Runtime;
 
-use anyhow::bail;
+use anyhow::{bail, Context};
 
 /// 仓库分析结果，完整流水线的输出
 pub struct AnalysisResult {
@@ -36,7 +38,8 @@ pub struct AnalysisStats {
     pub generation_time_ms: u64,
 }
 
-fn get_global_runtime() -> &'static Arc<Runtime> {
+/// 全局 tokio 运行时（流水线与 MCP server 共用，避免重复初始化）
+pub fn get_global_runtime() -> &'static Arc<Runtime> {
     static RT: OnceLock<Arc<Runtime>> = OnceLock::new();
     RT.get_or_init(|| Arc::new(Runtime::new().expect("创建 tokio Runtime 失败")))
 }
@@ -71,30 +74,46 @@ fn load_config_with_output(
 }
 
 /// 加载保护集：旧 state 的 protected_docs + 新检测出的人工修改；force 时清空
+///
+/// 损坏语义（票 02，fail-loud 裁决）：state 文件不存在 = 合法首次运行
+/// （返回空保护）；存在但读取/解析失败 = 状态损坏（半截写、被外部
+/// 改动）——损坏状态会让 protected_docs 静默丢失，人工修改保护失效，
+/// 故显式报错中断（与 sync_from_git 对损坏状态的拒绝行为一致），
+/// 由用户删除 .state/ 后重新 generate 重建。
 fn load_protection(
     config: &config::schema::WikiConfig,
     force: bool,
-) -> (std::collections::HashSet<String>, Option<incremental::state::GenerationState>) {
+) -> anyhow::Result<(std::collections::HashSet<String>, Option<incremental::state::GenerationState>)> {
     if force {
-        return (std::collections::HashSet::new(), None);
+        return Ok((std::collections::HashSet::new(), None));
     }
     let state_dir = Path::new(&config.output.dir).join(".state");
-    let state = incremental::state::GenerationState::load(&state_dir).ok();
-    let mut protected: std::collections::HashSet<String> = state
-        .as_ref()
-        .map(|s| s.protected_docs.iter().cloned().collect())
-        .unwrap_or_default();
-    if let Some(s) = &state {
-        for p in s.detect_manually_modified() {
-            protected.insert(p);
-        }
+    let state_path = state_dir.join("generation_state.json");
+    if !state_path.exists() {
+        // 无状态文件 = 从未生成过，合法空保护
+        return Ok((std::collections::HashSet::new(), None));
     }
-    (protected, state)
+    let state = incremental::state::GenerationState::load(&state_dir).with_context(|| {
+        format!(
+            "状态文件损坏或不可读: {}（删除该文件后重新运行 generate 可重建）",
+            state_path.display()
+        )
+    })?;
+    let mut protected: std::collections::HashSet<String> = state
+        .protected_docs
+        .iter()
+        .cloned()
+        .collect();
+    for p in state.detect_manually_modified() {
+        protected.insert(p);
+    }
+    Ok((protected, Some(state)))
 }
 
 /// 保存生成状态：doc_fingerprints 只记录实际写盘的文档（跳过保护集），
 /// protected_docs 合并本次保护集写回
 fn save_generation_state(
+    root: &project::ProjectRoot,
     config: &config::schema::WikiConfig,
     insights: &[ingest::parser::FileInsight],
     documents: &[model::WikiDocument],
@@ -104,7 +123,7 @@ fn save_generation_state(
 ) {
     let output_dir = Path::new(&config.output.dir);
     let state_dir = output_dir.join(".state");
-    if let Ok(mut state) = incremental::state::GenerationState::from_insights(insights, commit_hash) {
+    if let Ok(mut state) = incremental::state::GenerationState::from_insights(root, insights, commit_hash) {
         let mut protected_docs: Vec<String> = protected.iter().cloned().collect();
         protected_docs.sort();
         state.protected_docs = protected_docs;
@@ -187,7 +206,7 @@ pub fn run_pipeline_with_progress(
 
     // 保护集：旧 state 的 protected_docs + 检测出的人工修改；force 时清空。
     // old_state 同时供人工修改反向同步组装（collect_manual_edits → 生成前注入）
-    let (protected, old_state) = load_protection(&config, force);
+    let (protected, old_state) = load_protection(&config, force)?;
 
     // Phase 1: 扫描。增量模式启用解析缓存（parse 层增量：内容指纹未变复用
     // 缓存结果，仅变更文件重新 tree-sitter 解析）；全量模式直接全量解析。
@@ -310,7 +329,7 @@ pub fn run_pipeline_with_progress(
     // Phase 6: 保存增量状态（含文档指纹用于人工修改保护）
     if config.incremental.enabled {
         let head_hash = incremental::diff::get_head_commit_hash_at(root).unwrap_or_default();
-        save_generation_state(&config, &file_insights, &gen_output.documents, &gen_output.cards, &protected, &head_hash);
+        save_generation_state(root, &config, &file_insights, &gen_output.documents, &gen_output.cards, &protected, &head_hash);
     }
 
     on_progress(ProgressEvent { stage: "done", percent: 100 });
@@ -327,7 +346,7 @@ pub fn run_pipeline_with_progress(
     })
 }
 
-/// 执行知识卡片操作（CLI card 子命令与 Qoder /knowledge 对等）
+/// 知识卡片操作（CLI card 子命令与 Qoder /knowledge 对等）
 pub fn run_card_command(
     config_path: &Path,
     root: &project::ProjectRoot,
@@ -341,7 +360,7 @@ pub fn run_card_command(
         | generate::card::CardAction::Supplement { module, .. }
         | generate::card::CardAction::Rewrite { module, .. } => {
             if generate::card::read_card(&config, module)?.is_none() {
-                anyhow::bail!("模块 {module} 的卡片不存在，请先运行 `repo-wiki generate` 全量生成");
+                anyhow::bail!("模块 {module} 的卡片不存在，请先运行 `repo-wiki generate` 或 `repo-wiki card generate {module}` 生成");
             }
         }
     }
@@ -608,16 +627,20 @@ fn build_search_index(
     // 如果 embed 已启用，构建语义索引
     if config.embed.enabled {
         let semantic_path = index_dir.join("semantic_index.db");
-        let _ = std::fs::remove_file(&semantic_path);
+        // 票 10 时序修正：先初始化 Embedding 引擎、成功后再删旧索引——
+        // 旧实现先删后初始化，key 缺失时旧索引已丢且引导误导
+        //（"请启用 embed"掩盖了真实原因是 key 未配置）。
+        // 失败时保留旧索引（可回退旧语义结果），并在引导中区分两种失败。
         match generate::embed::EmbeddingEngine::new(&config.embed, get_global_runtime().handle().clone()) {
             Ok(embedder) => {
+                let _ = std::fs::remove_file(&semantic_path);
                 let embedder = std::sync::Arc::new(embedder);
                 let mut semantic_engine = search::semantic::SemanticEngine::open(&semantic_path, embedder, get_global_runtime().clone())?;
                 semantic_engine.index_batch(&items)?;
                 tracing::info!("语义索引构建完成: {} 个实体已向量化", items.len());
             }
             Err(e) => {
-                tracing::warn!("语义索引构建跳过（Embedding 引擎初始化失败）: {}", e);
+                tracing::warn!("语义索引构建跳过（Embedding 引擎初始化失败，保留旧索引）: {}", e);
             }
         }
     }
@@ -754,7 +777,7 @@ pub fn execute_search(
     match engine_type {
         config::schema::SearchEngineType::Text => {
             if !text_path.exists() {
-                anyhow::bail!("搜索索引不存在，请先运行 `repo-wiki generate` 构建索引");
+                anyhow::bail!("搜索索引不存在，请先运行 `repo-wiki generate` 或 `repo-wiki update` 构建索引");
             }
             let text_engine = search::text::TextEngine::open(&text_path)?;
             let results = text_engine.search(query, top_k)?;
@@ -774,14 +797,16 @@ pub fn execute_search(
             // 与 Text/Semantic 分支一致：text 索引是混合检索的必需底座
             //（RRF 至少一路有效），缺失时明确报错而非打开空库。
             if !text_path.exists() {
-                anyhow::bail!("搜索索引不存在，请先运行 `repo-wiki generate` 构建索引");
+                anyhow::bail!("搜索索引不存在，请先运行 `repo-wiki generate` 或 `repo-wiki update` 构建索引");
             }
             let text_engine = search::text::TextEngine::open(&text_path)?;
-            let semantic_engine = if semantic_path.exists() && config.embed.enabled {
-                generate::embed::EmbeddingEngine::new(&config.embed, get_global_runtime().handle().clone())
-                    .ok()
-                    .and_then(|e| search::semantic::SemanticEngine::open(&semantic_path, Arc::new(e), get_global_runtime().clone()).ok())
-            } else { None };
+            let semantic_engine: Option<Box<dyn search::semantic::SemanticSearch>> =
+                if semantic_path.exists() && config.embed.enabled {
+                    generate::embed::EmbeddingEngine::new(&config.embed, get_global_runtime().handle().clone())
+                        .ok()
+                        .and_then(|e| search::semantic::SemanticEngine::open(&semantic_path, Arc::new(e), get_global_runtime().clone()).ok())
+                        .map(|e| Box::new(e) as Box<dyn search::semantic::SemanticSearch>)
+                } else { None };
             let mut agent = search::agent::SearchAgent::new(text_engine, semantic_engine, config.search.rrf_k as f64);
             // 调用链补全：重建知识图谱以获得 Calls 边，构建调用索引注入 agent。
             // CLI 场景单次搜索的重建开销可接受（实测本项目约 1.2s）；
@@ -1020,15 +1045,59 @@ mod tests {
         state.save(&state_dir).unwrap();
 
         // force=false：保护集包含检测出的人工修改（下次生成不覆盖）
-        let (protected, _) = load_protection(&config, false);
+        let (protected, _) = load_protection(&config, false).unwrap();
         assert!(
             protected.contains(&doc_path.to_string_lossy().to_string()),
             "force=false 应保护人工修改的文档"
         );
 
         // force=true：保护集清空（render_all 将覆盖所有文档）
-        let (protected, _) = load_protection(&config, true);
+        let (protected, _) = load_protection(&config, true).unwrap();
         assert!(protected.is_empty(), "force=true 应清空保护集");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 票 02：state.json 存在但损坏（非 JSON）时 load_protection 必须 fail-loud，
+    /// 不得静默返回空保护集（空保护会让人工修改保护在后续 update 中失效）。
+    /// 与 sync_from_git 对损坏状态的拒绝行为对偶（tests/test_git_sync.rs:109-121）。
+    #[test]
+    fn test_load_protection_corrupt_state_fails_loud() {
+        let dir = std::env::temp_dir()
+            .join(format!("repo_wiki_test_corrupt_state_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut config = crate::config::schema::WikiConfig::default();
+        config.output.dir = dir.to_string_lossy().into_owned();
+
+        // 写入损坏的状态文件（半截 JSON）
+        let state_dir = dir.join(".state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(state_dir.join("generation_state.json"), "{ 半截").unwrap();
+
+        let err = load_protection(&config, false).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("状态文件损坏"), "应明确报告损坏, 实际: {msg}");
+
+        // force=true 不受影响（清空保护是显式操作，不读状态）
+        assert!(load_protection(&config, true).unwrap().0.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 票 02：状态文件不存在（首次运行）是合法场景，返回空保护不报错
+    #[test]
+    fn test_load_protection_missing_state_is_ok() {
+        let dir = std::env::temp_dir()
+            .join(format!("repo_wiki_test_missing_state_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut config = crate::config::schema::WikiConfig::default();
+        config.output.dir = dir.to_string_lossy().into_owned();
+
+        let (protected, state) = load_protection(&config, false).unwrap();
+        assert!(protected.is_empty());
+        assert!(state.is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
