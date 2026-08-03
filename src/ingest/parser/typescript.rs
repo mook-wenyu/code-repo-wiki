@@ -23,6 +23,8 @@ const KINDS: &[KindRule] = &[
     KindRule::with_sig("function_declaration", "function", '{'),
     KindRule::with_sig("method_definition", "function", '{'),
     KindRule::plain("type_alias_declaration", "type"),
+    // U09：TypeScript 枚举补齐（enum_declaration 此前未映射，枚举被遗漏）
+    KindRule::with_sig("enum_declaration", "enum", '{'),
     KindRule::plain("variable_declarator", "variable"),
 ];
 

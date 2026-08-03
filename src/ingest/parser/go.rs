@@ -54,6 +54,29 @@ impl SharedProcessor for GoProcessor {
                     });
                 }
             }
+            // U09：Go 的 const/var 声明补齐（const_declaration/var_declaration
+            // 下辖 const_spec/var_spec，每个 spec 一个 name 字段；kind 按声明
+            // 类型区分 const/var，行区间取整个声明块）
+            "const_declaration" | "var_declaration" => {
+                let kind = if node.kind() == "const_declaration" { "const" } else { "var" };
+                let mut cur = node.walk();
+                if cur.goto_first_child() {
+                    loop {
+                        if matches!(cur.node().kind(), "const_spec" | "var_spec")
+                            && let Some(name) = cur.node().child_by_field_name("name")
+                                .and_then(|n| n.utf8_text(bytes).ok())
+                        {
+                            entities.push(Entity {
+                                name: name.to_string(), kind: kind.to_string(),
+                                line_start: node.start_position().row + 1,
+                                line_end: node.end_position().row + 1,
+                                doc_comment: None, signature: None, summary: None,
+                            });
+                        }
+                        if !cur.goto_next_sibling() { break; }
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -113,3 +136,23 @@ func add(a int, b int) int { return a + b }
         assert!(result.entities.iter().any(|e| e.name == "add"));
     }
 }
+
+    /// U09：Go 的 const/var 声明补齐（此前只解析 func/type）
+    #[test]
+    fn test_parse_go_const_var() {
+        let source = r#"package main
+
+const MaxRetries = 3
+const (
+    TimeoutSec = 30
+    BufferSize = 1024
+)
+var GlobalCount = 0
+"#;
+        let proc = GoProcessor::new().unwrap();
+        let result = proc.parse(source, Path::new("test.go")).unwrap();
+        assert!(result.entities.iter().any(|e| e.name == "MaxRetries" && e.kind == "const"), "const 单值应解析: {:?}", result.entities);
+        assert!(result.entities.iter().any(|e| e.name == "TimeoutSec" && e.kind == "const"), "const 块成员应解析");
+        assert!(result.entities.iter().any(|e| e.name == "BufferSize" && e.kind == "const"), "const 块第二成员应解析");
+        assert!(result.entities.iter().any(|e| e.name == "GlobalCount" && e.kind == "var"), "var 应解析: {:?}", result.entities);
+    }

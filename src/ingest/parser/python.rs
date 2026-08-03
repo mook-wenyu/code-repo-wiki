@@ -30,7 +30,7 @@ impl SharedProcessor for PythonProcessor {
         KINDS
     }
 
-    fn handle_special(node: Node, bytes: &[u8], _entities: &mut Vec<Entity>, imports: &mut Vec<ImportStmt>) {
+    fn handle_special(node: Node, bytes: &[u8], entities: &mut Vec<Entity>, imports: &mut Vec<ImportStmt>) {
         match node.kind() {
             "import_statement" => {
                 if let Ok(text) = node.utf8_text(bytes) {
@@ -47,6 +47,25 @@ impl SharedProcessor for PythonProcessor {
                         source: text.trim().to_string(),
                         alias: None,
                         line: node.start_position().row + 1,
+                    });
+                }
+            }
+            // U09：模块级常量补齐——Python 无 const 语法，模块常量即顶层赋值
+            // 语句。判定：语句在顶层（缩进 0，column==0）且直接子节点是
+            // assignment、左值为标识符——如 `MAX_SIZE = 100`。
+            "expression_statement" if node.start_position().column == 0 => {
+                let mut cur = node.walk();
+                if cur.goto_first_child()
+                    && cur.node().kind() == "assignment"
+                    && let Some(left) = cur.node().child_by_field_name("left")
+                    && left.kind() == "identifier"
+                    && let Ok(name) = left.utf8_text(bytes)
+                {
+                    entities.push(Entity {
+                        name: name.trim().to_string(), kind: "constant".to_string(),
+                        line_start: node.start_position().row + 1,
+                        line_end: node.end_position().row + 1,
+                        doc_comment: None, signature: None, summary: None,
                     });
                 }
             }
@@ -128,5 +147,23 @@ def greet(name: str) -> str:
         assert!(result.entities.iter().any(|e| e.name == "Person"));
         assert!(result.entities.iter().any(|e| e.name == "greet"));
         assert!(result.imports.len() >= 2);
+    }
+
+    /// U09：Python 模块级常量补齐（顶层赋值，函数内赋值不误报）
+    #[test]
+    fn test_parse_python_module_constant() {
+        let source = r#"MAX_SIZE = 100
+API_BASE = "https://api.example.com"
+DEFAULT_NAME = "x"
+
+def helper():
+    local_cache = 1
+    return local_cache
+"#;
+        let proc = PythonProcessor::new().unwrap();
+        let result = proc.parse(source, Path::new("test.py")).unwrap();
+        assert!(result.entities.iter().any(|e| e.name == "MAX_SIZE" && e.kind == "constant"), "MAX_SIZE 应解析: {:?}", result.entities);
+        assert!(result.entities.iter().any(|e| e.name == "API_BASE" && e.kind == "constant"), "API_BASE 应解析");
+        assert!(!result.entities.iter().any(|e| e.name == "local_cache"), "函数内赋值不应误报为常量: {:?}", result.entities);
     }
 }

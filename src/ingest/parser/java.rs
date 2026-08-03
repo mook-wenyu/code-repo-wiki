@@ -19,6 +19,8 @@ const KINDS: &[KindRule] = &[
     KindRule::with_sig("enum_declaration", "enum", '{'),
     KindRule::with_sig("record_declaration", "class", '{'),
     KindRule::with_sig("method_declaration", "function", '{'),
+    // U09：Java 构造器补齐（constructor_declaration 此前未映射，构造器被遗漏）
+    KindRule::with_sig("constructor_declaration", "function", '{'),
 ];
 
 /// Java 差异点实现：语法常量、kinds 映射表（纯映射分支）、
@@ -147,5 +149,23 @@ interface Runnable {
         assert!(result.entities.iter().any(|e| e.name == "count" && e.kind == "variable"));
         assert!(result.imports.iter().any(|i| i.source == "java.util.List"));
         assert!(result.imports.iter().any(|i| i.source == "java.io.File"));
+    }
+
+    /// U09：Java 构造器补齐（constructor_declaration 此前未映射）
+    #[test]
+    fn test_parse_java_constructor() {
+        let source = r#"public class Calculator {
+    public Calculator() { this(0); }
+    public Calculator(int seed) { this.seed = seed; }
+    private int seed;
+}
+"#;
+        let proc = JavaProcessor::new().unwrap();
+        let result = proc.parse(source, Path::new("Test.java")).unwrap();
+        let ctors: Vec<&str> = result.entities.iter()
+            .filter(|e| e.name == "Calculator" && e.kind == "function")
+            .map(|e| e.name.as_str())
+            .collect();
+        assert!(!ctors.is_empty(), "构造器应解析为 function: {:?}", result.entities);
     }
 }
