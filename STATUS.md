@@ -192,3 +192,11 @@
 - **验证基线:321 lib + 118 集成 = 439 测试全绿**、clippy --all-targets -D warnings 干净、cargo machete 零未使用依赖、git 工作树干净
 - 新功能:bench 评测子命令(五维自动层+--judge TQS 裁判层)、MCP lang 净化、watch 多根、渲染原子写、fence 精确识别、增量两段式状态、force 退化全量、架构骨架降级、配置边界校验、插件清理、parser 覆盖补齐
 - 4 项验证与三张清单详见本会话最终回复;事故恢复路线(wayfinder-v11)全部完成
+
+## 二十五、v11 深度分析报告(2026-08-03,本会话,/goal 会话)
+- 方法:本地 62 src 文件全面审计子代理(12 项发现)+ 联网 11 次检索(RepoDoc 四阶段增量/CoREB reranker 结论/MVVP 评测协议/OpenDeepWiki v2/sqlite-knowledge-graph/tree-sitter 新范式)
+- **P1×2**:lib.rs:769-772 增量语义索引吞错(新旧向量混存);lib.rs:127-145 状态落盘三重吞错(人工修改保护静默失效,与 lib.rs:81 注释矛盾)
+- **P2×5**:bench HEAD 恢复无 RAII guard(事故同源);llm.rs 非真流式;incremental/state 静默降级×2;agent 索引损坏对 MCP 表现无命中
+- **P3×5**:build_call_edges 零单测(回归风险最高);bench diff 判定吞错;module.rs 测试残渣;embed filter_map 丢元素;chunk 同名去重边界
+- **网络对照结论**:repo-wiki 第一梯队(Karpathy 生态);增量缺"一致性校验"环节(RepoDoc 四阶段);搜索层需评估 reranker(短关键词 nDCG≈0);评测基准补 MVVP 协议(κ+复测+style 消偏)
+- 报告:.scratch/research/ANALYSIS-v11-2026-08-03.md(六节:现状/审计 12 项/网络对照/优先级路线/反思/三张清单)
