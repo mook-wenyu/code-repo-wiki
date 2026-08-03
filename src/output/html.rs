@@ -117,14 +117,23 @@ blockquote { border-left: 4px solid #ddd; margin: 0; padding: 0 16px; color: #66
     // 生成 assets/module-deps.html（通过 CDN 嵌入 Mermaid）
     if !modules.is_empty() {
         let mut mermaid_lines = vec!["graph TD".to_string()];
+        // U05/D9：节点名规范化与依赖边共用同一规则（非字母数字 → _），
+        // 保证节点声明与边引用同名（此前只有节点行零边——快照无依赖字段）
+        let node_id = |name: &str| name.replace(|c: char| !c.is_alphanumeric(), "_");
         for module in modules {
             if !module.files.is_empty() {
                 // ponytail: 简化为模块级节点，不展开到每个实体
                 mermaid_lines.push(format!(
                     "    {}[\"{}\"]",
-                    module.name.replace(|c: char| !c.is_alphanumeric(), "_"),
+                    node_id(&module.name),
                     escape_html(&module.name)
                 ));
+            }
+        }
+        // 依赖边：模块 → 依赖模块（BTreeSet 字典序，输出确定性）
+        for module in modules {
+            for dep in &module.dependencies {
+                mermaid_lines.push(format!("    {} --> {}", node_id(&module.name), node_id(dep)));
             }
         }
         let mermaid_code = mermaid_lines.join("\n");
@@ -262,6 +271,23 @@ pub fn rewrite_md_links_to_html(md: &str) -> String {
     out
 }
 
+/// Mermaid 渲染脚本（U05/D9）：CDN 加载 mermaid.js 后初始化；
+/// CDN 不可达（离线/网络隔离）时 onerror 降级——.mermaid div 的源码
+/// 转为 pre 文本展示，图不渲染但信息不丢失（与生成层 degrade 语义一致）。
+const MERMAID_SCRIPT: &str = r#"<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"
+ onerror="window.__repoWikiMermaidFallback&&window.__repoWikiMermaidFallback()"></script>
+<script>
+function __repoWikiMermaidFallback() {
+  document.querySelectorAll('.mermaid').forEach(function (el) {
+    var pre = document.createElement('pre');
+    pre.textContent = el.textContent;
+    el.replaceWith(pre);
+  });
+}
+window.__repoWikiMermaidFallback = __repoWikiMermaidFallback;
+if (window.mermaid) { mermaid.initialize({ startOnLoad: true }); }
+</script>"#;
+
 /// 生成完整 HTML 文档，包含 <!DOCTYPE>、<head> 和样式链接
 /// 包装完整 HTML 文档。
 ///
@@ -277,6 +303,7 @@ fn wrap_html(title: &str, body: &str, css_href: &str) -> String {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
 <link rel="stylesheet" href="{css_href}">
+{MERMAID_SCRIPT}
 </head>
 <body>
 {body}
@@ -289,11 +316,43 @@ fn wrap_html(title: &str, body: &str, css_href: &str) -> String {
 }
 
 /// 使用 pulldown-cmark 将 Markdown 文本转换为 HTML
+///
+/// U05/D9：mermaid 围栏块不输出为 <pre><code> 源码，改为
+/// `<div class="mermaid">` 容器（由 wrap_html 注入的 mermaid.js 渲染）；
+/// 其余事件逐条委托 pulldown-cmark 默认渲染。
 fn md_to_html(markdown: &str) -> String {
+    use pulldown_cmark::{CodeBlockKind, Event, Tag, TagEnd};
+
     let options = Options::all();
     let parser = Parser::new_ext(markdown, options);
     let mut html_output = String::new();
-    html::push_html(&mut html_output, parser);
+    let mut mermaid_buf: Option<String> = None;
+
+    for event in parser {
+        match event {
+            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(lang)))
+                if lang.eq_ignore_ascii_case("mermaid") =>
+            {
+                mermaid_buf = Some(String::new());
+            }
+            Event::Text(text) if mermaid_buf.is_some() => {
+                mermaid_buf.as_mut().unwrap().push_str(&text);
+            }
+            Event::End(TagEnd::CodeBlock) if mermaid_buf.is_some() => {
+                let buf = mermaid_buf.take().unwrap_or_default();
+                html_output.push_str(&format!(
+                    "<div class=\"mermaid\">\n{}\n</div>\n",
+                    escape_html(&buf)
+                ));
+            }
+            other => {
+                // 逐事件委托默认渲染（含 mermaid 外的普通围栏）
+                let mut tmp = String::new();
+                html::push_html(&mut tmp, std::iter::once(other));
+                html_output.push_str(&tmp);
+            }
+        }
+    }
     html_output
 }
 
@@ -360,8 +419,32 @@ mod tests {
     #[test]
     fn test_wrap_html_escapes_title() {
         let html = wrap_html("<script>alert('xss')</script>", "<p>body</p>", "style.css");
-        assert!(!html.contains("<script>"), "title 中的 HTML 应该被转义");
-        assert!(html.contains("&lt;script&gt;"), "title 中的 < 应该被转义为 &lt;");
+        // title 必须转义（页面本身含 mermaid 脚本标签，断言不能再用
+        // 全页 contains("<script>")——改为精确匹配 title 位置的转义形态）
+        assert!(
+            html.contains("<title>&lt;script&gt;alert(&#39;xss&#39;)&lt;/script&gt;</title>"),
+            "title 中的 HTML 应被转义, 实际: {html}"
+        );
+        assert!(html.contains("mermaid.min.js"), "页面应引入 mermaid.js（U05/D9）");
+        assert!(html.contains("__repoWikiMermaidFallback"), "应含离线降级脚本（U05/D9）");
+    }
+
+    /// U05/D9：mermaid 围栏渲染为 div.mermaid 容器（内容转义），
+    /// 普通代码围栏保持 <pre> 原样
+    #[test]
+    fn test_md_to_html_renders_mermaid_container() {
+        let result = md_to_html("```mermaid\nflowchart LR\nA[Start] --> B[End]\n```\n");
+        assert!(result.contains("<div class=\"mermaid\">"), "mermaid 应渲染为 div 容器: {result}");
+        assert!(result.contains("flowchart LR"), "内容应保留");
+        assert!(!result.contains("<pre>"), "mermaid 不应输出为 pre 代码块: {result}");
+        assert!(result.contains("A[Start] --&gt; B[End]"), "内容应 HTML 转义: {result}");
+    }
+
+    #[test]
+    fn test_md_to_html_plain_code_block_unchanged() {
+        let result = md_to_html("```rust\nfn main() {}\n```\n");
+        assert!(result.contains("<pre>"), "普通代码块应保持 pre: {result}");
+        assert!(!result.contains("mermaid"), "普通代码块不应触发 mermaid 渲染: {result}");
     }
 
     #[test]
@@ -456,6 +539,7 @@ mod tests {
             cohesion: 0.8,
             coupling: 0.2,
             features: vec![],
+            dependencies: vec![],
         }];
 
         export_html(&[doc], &[card], &modules, &config)?;

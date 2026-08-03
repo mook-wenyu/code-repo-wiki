@@ -98,6 +98,10 @@ pub struct ExportModuleSnapshot {
     pub cohesion: f64,
     pub coupling: f64,
     pub features: Vec<String>,
+    /// 依赖的模块名列表（U05/D9：module-deps.html 此前只有节点零边——
+    /// 快照无依赖字段，HTML 侧画不出依赖边；serde default 兼容旧快照）
+    #[serde(default)]
+    pub dependencies: Vec<String>,
 }
 
 /// 导出快照（`{output_dir}/.state/export_snapshot.json`）
@@ -154,6 +158,38 @@ pub fn latest_wiki_page_mtime(output_dir: &Path) -> Option<std::time::SystemTime
 
 /// 从图与卡片提取快照模块列表（按模块名排序保证确定性）
 pub fn export_modules(graph: &KnowledgeGraph, cards: &[KnowledgeCard]) -> Vec<ExportModuleSnapshot> {
+    // U05/D9：实体节点 → 所属模块映射（先到先得，与 index.rs/community
+    // 的同规则），用于聚合跨模块依赖边（Calls + Imports，排除 Contains）
+    use petgraph::visit::{EdgeRef, IntoEdgeReferences};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let mut node_module: std::collections::HashMap<crate::model::NodeId, String> =
+        std::collections::HashMap::new();
+    for module in &graph.modules {
+        for nid in &module.node_ids {
+            node_module
+                .entry(*nid)
+                .or_insert_with(|| module.name.clone());
+        }
+    }
+    let mut deps: BTreeMap<String, BTreeSet<String>> = Default::default();
+    for edge in graph.graph.edge_references() {
+        if matches!(
+            graph.graph[edge.id()].kind,
+            crate::model::EdgeKind::Calls | crate::model::EdgeKind::Imports
+        ) {
+            let (Some(src), Some(tgt)) = (
+                node_module.get(&edge.source()),
+                node_module.get(&edge.target()),
+            ) else {
+                continue;
+            };
+            if src != tgt {
+                deps.entry(src.clone()).or_default().insert(tgt.clone());
+            }
+        }
+    }
+
     let mut modules: Vec<ExportModuleSnapshot> = graph
         .modules
         .iter()
@@ -170,12 +206,18 @@ pub fn export_modules(graph: &KnowledgeGraph, cards: &[KnowledgeCard]) -> Vec<Ex
                 .find(|c| c.module_name == m.name)
                 .map(|c| c.features.clone())
                 .unwrap_or_default();
+            let mut dependencies: Vec<String> = deps
+                .get(&m.name)
+                .map(|s| s.iter().cloned().collect())
+                .unwrap_or_default();
+            dependencies.sort();
             ExportModuleSnapshot {
                 name: m.name.clone(),
                 files,
                 cohesion: m.cohesion,
                 coupling: m.coupling,
                 features,
+                dependencies,
             }
         })
         .collect();
