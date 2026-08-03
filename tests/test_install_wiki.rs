@@ -167,3 +167,56 @@ fn test_half_marker_errors_and_preserves_file() {
 
     let _ = std::fs::remove_dir_all(&work_dir);
 }
+
+/// U02 回归：注入块按目标仓库配置渲染产物路径（output.dir + wiki.language）
+#[test]
+fn test_install_wiki_template_uses_config_paths() {
+    let work_dir = setup("template_config");
+    std::fs::create_dir_all(work_dir.join(".repo-wiki")).unwrap();
+    std::fs::write(
+        work_dir.join(".repo-wiki").join("config.toml"),
+        "[wiki]\nlanguage = \"en\"\n\n[output]\ndir = \"docs\"\n",
+    )
+    .unwrap();
+
+    let out = run_bin(&work_dir, &["install-wiki", "--root", work_dir.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "install-wiki 应成功，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let content = std::fs::read_to_string(work_dir.join("AGENTS.md")).unwrap();
+    assert!(content.contains("`docs/`"), "产物路径应按配置渲染 docs/, 实际: {content}");
+    assert!(
+        content.contains("`docs/wiki/en/overview.md`"),
+        "应渲染 docs/wiki/en/overview.md, 实际: {content}"
+    );
+    assert!(
+        !content.contains(".repo-wiki/wiki/zh"),
+        "不应残留默认 .repo-wiki/zh 路径, 实际: {content}"
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
+
+/// U02 回归：无配置时按默认产物路径渲染并提示
+#[test]
+fn test_install_wiki_template_defaults_without_config() {
+    let work_dir = setup("template_default");
+
+    let out = run_bin(&work_dir, &["install-wiki", "--root", work_dir.to_str().unwrap()]);
+    assert!(out.status.success(), "install-wiki 应成功");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(combined.contains("默认"), "应提示按默认值渲染，实际: {combined}");
+    let content = std::fs::read_to_string(work_dir.join("AGENTS.md")).unwrap();
+    assert!(
+        content.contains("`.repo-wiki/wiki/zh/overview.md`"),
+        "默认应渲染 .repo-wiki/zh 路径，实际: {content}"
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}

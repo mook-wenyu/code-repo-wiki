@@ -172,8 +172,11 @@ fn collect_md_files(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// repo-wiki 安装: 配置 Agent 插件 + git hooks + 默认配置
-pub fn install(agent: &str) -> Result<()> {
-    let project_root = std::env::current_dir()?;
+///
+/// root 为项目根（U02：--root 注入，替代进程 cwd——插件/hook/config 全部
+/// 相对项目根解析，跨 cwd 运行不再错位）。
+pub fn install(agent: &str, root: &crate::project::ProjectRoot) -> Result<()> {
+    let project_root = root.path();
 
     // 1. 配置 OpenCode 插件 (如果 agent 是 opencode)
     if agent == "opencode" {
@@ -188,7 +191,7 @@ pub fn install(agent: &str) -> Result<()> {
     }
 
     // 2. 生成项目根 .mcp.json（Claude Code/Cursor/VS Code 等 MCP 客户端注册 repo-wiki server）
-    match install_mcp_config(&project_root)? {
+    match install_mcp_config(project_root)? {
         true => println!("✓ .mcp.json 已生成（Claude Code/Cursor 等客户端可用）"),
         false => println!("✓ .mcp.json 已存在，跳过（保留人工修改）"),
     }
@@ -230,8 +233,10 @@ pub fn install(agent: &str) -> Result<()> {
 }
 
 /// repo-wiki 卸载: 移除 Agent 插件 + git hooks + 可选数据
-pub fn uninstall(force: bool) -> Result<()> {
-    let project_root = std::env::current_dir()?;
+///
+/// root 为项目根（U02：--root 注入，与 install 对称）。
+pub fn uninstall(force: bool, root: &crate::project::ProjectRoot) -> Result<()> {
+    let project_root = root.path();
 
     if !force {
         println!("警告: 卸载将移除 repo-wiki 集成配置。");
@@ -260,7 +265,7 @@ pub fn uninstall(force: bool) -> Result<()> {
     }
 
     // 3. 移除 .mcp.json 中的 repo-wiki server 条目（Claude Code/Cursor 等客户端配置）
-    remove_mcp_config(&project_root)?;
+    remove_mcp_config(project_root)?;
     println!("✓ .mcp.json 已清理（Claude Code/Cursor 等客户端配置）");
 
     println!("✓ repo-wiki 卸载完成 (数据保留: .repo-wiki/)");
@@ -333,25 +338,33 @@ pub const WIKI_BLOCK_START: &str = "<!-- REPO-WIKI:START -->";
 /// wiki 引用块的结束标记
 pub const WIKI_BLOCK_END: &str = "<!-- REPO-WIKI:END -->";
 
-/// 注入块的固定模板（含标记对，install-wiki 与 --also-claude 共用）
+/// 渲染注入块模板（install-wiki 与 --also-claude 共用）
 ///
 /// 内容为中文 markdown 指针风格：只引产物路径与常用命令，不复制 wiki
 /// 正文（避免与 LLM 生成的产物内容双份漂移）。以换行结尾，保证追加/
-/// 替换后与相邻内容衔接干净。固定为常量是测试断言的锚点。
-pub const WIKI_BLOCK_TEMPLATE: &str = "\
+/// 替换后与相邻内容衔接干净。
+///
+/// 产物路径按实际配置渲染（U02）：`output_dir` 与 `lang` 来自目标仓库的
+/// config.toml（output.dir / wiki.language）——此前模板硬编码 `wiki/` 与
+/// `zh`，默认配置（output.dir=.repo-wiki、language 可改）下注入指引失配。
+pub fn wiki_block_template(output_dir: &str, lang: &str) -> String {
+    format!(
+        "\
 <!-- REPO-WIKI:START -->
-本仓库使用 repo-wiki 维护可持续进化的项目 Wiki，产物位于 `wiki/`。
+本仓库使用 repo-wiki 维护可持续进化的项目 Wiki，产物位于 `{output_dir}/`。
 
 ## AI 代理使用指引
 
-1. 先读 `wiki/wiki/zh/overview.md` 与 `wiki/wiki/zh/architecture.md` 建立全局认知，
+1. 先读 `{output_dir}/wiki/{lang}/overview.md` 与 `{output_dir}/wiki/{lang}/architecture.md` 建立全局认知，
    再按需深入模块页。
 2. 查找实体（函数/结构体/类）用 `repo-wiki search -q \"<关键词>\"`（支持
    text/semantic/hybrid 三引擎，hybrid 含调用链补全）。
 3. 修改代码后运行 `repo-wiki update` 增量更新；`repo-wiki lint` 检查产物健康。
-4. 知识沉淀：`repo-wiki note \"<记录>\"` 追加到 `wiki/wiki/zh/_log.md`。
+4. 知识沉淀：`repo-wiki note \"<记录>\"` 追加到 `{output_dir}/wiki/{lang}/_log.md`。
 <!-- REPO-WIKI:END -->
-";
+"
+    )
+}
 
 /// 文档中 wiki 标记对的状态
 enum WikiBlockState {
@@ -437,7 +450,7 @@ pub fn remove_wiki_block(content: &str) -> Result<Option<String>> {
 }
 
 /// 向单个文件写入 wiki 引用块（读 → 注入 → 原子写）
-fn write_wiki_block(path: &Path) -> Result<()> {
+fn write_wiki_block(path: &Path, block: &str) -> Result<()> {
     // 文件不存在视为空文档（正常创建路径），读取失败才显式报错
     let content = if path.exists() {
         std::fs::read_to_string(path)
@@ -445,7 +458,7 @@ fn write_wiki_block(path: &Path) -> Result<()> {
     } else {
         String::new()
     };
-    let new_content = inject_wiki_block(&content, WIKI_BLOCK_TEMPLATE)?;
+    let new_content = inject_wiki_block(&content, block)?;
     crate::fs::write_file_atomic(path, &new_content)
 }
 
@@ -469,13 +482,28 @@ fn remove_wiki_block_from_file(path: &Path) -> Result<bool> {
 ///
 /// 文件不存在则创建；已存在完整标记对则整块替换（只动标记之间内容）；
 /// 半标记报错（不修，理由见 `wiki_block_state`）。
+///
+/// 注入块按目标仓库配置渲染（U02）：读 `root/.repo-wiki/config.toml` 取
+/// output.dir 与 wiki.language；配置缺失（首次运行/未 init）时用默认值
+/// (".repo-wiki", "zh") 并提示——与 init 先例一致，不因配置缺失阻断注入。
 pub fn install_wiki(root: &crate::project::ProjectRoot, also_claude: bool) -> Result<()> {
+    // 目标仓库产物路径：config 优先，缺失回退默认（与 create_default_config
+    // 的引导语义一致；输出目录解析相对 root，与 generate 的产物基准一致）
+    let config_path = root.join(Path::new(".repo-wiki/config.toml"));
+    let (output_dir, lang) = match crate::config::load_config(&config_path) {
+        Ok(c) => (c.output.dir, c.wiki.language),
+        Err(e) => {
+            println!("提示: 未找到有效配置（{}），注入块按默认产物路径 (.repo-wiki / zh) 渲染", e);
+            (".repo-wiki".to_string(), "zh".to_string())
+        }
+    };
+    let block = wiki_block_template(&output_dir, &lang);
     let agents_path = root.join(Path::new("AGENTS.md"));
-    write_wiki_block(&agents_path)?;
+    write_wiki_block(&agents_path, &block)?;
     println!("✓ wiki 引用块已注入 {}", agents_path.display());
     if also_claude {
         let claude_path = root.join(Path::new("CLAUDE.md"));
-        write_wiki_block(&claude_path)?;
+        write_wiki_block(&claude_path, &block)?;
         println!("✓ wiki 引用块已注入 {}", claude_path.display());
     }
     Ok(())
@@ -504,6 +532,11 @@ pub fn uninstall_wiki(root: &crate::project::ProjectRoot) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 注入测试用的模板块（默认产物路径形态，模板函数化后的断言锚点）
+    fn test_template() -> String {
+        wiki_block_template(".repo-wiki", "zh")
+    }
 
     /// append_note 追加式日志：同一日期节内序号递增；两次调用不覆盖历史
     #[test]
@@ -644,8 +677,8 @@ mod tests {
     /// 全新注入：空文档 → 追加完整标记对，结果恰等于模板本身
     #[test]
     fn test_inject_wiki_block_fresh() {
-        let out = inject_wiki_block("", WIKI_BLOCK_TEMPLATE).unwrap();
-        assert_eq!(out, WIKI_BLOCK_TEMPLATE, "空文档注入结果应等于模板本身");
+        let out = inject_wiki_block("", &test_template()).unwrap();
+        assert_eq!(out, test_template(), "空文档注入结果应等于模板本身");
         assert!(out.contains(WIKI_BLOCK_START) && out.contains(WIKI_BLOCK_END));
     }
 
@@ -653,18 +686,18 @@ mod tests {
     #[test]
     fn test_inject_wiki_block_replaces_existing() {
         let before = "用户头部\n\n<!-- REPO-WIKI:START -->\n旧块内容\n<!-- REPO-WIKI:END -->\n\n用户尾部\n";
-        let out = inject_wiki_block(before, WIKI_BLOCK_TEMPLATE).unwrap();
+        let out = inject_wiki_block(before, &test_template()).unwrap();
         assert!(out.starts_with("用户头部\n\n"), "用户头部应保留, 实际: {out}");
         assert!(out.ends_with("用户尾部\n"), "用户尾部应保留, 实际: {out}");
-        assert!(out.contains(WIKI_BLOCK_TEMPLATE), "旧块应被替换为模板, 实际: {out}");
+        assert!(out.contains(&test_template()), "旧块应被替换为模板, 实际: {out}");
         assert!(!out.contains("旧块内容"), "旧块内容应被替换掉, 实际: {out}");
     }
 
     /// 幂等：同一文档注入两次 → 结果一致（第二次走替换路径）
     #[test]
     fn test_inject_wiki_block_twice_stable() {
-        let first = inject_wiki_block("头部\n", WIKI_BLOCK_TEMPLATE).unwrap();
-        let second = inject_wiki_block(&first, WIKI_BLOCK_TEMPLATE).unwrap();
+        let first = inject_wiki_block("头部\n", &test_template()).unwrap();
+        let second = inject_wiki_block(&first, &test_template()).unwrap();
         assert_eq!(first, second, "重复注入应幂等（内容不变）");
     }
 
@@ -677,7 +710,7 @@ mod tests {
             "<!-- REPO-WIKI:END -->\n<!-- REPO-WIKI:START -->\n",
         ];
         for case in cases {
-            let err = inject_wiki_block(case, WIKI_BLOCK_TEMPLATE).unwrap_err();
+            let err = inject_wiki_block(case, &test_template()).unwrap_err();
             assert!(err.to_string().contains("不完整"), "半标记应报错: {err}");
         }
     }
@@ -686,7 +719,7 @@ mod tests {
     #[test]
     fn test_inject_wiki_block_preserves_user_content() {
         let before = "# 我的项目\n\n这是用户写的说明。\n";
-        let out = inject_wiki_block(before, WIKI_BLOCK_TEMPLATE).unwrap();
+        let out = inject_wiki_block(before, &test_template()).unwrap();
         let marker_idx = out.find(WIKI_BLOCK_START).unwrap();
         assert_eq!(
             &out[..marker_idx],

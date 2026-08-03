@@ -53,18 +53,27 @@ enum Commands {
         /// 配置文件路径
         #[arg(short, long, default_value = ".repo-wiki/config.toml")]
         config: PathBuf,
+        /// 项目根目录（产物目录定位基准，默认当前目录；U02 root 补齐族）
+        #[arg(long)]
+        root: Option<PathBuf>,
     },
     /// 查看当前 Wiki 状态
     Status {
         /// 配置文件路径
         #[arg(short, long, default_value = ".repo-wiki/config.toml")]
         config: PathBuf,
+        /// 项目根目录（产物目录定位基准，默认当前目录；U02 root 补齐族）
+        #[arg(long)]
+        root: Option<PathBuf>,
     },
     /// 检查 Wiki 产物健康（孤儿页/断链/过时），供 CI 使用；有问题时退出码非 0
     Lint {
         /// 配置文件路径
         #[arg(short, long, default_value = ".repo-wiki/config.toml")]
         config: PathBuf,
+        /// 项目根目录（产物目录定位基准，默认当前目录；U02 root 补齐族）
+        #[arg(long)]
+        root: Option<PathBuf>,
     },
     /// 追加一条知识沉淀记录到 _log.md（Karpathy log 模式，人工可读可 grep）
     Note {
@@ -73,6 +82,9 @@ enum Commands {
         /// 配置文件路径（取主语言写日志）
         #[arg(short, long, default_value = ".repo-wiki/config.toml")]
         config: PathBuf,
+        /// 项目根目录（产物目录定位基准，默认当前目录；U02 root 补齐族）
+        #[arg(long)]
+        root: Option<PathBuf>,
     },
     /// 导出 Wiki 为 HTML
     Export {
@@ -91,9 +103,12 @@ enum Commands {
     },
     /// 初始化配置文件
     Init {
-        /// 输出路径
+        /// 输出路径（相对 root 解析；U02 root 补齐族）
         #[arg(default_value = ".repo-wiki/config.toml")]
         path: PathBuf,
+        /// 项目根目录（路径定位基准，默认当前目录）
+        #[arg(long)]
+        root: Option<PathBuf>,
     },
     /// 监听文件变更并自动增量更新 Wiki
     Watch {
@@ -151,12 +166,19 @@ enum Commands {
         root: Option<PathBuf>,
     },
     /// 将 repo-wiki 注册为 OpenCode 插件
-    InstallToOpencode,
+    InstallToOpencode {
+        /// 项目根目录（插件/hook 安装基准，默认当前目录；U02 root 补齐族）
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
     /// 从 OpenCode 卸载 repo-wiki 插件
     UninstallFromOpencode {
         /// 跳过确认（卸载将移除集成配置）
         #[arg(long)]
         force: bool,
+        /// 项目根目录（插件/hook 移除基准，默认当前目录；U02 root 补齐族）
+        #[arg(long)]
+        root: Option<PathBuf>,
     },
     /// 向项目根 AGENTS.md 注入 wiki 引用块（标记对 <!-- REPO-WIKI:START/END --> 之间）
     InstallWiki {
@@ -332,14 +354,22 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
                 result.stats.modules_detected
             );
         }
-        Commands::Sync { config } => {
-            // sync = Git 内容 → 指纹库（不触发 LLM）；与 update = 代码变更 → 增量生成 边界分离
+        Commands::Sync { config, root } => {
+            // sync = Git 内容 → 指纹库（不触发 LLM）；与 update = 代码变更 → 增量生成 边界分离。
+            // 产物目录相对 cwd 解析（与 generate 的 output.dir 同基准，指纹键形态一致——
+            // 若以 root 重定向会破坏与生成状态键的一致性，人工修改保护检测失效）。
+            // --root 仅作接口对称（v8 P3 root 补齐族），resolve 校验后不使用。
+            let _root = resolve_root(root.as_deref())?;
             let cfg = repo_wiki::config::load_config(&config)?;
             repo_wiki::commands::sync_from_git(Path::new(&cfg.output.dir))?;
             tracing::info!("同步完成 (--config {})", config.display());
         }
-        Commands::Status { config } => {
-            let cfg = repo_wiki::config::load_config(&config)?;
+        Commands::Status { config, root } => {
+            // --root 提供时以 root 为产物目录基准（跨 cwd 运行 status 能定位正确产物；
+            // 缺省 root=cwd 行为不变）
+            let root = resolve_root(root.as_deref())?;
+            let mut cfg = repo_wiki::config::load_config(&config)?;
+            cfg.output.dir = root.path().join(&cfg.output.dir).to_string_lossy().into_owned();
             tracing::info!("配置加载成功: {}", config.display());
             let report = repo_wiki::commands::status_report(&cfg);
             // ready 才报告页面统计与 lint 结果；未生成时引导运行 generate
@@ -359,10 +389,13 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
                 println!("配置文件: {}", config.display());
             }
         }
-        Commands::Lint { config } => {
+        Commands::Lint { config, root } => {
             // lint 检查产物健康:孤儿页/断链/过时;发现问题时以非 0 退出码结束
             // (供 CI 门禁使用:git hook 或流水线可据此拒绝合并)
-            let cfg = repo_wiki::config::load_config(&config)?;
+            // --root 提供时以 root 为产物目录基准（同 status）
+            let root = resolve_root(root.as_deref())?;
+            let mut cfg = repo_wiki::config::load_config(&config)?;
+            cfg.output.dir = root.path().join(&cfg.output.dir).to_string_lossy().into_owned();
             let output_dir = Path::new(&cfg.output.dir);
             // 源码根从 scope.include 派生(取通配符前的目录前缀,如 "src/**" → "src")：
             // 过时检查需要对比源文件 mtime,空根会导致检查静默跳过(缺陷修复前行为)
@@ -467,8 +500,11 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
             }
             tracing::info!("HTML 导出完成 (--config {})", config.display());
         }
-        Commands::Note { text, config } => {
-            let cfg = repo_wiki::config::load_config(&config)?;
+        Commands::Note { text, config, root } => {
+            // --root 提供时以 root 为产物目录基准（同 status/lint）
+            let root = resolve_root(root.as_deref())?;
+            let mut cfg = repo_wiki::config::load_config(&config)?;
+            cfg.output.dir = root.path().join(&cfg.output.dir).to_string_lossy().into_owned();
             repo_wiki::commands::append_note(
                 Path::new(&cfg.output.dir),
                 &cfg.wiki.language,
@@ -476,7 +512,10 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
             )?;
             tracing::info!("知识记录已写入 (--config {})", config.display());
         }
-        Commands::Init { path } => {
+        Commands::Init { path, root } => {
+            // --root 提供时 path 相对 root 解析（与产物目录基准一致）
+            let root = resolve_root(root.as_deref())?;
+            let path = if path.is_absolute() { path } else { root.path().join(&path) };
             repo_wiki::config::create_default_config(&path)?;
             tracing::info!("默认配置文件已创建: {}", path.display());
         }
@@ -529,11 +568,13 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
                 }
             }
         }
-        Commands::InstallToOpencode => {
-            repo_wiki::commands::install("opencode")?;
+        Commands::InstallToOpencode { root } => {
+            let root = resolve_root(root.as_deref())?;
+            repo_wiki::commands::install("opencode", &root)?;
         }
-        Commands::UninstallFromOpencode { force } => {
-            repo_wiki::commands::uninstall(force)?;
+        Commands::UninstallFromOpencode { force, root } => {
+            let root = resolve_root(root.as_deref())?;
+            repo_wiki::commands::uninstall(force, &root)?;
         }
         Commands::InstallWiki { also_claude, root } => {
             // AGENTS.md 注入 wiki 引用块（--also-claude 双写 CLAUDE.md）；
