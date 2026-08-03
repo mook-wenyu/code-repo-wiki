@@ -171,3 +171,18 @@
 - 摸到的文件:Cargo.toml(+merman-core="0.7")、Cargo.lock、src/output/mermaid_check.rs(新)、src/output/mod.rs、src/generate/wiki.rs、src/output/lint.rs、src/commands.rs、src/main.rs、tests/test_install_wiki.rs(新)
 - 验证基线:**292 lib + 集成全绿**(lib 271→292 新增21:mermaid_check 9 + wiki mermaid 3 + lint bad-mermaid 1 + G1 commands 8)、clippy --all-targets -D warnings 0、全量 cargo test 0 失败
 - 已知边界:测试跑完全量后需 git checkout -- wiki/ 恢复(mock 产物泄漏到仓库根 wiki/,既有行为);merman alpha 状态风险已登记(t05 拍板接受)
+
+## 二十二、重大事故记录与恢复(2026-08-03,本会话)
+- **事故**:U10 验收时运行 repo-wiki bench(本仓库为评测对象),Update Recall 回放用 git reset --hard 逐 commit 回滚,吞噬 U01-U10 全部未提交改动(20+ src + 10+ tests 文件)
+- **根因**:measure_update_recall 无工作区干净检查(评测语义缺陷);已提交工作不受影响
+- **止损**:git checkout 75b5918 -- . 恢复工作树 + git update-ref refs/heads/master 75b5918 恢复分支;已提交(G1-G3/MCP/T0-T5/v8-v9)完整恢复;292 lib 测试全绿
+- **防护持久化**:src/bench/mod.rs 回放前强制 git statuses 干净检查(非空即 bail),已提交 76739e0
+- **损失**:U01-U10 未提交改动丢失,方案记录完整(压缩摘要),需重做;src/bench 文件幸存但接线(lib.rs pub mod bench + main.rs Bench)丢失
+- 分析报告:.scratch/research/ANALYSIS-v10-2026-08-03.md(含未完成项全景/优先级/防再丢建议)
+
+## 二十三、wayfinder 建图:U01-U11 重做与完成(v11)(2026-08-03,本会话)
+- 触发:事故(U01-U10 被 bench 回放吞噬)后,用户启动 wayfinder 重新规划恢复路线
+- 用户拍板(question 两轮 7 项):Destination=重做 U01-U10 + 完成评测 U10/U11 全部;产出=纯规划(地图+决策票+完整实现计划);提交策略=每完成一个 U 立即 git commit(强制执行无需批准);U11=纳入(裁判模型实施时实测选型);顺序=接受 ANALYSIS-v10 9 步路线;bench 安全闸=纯硬闸(脏工作区拒绝,无逃生口);评测仓库=先本仓库,公开仓库进 fog
+- 产物:.scratch/wayfinder-v11/map.md + issues/t01-t02(2 research 票)+ IMPLEMENTATION-PLAN.md(9 步完整计划,每 U 含实现要点/文件/测试/提交)
+- 地图:Destination=全量落地;frontier=t01/t02(待 fire 子代理);无未决 grilling(全部拍板)
+- 摸到的文件:STATUS.md、.scratch/wayfinder-v11/*(新建 4 文件)
