@@ -455,3 +455,52 @@ fn test_manual_edit_synced_to_card_without_code_change() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// P3-4（A8 防回归）：反向同步目标卡片缺失（被删除）时显式告警并跳过，
+/// 不得以空内容 + push_str 的方式凭空重建卡片（原实现 unwrap_or_default
+/// 会把被删卡片"复活"成只含人工修改节的残片）
+#[test]
+fn test_manual_edit_sync_skips_missing_card() {
+    use repo_wiki::incremental::state::GenerationState;
+
+    let dir = std::env::temp_dir()
+        .join(format!("repo_wiki_test_manual_sync_missing_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("wiki").join("zh")).unwrap();
+
+    // 人工修改的页面存在（指纹不匹配），但目标卡片文件不存在
+    let page = dir.join("wiki").join("zh").join("src_testmodule.md");
+    std::fs::write(&page, "人工修改后的内容").unwrap();
+
+    let page_str = page.to_string_lossy().to_string();
+    let state = GenerationState {
+        last_commit_hash: None,
+        file_fingerprints: HashMap::new(),
+        doc_fingerprints: {
+            let mut m = HashMap::new();
+            m.insert(page_str.clone(), "与磁盘内容不同的指纹".into());
+            m
+        },
+        doc_modules: {
+            let mut m = HashMap::new();
+            m.insert(page_str, "src::testmodule".into());
+            m
+        },
+        protected_docs: Vec::new(),
+        generated_at: String::new(),
+    };
+
+    let mut config = repo_wiki::config::schema::WikiConfig::default();
+    config.output.dir = dir.to_string_lossy().into_owned();
+
+    let synced = repo_wiki::sync_manual_edits_to_cards(&config, &state).unwrap();
+    assert_eq!(synced, 0, "卡片缺失时应跳过，不得凭空创建");
+
+    let card_path = dir.join("cards").join("zh").join("src_testmodule.md");
+    assert!(
+        !card_path.exists(),
+        "被删卡片不应被反向同步重建（读失败告警 + 跳过）"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

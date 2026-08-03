@@ -117,16 +117,6 @@ fn test_search_index_build_and_query() {
     std::fs::create_dir_all(&tmp_dir).expect("创建临时目录失败");
     let index_path = tmp_dir.join("text_index.bin");
 
-    // 收集实体并构建索引
-    let source_map: std::collections::HashMap<String, String> = insights
-        .iter()
-        .filter_map(|i| {
-            std::fs::read_to_string(&i.path)
-                .ok()
-                .map(|s| (i.path.to_string_lossy().to_string(), s))
-        })
-        .collect();
-
     let items: Vec<(repo_wiki::model::CodeNode, String)> = graph
         .graph
         .node_indices()
@@ -144,7 +134,6 @@ fn test_search_index_build_and_query() {
                 .signature
                 .clone()
                 .unwrap_or_else(|| node.name.clone());
-            let _ = &source_map; // 简化：直接用签名
             Some((node.clone(), source))
         })
         .collect();

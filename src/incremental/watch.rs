@@ -51,6 +51,9 @@ pub fn run_watch_loop(
         Duration::from_millis(300),
         None,
         move |result: DebounceEventResult| {
+            // tx.send 失败 = 接收端（主循环 rx）已 drop。此时事件本就无人消费，
+            // 静默丢弃是正确语义（不存在"数据丢失"——通道已断）；主循环退出
+            // 由外部信号/错误驱动，不由 send 结果驱动，故不在此处理 Err。
             let _ = tx.send(result);
         },
     )

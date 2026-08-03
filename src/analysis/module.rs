@@ -305,7 +305,7 @@ mod tests {
             });
             (nid, eid)
         };
-        let (tcp, etcp) = add_file(g, 0, "src/net/tcp.rs", vec!["src", "net"]);
+        let (_tcp, etcp) = add_file(g, 0, "src/net/tcp.rs", vec!["src", "net"]);
         let (_udp, eudp) = add_file(g, 1, "src/net/udp.rs", vec!["src", "net"]);
         let _server = add_file(g, 2, "src/http/server.rs", vec!["src", "http"]);
         let _client = add_file(g, 3, "src/http/client.rs", vec!["src", "http"]);
@@ -314,7 +314,6 @@ mod tests {
             id: EdgeId::new(g.edge_count()), kind: EdgeKind::Calls,
             source: etcp, target: eudp, weight: 0.7, location: None,
         });
-        let _ = tcp;
 
         let detector = ModuleDetector::new(&kg);
         let clusters = detector.detect();

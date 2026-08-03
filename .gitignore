@@ -7,6 +7,6 @@
 .scratch/
 .swarm/evidence/
 
-# wiki 运行状态与索引（可再生，不入库）
-wiki/.search/
-wiki/.state/
+# 仓库根 wiki/ 是 mock 测试泄漏产物（真实产物按 config output.dir 生成，
+# 本仓库为 .repo-wiki/）；整体不入库，防全量测试产物再次混入提交
+wiki/

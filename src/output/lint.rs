@@ -67,7 +67,12 @@ pub fn lint(output_dir: &Path, source_roots: &[PathBuf]) -> Vec<LintIssue> {
 fn check_orphan_pages(pages: &[PathBuf], link_sources: &[PathBuf], lang: &str) -> Vec<LintIssue> {
     let mut incoming: HashMap<String, usize> = HashMap::new();
     for page in link_sources {
-        let content = std::fs::read_to_string(page).unwrap_or_default();
+        // 页面读取失败（损坏/权限/竞态删除）时显式告警并跳过该页——
+        // 静默当作空内容会把页误报为孤儿/断链（失败必须可观测）
+        let Ok(content) = std::fs::read_to_string(page) else {
+            tracing::warn!("lint 读取页面失败（跳过检查）: {}", page.display());
+            continue;
+        };
         for link in extract_md_links(&content) {
             // 仅统计 wiki 页面间链接（.md 结尾且不含协议）
             if link.ends_with(".md") && !link.contains("://") {
@@ -109,7 +114,12 @@ fn check_orphan_pages(pages: &[PathBuf], link_sources: &[PathBuf], lang: &str) -
 fn check_broken_links(pages: &[PathBuf], lang: &str) -> Vec<LintIssue> {
     let mut issues = Vec::new();
     for page in pages {
-        let content = std::fs::read_to_string(page).unwrap_or_default();
+        // 页面读取失败（损坏/权限/竞态删除）时显式告警并跳过该页——
+        // 静默当作空内容会把页误报为孤儿/断链（失败必须可观测）
+        let Ok(content) = std::fs::read_to_string(page) else {
+            tracing::warn!("lint 读取页面失败（跳过检查）: {}", page.display());
+            continue;
+        };
         let file_name = page
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
@@ -145,7 +155,12 @@ fn check_stale(pages: &[PathBuf], cards_dir: &Path, source_roots: &[PathBuf], la
 
     let mut issues = Vec::new();
     for page in &stale_targets {
-        let content = std::fs::read_to_string(page).unwrap_or_default();
+        // 页面读取失败（损坏/权限/竞态删除）时显式告警并跳过该页——
+        // 静默当作空内容会把页误报为孤儿/断链（失败必须可观测）
+        let Ok(content) = std::fs::read_to_string(page) else {
+            tracing::warn!("lint 读取页面失败（跳过检查）: {}", page.display());
+            continue;
+        };
         let file_name = page
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
@@ -178,7 +193,12 @@ fn check_stale(pages: &[PathBuf], cards_dir: &Path, source_roots: &[PathBuf], la
 fn check_citations(pages: &[PathBuf], output_dir: &Path, source_roots: &[PathBuf], lang: &str) -> Vec<LintIssue> {
     let mut issues = Vec::new();
     for page in pages {
-        let content = std::fs::read_to_string(page).unwrap_or_default();
+        // 页面读取失败（损坏/权限/竞态删除）时显式告警并跳过该页——
+        // 静默当作空内容会把页误报为孤儿/断链（失败必须可观测）
+        let Ok(content) = std::fs::read_to_string(page) else {
+            tracing::warn!("lint 读取页面失败（跳过检查）: {}", page.display());
+            continue;
+        };
         let file_name = page
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
@@ -240,7 +260,12 @@ fn check_entity_coverage(pages: &[PathBuf], api_path: &Path, lang: &str, output_
 
     let mut issues = Vec::new();
     for page in pages {
-        let content = std::fs::read_to_string(page).unwrap_or_default();
+        // 页面读取失败（损坏/权限/竞态删除）时显式告警并跳过该页——
+        // 静默当作空内容会把页误报为孤儿/断链（失败必须可观测）
+        let Ok(content) = std::fs::read_to_string(page) else {
+            tracing::warn!("lint 读取页面失败（跳过检查）: {}", page.display());
+            continue;
+        };
         let file_name = page
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
@@ -264,7 +289,12 @@ fn check_entity_coverage(pages: &[PathBuf], api_path: &Path, lang: &str, output_
 fn check_mermaid(pages: &[PathBuf], lang: &str) -> Vec<LintIssue> {
     let mut issues = Vec::new();
     for page in pages {
-        let content = std::fs::read_to_string(page).unwrap_or_default();
+        // 页面读取失败（损坏/权限/竞态删除）时显式告警并跳过该页——
+        // 静默当作空内容会把页误报为孤儿/断链（失败必须可观测）
+        let Ok(content) = std::fs::read_to_string(page) else {
+            tracing::warn!("lint 读取页面失败（跳过检查）: {}", page.display());
+            continue;
+        };
         let file_name = page
             .file_name()
             .map(|s| s.to_string_lossy().to_string())

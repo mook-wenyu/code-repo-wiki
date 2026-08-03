@@ -142,6 +142,9 @@ impl SemanticSearch for SemanticEngine {
             .iter()
             .zip(vectors)
             .map(|((node, _), vector)| {
+                // CodeNode 是纯数据模型（无自定义 serde 错误路径），
+                // 序列化失败在类型层面不可达；unwrap_or_default 只为
+                // 满足 map 闭包签名，空串行由搜索侧反序列化失败自然跳过
                 let node_json = serde_json::to_string(node).unwrap_or_default();
                 let file = node.file_path.as_deref().unwrap_or("").to_string();
                 (file, node_json, vector)
@@ -166,6 +169,9 @@ impl SemanticSearch for SemanticEngine {
             .knn(&query_json, limit, crate::search::vecdb::MAX_COSINE_DISTANCE)?;
         let mut results = Vec::with_capacity(rows.len());
         for row in rows {
+            // 反序列化失败 = 索引数据损坏（外部篡改/旧版本写入的异构格式），
+            // 单条跳过不中断整个搜索（坏行对结果质量影响有限，搜索是
+            // 只读尽力而为路径）；索引重建由维度探测/全量重建机制覆盖
             if let Ok(node) = serde_json::from_str::<CodeNode>(&row.node_json) {
                 // 距离 → 相似度（1 - distance），与旧实现返回语义一致
                 results.push((node, (1.0 - row.distance) as f32));

@@ -670,4 +670,36 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// P3-4（A8 防回归）：旧卡片读取失败（卡片路径被替换为目录 →
+    /// read_to_string 返回 IsADirectory）时，显式告警 + 降级为空记录，
+    /// 不中断整批卡片生成；本次 extra 记录照常注入
+    #[tokio::test]
+    async fn test_generate_all_cards_survives_card_read_failure() {
+        let chunk = make_test_chunk();
+        let provider = Provider::Mock(MockProvider::new());
+        let (config, dir) = card_fixture("readfail", "src", "# src\n\n## 摘要\n旧内容");
+
+        // 卡片文件替换为同名目录：读取必然失败（非 NotFound 的 IO 错误路径）
+        let card_file = card_path(&config, "src");
+        std::fs::remove_file(&card_file).unwrap();
+        std::fs::create_dir_all(&card_file).unwrap();
+
+        let generator = CardGenerator::new(&provider, config, 1, "zh".into(), None);
+        let mut extra = std::collections::HashMap::new();
+        extra.insert(
+            "src".to_string(),
+            vec!["人工修改待同步: wiki/zh/src.md 内容摘要: 新修改".to_string()],
+        );
+
+        let cards = generator.generate_all_cards(&[chunk], &extra).await.unwrap();
+        assert_eq!(cards.len(), 1, "旧卡片读失败不应中断整批生成");
+        assert_eq!(
+            cards[0].pending_manual_edits,
+            vec!["人工修改待同步: wiki/zh/src.md 内容摘要: 新修改".to_string()],
+            "旧记录读取失败降级为空，只携带本次 extra 记录"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

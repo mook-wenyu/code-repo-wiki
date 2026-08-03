@@ -188,14 +188,12 @@ mod tests {
     /// FTS 命中足够（≥3 条）时不触发语义回溯（分层搜索的成本控制语义）
     #[test]
     fn test_agent_skips_semantic_when_text_sufficient() {
-        let text = make_text_engine(); // add_user + delete_user 只有 2 条……
-        // 补充第 3 条使 FTS 命中 ≥3，验证不触发回溯
+        // 构造 3 条使 FTS 命中 ≥3，验证不触发回溯
         let path = unique_db_path("agent_text3");
         let mut t = TextEngine::open(&path).unwrap();
         let _ = t.index(&mock_node("add_user"), "fn add_user(name: &str)");
         let _ = t.index(&mock_node("delete_user"), "fn delete_user(id: u64)");
         let _ = t.index(&mock_node("update_user"), "fn update_user(id: u64)");
-        let _ = text;
         let semantic = Box::new(MockSemantic {
             results: vec![(mock_node("sem_hit"), 0.95)],
         });
