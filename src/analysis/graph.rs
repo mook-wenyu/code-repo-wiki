@@ -552,3 +552,206 @@ mod tests {
         assert!(cycles[0].contains(&"func_b".to_string()));
     }
 }
+
+    /// t04：build_call_edges 跨文件调用边——a.rs 定义 callee，b.rs 的 caller
+    /// 正文含 "callee(" 应产生 Calls 边（此前该核心功能零单测）
+    #[test]
+    fn test_build_call_edges_cross_file() {
+        let mut g = petgraph::stable_graph::StableDiGraph::<CodeNode, CodeEdge>::new();
+        let callee = g.add_node(CodeNode {
+            id: NodeId::new(0),
+            kind: NodeKind::Function,
+            name: "callee".into(),
+            file_path: Some("src/a.rs".into()),
+            line_range: Some((1, 3)),
+            doc_comment: None,
+            signature: None,
+            module_path: vec![],
+        });
+        let caller = g.add_node(CodeNode {
+            id: NodeId::new(1),
+            kind: NodeKind::Function,
+            name: "caller".into(),
+            file_path: Some("src/b.rs".into()),
+            line_range: Some((1, 3)),
+            doc_comment: None,
+            signature: None,
+            module_path: vec![],
+        });
+        // call_candidates：(实体, 节点, 函数体源码)
+        let candidates = vec![(
+            Entity {
+                name: "caller".into(),
+                kind: "fn".into(),
+                line_start: 1,
+                line_end: 3,
+                doc_comment: None,
+                signature: None,
+                summary: None,
+            },
+            caller,
+            "pub fn caller() { callee(42) }".to_string(),
+        )];
+        build_call_edges(&mut g, &candidates);
+        assert_eq!(
+            g.edges_connecting(caller, callee).count(),
+            1,
+            "跨文件调用应产生一条 Calls 边"
+        );
+        let edge = g.edges_connecting(caller, callee).next().unwrap();
+        assert_eq!(edge.weight().kind, EdgeKind::Calls);
+    }
+
+    /// t04：单词边界——mycallee( 不应误匹配 callee(
+    #[test]
+    fn test_build_call_edges_word_boundary() {
+        let mut g = petgraph::stable_graph::StableDiGraph::<CodeNode, CodeEdge>::new();
+        let callee = g.add_node(CodeNode {
+            id: NodeId::new(0),
+            kind: NodeKind::Function,
+            name: "callee".into(),
+            file_path: Some("src/a.rs".into()),
+            line_range: Some((1, 3)),
+            doc_comment: None,
+            signature: None,
+            module_path: vec![],
+        });
+        let caller = g.add_node(CodeNode {
+            id: NodeId::new(1),
+            kind: NodeKind::Function,
+            name: "caller".into(),
+            file_path: Some("src/b.rs".into()),
+            line_range: Some((1, 3)),
+            doc_comment: None,
+            signature: None,
+            module_path: vec![],
+        });
+        let candidates = vec![(
+            Entity {
+                name: "caller".into(),
+                kind: "fn".into(),
+                line_start: 1,
+                line_end: 3,
+                doc_comment: None,
+                signature: None,
+                summary: None,
+            },
+            caller,
+            "pub fn caller() { mycallee(1) }".to_string(),
+        )];
+        build_call_edges(&mut g, &candidates);
+        assert_eq!(
+            g.edges_connecting(caller, callee).count(),
+            0,
+            "mycallee( 不是对 callee 的调用（前缀字母不构成调用）"
+        );
+    }
+
+    /// t04：同名自调用排除——callee 调用同名函数不建边；多次出现只建一条边
+    #[test]
+    fn test_build_call_edges_self_name_skipped_and_dedup() {
+        let mut g = petgraph::stable_graph::StableDiGraph::<CodeNode, CodeEdge>::new();
+        let callee = g.add_node(CodeNode {
+            id: NodeId::new(0),
+            kind: NodeKind::Function,
+            name: "callee".into(),
+            file_path: Some("src/a.rs".into()),
+            line_range: Some((1, 3)),
+            doc_comment: None,
+            signature: None,
+            module_path: vec![],
+        });
+        // 两个候选都调用 callee（同名实体跳过自身；同一模式重复出现去重）
+        let candidates = vec![
+            (
+                Entity {
+                    name: "callee".into(),
+                    kind: "fn".into(),
+                    line_start: 1,
+                    line_end: 3,
+                    doc_comment: None,
+                    signature: None,
+                    summary: None,
+                },
+                callee,
+                "pub fn callee() { callee(1); callee(2) }".to_string(),
+            ),
+            (
+                Entity {
+                    name: "other".into(),
+                    kind: "fn".into(),
+                    line_start: 1,
+                    line_end: 3,
+                    doc_comment: None,
+                    signature: None,
+                    summary: None,
+                },
+                g.add_node(CodeNode {
+                    id: NodeId::new(1),
+                    kind: NodeKind::Function,
+                    name: "other".into(),
+                    file_path: Some("src/c.rs".into()),
+                    line_range: Some((1, 3)),
+                    doc_comment: None,
+                    signature: None,
+                    module_path: vec![],
+                }),
+                "pub fn other() { callee(3) }".to_string(),
+            ),
+        ];
+        build_call_edges(&mut g, &candidates);
+        // 自调用（callee→callee）不建边
+        assert_eq!(
+            g.edges_connecting(callee, callee).count(),
+            0,
+            "同名实体（自调用）应跳过"
+        );
+        // other→callee 只建一条（去重）
+        let other = g.node_indices().find(|&n| g[n].name == "other").unwrap();
+        assert_eq!(
+            g.edges_connecting(other, callee).count(),
+            1,
+            "同一调用模式多次出现只建一条边"
+        );
+    }
+
+    /// t04：无调用时零边
+    #[test]
+    fn test_build_call_edges_no_call() {
+        let mut g = petgraph::stable_graph::StableDiGraph::<CodeNode, CodeEdge>::new();
+        let callee = g.add_node(CodeNode {
+            id: NodeId::new(0),
+            kind: NodeKind::Function,
+            name: "callee".into(),
+            file_path: Some("src/a.rs".into()),
+            line_range: Some((1, 3)),
+            doc_comment: None,
+            signature: None,
+            module_path: vec![],
+        });
+        let caller = g.add_node(CodeNode {
+            id: NodeId::new(1),
+            kind: NodeKind::Function,
+            name: "caller".into(),
+            file_path: Some("src/b.rs".into()),
+            line_range: Some((1, 3)),
+            doc_comment: None,
+            signature: None,
+            module_path: vec![],
+        });
+        let candidates = vec![(
+            Entity {
+                name: "caller".into(),
+                kind: "fn".into(),
+                line_start: 1,
+                line_end: 3,
+                doc_comment: None,
+                signature: None,
+                summary: None,
+            },
+            caller,
+            "pub fn caller() { let x = 1; }".to_string(),
+        )];
+        build_call_edges(&mut g, &candidates);
+        assert_eq!(g.edge_count(), 0, "无调用应零边");
+    }

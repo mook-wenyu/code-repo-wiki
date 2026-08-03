@@ -305,6 +305,8 @@ fn measure_update_recall(
         .ok()
         .and_then(|h| h.peel_to_commit().ok())
         .map(|c| c.id());
+    // t03：守卫接管 HEAD 恢复职责（panic/中断也恢复，见 HeadRestoreGuard）
+    let _head_guard = HeadRestoreGuard::new(&repo, original_head);
 
     for (i, commit) in commits.iter().enumerate() {
         let commit_id = commit.id();
@@ -361,11 +363,15 @@ fn measure_update_recall(
         }
     }
 
-    // 恢复原始 HEAD（回放期间 reset 移动了 HEAD，恢复避免污染用户仓库）
-    if let Some(oid) = original_head
-        && let Ok(obj) = repo.find_object(oid, None)
-    {
-        let _ = repo.reset(&obj, git2::ResetType::Hard, None);
+    // 恢复原始 HEAD（回放期间 reset 移动了 HEAD，恢复避免污染用户仓库）。
+    // 正常路径显式恢复并传播错误——恢复失败必须让用户知道（仓库停留在
+    // 回放 commit）；_guard 的 Drop 兜底处理 panic/中断路径（见下方结构体）。
+    if let Some(oid) = original_head {
+        let obj = repo
+            .find_object(oid, None)
+            .with_context(|| "回放后解析原 HEAD 失败")?;
+        repo.reset(&obj, git2::ResetType::Hard, None)
+            .with_context(|| "回放后恢复原 HEAD 失败（用户仓库停留在回放 commit）")?;
     }
 
     let recall = if with_changes == 0 { 1.0 } else { correctly_updated as f64 / with_changes as f64 };
@@ -375,6 +381,36 @@ fn measure_update_recall(
         correctly_updated,
         recall,
     })
+}
+
+/// t03/P1-3：回放期间的 HEAD 恢复守卫（RAII）
+///
+/// 回放用 reset --hard 逐 commit 移动 HEAD；若回放中途 panic/中断
+/// （内部 panic、Ctrl+C），流程末尾的显式恢复不会执行，用户仓库会停在
+/// 回放 commit——与实测事故（U01-U10 被回放吞噬）同源的危险路径。
+/// 本守卫在 Drop 中无条件恢复原始 HEAD：Drop 无法传播错误，恢复失败
+/// 仅告警（至少不静默）；正常路径仍在函数末尾显式恢复并传播错误。
+struct HeadRestoreGuard<'repo> {
+    repo: &'repo git2::Repository,
+    original: Option<git2::Oid>,
+}
+
+impl<'repo> HeadRestoreGuard<'repo> {
+    /// 创建守卫并立即接管恢复职责（在回放循环之前调用）
+    fn new(repo: &'repo git2::Repository, original: Option<git2::Oid>) -> Self {
+        Self { repo, original }
+    }
+}
+
+impl Drop for HeadRestoreGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(oid) = self.original
+            && let Ok(obj) = self.repo.find_object(oid, None)
+            && let Err(e) = self.repo.reset(&obj, git2::ResetType::Hard, None)
+        {
+            tracing::warn!("bench: 回放后恢复 HEAD 失败（Drop 兜底路径）: {e}");
+        }
+    }
 }
 
 /// 运行自动层评测，返回报告

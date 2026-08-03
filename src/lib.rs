@@ -124,24 +124,37 @@ fn save_generation_state(
 ) {
     let output_dir = Path::new(&config.output.dir);
     let state_dir = output_dir.join(".state");
-    if let Ok(mut state) = incremental::state::GenerationState::from_insights(root, insights, commit_hash) {
-        let mut protected_docs: Vec<String> = protected.iter().cloned().collect();
-        protected_docs.sort();
-        state.protected_docs = protected_docs;
-        if let Ok((fps, modules)) = incremental::state::GenerationState::record_doc_fingerprints(
-            documents,
-            cards,
-            output_dir,
-            &output::wiki_languages(config),
-        ) {
-            // 全量记录指纹与模块归属（含保护集文档）：受保护文档本轮被跳过
-            // 写盘，磁盘上仍是人工版，记录的即人工版指纹——下次再被人为修改
-            // 时指纹比对仍能命中检测，反向同步可持续生效；卡片侧的记录注入
-            // 自带去重（contains 检查），同一修改不会重复同步。
-            state.doc_fingerprints = fps;
-            state.doc_modules = modules;
+    // t02/P1-2：三处落盘失败全部告警（此前静默——状态写失败会导致下次 update
+    // 无指纹基线，人工修改保护与反向同步**静默失效**，与模块头"不静默丢失保护"
+    // 的目标矛盾；与 incremental/mod.rs 前置保存的 warn 处理对齐）。
+    match incremental::state::GenerationState::from_insights(root, insights, commit_hash) {
+        Ok(mut state) => {
+            let mut protected_docs: Vec<String> = protected.iter().cloned().collect();
+            protected_docs.sort();
+            state.protected_docs = protected_docs;
+            match incremental::state::GenerationState::record_doc_fingerprints(
+                documents,
+                cards,
+                output_dir,
+                &output::wiki_languages(config),
+            ) {
+                Ok((fps, modules)) => {
+                    // 全量记录指纹与模块归属（含保护集文档）：受保护文档本轮被跳过
+                    // 写盘，磁盘上仍是人工版，记录的即人工版指纹——下次再被人为修改
+                    // 时指纹比对仍能命中检测，反向同步可持续生效；卡片侧的记录注入
+                    // 自带去重（contains 检查），同一修改不会重复同步。
+                    state.doc_fingerprints = fps;
+                    state.doc_modules = modules;
+                }
+                Err(e) => tracing::warn!(
+                    "产物指纹记录失败（下次 update 人工修改检测可能失效）: {e}"
+                ),
+            }
+            if let Err(e) = state.save(&state_dir) {
+                tracing::warn!("生成状态保存失败（下次 update 无指纹基线，人工修改保护失效）: {e}");
+            }
         }
-        let _ = state.save(&state_dir);
+        Err(e) => tracing::warn!("生成状态构造失败（本次状态未落盘）: {e}"),
     }
 }
 
@@ -766,10 +779,15 @@ fn update_search_index_incremental(
                     semantic_engine.clear()?;
                     semantic_engine.index_batch(&all_items)?;
                 } else {
+                    // t01/P1-1：删除与回填错误显式传播（与同函数 text 路径一致）。
+                    // 此前 `let _` 吞错：文本索引已更新而向量库停留旧态（新旧混存），
+                    // 搜索返回陈旧/错位结果且无任何日志；语义索引是搜索功能的一部分，
+                    // 静默失败不可接受。函数级隔离哲学不变——调用方（lib.rs Phase 5）
+                    // 仍以 warn 包装，不中断主流程。
                     for file in changed_files {
-                        let _ = semantic_engine.remove_by_file(&file.to_string_lossy());
+                        semantic_engine.remove_by_file(&file.to_string_lossy())?;
                     }
-                    let _ = semantic_engine.index_batch(&items);
+                    semantic_engine.index_batch(&items)?;
                 }
             }
         }
