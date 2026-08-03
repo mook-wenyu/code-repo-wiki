@@ -93,9 +93,7 @@ cargo build --release
 repo-wiki init
 
 # 全量生成 Wiki
-repo-wiki generate
-
-# 增量更新
+repo-wiki generate# 增量更新
 repo-wiki update
 
 # 搜索代码实体
@@ -145,6 +143,16 @@ documents:                         # 页面白名单（提供时严格只输出�
 `update`（增量）与 `generate` 生成前会比对磁盘文档与上次生成时记录的 SHA256 指纹：人工修改过的文档自动加入保护集，后续更新不覆盖（保护集记录于 `.repo-wiki/.state/generation_state.json`）。使用 `generate --force` 清空保护集强制重写。
 
 ## 配置
+
+### 配置加载链（全局/项目级）
+
+不带 `--config` 时按以下链解析配置文件（v13 E 组）：
+
+1. **项目级**：`{root}/.repo-wiki/config.toml`（root 为当前目录或 `--root` 指定）
+2. **全局（用户级）**：Windows `%APPDATA%\repo-wiki\config.toml`，其他平台 `~/repo-wiki/config.toml`
+3. **创建**：两者都不存在时自动创建全局目录与默认配置（引导式，无需先手动 init）
+
+显式 `--config <path>` 指定时原样使用（缺失则报错，不走创建链）。
 
 ```toml
 [wiki]

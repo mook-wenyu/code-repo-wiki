@@ -15,8 +15,8 @@ enum Commands {
     /// 全量生成 Wiki 文档
     Generate {
         /// 配置文件路径（默认 .repo-wiki/config.toml）
-        #[arg(short, long, default_value = ".repo-wiki/config.toml")]
-        config: PathBuf,
+        #[arg(short, long)]
+        config: Option<PathBuf>,
         /// 输出目录（覆盖配置文件中的 output.dir）
         #[arg(short, long)]
         output: Option<PathBuf>,
@@ -33,8 +33,8 @@ enum Commands {
     /// 增量更新 Wiki 文档
     Update {
         /// 配置文件路径
-        #[arg(short, long, default_value = ".repo-wiki/config.toml")]
-        config: PathBuf,
+        #[arg(short, long)]
+        config: Option<PathBuf>,
         /// 输出目录（覆盖配置文件中的 output.dir）
         #[arg(short, long)]
         output: Option<PathBuf>,
@@ -51,8 +51,8 @@ enum Commands {
     /// 同步产物目录内容到指纹库（Git 内容合入，不触发 LLM 生成）
     Sync {
         /// 配置文件路径
-        #[arg(short, long, default_value = ".repo-wiki/config.toml")]
-        config: PathBuf,
+        #[arg(short, long)]
+        config: Option<PathBuf>,
         /// 项目根目录（产物目录定位基准，默认当前目录；U02 root 补齐族）
         #[arg(long)]
         root: Option<PathBuf>,
@@ -60,8 +60,8 @@ enum Commands {
     /// 查看当前 Wiki 状态
     Status {
         /// 配置文件路径
-        #[arg(short, long, default_value = ".repo-wiki/config.toml")]
-        config: PathBuf,
+        #[arg(short, long)]
+        config: Option<PathBuf>,
         /// 项目根目录（产物目录定位基准，默认当前目录；U02 root 补齐族）
         #[arg(long)]
         root: Option<PathBuf>,
@@ -69,8 +69,8 @@ enum Commands {
     /// 检查 Wiki 产物健康（孤儿页/断链/过时），供 CI 使用；有问题时退出码非 0
     Lint {
         /// 配置文件路径
-        #[arg(short, long, default_value = ".repo-wiki/config.toml")]
-        config: PathBuf,
+        #[arg(short, long)]
+        config: Option<PathBuf>,
         /// 项目根目录（产物目录定位基准，默认当前目录；U02 root 补齐族）
         #[arg(long)]
         root: Option<PathBuf>,
@@ -80,8 +80,8 @@ enum Commands {
         /// 记录文本
         text: String,
         /// 配置文件路径（取主语言写日志）
-        #[arg(short, long, default_value = ".repo-wiki/config.toml")]
-        config: PathBuf,
+        #[arg(short, long)]
+        config: Option<PathBuf>,
         /// 项目根目录（产物目录定位基准，默认当前目录；U02 root 补齐族）
         #[arg(long)]
         root: Option<PathBuf>,
@@ -89,8 +89,8 @@ enum Commands {
     /// 导出 Wiki 为 HTML
     Export {
         /// 配置文件路径
-        #[arg(short, long, default_value = ".repo-wiki/config.toml")]
-        config: PathBuf,
+        #[arg(short, long)]
+        config: Option<PathBuf>,
         /// 输出目录（覆盖配置文件中的 output.dir，仅 skip_generate=false 时生效）
         #[arg(short, long)]
         output: Option<PathBuf>,
@@ -103,9 +103,9 @@ enum Commands {
     },
     /// 初始化配置文件
     Init {
-        /// 输出路径（相对 root 解析；U02 root 补齐族）
-        #[arg(default_value = ".repo-wiki/config.toml")]
-        path: PathBuf,
+        /// 输出路径（相对 root 解析；缺省走默认配置链——项目级存在则
+        /// 用项目级，否则创建全局默认配置；v13 E 组）
+        path: Option<PathBuf>,
         /// 项目根目录（路径定位基准，默认当前目录）
         #[arg(long)]
         root: Option<PathBuf>,
@@ -113,8 +113,8 @@ enum Commands {
     /// 监听文件变更并自动增量更新 Wiki
     Watch {
         /// 配置文件路径
-        #[arg(short, long, default_value = ".repo-wiki/config.toml")]
-        config: PathBuf,
+        #[arg(short, long)]
+        config: Option<PathBuf>,
         /// 项目根目录（扫描根/监听根基准，默认当前目录）
         #[arg(long)]
         root: Option<PathBuf>,
@@ -128,8 +128,8 @@ enum Commands {
         #[arg(short = 'k', long)]
         top_k: Option<usize>,
         /// 配置文件路径
-        #[arg(short, long, default_value = ".repo-wiki/config.toml")]
-        config: PathBuf,
+        #[arg(short, long)]
+        config: Option<PathBuf>,
         /// 以 JSON 格式输出
         #[arg(long)]
         json: bool,
@@ -148,8 +148,8 @@ enum Commands {
         #[arg(short, long)]
         language: Option<String>,
         /// 配置文件路径
-        #[arg(short, long, default_value = ".repo-wiki/config.toml")]
-        config: PathBuf,
+        #[arg(short, long)]
+        config: Option<PathBuf>,
         /// 以 JSON 格式输出
         #[arg(long)]
         json: bool,
@@ -198,8 +198,8 @@ enum Commands {
     /// 启动 MCP (Model Context Protocol) stdio server（供 Claude Code/Cline 等客户端连接）
     Mcp {
         /// 配置文件路径
-        #[arg(short, long, default_value = ".repo-wiki/config.toml")]
-        config: PathBuf,
+        #[arg(short, long)]
+        config: Option<PathBuf>,
         /// 项目根目录（扫描根/git 定位基准，默认当前目录）
         #[arg(long)]
         root: Option<PathBuf>,
@@ -236,8 +236,8 @@ enum CardAction {
         /// 模块名（如 src::config）
         module: String,
         /// 配置文件路径
-        #[arg(long, default_value = ".repo-wiki/config.toml")]
-        config: PathBuf,
+        #[arg(long)]
+        config: Option<PathBuf>,
     },
     /// 按指令修改已有卡片
     Modify {
@@ -250,8 +250,8 @@ enum CardAction {
         #[arg(long)]
         reference: Vec<PathBuf>,
         /// 配置文件路径
-        #[arg(long, default_value = ".repo-wiki/config.toml")]
-        config: PathBuf,
+        #[arg(long)]
+        config: Option<PathBuf>,
     },
     /// 在已有卡片上追加内容
     Supplement {
@@ -264,8 +264,8 @@ enum CardAction {
         #[arg(long)]
         reference: Vec<PathBuf>,
         /// 配置文件路径
-        #[arg(long, default_value = ".repo-wiki/config.toml")]
-        config: PathBuf,
+        #[arg(long)]
+        config: Option<PathBuf>,
     },
     /// 忽略现有内容全量重写
     Rewrite {
@@ -278,8 +278,8 @@ enum CardAction {
         #[arg(long)]
         reference: Vec<PathBuf>,
         /// 配置文件路径
-        #[arg(long, default_value = ".repo-wiki/config.toml")]
-        config: PathBuf,
+        #[arg(long)]
+        config: Option<PathBuf>,
     },
 }
 
@@ -301,6 +301,16 @@ fn resolve_root(root: Option<&Path>) -> anyhow::Result<repo_wiki::project::Proje
     }
 }
 
+/// 解析 --config 参数：显式指定原样使用；缺省走默认配置链
+/// （项目级 .repo-wiki/config.toml → 全局用户级目录 → 创建全局，
+/// 见 config::resolve_default_config_path；E 组 v13）
+fn resolve_config_path(
+    config: Option<&Path>,
+    root: &repo_wiki::project::ProjectRoot,
+) -> anyhow::Result<PathBuf> {
+    repo_wiki::config::resolve_config_path(config, root)
+}
+
 fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -313,6 +323,7 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
     match cli.command {
         Commands::Generate { config, output, force, progress_json, root } => {
             let root = resolve_root(root.as_deref())?;
+            let config = resolve_config_path(config.as_deref(), &root)?;
             let result = if progress_json {
                 // JSONL 进度输出：插件 wiki_generate 流式解析
                 repo_wiki::run_pipeline_with_progress(
@@ -337,6 +348,7 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
         Commands::Update { config, output, force, progress_json, root } => {
             // update 命令无外部 watch 事件，watch_paths 传空、change_kind 传 None
             let root = resolve_root(root.as_deref())?;
+            let config = resolve_config_path(config.as_deref(), &root)?;
             let result = if progress_json {
                 // JSONL 进度输出：与 generate --progress-json 同构，供插件流式解析
                 repo_wiki::run_pipeline_with_progress(
@@ -368,8 +380,9 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
             // sync = Git 内容 → 指纹库（不触发 LLM）；与 update = 代码变更 → 增量生成 边界分离。
             // 产物目录相对 cwd 解析（与 generate 的 output.dir 同基准，指纹键形态一致——
             // 若以 root 重定向会破坏与生成状态键的一致性，人工修改保护检测失效）。
-            // --root 仅作接口对称（v8 P3 root 补齐族），resolve 校验后不使用。
-            let _root = resolve_root(root.as_deref())?;
+            // --root 仅用于默认配置链的项目级定位（v13 E 组），产物基准语义不变。
+            let root = resolve_root(root.as_deref())?;
+            let config = resolve_config_path(config.as_deref(), &root)?;
             let cfg = repo_wiki::config::load_config(&config)?;
             repo_wiki::commands::sync_from_git(Path::new(&cfg.output.dir))?;
             tracing::info!("同步完成 (--config {})", config.display());
@@ -378,6 +391,7 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
             // --root 提供时以 root 为产物目录基准（跨 cwd 运行 status 能定位正确产物；
             // 缺省 root=cwd 行为不变）
             let root = resolve_root(root.as_deref())?;
+            let config = resolve_config_path(config.as_deref(), &root)?;
             let mut cfg = repo_wiki::config::load_config(&config)?;
             cfg.output.dir = root.path().join(&cfg.output.dir).to_string_lossy().into_owned();
             tracing::info!("配置加载成功: {}", config.display());
@@ -404,6 +418,7 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
             // (供 CI 门禁使用:git hook 或流水线可据此拒绝合并)
             // --root 提供时以 root 为产物目录基准（同 status）
             let root = resolve_root(root.as_deref())?;
+            let config = resolve_config_path(config.as_deref(), &root)?;
             let mut cfg = repo_wiki::config::load_config(&config)?;
             cfg.output.dir = root.path().join(&cfg.output.dir).to_string_lossy().into_owned();
             let output_dir = Path::new(&cfg.output.dir);
@@ -423,6 +438,7 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
         Commands::AstSearch { symbol, language, config, json, root } => {
             // AST 精确符号查找：不依赖搜索索引，直接扫描源文件解析 AST 定位定义
             let root = resolve_root(root.as_deref())?;
+            let config = resolve_config_path(config.as_deref(), &root)?;
             let results = repo_wiki::execute_ast_search(&config, &root, &symbol, language.as_deref())?;
             if json {
                 let json_results: Vec<serde_json::Value> = results.iter().map(|hit| {
@@ -453,6 +469,7 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
         }
         Commands::Export { config, output, skip_generate, root } => {
             let root = resolve_root(root.as_deref())?;
+            let config = resolve_config_path(config.as_deref(), &root)?;
             let cfg = repo_wiki::config::load_config(&config)?;
             if skip_generate {
                 // 从导出快照恢复导出（票 06）：不重跑生成流水线。
@@ -513,6 +530,7 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
         Commands::Note { text, config, root } => {
             // --root 提供时以 root 为产物目录基准（同 status/lint）
             let root = resolve_root(root.as_deref())?;
+            let config = resolve_config_path(config.as_deref(), &root)?;
             let mut cfg = repo_wiki::config::load_config(&config)?;
             cfg.output.dir = root.path().join(&cfg.output.dir).to_string_lossy().into_owned();
             repo_wiki::commands::append_note(
@@ -523,18 +541,27 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
             tracing::info!("知识记录已写入 (--config {})", config.display());
         }
         Commands::Init { path, root } => {
-            // --root 提供时 path 相对 root 解析（与产物目录基准一致）
+            // --root 提供时 path 相对 root 解析（与产物目录基准一致）；
+            // path 缺省走默认配置链：项目级 .repo-wiki/config.toml 存在则
+            // 复用（不重复创建），否则创建全局默认配置（E 组引导语义）
             let root = resolve_root(root.as_deref())?;
-            let path = if path.is_absolute() { path } else { root.path().join(&path) };
+            let path = match path {
+                Some(p) if p.is_absolute() => p,
+                Some(p) => root.path().join(p),
+                None => repo_wiki::config::resolve_default_config_path(&root)?,
+            };
             repo_wiki::config::create_default_config(&path)?;
             tracing::info!("默认配置文件已创建: {}", path.display());
         }
         Commands::Watch { config, root } => {
             let root = resolve_root(root.as_deref())?;
+            let config = resolve_config_path(config.as_deref(), &root)?;
             repo_wiki::run_watch(&config, &root)?;
         }
         Commands::Search { query, top_k, config, json, engine, root } => {
             // 解析引擎类型：优先用 CLI 参数，否则取配置文件中的 default_engine
+            let root = resolve_root(root.as_deref())?;
+            let config = resolve_config_path(config.as_deref(), &root)?;
             let cfg = repo_wiki::config::load_config(&config)?;
             let engine_type = match engine.as_deref() {
                 Some("text") => repo_wiki::config::schema::SearchEngineType::Text,
@@ -546,7 +573,6 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
             // CLI 显式 -k 优先，未传时回退配置 search.default_top_k
             // N17：top_k 下限收敛到 1（top_k=0 的搜索调用无意义，返回空结果）
             let top_k = top_k.unwrap_or(cfg.search.default_top_k).max(1);
-            let root = resolve_root(root.as_deref())?;
             let results = repo_wiki::execute_search(&config, &root, &query, top_k, &engine_type)?;
             if json {
                 // JSON 格式输出（供 OpenCode 插件解析）
@@ -601,6 +627,7 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
             // MCP stdio server：阻塞直到客户端断开。异步运行时由库内
             // get_global_runtime 提供（与流水线共用，避免二次初始化）。
             let root = resolve_root(root.as_deref())?;
+            let config = resolve_config_path(config.as_deref(), &root)?;
             let rt = repo_wiki::get_global_runtime();
             rt.block_on(repo_wiki::mcp::serve_stdio(config, root))?;
         }
@@ -625,16 +652,18 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
                 ),
             };
             let root = resolve_root(root.as_deref())?;
+            let config = resolve_config_path(config.as_deref(), &root)?;
             repo_wiki::run_card_command(&config, &root, &action)?;
         }
         Commands::Bench { root, repo_name, config, json, judge } => {
             // 评测基准（U10）：五维自动评测。root 必填（评测对象仓库根），
-            // ProjectRoot::new 会校验目录存在性（N7）。config 缺省取
-            // root/.repo-wiki/config.toml；repo_name 缺省取 root 目录名。
+            // ProjectRoot::new 会校验目录存在性（N7）。config 缺省走默认
+            // 配置链（E 组：项目级 → 全局 → 创建全局）；repo_name 缺省取
+            // root 目录名。
             // Update Recall 回放前有工作区干净检查（安全闸，事故教训），
             // 脏工作区会明确报错拒绝评测。
             let root = repo_wiki::project::ProjectRoot::new(root);
-            let config_path = config.unwrap_or_else(|| root.path().join(".repo-wiki").join("config.toml"));
+            let config_path = resolve_config_path(config.as_deref(), &root)?;
             let cfg = repo_wiki::config::load_config(&config_path)?;
             let repo_name = repo_name.unwrap_or_else(|| {
                 root.path()

@@ -566,3 +566,30 @@ fn test_root_missing_dir_errors() {
 
     let _ = std::fs::remove_dir_all(&work_dir);
 }
+
+// ==================== E 组：默认配置链（v13） ====================
+
+/// E 组：无 --config 时默认配置链取项目级 .repo-wiki/config.toml（项目级优先）。
+/// 项目级存在时不触达全局目录（resolve 先查项目级），测试无需隔离 APPDATA。
+#[test]
+fn test_default_config_chain_prefers_project_config() {
+    let work_dir = unique_dir("e-chain");
+    let _ = std::fs::remove_dir_all(&work_dir);
+    std::fs::create_dir_all(work_dir.join(".repo-wiki")).unwrap();
+    std::fs::write(work_dir.join(".repo-wiki").join("config.toml"), TEST_CONFIG).unwrap();
+
+    // 不带 --config 运行 status：应命中项目级配置（未生成提示 + 配置路径）
+    let out = run_bin(&work_dir, &["status"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "status 应成功，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.replace('\\', "/").contains(".repo-wiki/config.toml"),
+        "默认链应命中项目级配置，实际: {stdout}"
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
