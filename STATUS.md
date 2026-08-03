@@ -223,3 +223,12 @@
 - 网络对照:Agent Retrieval Bench edit2ripple(增量评测可借鉴);style bias(0.76-0.92)≫position bias;robust-llm-wiki 分层 lint;Karpathy 生态背书
 - 报告:.scratch/research/ANALYSIS-v13-2026-08-03.md(七节:状态/发现/对照/未完成项全景/需求/反思/三清单)
 - 教训:445 全绿测试覆盖纸面路径;声称完成必须有真实调用点证据;语义级测试(非存在性断言)
+
+## 二十九、v13 全量落地完成(2026-08-04,本会话,wayfinder-v13)
+- **A 组 P1 正确性 10 项(f8ae1c8)**:A1 首次 update 无基线回退全量(原静默空 diff 短路,wiki 恒空);A2 incremental 禁用时 update 真正全量;A3 mermaid 依赖图/调用图确定性排序(原 HashSet/HashMap 字节漂移);A4 LLM 生产路径统一流式(complete 默认实现委托 complete_stream,移除 client 120s/180s 总超时,SSE 60s 空闲超时保护——v12 t09 纸面化修复,附 A4 回归 6469fea:test_cli mock 改 SSE);A5 文档指纹读失败保守计入保护集;A6 状态读取失败显式告警;A7 插件全部工具补 --root;A8 卡片恢复/反向同步读失败告警+被删卡片不重建;A9 semantic 吞错链修复+hybrid 降级 warn;A10 文档修复(README/CONTEXT/fixture/测试注释)
+- **E 组 全局配置链(3e30f9d,用户拍板)**:新 global_config_dir(Windows %APPDATA%/repo-wiki,其他 ~/repo-wiki,USERPROFILE 优先);默认配置搜索链=项目级→全局→创建全局;15 处 --config 改 Option 全部入口统一 resolve;Init 缺省走链创建全局;Bench config 走链;测试隔离核查(全部 CLI 测试显式 --config,不触达真实 APPDATA)
+- **B 组 P2 可维护性 11 项(c9039f0)**:B1/B2 已于 A 组完成;死代码 4 处(SearchAgent::text_engine/set_rrf_k、NodeKind::priority、ParserRegistry::supported_extensions);bench diff 吞错 warn+保守计入;ScanOutput{insights,files_failed} 解析失败统计+AnalysisStats.files_failed;embed 非数字元素显式 bail;lint.rs 六类检查各一函数(每函数<60 行);tests/common/mod.rs helper 收敛(9 文件去重);benches root 参数化;update --progress-json 冒烟
+- **C 组 P3 卫生 3 项(eabfa0a)**:测试残渣(module.rs/agent.rs/integration_test 死变量)+lint 5 处读失败 warn+semantic 注释;wiki/ 整体 .gitignore+git rm --cached(仓库根 wiki/ 是 mock 泄漏产物,真实产物在 .repo-wiki/);P3-4 八项核对补齐 2 测试(卡片读失败不中断/被删卡片不重建)
+- **D 组(c424210)**:D1 stale-entity 符号漂移 lint(api.md 清单实体∉源码 AST→报错,entity-coverage 反向);D2 update 尾部 lint 全量复核 warn 不阻断;D3 前置查证=seed 本就固定(LEIDEN_SEED=42 双处),detect_communities_with_resolution 参数化+新 benchmarks/gamma_scan.rs 评测工具;γ 实测(Unity 2950 文件):γ 0.2-0.6→模块 521-724(差异≤25%),单文件占比 59-69% 不敏感——低模块化是图结构特性,维持默认 0.5,t08 结论修正
+- **验证基线:463 passed**(346 lib + 117 集成,较 v12 445 +18)、clippy -D warnings 0、machete 干净、工作树干净
+- 已知边界:wiki_note 需二进制在 PATH(本机 G1 环境问题,已用 cargo run 完成);wiki 自更新需真实 LLM key 未执行;γ 扫描工具保留于 benches/gamma_scan.rs 供大仓库复测
