@@ -149,7 +149,7 @@ where
 /// 真实差异在 JSON 字段路径（OpenAI: choices[0].delta.content；
 /// Anthropic: type=content_block_delta 事件的 delta.text），故用提取闭包参数化。
 /// `data: [DONE]` 等非 JSON 行解析失败自然跳过。
-fn parse_sse_stream(
+/// 仅测试使用（流式路径已内联同样的按行解析，此处保留整块解析供 mock 断言）\n#[cfg(test)]\nfn parse_sse_stream(
     bytes: &[u8],
     line_prefix: &str,
     extract: impl Fn(&serde_json::Value) -> Option<String>,
@@ -170,14 +170,70 @@ fn parse_sse_stream(
     chunks
 }
 
-/// 消费流式响应并走共享 SSE 解析（完整收包后统一解析）
+/// 消费流式响应并走共享 SSE 解析（逐 chunk 流式，t09）
+///
+/// 原实现 `resp.bytes().await` 全量收包后统一解析：长生成（真实 LLM
+/// 10min 超时前科）受 client 总超时（120s）**整体截断**，重试又从头
+/// 再来——进度全部丢失。流式方案：`bytes_stream` 逐块读取，每次读块
+/// 用**空闲超时**保护（60s 无数据才判超时）：只要模型还在产出就不会
+/// 超时，真正停止产出才失败，长生成不再受总超时限制。
+///
+/// SSE 行解析复用 parse_sse_stream 的语义（`data: ` 前缀 + 提取闭包），
+/// 逐行增量处理；跨 chunk 的残行保留到下一块。
+const SSE_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
 async fn collect_sse(
     resp: reqwest::Response,
     line_prefix: &str,
     extract: impl Fn(&serde_json::Value) -> Option<String>,
 ) -> Result<Vec<String>> {
-    let bytes = resp.bytes().await.context("读取 SSE 流失败")?;
-    Ok(parse_sse_stream(&bytes, line_prefix, extract))
+    use futures::StreamExt;
+    let mut stream = resp.bytes_stream();
+    let mut buf: Vec<u8> = Vec::new();
+    let mut chunks = Vec::new();
+
+    loop {
+        let item = match tokio::time::timeout(SSE_IDLE_TIMEOUT, stream.next()).await {
+            Ok(Some(Ok(item))) => item,
+            Ok(Some(Err(e))) => return Err(e.into()),
+            // 流正常结束：处理尾部残行后返回
+            Ok(None) => break,
+            Err(_) => anyhow::bail!(
+                "SSE 流读取空闲超时（{}s 无数据，模型可能已停止产出）",
+                SSE_IDLE_TIMEOUT.as_secs()
+            ),
+        };
+        buf.extend_from_slice(&item);
+        // 按行切分处理，保留未完成的尾部残行
+        let mut consumed = 0usize;
+        for (idx, b) in buf.iter().enumerate() {
+            if *b != b'\n' {
+                continue;
+            }
+            let line = String::from_utf8_lossy(&buf[consumed..idx]);
+            let line = line.trim();
+            if !line.is_empty()
+                && let Some(json_str) = line.strip_prefix(line_prefix)
+                && let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str)
+                && let Some(text) = extract(&val)
+            {
+                chunks.push(text);
+            }
+            consumed = idx + 1;
+        }
+        buf.drain(..consumed);
+    }
+    // 尾部残行（流结束时最后一行可能无换行符）
+    if !buf.is_empty() {
+        let line = String::from_utf8_lossy(&buf);
+        if let Some(json_str) = line.trim().strip_prefix(line_prefix)
+            && let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str)
+            && let Some(text) = extract(&val)
+        {
+            chunks.push(text);
+        }
+    }
+    Ok(chunks)
 }
 
 /// OpenAI 兼容 API 的 LLM Provider 实现
