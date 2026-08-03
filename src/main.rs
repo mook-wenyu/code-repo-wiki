@@ -221,6 +221,10 @@ enum Commands {
         /// 以 JSON 格式输出报告
         #[arg(long)]
         json: bool,
+        /// 追加 TQS LLM 裁判打分维度（需配置 LLM API key；快照缺失或
+        /// LLM 不可用时该维度跳过）
+        #[arg(long)]
+        judge: bool,
     },
 }
 
@@ -623,7 +627,7 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
             let root = resolve_root(root.as_deref())?;
             repo_wiki::run_card_command(&config, &root, &action)?;
         }
-        Commands::Bench { root, repo_name, config, json } => {
+        Commands::Bench { root, repo_name, config, json, judge } => {
             // 评测基准（U10）：五维自动评测。root 必填（评测对象仓库根），
             // ProjectRoot::new 会校验目录存在性（N7）。config 缺省取
             // root/.repo-wiki/config.toml；repo_name 缺省取 root 目录名。
@@ -638,7 +642,7 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "unknown".to_string())
             });
-            let report = repo_wiki::bench::run_bench(&config_path, &root, &cfg, &repo_name)?;
+            let report = repo_wiki::bench::run_bench(&config_path, &root, &cfg, &repo_name, judge)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {

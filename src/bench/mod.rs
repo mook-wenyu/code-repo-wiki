@@ -25,6 +25,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::config::schema::WikiConfig;
+use crate::generate::llm::LlmProvider;
 use crate::project::ProjectRoot;
 
 /// 增量回放的最大 commit 数（对齐 RepoDoc 每仓库 20 commit 协议）
@@ -42,6 +43,8 @@ pub struct BenchReport {
     pub lint: LintReport,
     pub update_recall: UpdateRecallReport,
     pub time: TimeReport,
+    /// TQS 裁判打分（--judge 启用且 LLM 可用时 Some；否则 None）
+    pub tqs: Option<TqsReport>,
 }
 
 /// 维度 1：实体覆盖率
@@ -101,6 +104,27 @@ pub struct TimeReport {
     pub generate_ms: u64,
     /// 总耗时（毫秒）
     pub total_ms: u64,
+}
+
+/// 维度 6：TQS 文本质量打分（LLM 裁判层，U11，需 API key）
+///
+/// RepoDocBench 协议：对同一模块的旧文档（导出快照）与当前产物，
+/// 裁判按五维 0-10 打分（Clarity/Readability/Conciseness/Richness/
+/// Structure），交换文档顺序两轮取平均消除位置偏差（position bias）。
+/// 裁判模型与温度由 config.llm 决定（默认配置 mock/未配置 key 时
+/// 本维度被跳过，report.tqs = None）。
+#[derive(Debug, Clone, Serialize)]
+pub struct TqsReport {
+    /// 完成打分的模块数（旧文档与当前产物都存在的模块）
+    pub judged_modules: usize,
+    /// 五维平均分（0-10，两轮顺序消偏后取平均）
+    pub avg_clarity: f64,
+    pub avg_readability: f64,
+    pub avg_conciseness: f64,
+    pub avg_richness: f64,
+    pub avg_structure: f64,
+    /// 五维总分平均（0-10）
+    pub avg_total: f64,
 }
 
 /// 收集全部产物页内容（wiki/{lang}/*.md，主语言 + 扩展语言）
@@ -340,11 +364,14 @@ fn measure_update_recall(
 /// `config_path` 为目标仓库的配置文件路径（增量回放复用同一份配置，
 /// 注意：回放会 checkout 目标仓库的 git commit——这是评测语义的一部分，
 /// 运行前请确认工作区无未提交改动（脏工作区会跳过对应 commit）。
+/// `judge` 为 true 时追加 TQS 裁判打分维度（需 LLM API key；快照缺失
+/// 或 LLM 不可用时该维度返回 None，不中断其他维度）。
 pub fn run_bench(
     config_path: &Path,
     root: &ProjectRoot,
     config: &WikiConfig,
     repo_name: &str,
+    judge: bool,
 ) -> Result<BenchReport> {
     let start = Instant::now();
 
@@ -360,6 +387,12 @@ pub fn run_bench(
     let update_recall = measure_update_recall(config_path, root)?;
     let generate_ms = gen_start.elapsed().as_millis() as u64;
 
+    let tqs = if judge {
+        measure_tqs(config)?
+    } else {
+        None
+    };
+
     Ok(BenchReport {
         repo_name: repo_name.to_string(),
         generated_at: chrono::Utc::now().to_rfc3339(),
@@ -372,7 +405,168 @@ pub fn run_bench(
             generate_ms,
             total_ms: start.elapsed().as_millis() as u64,
         },
+        tqs,
     })
+}
+
+/// TQS 打分执行：对每个"旧文档（快照）与当前产物都存在"的模块页，
+/// 两轮裁判（顺序 AB/BA）取五维平均。LLM 不可用（create_provider 失败）
+/// 或快照缺失时返回 None（与自动层"失败只告警"策略一致，不中断评测）。
+fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
+    // 快照 = 旧文档集（上次生成意图）；当前产物从磁盘读
+    let snapshot_path = crate::output::export_snapshot_path(Path::new(&config.output.dir));
+    let Ok(snapshot_content) = std::fs::read_to_string(&snapshot_path) else {
+        tracing::warn!("TQS 跳过：导出快照不存在（先运行 generate 落盘快照）");
+        return Ok(None);
+    };
+    let snapshot: crate::output::ExportSnapshot = serde_json::from_str(&snapshot_content)
+        .with_context(|| "解析导出快照失败")?;
+    // 只评模块页（WikiPage）；旧文档按 title 索引
+    let old_docs: std::collections::HashMap<String, String> = snapshot
+        .documents
+        .iter()
+        .filter(|d| matches!(d.kind, crate::model::DocumentKind::WikiPage))
+        .map(|d| (d.title.clone(), d.content.clone()))
+        .collect();
+
+    // 新文档 = 磁盘产物：title → wiki/{lang}/{title.replace("::","_")}.md
+    let mut pairs: Vec<(String, String, String)> = Vec::new(); // (title, old, new)
+    for title in old_docs.keys() {
+        let page_path = crate::output::wiki_page_path(
+            Path::new(&config.output.dir),
+            &config.wiki.language,
+            &crate::model::WikiDocument {
+                title: title.clone(),
+                kind: crate::model::DocumentKind::WikiPage,
+                content: String::new(),
+                language: config.wiki.language.clone(),
+                module_path: Vec::new(),
+                references: Vec::new(),
+                last_updated: String::new(),
+                fingerprint: None,
+            },
+        );
+        if let Ok(new_content) = std::fs::read_to_string(&page_path) {
+            pairs.push((title.clone(), old_docs[title].clone(), new_content));
+        }
+    }
+    if pairs.is_empty() {
+        tracing::warn!("TQS 跳过：无新旧文档都存在的模块页");
+        return Ok(None);
+    }
+
+    // 裁判 LLM（config.llm 决定模型；未配置 key 时 create_provider 报错 → 跳过）
+    let provider = match crate::generate::create_provider(config) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("TQS 跳过（LLM 不可用）: {e}");
+            return Ok(None);
+        }
+    };
+    let rt = crate::get_global_runtime();
+
+    let mut sum = [0.0f64; 5];
+    let mut judged = 0usize;
+    for (title, old, new) in &pairs {
+        // 两轮打分：AB 与 BA（消偏），任一失败跳过该模块
+        let mut round_scores: Vec<[f64; 5]> = Vec::new();
+        for a_first in [true, false] {
+            let messages = tqs_prompt(&config.wiki.language, old, new, a_first);
+            match rt.block_on(provider.complete(&messages)) {
+                Ok(content) => match parse_tqs_score(&content) {
+                    Ok(s) => round_scores.push(s),
+                    Err(e) => {
+                        tracing::warn!("TQS 裁判输出解析失败（模块 {title}）: {e}");
+                        break;
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!("TQS 裁判调用失败（模块 {title}）: {e}");
+                    break;
+                }
+            }
+        }
+        if round_scores.len() == 2 {
+            for i in 0..5 {
+                sum[i] += (round_scores[0][i] + round_scores[1][i]) / 2.0;
+            }
+            judged += 1;
+        }
+    }
+    if judged == 0 {
+        return Ok(None);
+    }
+    let avg = |i: usize| sum[i] / judged as f64;
+    Ok(Some(TqsReport {
+        judged_modules: judged,
+        avg_clarity: avg(0),
+        avg_readability: avg(1),
+        avg_conciseness: avg(2),
+        avg_richness: avg(3),
+        avg_structure: avg(4),
+        avg_total: (avg(0) + avg(1) + avg(2) + avg(3) + avg(4)) / 5.0,
+    }))
+}
+
+/// TQS 裁判 prompt（五维定义固定措辞 + 0-10 量表 + strict JSON）
+fn tqs_prompt(lang: &str, doc_a: &str, doc_b: &str, a_first: bool) -> Vec<crate::generate::llm::Message> {
+    let (first, second) = if a_first { (doc_a, doc_b) } else { (doc_b, doc_a) };
+    let system = format!(
+        r#"你是代码仓库 Wiki 文档质量裁判。对下面两份同一模块的文档（顺序 A、B）分别打五维分，每维 0-10 分：
+- clarity（清晰度）：意图表达是否一目了然
+- readability（可读性）：行文是否流畅连贯、便于通读
+- conciseness（简洁性）：是否无冗余啰嗦
+- richness（丰富度）：信息量与示例是否充分
+- structure（结构）：逻辑组织是否清晰
+
+规则：
+1. 只评文档质量，禁止因长度差异偏袒（长≠好）；
+2. 分数可相同；
+3. 先给一句话理由（A、B 各一条），再输出 JSON。
+
+仅输出 JSON，无 prose、无 markdown 围栏，格式：
+{{"A": {{"clarity": 0, "readability": 0, "conciseness": 0, "richness": 0, "structure": 0}},
+ "B": {{"clarity": 0, "readability": 0, "conciseness": 0, "richness": 0, "structure": 0}}}}
+语言：{lang}"#
+    );
+    vec![
+        crate::generate::llm::Message::system(system),
+        crate::generate::llm::Message::user(format!(
+            "文档 A（第一份）：\n{first}\n\n---\n\n文档 B（第二份）：\n{second}"
+        )),
+    ]
+}
+
+/// 解析裁判 JSON 输出（容错：剥离代码围栏/围栏外文本，取首个 JSON 对象；
+/// 分数越界 clamp 到 0-10；缺字段/非 JSON 报错——整条作废重打而非静默裁剪）
+fn parse_tqs_score(content: &str) -> Result<[f64; 5]> {
+    let trimmed = content.trim();
+    // 剥离 ```json ... ``` 围栏（若裁判不遵守 strict JSON）
+    let inner = trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```"))
+        .map(|s| s.trim().trim_end_matches("```").trim())
+        .unwrap_or(trimmed);
+    // 定位首个 '{' 到最后一个 '}'（裁判可能在 JSON 前写了理由）
+    let start = inner.find('{').ok_or_else(|| anyhow::anyhow!("输出不含 JSON 对象"))?;
+    let end = inner.rfind('}').ok_or_else(|| anyhow::anyhow!("JSON 对象未闭合"))?;
+    let json_str = &inner[start..=end];
+    let v: serde_json::Value = serde_json::from_str(json_str)
+        .with_context(|| "裁判输出不是合法 JSON")?;
+    // 顺序 AB 与 BA 都返回 {A:…, B:…}：取第一份文档的分数
+    let doc = v.get("A").or_else(|| v.get("B")).ok_or_else(|| anyhow::anyhow!("缺少 A/B 文档分数"))?;
+    let mut scores = [0.0f64; 5];
+    for (i, key) in ["clarity", "readability", "conciseness", "richness", "structure"]
+        .iter()
+        .enumerate()
+    {
+        scores[i] = doc
+            .get(*key)
+            .and_then(|x| x.as_f64())
+            .ok_or_else(|| anyhow::anyhow!("缺少维度 {key}"))?
+            .clamp(0.0, 10.0);
+    }
+    Ok(scores)
 }
 
 /// 渲染 Markdown 报告（人类可读，CI/人工复跑对比用）
@@ -425,6 +619,22 @@ pub fn render_markdown(report: &BenchReport) -> String {
         "- 扫描: {}ms\n- 增量: {}ms\n- 总计: {}ms\n",
         report.time.scan_ms, report.time.generate_ms, report.time.total_ms
     ));
+
+    out.push_str("## 6. TQS 文本质量（LLM 裁判，--judge）\n\n");
+    if let Some(tqs) = &report.tqs {
+        out.push_str(&format!(
+            "- 判定模块: {}\n- Clarity: {:.1}\n- Readability: {:.1}\n- Conciseness: {:.1}\n- Richness: {:.1}\n- Structure: {:.1}\n- 总分: {:.1}\n\n",
+            tqs.judged_modules,
+            tqs.avg_clarity,
+            tqs.avg_readability,
+            tqs.avg_conciseness,
+            tqs.avg_richness,
+            tqs.avg_structure,
+            tqs.avg_total
+        ));
+    } else {
+        out.push_str("- 未启用（使用 --judge 且配置 LLM API key 后启用）\n\n");
+    }
 
     out
 }
@@ -556,10 +766,58 @@ mod tests {
             lint: LintReport { total_issues: 0, by_kind: Default::default() },
             update_recall: UpdateRecallReport { commits_scanned: 0, commits_with_changes: 0, correctly_updated: 0, recall: 1.0 },
             time: TimeReport { scan_ms: 0, generate_ms: 0, total_ms: 0 },
+            tqs: None,
         };
         let md = render_markdown(&report);
         for section in ["实体覆盖率", "文本统计", "lint 健康", "增量召回", "耗时"] {
             assert!(md.contains(section), "报告应含 {section} 节: {md}");
         }
+    }
+
+    /// U11：裁判 JSON 解析——围栏剥离 + 理由前缀容错 + 越界 clamp
+    #[test]
+    fn test_parse_tqs_score_tolerates_fences_and_prose() {
+        let content = "理由：A 更清晰。\n```json\n{\"A\": {\"clarity\": 8.5, \"readability\": 7, \"conciseness\": 12, \"richness\": 6, \"structure\": 9}}\n```\n";
+        let scores = parse_tqs_score(content).unwrap();
+        assert_eq!(scores[0], 8.5, "clarity");
+        assert_eq!(scores[2], 10.0, "conciseness 越界应 clamp 到 10");
+    }
+
+    /// U11：缺维度/非 JSON → 报错（整条作废，不静默裁剪）
+    #[test]
+    fn test_parse_tqs_score_rejects_missing_field() {
+        let content = r#"{"A": {"clarity": 8, "readability": 7}}"#;
+        assert!(parse_tqs_score(content).is_err(), "缺维度应报错");
+        assert!(parse_tqs_score("no json here").is_err(), "非 JSON 应报错");
+    }
+
+    /// U11：报告渲染——启用时输出五维分数，未启用时提示 --judge
+    #[test]
+    fn test_render_markdown_tqs_section() {
+        let mut report = BenchReport {
+            repo_name: "demo".into(),
+            generated_at: "2026-08-03T00:00:00Z".into(),
+            coverage: CoverageReport { total_entities: 0, covered_entities: 0, ratio: 1.0 },
+            doc_info: DocInfoReport { pages: 0, words: 0, cross_references: 0, code_blocks: 0, diagrams: 0 },
+            lint: LintReport { total_issues: 0, by_kind: Default::default() },
+            update_recall: UpdateRecallReport { commits_scanned: 0, commits_with_changes: 0, correctly_updated: 0, recall: 1.0 },
+            time: TimeReport { scan_ms: 0, generate_ms: 0, total_ms: 0 },
+            tqs: None,
+        };
+        let md_off = render_markdown(&report);
+        assert!(md_off.contains("--judge"), "未启用时应提示 --judge: {md_off}");
+
+        report.tqs = Some(TqsReport {
+            judged_modules: 2,
+            avg_clarity: 8.0,
+            avg_readability: 7.5,
+            avg_conciseness: 6.0,
+            avg_richness: 7.0,
+            avg_structure: 8.5,
+            avg_total: 7.4,
+        });
+        let md_on = render_markdown(&report);
+        assert!(md_on.contains("判定模块: 2"), "应输出判定模块数: {md_on}");
+        assert!(md_on.contains("Clarity: 8.0"), "应输出五维分数: {md_on}");
     }
 }
