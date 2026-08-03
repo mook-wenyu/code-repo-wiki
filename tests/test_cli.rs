@@ -49,13 +49,16 @@ fn run_bin(dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
 }
 
 /// 启动本地 mock LLM server（返回固定卡片 JSON 响应），返回监听端口
+/// 注意：v13 A4 后生产路径统一请求流式（stream:true）并解析 SSE——
+/// mock 必须返回 `data: {...}` 行格式，非流式 JSON 会被解析为空内容。
 fn spawn_mock_llm() -> u16 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
         use std::io::{Read, Write};
         let content = r#"{"summary": "Mock 生成的摘要", "key_entities": []}"#;
-        let body = serde_json::json!({ "choices": [{ "message": { "content": content } }] }).to_string();
+        let payload = serde_json::json!({ "choices": [{ "delta": { "content": content } }] });
+        let body = format!("data: {}\n\ndata: [DONE]\n\n", payload.to_string());
         for stream in listener.incoming() {
             let mut s = match stream {
                 Ok(s) => s,
@@ -64,7 +67,7 @@ fn spawn_mock_llm() -> u16 {
             let mut buf = [0u8; 4096];
             let _ = s.read(&mut buf);
             let head = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len()
             );
             let _ = s.write_all(head.as_bytes());
@@ -529,7 +532,6 @@ exclude = []
 
 [output]
 dir = \"wiki\"
-format = \"markdown\"
 
 [llm]
 provider = \"mock\"
