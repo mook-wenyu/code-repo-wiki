@@ -42,7 +42,7 @@ pub fn extract_create_table_blocks(sql: &str) -> Vec<&str> {
 
 /// 在指定项目根下收集 .sql 文件（复用 Scanner 的 include/exclude 过滤）
 pub fn collect_sql_files_at(root: &ProjectRoot, config: &WikiConfig) -> Result<Vec<PathBuf>> {
-    let scanner = crate::ingest::scanner::Scanner::new(root.path(), &config.scope);
+    let scanner = crate::ingest::scanner::Scanner::new(root.path(), &config.scope)?;
     let files = scanner.scan()?;
     Ok(files
         .into_iter()

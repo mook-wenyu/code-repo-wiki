@@ -41,7 +41,7 @@ fn fixture_config() -> WikiConfig {
 fn scan_fixture() -> Vec<repo_wiki::ingest::parser::FileInsight> {
     let root = fixture_src();
     let config = fixture_config();
-    let scanner = Scanner::new(&root, &config.scope);
+    let scanner = Scanner::new(&root, &config.scope).unwrap();
     let files = scanner.scan().expect("扫描 fixture 目录失败");
 
     let registry = ParserRegistry::new();

@@ -5,20 +5,11 @@
 //!  [[bench]] harness = true 目标，故可通过 --bench 指定运行，或直接 cargo bench)
 
 use std::path::Path;
-use std::sync::Mutex;
+
 use std::time::Instant;
 
 use repo_wiki::config::schema::{ScopeSection, WikiConfig};
 use repo_wiki::ingest::parser::FileInsight;
-
-/// 串行化依赖当前工作目录的基准（scan_and_parse 内部使用 current_dir）。
-/// 容忍毒化：任一基准断言失败（panic）后，并行运行的兄弟基准仍需能拿锁
-/// 完成清理，避免一次失败级联毒化整个基准套件。
-static CWD_LOCK: Mutex<()> = Mutex::new(());
-
-fn lock_cwd() -> std::sync::MutexGuard<'static, ()> {
-    CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner())
-}
 
 /// 覆盖默认 scope 的配置：默认 include 只匹配 src/** 与 lib/**，基准仓库在临时目录根下
 fn bench_config() -> WikiConfig {
@@ -38,7 +29,9 @@ fn bench_config() -> WikiConfig {
 
 /// 在临时目录构造 200 文件仓库（rust/python/js/go 各 50）并解析
 ///
-/// 调用方需先 set_current_dir 到临时目录（scan_and_parse 以 cwd 为根）。
+/// 调用方以 ProjectRoot::new(dir) 注入根（N8 清理：此前用 set_current_dir
+/// 加 CWD_LOCK 依赖进程 cwd——scan_and_parse_at 已 root 参数化，cwd 依赖
+/// 是历史残留，且 set_current_dir 与并行基准互相干扰）。
 fn build_bench_repo(dir: &Path) -> Vec<FileInsight> {
     for i in 0..200 {
         let sub = dir.join(format!("mod{}", i % 10));
@@ -63,7 +56,7 @@ fn build_bench_repo(dir: &Path) -> Vec<FileInsight> {
         };
         std::fs::write(sub.join(name), content).unwrap();
     }
-    repo_wiki::ingest::scan_and_parse_at(&repo_wiki::project::ProjectRoot::from_cwd().unwrap(), &bench_config()).unwrap()
+    repo_wiki::ingest::scan_and_parse_at(&repo_wiki::project::ProjectRoot::new(dir.to_path_buf()), &bench_config()).unwrap()
 }
 
 /// 500 条索引下 BM25 搜索平均耗时
@@ -132,7 +125,7 @@ fn bench_scan_and_parse() {
         eprintln!("skip bench: CI");
         return;
     }
-    let _guard = lock_cwd();
+
 
     let dir = std::env::temp_dir().join(format!("bench_repo_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -157,7 +150,6 @@ fn bench_graph_build() {
         eprintln!("skip bench: CI");
         return;
     }
-    let _guard = lock_cwd();
 
     let dir = std::env::temp_dir().join(format!("bench_graph_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -227,7 +219,6 @@ fn bench_clustering_detection() {
         eprintln!("skip bench: CI");
         return;
     }
-    let _guard = lock_cwd();
 
     let dir = std::env::temp_dir().join(format!("bench_cluster_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

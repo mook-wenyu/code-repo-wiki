@@ -544,3 +544,25 @@ fn test_watch_command_detects_change() {
     drain_thread.join().unwrap();
     let _ = std::fs::remove_dir_all(&work_dir);
 }
+/// N7 回归：--root 指定不存在的目录时显式报错（此前静默通过，
+/// 扫描空集/产物静默为空）
+#[test]
+fn test_root_missing_dir_errors() {
+    let work_dir = prepare_repo("root_missing");
+    let missing = work_dir.join("no-such-dir");
+
+    let out = run_bin(&work_dir, &["generate", "-c", "config.toml", "--root", missing.to_str().unwrap()]);
+    assert!(
+        !out.status.success(),
+        "--root 不存在应非 0 退出码, stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(combined.contains("目录不存在"), "应报目录不存在, 实际: {combined}");
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}

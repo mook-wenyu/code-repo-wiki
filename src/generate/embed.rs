@@ -107,6 +107,28 @@ impl EmbeddingEngine {
                 })
                 .collect::<Result<Vec<_>>>()?;
 
+            // N5 修复：响应校验——data 条数必须与请求批次一致，且同批
+            // 向量维度必须一致。此前只校验"字段存在"，条数不足时
+            // 索引错位（下游 zip 静默丢弃多余/缺失）、维度不一致时
+            // 向量库维度校验失败但错误发生在数据已被吞之后。
+            if embeddings.len() != chunk.len() {
+                anyhow::bail!(
+                    "Embedding 响应数量不匹配：请求 {} 条，返回 {} 条",
+                    chunk.len(),
+                    embeddings.len()
+                );
+            }
+            if let Some(first) = embeddings.first() {
+                let dim = first.len();
+                if let Some(bad) = embeddings.iter().find(|v| v.len() != dim) {
+                    anyhow::bail!(
+                        "Embedding 响应维度不一致：{} 维与 {} 维并存",
+                        dim,
+                        bad.len()
+                    );
+                }
+            }
+
             all_embeddings.extend(embeddings);
         }
 

@@ -40,6 +40,11 @@ fn validate_config(config: &schema::WikiConfig) -> Result<()> {
     if config.scope.include.is_empty() {
         anyhow::bail!("scope.include 至少需要一个模式");
     }
+    // N2 修复：batch_size=0 会让 embedding 分批切分按 0 取模 → panic
+    //（embed.rs 的 chunks(0) 运行时崩溃）。配置层显式拒绝，错误可读。
+    if config.embed.batch_size == 0 {
+        anyhow::bail!("embed.batch_size 必须大于 0");
+    }
     Ok(())
 }
 
@@ -71,3 +76,11 @@ mod tests {
         assert!(validate_config(&config).is_err());
     }
 }
+
+    /// N2 回归：embed.batch_size=0 时配置加载报错（此前 embed.rs 运行时 panic）
+    #[test]
+    fn test_validate_zero_embed_batch_size() {
+        let mut config = schema::WikiConfig::default();
+        config.embed.batch_size = 0;
+        assert!(validate_config(&config).is_err());
+    }

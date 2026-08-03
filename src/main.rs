@@ -286,6 +286,12 @@ enum CardAction {
 /// "代码从哪扫"而非"产物写哪"。
 fn resolve_root(root: Option<&Path>) -> anyhow::Result<repo_wiki::project::ProjectRoot> {
     match root {
+        // N7 修复：--root 指定的目录不存在时显式报错——此前静默通过，
+        // 扫描产出空集，流水线报"未找到任何源文件"（方向误导）或产物
+        // 静默为空。
+        Some(p) if !p.is_dir() => {
+            anyhow::bail!("--root 指定的目录不存在: {}", p.display())
+        }
         Some(p) => Ok(repo_wiki::project::ProjectRoot::new(p.to_path_buf())),
         None => repo_wiki::project::ProjectRoot::from_cwd(),
     }

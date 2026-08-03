@@ -37,10 +37,22 @@ impl Scanner {
     ///
     /// * `root` - 项目根目录
     /// * `scope` - 扫描范围配置（include/exclude glob 模式）
-    pub fn new(root: &Path, scope: &ScopeSection) -> Self {
-        let include = scope.include.iter().filter_map(|p| Pattern::new(p).ok()).collect();
-        let exclude = scope.exclude.iter().filter_map(|p| Pattern::new(p).ok()).collect();
-        Self { root: root.to_path_buf(), include, exclude }
+    ///
+    /// N6 修复：非法 glob 模式显式报错（此前 filter_map 静默丢弃，
+    /// 配置写错时扫描范围被悄悄扩大/缩小，产物缺失无任何提示）。
+    pub fn new(root: &Path, scope: &ScopeSection) -> Result<Self> {
+        use anyhow::Context;
+        let include = scope
+            .include
+            .iter()
+            .map(|p| Pattern::new(p).with_context(|| format!("include 模式非法: {p}")))
+            .collect::<Result<Vec<_>>>()?;
+        let exclude = scope
+            .exclude
+            .iter()
+            .map(|p| Pattern::new(p).with_context(|| format!("exclude 模式非法: {p}")))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self { root: root.to_path_buf(), include, exclude })
     }
 
     /// 遍历目录树，返回匹配的文件列表
@@ -97,7 +109,7 @@ mod tests {
             include: vec!["**/*.rs".to_string()],
             exclude: vec!["**/test/**".to_string()],
         };
-        let scanner = Scanner::new(Path::new("."), &scope);
+        let scanner = Scanner::new(Path::new("."), &scope).unwrap();
         assert_eq!(scanner.include.len(), 1);
         assert_eq!(scanner.exclude.len(), 1);
         // smoke: scan current project dir, at least src/lib.rs should be found
@@ -119,7 +131,7 @@ mod tests {
             include: vec!["**/*.txt".to_string()],
             exclude: vec![],
         };
-        let scanner = Scanner::new(&dir, &scope);
+        let scanner = Scanner::new(&dir, &scope).unwrap();
         assert!(scanner.scan_with_limit(3).is_err());
 
         // 上限之内正常返回
@@ -127,5 +139,18 @@ mod tests {
         assert_eq!(files.len(), 4);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// N6 回归：非法 glob 模式显式报错（此前静默丢弃，扫描范围悄悄扩大）
+    #[test]
+    fn test_scanner_rejects_invalid_glob() {
+        let scope = ScopeSection {
+            include: vec!["[unclosed".to_string()],
+            exclude: vec![],
+        };
+        match Scanner::new(Path::new("."), &scope) {
+            Err(e) if e.to_string().contains("include 模式非法") => {}
+            _ => panic!("应报非法 include（实际 Ok 或错误信息不符）"),
+        }
     }
 }

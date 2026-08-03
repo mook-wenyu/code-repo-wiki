@@ -107,7 +107,18 @@ pub fn chunk_by_module(
             .zip(entity_sources)
             .collect();
         paired.sort_by(|a, b| a.0.name.cmp(&b.0.name));
+        // N4：同名实体去重——不同文件定义同名实体时按排序后首个保留，
+        // 此前静默丢弃无任何提示；告警暴露去重事实（名称冲突常见于
+        // 重载/同名导出，模块页与搜索索引只保留一个定义）
+        let before = paired.len();
         paired.dedup_by(|a, b| a.0.name == b.0.name);
+        if paired.len() < before {
+            tracing::warn!(
+                "模块 {} 去重 {} 个同名实体（保留排序后首个定义）",
+                module.name,
+                before - paired.len()
+            );
+        }
         let entities: Vec<Entity> = paired.iter().map(|(e, _)| e.clone()).collect();
         let entity_sources: Vec<PathBuf> = paired.iter().map(|(_, f)| f.clone()).collect();
 

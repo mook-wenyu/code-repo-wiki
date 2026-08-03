@@ -33,7 +33,7 @@ pub fn scan_and_parse_cached_at(
     cache_path: &Option<std::path::PathBuf>,
     changed_files: &std::collections::HashSet<std::path::PathBuf>,
 ) -> Result<Vec<FileInsight>> {
-    let scanner = scanner::Scanner::new(root.path(), &config.scope);
+    let scanner = scanner::Scanner::new(root.path(), &config.scope)?;
     // 扫描产出绝对路径；转换为相对扫描根的路径——
     // 模块名派生（graph/chunk 的 Normal 组件提取）、搜索索引、指纹记录
     // 全部以相对路径为基准，杜绝绝对路径污染模块名（此前产出
