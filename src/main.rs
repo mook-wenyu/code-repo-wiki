@@ -375,6 +375,27 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
                 result.stats.files_scanned,
                 result.stats.modules_detected
             );
+
+            // D2（N2）：update 尾部一致性校验——复用 lint 全部检查对产物做
+            // 全量复核（本轮受影响页 + 存量页）。增量更新只重建受影响模块，
+            // 跨页一致性问题（断链/引用漂移/符号漂移等）可能残留，此处让
+            // 用户立即可见；只告警不改变退出码（"失败只告警"策略——产物
+            // 缺陷由 lint 门禁兜底拦截，update 主流程语义不受影响）。
+            let cfg = repo_wiki::config::load_config(&config)?;
+            let output_dir = Path::new(&cfg.output.dir);
+            let source_roots = repo_wiki::commands::source_roots_from_include(&cfg.scope.include);
+            let issues = repo_wiki::output::lint::lint(output_dir, &source_roots);
+            if !issues.is_empty() {
+                tracing::warn!(
+                    "update 完成后产物检查发现 {} 个问题（不阻断本次更新，详情可用 `repo-wiki lint` 查看）:",
+                    issues.len()
+                );
+                for issue in &issues {
+                    tracing::warn!("  [{}] {}: {}", issue.kind, issue.path, issue.message);
+                }
+            } else {
+                tracing::info!("update 完成后产物检查通过（全部检查无问题）");
+            }
         }
         Commands::Sync { config, root } => {
             // sync = Git 内容 → 指纹库（不触发 LLM）；与 update = 代码变更 → 增量生成 边界分离。

@@ -57,6 +57,7 @@ pub fn lint(output_dir: &Path, source_roots: &[PathBuf]) -> Vec<LintIssue> {
         issues.extend(check_citations(&pages, output_dir, source_roots, lang));
         issues.extend(check_entity_coverage(&pages, &output_dir.join("wiki").join(lang).join("api.md"), lang, output_dir));
         issues.extend(check_mermaid(&pages, lang));
+        issues.extend(check_stale_entities(&output_dir.join("wiki").join(lang).join("api.md"), source_roots, lang, output_dir));
     }
 
     issues
@@ -234,17 +235,12 @@ fn check_citations(pages: &[PathBuf], output_dir: &Path, source_roots: &[PathBuf
     issues
 }
 
-/// 5. 实体覆盖率检查（P1-4 零成本评测）：模块页核心实体须存在于 api.md
-///    （api.md 由 graph 权威渲染，页面声称的实体若不在 = LLM 编造实体名，
-///    防幻觉第二道闸；api.md 仅主语言一份，只检查主语言目录）
-fn check_entity_coverage(pages: &[PathBuf], api_path: &Path, lang: &str, output_dir: &Path) -> Vec<LintIssue> {
-    if primary_language(output_dir) != *lang {
-        return Vec::new();
-    }
-    let Ok(api_content) = std::fs::read_to_string(api_path) else {
-        return Vec::new();
-    };
-    let known: std::collections::HashSet<String> = api_content
+/// 从 api.md 权威清单提取实体名集合（- ` 行 + entity_name_from_signature）
+///
+/// entity-coverage（页面声称实体须在清单中）与 stale-entity（清单实体须在
+/// 源码中）两侧共用同一提取，保证口径一致。
+fn api_known_entities(api_content: &str) -> std::collections::HashSet<String> {
+    api_content
         .lines()
         .filter(|l| l.trim_start().starts_with("- `"))
         .filter_map(|l| {
@@ -256,7 +252,20 @@ fn check_entity_coverage(pages: &[PathBuf], api_path: &Path, lang: &str, output_
                 .next()
                 .and_then(entity_name_from_signature)
         })
-        .collect();
+        .collect()
+}
+
+/// 5. 实体覆盖率检查（P1-4 零成本评测）：模块页核心实体须存在于 api.md
+///    （api.md 由 graph 权威渲染，页面声称的实体若不在 = LLM 编造实体名，
+///    防幻觉第二道闸；api.md 仅主语言一份，只检查主语言目录）
+fn check_entity_coverage(pages: &[PathBuf], api_path: &Path, lang: &str, output_dir: &Path) -> Vec<LintIssue> {
+    if primary_language(output_dir) != *lang {
+        return Vec::new();
+    }
+    let Ok(api_content) = std::fs::read_to_string(api_path) else {
+        return Vec::new();
+    };
+    let known = api_known_entities(&api_content);
 
     let mut issues = Vec::new();
     for page in pages {
@@ -281,6 +290,75 @@ fn check_entity_coverage(pages: &[PathBuf], api_path: &Path, lang: &str, output_
         }
     }
     issues
+}
+
+/// 7. 符号漂移检查（v13 D1，N1）：api.md 权威清单中的实体在当前源码中不存在
+///    → "文档引用了已删除实体"（entity-coverage 的反向：前者防 LLM 编造，
+///    本检查防文档过期——增量更新未覆盖、模块重构改名、人工删改产物）。
+///    零 LLM，源码侧直接 AST 解析（与生成侧同一 parser，口径一致）。
+fn check_stale_entities(api_path: &Path, source_roots: &[PathBuf], lang: &str, output_dir: &Path) -> Vec<LintIssue> {
+    if primary_language(output_dir) != *lang {
+        return Vec::new();
+    }
+    let Ok(api_content) = std::fs::read_to_string(api_path) else {
+        return Vec::new();
+    };
+    let known = api_known_entities(&api_content);
+    if known.is_empty() {
+        return Vec::new();
+    }
+
+    // 收集源码实体名集合：递归扫描 source_roots 下 parser 支持的扩展名，
+    // 逐个 AST 解析（解析失败的文件跳过——文件级损坏不是文档问题）
+    let mut source_entities: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let registry = crate::ingest::parser::ParserRegistry::new();
+    for root in source_roots {
+        if !root.is_dir() {
+            continue;
+        }
+        for entry in walk_files(root) {
+            let Some(processor) = registry.get_for_file(&entry) else { continue };
+            let Ok(source) = std::fs::read_to_string(&entry) else { continue };
+            if let Ok(insight) = processor.parse(&source, &entry) {
+                for entity in &insight.entities {
+                    source_entities.insert(entity.name.clone());
+                }
+            }
+        }
+    }
+    if source_entities.is_empty() {
+        // 源码根为空/全解析失败时无从对比，跳过（避免把"扫描失败"误报成
+        // "文档过期"——二者错误信号不同，不能混淆）
+        return Vec::new();
+    }
+
+    let mut issues = Vec::new();
+    let mut stale: Vec<&String> = known.iter().filter(|e| !source_entities.contains(*e)).collect();
+    stale.sort();
+    for entity in stale {
+        issues.push(LintIssue {
+            kind: "stale-entity",
+            path: format!("wiki/{lang}/api.md"),
+            message: format!("符号漂移: api.md 中的实体 `{entity}` 在当前源码中不存在（已删除或重命名，文档过期）"),
+        });
+    }
+    issues
+}
+
+/// 递归收集目录下全部文件（跟随子目录，忽略隐藏目录与符号链接循环——
+/// 生产仓库正常布局下深度有限，不引入额外依赖）
+fn walk_files(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else { return out };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            out.extend(walk_files(&path));
+        } else {
+            out.push(path);
+        }
+    }
+    out
 }
 
 /// 6. Mermaid 语法检查（G2）：产物中的 mermaid fence 必须可被 merman 权威解析器解析
@@ -734,6 +812,45 @@ mod tests {
         assert_eq!(bad.len(), 1, "只有坏图应报 bad-mermaid, 实际: {:?}", issues);
         assert!(bad[0].path.ends_with("bad.md"), "应指向坏图页面: {}", bad[0].path);
         assert!(bad[0].message.contains("Unterminated"), "错误消息应可读: {}", bad[0].message);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// D1（N1）：符号漂移——api.md 权威清单中的实体在当前源码 AST 中不存在
+    /// → 报 stale-entity（文档过期/实体已删除）；源码中存在的实体不报。
+    /// 源码根为空（扫描失败/无源码）时跳过检查，不把"扫描失败"误报成"文档过期"
+    #[test]
+    fn test_lint_stale_entity_detects_deleted_symbol() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_lint_stale_entity_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        let src_root = dir.join("src");
+        std::fs::create_dir_all(&src_root).unwrap();
+        // 源码只有 alpha（beta 已被删除/重命名）
+        std::fs::write(src_root.join("lib.rs"), "pub fn alpha() {}\n").unwrap();
+        // api.md 声明 alpha（存在）+ beta（已删除）
+        std::fs::write(
+            wiki.join("api.md"),
+            "# API 参考\n\n## m\n\n- `alpha` — m.rs:1\n- `beta` — m.rs:2\n",
+        )
+        .unwrap();
+
+        let issues = lint(&dir, &[src_root]);
+        let stale: Vec<_> = issues.iter().filter(|i| i.kind == "stale-entity").collect();
+        assert_eq!(stale.len(), 1, "只应报已删除的 beta, 实际: {:?}", issues);
+        assert!(stale[0].message.contains("beta"), "应指向 beta: {}", stale[0].message);
+        assert!(!stale[0].message.contains("alpha"), "源码存在的实体不应误报");
+
+        // 源码根为空 → 跳过检查（扫描失败与文档过期是不同信号，不能混淆）
+        let empty_root = dir.join("empty_src");
+        std::fs::create_dir_all(&empty_root).unwrap();
+        let issues2 = lint(&dir, &[empty_root]);
+        assert!(
+            !issues2.iter().any(|i| i.kind == "stale-entity"),
+            "空源码根应跳过 stale-entity 检查, 实际: {:?}",
+            issues2
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -35,6 +35,12 @@ pub const WEIGHT_CALLS: f64 = 0.7;
 ///
 /// 输出确定性：社区内按 file_path 字典序排序后作为分组键排序。
 pub fn detect_communities(graph: &KnowledgeGraph) -> Vec<Vec<NodeId>> {
+    detect_communities_with_resolution(graph, LEIDEN_RESOLUTION)
+}
+
+/// 带分辨率参数的社区检测（v13 D3 拆分：评测工具 gamma_scan 需要扫描
+/// 多个 γ 取值找最优粒度，生产默认走 detect_communities 的常量分辨率）
+pub fn detect_communities_with_resolution(graph: &KnowledgeGraph, resolution: f64) -> Vec<Vec<NodeId>> {
     let file_nodes: Vec<NodeId> = graph
         .graph
         .node_references()
@@ -121,7 +127,7 @@ pub fn detect_communities(graph: &KnowledgeGraph) -> Vec<Vec<NodeId>> {
 
     let config = LeidenConfig {
         quality: QualityType::CPM,
-        resolution: LEIDEN_RESOLUTION,
+        resolution,
         seed: Some(LEIDEN_SEED),
         ..Default::default()
     };
