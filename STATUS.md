@@ -200,3 +200,11 @@
 - **P3×5**:build_call_edges 零单测(回归风险最高);bench diff 判定吞错;module.rs 测试残渣;embed filter_map 丢元素;chunk 同名去重边界
 - **网络对照结论**:repo-wiki 第一梯队(Karpathy 生态);增量缺"一致性校验"环节(RepoDoc 四阶段);搜索层需评估 reranker(短关键词 nDCG≈0);评测基准补 MVVP 协议(κ+复测+style 消偏)
 - 报告:.scratch/research/ANALYSIS-v11-2026-08-03.md(六节:现状/审计 12 项/网络对照/优先级路线/反思/三张清单)
+
+## 二十六、wayfinder 建图:repo-wiki v11 路线全量落地 + Unity 仓库评测(v12)(2026-08-03,本会话)
+- 触发:v11 分析报告(12 项发现+网络对照)后用户启动 wayfinder 规划恢复/增强路线
+- 用户拍板(question 三轮 13 项):Destination=全部(短中长)+Unity 仓库评测;产出=纯规划;P1-1=传播错误;MVVP 裁判=DeepSeek V4 Flash;reranker=候选对比实测;图谱=research 对照;公开 Rust 集不纳入(只测 Unity);C# parser 提前增强;Unity 仓库=评测+端到端验证;规模=先扫描;长期项全部纳入
+- 重要新对象:D:/UnityProjects/Project Strategy(用户 Unity 游戏仓库)——评测主对象+真实大仓库端到端验证(解决历史未验证项)
+- 产物:.scratch/wayfinder-v12/map.md + issues/t01-t12(12 票,全 open)+ IMPLEMENTATION-PLAN.md(实施蓝图)
+- 地图:Destination=全量落地;frontier=t01-t10,t12;t11 blocked by t06;t08 需 t06 数据(方法论可先行)
+- 摸到的文件:STATUS.md、.scratch/wayfinder-v12/*(新建 14 文件)
