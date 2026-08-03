@@ -300,7 +300,7 @@ pub async fn generate_module_card(
     root: &crate::project::ProjectRoot,
     module: &str,
 ) -> Result<()> {
-    let insights = crate::ingest::scan_and_parse_at(root, config)?;
+    let insights = crate::ingest::scan_and_parse_at(root, config)?.insights;
     let graph = crate::analysis::build_graph(&insights)?;
     let chunks = crate::generate::chunk::chunk_by_module(&insights, &graph.modules, &graph);
     let chunk = chunks

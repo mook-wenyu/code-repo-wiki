@@ -1,5 +1,5 @@
-//! 扫描与解析层（单进程契约：insights_cache.json 无文件锁，
-//! 同一输出目录并发运行不被支持，见 README 限制项）
+/// 扫描与解析层（单进程契约：insights_cache.json 无文件锁，
+/// 同一输出目录并发运行不被支持，见 README 限制项）
 pub mod scanner;
 pub mod parser;
 
@@ -8,13 +8,21 @@ use crate::config::schema::WikiConfig;
 use crate::project::ProjectRoot;
 use parser::{FileInsight, ParserRegistry};
 
+/// 扫描结果：成功解析的文件 + 解析失败文件数（B5：失败可观测，
+/// 此前失败仅在日志中出现，AnalysisStats 无计数——解析失败的文件
+/// 不会出现在 insights 中，下游（覆盖率/统计）会误以为全部成功）
+pub struct ScanOutput {
+    pub insights: Vec<FileInsight>,
+    /// 扫描范围内解析失败的文件数（非 UTF-8 读取失败 / tree-sitter 解析错误）
+    pub files_failed: usize,
+}
 
 /// 在指定项目根下执行扫描和解析（全量解析：委托缓存版，传入空变更集）
 ///
 /// 扫描根与路径相对化基准都取自 root，不再依赖进程 cwd——
 /// 测试可在临时目录构造 ProjectRoot 验证扫描行为，watch 常驻进程
 /// 的 cwd 漂移不再影响扫描范围。
-pub fn scan_and_parse_at(root: &ProjectRoot, config: &WikiConfig) -> Result<Vec<FileInsight>> {
+pub fn scan_and_parse_at(root: &ProjectRoot, config: &WikiConfig) -> Result<ScanOutput> {
     scan_and_parse_cached_at(root, config, &None, &std::collections::HashSet::new())
 }
 
@@ -32,7 +40,7 @@ pub fn scan_and_parse_cached_at(
     config: &WikiConfig,
     cache_path: &Option<std::path::PathBuf>,
     changed_files: &std::collections::HashSet<std::path::PathBuf>,
-) -> Result<Vec<FileInsight>> {
+) -> Result<ScanOutput> {
     let scanner = scanner::Scanner::new(root.path(), &config.scope)?;
     // 扫描产出绝对路径；转换为相对扫描根的路径——
     // 模块名派生（graph/chunk 的 Normal 组件提取）、搜索索引、指纹记录
@@ -49,6 +57,7 @@ pub fn scan_and_parse_cached_at(
 
     let mut insights = Vec::new();
     let mut reused = 0usize;
+    let mut files_failed = 0usize;
     for file in &files {
         let processor = match registry.get_for_file(file) {
             Some(p) => p,
@@ -61,6 +70,7 @@ pub fn scan_and_parse_cached_at(
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!("跳过非 UTF-8 文件 {}: {}", abs.display(), e);
+                files_failed += 1;
                 continue;
             }
         };
@@ -92,6 +102,7 @@ pub fn scan_and_parse_cached_at(
             }
             Err(e) => {
                 tracing::error!("解析失败 {}: {}", file.display(), e);
+                files_failed += 1;
             }
         }
     }
@@ -112,12 +123,13 @@ pub fn scan_and_parse_cached_at(
     }
 
     tracing::info!(
-        "扫描完成: 共 {} 个文件, 成功解析 {} 个（缓存复用 {} 个）",
+        "扫描完成: 共 {} 个文件, 成功解析 {} 个（缓存复用 {} 个, 失败 {} 个）",
         files.len(),
         insights.len(),
-        reused
+        reused,
+        files_failed
     );
-    Ok(insights)
+    Ok(ScanOutput { insights, files_failed })
 }
 
 /// 解析缓存条目：路径（相对项目根，与 insight.path 同形态）+ 内容指纹 + 解析结果
@@ -197,7 +209,7 @@ mod tests {
     fn test_cached_scan_writes_cache_file() {
         let (root, config) = temp_project("write");
         let cp = Some(cache_path(&root));
-        let insights = scan_and_parse_cached_at(&root, &config, &cp, &std::collections::HashSet::new()).unwrap();
+        let insights = scan_and_parse_cached_at(&root, &config, &cp, &std::collections::HashSet::new()).unwrap().insights;
         assert_eq!(insights.len(), 2, "两个 .rs 文件都应解析");
 
         let content = std::fs::read_to_string(cache_path(&root)).unwrap();
@@ -212,13 +224,13 @@ mod tests {
     fn test_cached_scan_reparses_on_fingerprint_change() {
         let (root, config) = temp_project("invalidate");
         let cp = Some(cache_path(&root));
-        let first = scan_and_parse_cached_at(&root, &config, &cp, &std::collections::HashSet::new()).unwrap();
+        let first = scan_and_parse_cached_at(&root, &config, &cp, &std::collections::HashSet::new()).unwrap().insights;
         let alpha_source = first.iter().find(|i| i.path.ends_with("a.rs")).unwrap().source.clone();
         assert!(alpha_source.contains("alpha"), "初始内容含 alpha");
 
         // 修改 a.rs 内容（新函数 alpha_v2）
         std::fs::write(root.path().join("src").join("a.rs"), "pub fn alpha_v2() {}\n").unwrap();
-        let second = scan_and_parse_cached_at(&root, &config, &cp, &std::collections::HashSet::new()).unwrap();
+        let second = scan_and_parse_cached_at(&root, &config, &cp, &std::collections::HashSet::new()).unwrap().insights;
         let alpha2_source = second.iter().find(|i| i.path.ends_with("a.rs")).unwrap().source.clone();
         assert!(
             alpha2_source.contains("alpha_v2") && !alpha2_source.contains("alpha()"),
@@ -240,7 +252,7 @@ mod tests {
         scan_and_parse_cached_at(&root, &config, &cp, &std::collections::HashSet::new()).unwrap();
         std::fs::write(cache_path(&root), "{ 垃圾内容").unwrap();
 
-        let insights = scan_and_parse_cached_at(&root, &config, &cp, &std::collections::HashSet::new()).unwrap();
+        let insights = scan_and_parse_cached_at(&root, &config, &cp, &std::collections::HashSet::new()).unwrap().insights;
         assert_eq!(insights.len(), 2, "损坏缓存应触发全量重建而非失败");
         assert!(insights.iter().any(|i| i.source.contains("alpha")));
 
@@ -251,7 +263,7 @@ mod tests {
     #[test]
     fn test_cached_scan_without_cache_path() {
         let (root, config) = temp_project("nocache");
-        let insights = scan_and_parse_cached_at(&root, &config, &None, &std::collections::HashSet::new()).unwrap();
+        let insights = scan_and_parse_cached_at(&root, &config, &None, &std::collections::HashSet::new()).unwrap().insights;
         assert_eq!(insights.len(), 2);
         assert!(!root.path().join(".state").exists(), "无缓存路径时不应创建 .state 目录");
         let _ = std::fs::remove_dir_all(root.path());
@@ -267,8 +279,33 @@ mod tests {
 
         let mut changed = std::collections::HashSet::new();
         changed.insert(PathBuf::from("src/a.rs"));
-        let insights = scan_and_parse_cached_at(&root, &config, &cp, &changed).unwrap();
+        let insights = scan_and_parse_cached_at(&root, &config, &cp, &changed).unwrap().insights;
         assert_eq!(insights.len(), 2, "强制重解析不改变结果集合");
         let _ = std::fs::remove_dir_all(root.path());
+    }
+
+    /// B5：解析失败文件计数——扫描范围内存在非 UTF-8 .rs 文件时，
+    /// files_failed 应准确计数（此前失败仅日志可见，统计无法反映）
+    #[test]
+    fn test_scan_counts_failed_files() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_failed_cnt_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        // 正常文件
+        std::fs::write(dir.join("src").join("ok.rs"), "pub fn ok() {}\n").unwrap();
+        // 非法 UTF-8 文件（read_to_string 失败 → files_failed 计数）
+        std::fs::write(dir.join("src").join("bad.rs"), [0xFFu8, 0xFE, 0x00]).unwrap();
+        // 非 .rs 文件（无处理器，不计入失败——扫描范围外）
+        std::fs::write(dir.join("src").join("notes.txt"), "text").unwrap();
+
+        let mut config = crate::config::schema::WikiConfig::default();
+        config.scope.include = vec!["**/*.rs".to_string()];
+        let root = ProjectRoot::new(dir.clone());
+        let out = scan_and_parse_at(&root, &config).unwrap();
+
+        assert_eq!(out.insights.len(), 1, "只有正常文件被解析");
+        assert_eq!(out.files_failed, 1, "非 UTF-8 文件应计数为失败");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -10,31 +10,13 @@
 //! 不触碰 opencode 全局配置（无 HOME/USERPROFILE 隔离需求），
 //! 仅关闭 RUST_LOG 保证 stdout 只有业务输出（参照 test_install_opencode.rs）。
 
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::path::PathBuf;
 
-/// 进程内自增序号：同一进程内多个测试并行时临时目录互不冲突
-static DIR_SEQ: AtomicUsize = AtomicUsize::new(0);
+mod common;
+use common::{run_bin, unique_dir};
 
 const START: &str = "<!-- REPO-WIKI:START -->";
 const END: &str = "<!-- REPO-WIKI:END -->";
-
-/// 生成唯一临时目录（进程 id + 自增序号）
-fn unique_dir(name: &str) -> PathBuf {
-    let seq = DIR_SEQ.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("repo_wiki_wiki_install_{}_{}_{}", name, std::process::id(), seq))
-}
-
-/// 在指定目录下执行 repo-wiki 二进制，返回完整输出
-fn run_bin(dir: &Path, args: &[&str]) -> Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_repo-wiki"));
-    cmd.args(args)
-        .current_dir(dir)
-        .env("RUST_LOG", "off") // 关闭 tracing 日志，保证 stdout 只有业务输出
-        .env_remove("OPENAI_API_KEY"); // 避免宿主机真实 Key 被误用
-    cmd.output().expect("执行 repo-wiki 二进制失败")
-}
 
 /// 创建隔离临时目录并返回路径
 fn setup(tag: &str) -> PathBuf {

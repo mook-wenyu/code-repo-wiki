@@ -171,7 +171,7 @@ fn collect_wiki_pages(output_dir: &Path) -> Vec<(PathBuf, String)> {
 /// 做子串包含判定（实体名是文档必提的标识符，子串口径与 RepoDoc 的
 /// AST 提及率一致——同名误报由名称唯一性控制）。
 fn measure_coverage(root: &ProjectRoot, config: &WikiConfig, pages: &[(PathBuf, String)]) -> Result<CoverageReport> {
-    let insights = crate::ingest::scan_and_parse_at(root, config)?;
+    let insights = crate::ingest::scan_and_parse_at(root, config)?.insights;
     let mut entities: Vec<String> = insights
         .iter()
         .flat_map(|i| i.entities.iter().map(|e| e.name.clone()))
@@ -338,13 +338,33 @@ fn measure_update_recall(
         scanned += 1;
 
         // 有源码变更判定：相对前一 commit 的 diff（首个 commit 视为基线）
+        // tree()/diff 失败时显式告警并按"有变更"保守计入（低估召回率会
+        // 虚高评测分，高估则更接近真实——错误可见而非静默假数据）
         let has_changes = if i == 0 {
             false
         } else {
-            let prev_tree = commits[i - 1].tree().ok();
-            let cur_tree = commit.tree().ok();
+            let prev_tree = match commits[i - 1].tree() {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    tracing::warn!("bench: commit {} tree 读取失败，按有变更计入: {}", commits[i - 1].id(), e);
+                    None
+                }
+            };
+            let cur_tree = match commit.tree() {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    tracing::warn!("bench: commit {} tree 读取失败，按有变更计入: {}", commit_id, e);
+                    None
+                }
+            };
             matches!(prev_tree.as_ref().zip(cur_tree.as_ref()), Some((a, b)) if {
-                repo.diff_tree_to_tree(Some(a), Some(b), None).map(|d| d.deltas().len() > 0).unwrap_or(false)
+                match repo.diff_tree_to_tree(Some(a), Some(b), None) {
+                    Ok(d) => d.deltas().len() > 0,
+                    Err(e) => {
+                        tracing::warn!("bench: commit {commit_id} diff 计算失败，按有变更计入: {e}");
+                        true
+                    }
+                }
             })
         };
         if has_changes {

@@ -110,14 +110,19 @@ impl EmbeddingEngine {
                 .context("Embedding 响应缺少 data 字段")?
                 .iter()
                 .map(|item| {
-                    item["embedding"]
+                    let arr = item["embedding"]
                         .as_array()
-                        .context("嵌入向量缺失")
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|v| v.as_f64().map(|f| f as f32))
-                                .collect::<Vec<f32>>()
+                        .context("嵌入向量缺失")?;
+                    // B6：元素必须全为数字——filter_map 静默丢弃非数字元素会
+                    // 让向量降维而不报错（同批一致变短时维度校验也捕获不到），
+                    // 模型输出异常必须显式失败而非产出残缺向量
+                    arr.iter()
+                        .map(|v| {
+                            v.as_f64()
+                                .map(|f| f as f32)
+                                .with_context(|| "嵌入向量包含非数字元素（模型输出异常，拒绝静默丢弃）")
                         })
+                        .collect::<Result<Vec<f32>>>()
                 })
                 .collect::<Result<Vec<_>>>()?;
 

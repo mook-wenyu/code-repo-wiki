@@ -5,19 +5,13 @@
 //! 验证 5 个工具全部注册、search 工具能返回 mock 索引结果、status 工具
 //! 能读取配置状态。
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-/// 进程内自增序号：并行测试临时目录互不冲突
-static DIR_SEQ: AtomicUsize = AtomicUsize::new(0);
-
-fn unique_dir(name: &str) -> PathBuf {
-    let seq = DIR_SEQ.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("repo_wiki_mcp_{}_{}_{}", name, std::process::id(), seq))
-}
+mod common;
+use common::unique_dir;
 
 /// 冒烟配置：mock provider + 仓库内 .repo-wiki（search 开启，供 search 工具验证）
 const TEST_CONFIG: &str = r#"

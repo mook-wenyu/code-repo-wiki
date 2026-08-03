@@ -6,76 +6,13 @@
 //! 3. card 子命令（generate 后 modify 卡片）
 //!
 //! 每个测试使用独立临时目录（进程 pid + 自增序号）避免并行冲突；
-//! LLM 指向本地 mock server（返回固定 JSON 响应，无网络边界）。
+//! LLM 指向本地 mock server（返回固定 SSE 流式响应，无网络边界）。
+//! 公共 helper（unique_dir/copy_dir/run_bin_with_envs/mock_llm_server）
+//! 收敛于 common 模块（v13 B8）。
 
+mod common;
+use common::{copy_dir, mock_llm_server, run_bin_with_envs, unique_dir};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-/// 进程内自增序号：同一进程内多个测试并行时临时目录互不冲突
-static DIR_SEQ: AtomicUsize = AtomicUsize::new(0);
-
-/// 生成唯一临时目录（进程 id + 自增序号）
-fn unique_dir(name: &str) -> PathBuf {
-    let seq = DIR_SEQ.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("repo_wiki_cli_{}_{}_{}", name, std::process::id(), seq))
-}
-
-/// 递归复制目录（构造 fixture 副本）
-fn copy_dir(src: &Path, dst: &Path) {
-    std::fs::create_dir_all(dst).unwrap();
-    for entry in std::fs::read_dir(src).unwrap() {
-        let entry = entry.unwrap();
-        let target = dst.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
-            copy_dir(&entry.path(), &target);
-        } else {
-            std::fs::copy(entry.path(), target).unwrap();
-        }
-    }
-}
-
-/// 在指定目录下执行 repo-wiki 二进制（额外环境变量可选），返回完整输出
-fn run_bin(dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_repo-wiki"));
-    cmd.args(args)
-        .current_dir(dir)
-        .env("RUST_LOG", "off") // 关闭 tracing 日志，保证 stdout 只有业务输出
-        .env_remove("OPENAI_API_KEY"); // 避免宿主机真实 Key 被误用
-    for (k, v) in envs {
-        cmd.env(k, v);
-    }
-    cmd.output().expect("执行 repo-wiki 二进制失败")
-}
-
-/// 启动本地 mock LLM server（返回固定卡片 JSON 响应），返回监听端口
-/// 注意：v13 A4 后生产路径统一请求流式（stream:true）并解析 SSE——
-/// mock 必须返回 `data: {...}` 行格式，非流式 JSON 会被解析为空内容。
-fn spawn_mock_llm() -> u16 {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    std::thread::spawn(move || {
-        use std::io::{Read, Write};
-        let content = r#"{"summary": "Mock 生成的摘要", "key_entities": []}"#;
-        let payload = serde_json::json!({ "choices": [{ "delta": { "content": content } }] });
-        let body = format!("data: {}\n\ndata: [DONE]\n\n", payload.to_string());
-        for stream in listener.incoming() {
-            let mut s = match stream {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-            let mut buf = [0u8; 4096];
-            let _ = s.read(&mut buf);
-            let head = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            );
-            let _ = s.write_all(head.as_bytes());
-            let _ = s.write_all(body.as_bytes());
-        }
-    });
-    port
-}
 
 /// 最小可用配置：LLM 指向本地 mock server，增量/搜索关闭，输出到相对路径 wiki
 fn minimal_config(port: u16) -> String {
@@ -120,7 +57,7 @@ fn prepare_repo(tag: &str) -> PathBuf {
     let work_dir = unique_dir(tag);
     let _ = std::fs::remove_dir_all(&work_dir);
     copy_dir(&fixture, &work_dir);
-    let port = spawn_mock_llm();
+    let port = mock_llm_server();
     std::fs::write(work_dir.join("config.toml"), minimal_config(port)).unwrap();
     work_dir
 }
@@ -144,7 +81,7 @@ fn test_uninstall_requires_force() {
     ];
 
     // 1. 无 --force → 非 0 退出码且提示需要 --force
-    let out = run_bin(&work_dir, &["uninstall-from-opencode"], envs);
+    let out = run_bin_with_envs(&work_dir, &["uninstall-from-opencode"], envs);
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
@@ -162,7 +99,7 @@ fn test_uninstall_requires_force() {
     assert!(combined.contains("卸载"), "拒绝提示应提及卸载");
 
     // 2. --force → 退出码 0；隔离环境下无 opencode.json/git hooks，安全返回
-    let out = run_bin(&work_dir, &["uninstall-from-opencode", "--force"], envs);
+    let out = run_bin_with_envs(&work_dir, &["uninstall-from-opencode", "--force"], envs);
     assert!(
         out.status.success(),
         "--force 应卸载成功，stderr: {}",
@@ -184,7 +121,7 @@ fn test_uninstall_requires_force() {
 fn test_progress_json_cli() {
     let work_dir = prepare_repo("progress_json");
 
-    let out = run_bin(&work_dir, &["generate", "--config", "config.toml", "--progress-json"], &[]);
+    let out = run_bin_with_envs(&work_dir, &["generate", "--config", "config.toml", "--progress-json"], &[]);
     assert!(
         out.status.success(),
         "generate --progress-json 应成功，stderr: {}",
@@ -222,13 +159,61 @@ fn test_progress_json_cli() {
     let _ = std::fs::remove_dir_all(&work_dir);
 }
 
+/// update --progress-json（P2-11）：增量更新命令同样输出 JSONL 进度事件
+///（U08 给 update 补上 progress 输出后一直无冒烟覆盖——generate 已有
+/// test_progress_json_cli，update 的 progress-json 分支必须同等验证：
+/// 事件非空、以 done=100 结束。增量禁用/非 git 时 update 回退全量路径，
+/// run_pipeline_with_progress 的进度事件照常输出，断言不依赖具体模式）
+#[test]
+fn test_update_progress_json_cli() {
+    let work_dir = prepare_repo("update_progress_json");
+
+    // 先全量 generate 建立基线（增量路径需要产物与状态）
+    let gen_out = run_bin_with_envs(&work_dir, &["generate", "--config", "config.toml"], &[]);
+    assert!(
+        gen_out.status.success(),
+        "generate 应成功，stderr: {}",
+        String::from_utf8_lossy(&gen_out.stderr)
+    );
+
+    // 修改一个源文件触发变更（update 以 changed_files 判定有无更新）
+    let src = work_dir.join("src").join("main.rs");
+    let mut content = std::fs::read_to_string(&src).unwrap();
+    content.push_str("\n// update --progress-json 触发注释\n");
+    std::fs::write(&src, content).unwrap();
+
+    let out = run_bin_with_envs(&work_dir, &["update", "--config", "config.toml", "--progress-json"], &[]);
+    assert!(
+        out.status.success(),
+        "update --progress-json 应成功，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let events: Vec<(String, u8)> = stdout
+        .lines()
+        .filter_map(|line| {
+            let v: serde_json::Value = serde_json::from_str(line).ok()?;
+            Some((
+                v.get("stage")?.as_str()?.to_string(),
+                v.get("progress")?.as_u64()? as u8,
+            ))
+        })
+        .collect();
+    assert!(!events.is_empty(), "update 应输出进度事件，实际 stdout: {stdout}");
+    assert_eq!(events.last().unwrap().0, "done", "末个事件应为 done");
+    assert_eq!(events.last().unwrap().1, 100, "末个事件 progress 应为 100");
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
+
 /// card 子命令集成：generate 产出卡片后，card modify 修改卡片文件内容
 #[test]
 fn test_card_cli_commands() {
     let work_dir = prepare_repo("card");
 
     // 1. 全量 generate（mock LLM 返回卡片 JSON）→ 卡片文件落盘
-    let out = run_bin(&work_dir, &["generate", "--config", "config.toml"], &[]);
+    let out = run_bin_with_envs(&work_dir, &["generate", "--config", "config.toml"], &[]);
     assert!(
         out.status.success(),
         "generate 应成功，stderr: {}",
@@ -250,7 +235,7 @@ fn test_card_cli_commands() {
     assert!(!before.is_empty(), "卡片文件不应为空");
 
     // 2. card modify：卡片文件内容变化且为 LLM 响应
-    let out = run_bin(
+    let out = run_bin_with_envs(
         &work_dir,
         &[
             "card", "modify", &module,
@@ -280,7 +265,7 @@ fn test_card_cli_commands() {
 fn test_card_reference_validation() {
     let work_dir = prepare_repo("card_ref");
 
-    let out = run_bin(&work_dir, &["generate", "--config", "config.toml"], &[]);
+    let out = run_bin_with_envs(&work_dir, &["generate", "--config", "config.toml"], &[]);
     assert!(
         out.status.success(),
         "generate 应成功，stderr: {}",
@@ -301,7 +286,7 @@ fn test_card_reference_validation() {
     let before = std::fs::read_to_string(&card_file).unwrap();
 
     // 1. reference 指向不存在文件 → 非 0 退出码且报错（read_references 读取失败即失败）
-    let out = run_bin(
+    let out = run_bin_with_envs(
         &work_dir,
         &[
             "card", "modify", &module,
@@ -332,7 +317,7 @@ fn test_card_reference_validation() {
 
     // 2. reference 指向存在文件 → 成功且卡片更新
     std::fs::write(work_dir.join("refs.md"), "参考材料：新增设计约束").unwrap();
-    let out = run_bin(
+    let out = run_bin_with_envs(
         &work_dir,
         &[
             "card", "modify", &module,
@@ -360,7 +345,7 @@ fn test_card_reference_validation() {
 fn test_export_produces_html_artifacts() {
     let work_dir = prepare_repo("export");
 
-    let gen_out = run_bin(
+    let gen_out = run_bin_with_envs(
         &work_dir,
         &["generate", "--config", "config.toml"],
         &[],
@@ -371,7 +356,7 @@ fn test_export_produces_html_artifacts() {
         String::from_utf8_lossy(&gen_out.stderr)
     );
 
-    let out = run_bin(
+    let out = run_bin_with_envs(
         &work_dir,
         &["export", "--config", "config.toml"],
         &[],
@@ -429,7 +414,7 @@ fn test_search_hybrid_includes_callchain() {
     copy_dir(&fixture, &work_dir);
 
     // 覆盖 config.toml：启用搜索索引（fixture 自带 config 可能未开）
-    let port = spawn_mock_llm();
+    let port = mock_llm_server();
     let config = format!(
         r#"
 [scope]
@@ -462,14 +447,14 @@ default_top_k = 10
     );
     std::fs::write(work_dir.join("config.toml"), config).unwrap();
 
-    let gen_out = run_bin(&work_dir, &["generate", "--config", "config.toml"], &[]);
+    let gen_out = run_bin_with_envs(&work_dir, &["generate", "--config", "config.toml"], &[]);
     assert!(
         gen_out.status.success(),
         "generate 应成功, stderr: {}",
         String::from_utf8_lossy(&gen_out.stderr)
     );
 
-    let out = run_bin(
+    let out = run_bin_with_envs(
         &work_dir,
         &["search", "-q", "authenticate", "-k", "3", "--engine", "hybrid", "--json", "--config", "config.toml"],
         &[],
@@ -553,7 +538,7 @@ default_top_k = 10
 ").unwrap();
 
     // 干净产物 → lint 通过(无孤儿页)
-    let clean = run_bin(&work_dir, &["lint", "--config", "config.toml"], &[]);
+    let clean = run_bin_with_envs(&work_dir, &["lint", "--config", "config.toml"], &[]);
     assert!(
         clean.status.success(),
         "干净产物 lint 应通过, stderr: {}",
@@ -567,7 +552,7 @@ default_top_k = 10
     )
     .unwrap();
 
-    let dirty = run_bin(&work_dir, &["lint", "--config", "config.toml"], &[]);
+    let dirty = run_bin_with_envs(&work_dir, &["lint", "--config", "config.toml"], &[]);
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&dirty.stdout),
@@ -595,7 +580,7 @@ default_top_k = 10
 fn test_ast_search_finds_definition() {
     let work_dir = prepare_repo("ast_search");
 
-    let out = run_bin(
+    let out = run_bin_with_envs(
         &work_dir,
         &["ast-search", "authenticate", "--config", "config.toml"],
         &[],
@@ -620,7 +605,7 @@ fn test_ast_search_finds_definition() {
     );
 
     // 不存在的符号 → 明确提示
-    let miss = run_bin(
+    let miss = run_bin_with_envs(
         &work_dir,
         &["ast-search", "definitely_missing", "--config", "config.toml"],
         &[],

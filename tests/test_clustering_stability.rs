@@ -56,7 +56,7 @@ fn test_clustering_stable_across_runs() {
     build_cluster_repo(&dir);
 
     let root = repo_wiki::project::ProjectRoot::new(dir.clone());
-    let insights = repo_wiki::ingest::scan_and_parse_at(&root, &bench_config()).unwrap();
+    let insights = repo_wiki::ingest::scan_and_parse_at(&root, &bench_config()).unwrap().insights;
     let graph = repo_wiki::analysis::build_graph(&insights).unwrap();
 
     // 两次独立检测

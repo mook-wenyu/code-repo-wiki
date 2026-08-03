@@ -77,21 +77,4 @@ impl NodeKind {
             NodeKind::Macro => "macro",
         }
     }
-
-    /// 优先级排序（值越小优先级越高），用于分层显示
-    pub fn priority(&self) -> u8 {
-        match self {
-            NodeKind::Project => 0,
-            NodeKind::Module => 1,
-            NodeKind::File => 2,
-            NodeKind::Struct | NodeKind::Class | NodeKind::Interface => 3,
-            NodeKind::Trait => 4,
-            NodeKind::Impl => 5,
-            NodeKind::Enum => 6,
-            NodeKind::Function => 7,
-            NodeKind::Type => 8,
-            NodeKind::Constant | NodeKind::Variable => 9,
-            NodeKind::Macro => 10,
-        }
-    }
 }

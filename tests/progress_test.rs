@@ -9,30 +9,9 @@
 
 use std::path::Path;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// 进程内自增序号：同一进程内多个测试并行时临时目录互不冲突
-static DIR_SEQ: AtomicUsize = AtomicUsize::new(0);
-
-/// 生成唯一临时目录（进程 id + 自增序号）
-fn unique_dir(name: &str) -> std::path::PathBuf {
-    let seq = DIR_SEQ.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("repo_wiki_{}_{}_{}", name, std::process::id(), seq))
-}
-
-/// 递归复制目录（构造 fixture 副本）
-fn copy_dir(src: &Path, dst: &Path) {
-    std::fs::create_dir_all(dst).unwrap();
-    for entry in std::fs::read_dir(src).unwrap() {
-        let entry = entry.unwrap();
-        let target = dst.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
-            copy_dir(&entry.path(), &target);
-        } else {
-            std::fs::copy(entry.path(), target).unwrap();
-        }
-    }
-}
+mod common;
+use common::{copy_dir, unique_dir};
 
 #[test]
 fn test_pipeline_progress_events_monotonic_and_done() {

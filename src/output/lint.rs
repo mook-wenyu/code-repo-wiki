@@ -29,6 +29,10 @@ pub struct LintIssue {
 ///
 /// `output_dir` 为产物根目录（config.output.dir），
 /// `source_roots` 为源码扫描根列表（用于过时检查的源文件 mtime 对比）。
+///
+/// 六类检查各一个私有函数（B7：单函数承载单一职责，lint() 只做组合）：
+/// orphan（孤儿页）、broken（断链）、stale（过时）、bad-citation（引用存在性）、
+/// entity-coverage（实体覆盖率）、bad-mermaid（Mermaid 语法）。
 pub fn lint(output_dir: &Path, source_roots: &[PathBuf]) -> Vec<LintIssue> {
     let mut issues = Vec::new();
     let wiki_root = output_dir.join("wiki");
@@ -39,214 +43,244 @@ pub fn lint(output_dir: &Path, source_roots: &[PathBuf]) -> Vec<LintIssue> {
         let lang_dir = wiki_root.join(lang);
         let pages = collect_md_files(&lang_dir);
 
-        // ---- 1. 孤儿页检查：收集所有页面内链接（含目录页 _toc），统计入链 ----
-        // 链接形态：[](wiki/zh/xxx.md) 或相对链接 (xxx.md)；按文件名主体匹配
-        let mut incoming: HashMap<String, usize> = HashMap::new();
-        // 链接统计范围 = 语言目录页面 + 产物根目录页(_toc.md,它在 wiki 根而非 lang 目录,
-        // 但其链接指向全部页面——不统计则每页都因无入链被误标孤儿)
+        // 链接统计范围 = 语言目录页面 + 产物根目录页（_toc.md 在 wiki 根而非
+        // lang 目录，但其链接指向全部页面——不统计则每页都因无入链被误标孤儿）
         let mut link_sources: Vec<PathBuf> = pages.clone();
         let toc_path = output_dir.join("_toc.md");
         if toc_path.exists() {
             link_sources.push(toc_path);
         }
-        for page in &link_sources {
-            let content = std::fs::read_to_string(page).unwrap_or_default();
-            for link in extract_md_links(&content) {
-                // 仅统计 wiki 页面间链接（.md 结尾且不含协议）
-                if link.ends_with(".md") && !link.contains("://") {
-                    let stem = link
-                        .rsplit(['/', '\\'])
-                        .next()
-                        .unwrap_or(&link)
-                        .trim_end_matches(".md")
-                        .to_string();
-                    *incoming.entry(stem).or_default() += 1;
-                }
+
+        issues.extend(check_orphan_pages(&pages, &link_sources, lang));
+        issues.extend(check_broken_links(&pages, lang));
+        issues.extend(check_stale(&pages, &output_dir.join("cards").join(lang), source_roots, lang));
+        issues.extend(check_citations(&pages, output_dir, source_roots, lang));
+        issues.extend(check_entity_coverage(&pages, &output_dir.join("wiki").join(lang).join("api.md"), lang, output_dir));
+        issues.extend(check_mermaid(&pages, lang));
+    }
+
+    issues
+}
+
+/// 1. 孤儿页检查：收集所有页面内链接（含目录页 _toc），统计入链，
+///    无任何页面链接指向的模块页报 orphan（全局文档由 TOC/概览引用，不算）
+fn check_orphan_pages(pages: &[PathBuf], link_sources: &[PathBuf], lang: &str) -> Vec<LintIssue> {
+    let mut incoming: HashMap<String, usize> = HashMap::new();
+    for page in link_sources {
+        let content = std::fs::read_to_string(page).unwrap_or_default();
+        for link in extract_md_links(&content) {
+            // 仅统计 wiki 页面间链接（.md 结尾且不含协议）
+            if link.ends_with(".md") && !link.contains("://") {
+                let stem = link
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .unwrap_or(&link)
+                    .trim_end_matches(".md")
+                    .to_string();
+                *incoming.entry(stem).or_default() += 1;
             }
         }
+    }
 
-        for page in &pages {
-            let file_name = page
-                .file_name()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default();
-            let stem = file_name.trim_end_matches(".md").to_string();
-            // 全局文档(api/overview/architecture/_toc)由 TOC/概览引用,不算孤儿
-            let is_global = matches!(
-                stem.as_str(),
-                "api" | "overview" | "architecture" | "_toc" | "index"
-            );
-            if !is_global && incoming.get(&stem).copied().unwrap_or(0) == 0 {
+    let mut issues = Vec::new();
+    for page in pages {
+        let file_name = page
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let stem = file_name.trim_end_matches(".md").to_string();
+        // 全局文档(api/overview/architecture/_toc/index)由 TOC/概览引用,不算孤儿
+        let is_global = matches!(
+            stem.as_str(),
+            "api" | "overview" | "architecture" | "_toc" | "index"
+        );
+        if !is_global && incoming.get(&stem).copied().unwrap_or(0) == 0 {
+            issues.push(LintIssue {
+                kind: "orphan",
+                path: format!("wiki/{lang}/{file_name}"),
+                message: format!("孤儿页: 无任何页面链接指向 {file_name}"),
+            });
+        }
+    }
+    issues
+}
+
+/// 2. 断链检查：页面内链接目标必须存在于产物文件集合
+fn check_broken_links(pages: &[PathBuf], lang: &str) -> Vec<LintIssue> {
+    let mut issues = Vec::new();
+    for page in pages {
+        let content = std::fs::read_to_string(page).unwrap_or_default();
+        let file_name = page
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        for link in extract_md_links(&content) {
+            if !link.ends_with(".md") || link.contains("://") {
+                continue;
+            }
+            // 解析链接目标:可能带 wiki/zh/ 前缀或纯文件名
+            let target_name = link.rsplit(['/', '\\']).next().unwrap_or(&link);
+            let target_exists = pages.iter().any(|p| {
+                p.file_name()
+                    .map(|s| s.to_string_lossy() == target_name)
+                    .unwrap_or(false)
+            });
+            if !target_exists {
                 issues.push(LintIssue {
-                    kind: "orphan",
+                    kind: "broken",
                     path: format!("wiki/{lang}/{file_name}"),
-                    message: format!("孤儿页: 无任何页面链接指向 {file_name}"),
+                    message: format!("断链: {link} 指向不存在的产物文件"),
                 });
             }
         }
+    }
+    issues
+}
 
-        // ---- 2. 断链检查：页面内链接目标必须存在 ----
-        for page in &pages {
-            let content = std::fs::read_to_string(page).unwrap_or_default();
-            let file_name = page
-                .file_name()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default();
-            for link in extract_md_links(&content) {
-                if !link.ends_with(".md") || link.contains("://") {
-                    continue;
-                }
-                // 解析链接目标:可能带 wiki/zh/ 前缀或纯文件名
-                let target_name = link.rsplit(['/', '\\']).next().unwrap_or(&link);
-                let target_exists = pages.iter().any(|p| {
-                    p.file_name()
-                        .map(|s| s.to_string_lossy() == target_name)
-                        .unwrap_or(false)
-                });
-                if !target_exists {
-                    issues.push(LintIssue {
-                        kind: "broken",
-                        path: format!("wiki/{lang}/{file_name}"),
-                        message: format!("断链: {link} 指向不存在的产物文件"),
-                    });
-                }
-            }
-        }
+/// 3. 过时检查：模块页/卡片生成时间 < 其源文件 mtime
+///    （从产物内容提取源文件路径——相关文件段，与源码根下对应文件的 mtime 对比）
+fn check_stale(pages: &[PathBuf], cards_dir: &Path, source_roots: &[PathBuf], lang: &str) -> Vec<LintIssue> {
+    let mut stale_targets: Vec<PathBuf> = pages.to_vec();
+    stale_targets.extend(collect_md_files(cards_dir));
 
-        // ---- 3. 过时检查：模块页/卡片生成时间 < 其源文件 mtime ----
-        // 从产物内容提取源文件路径（相关文件段: - `path`，卡片含此段，
-        // 模块页正文未必含），与源码根下对应文件的 mtime 对比
-        let cards_dir = output_dir.join("cards").join(lang);
-        let mut stale_targets: Vec<PathBuf> = pages.clone();
-        stale_targets.extend(collect_md_files(&cards_dir));
-        for page in &stale_targets {
-            let content = std::fs::read_to_string(page).unwrap_or_default();
-            let file_name = page
-                .file_name()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default();
-            let page_mtime = std::fs::metadata(page)
-                .and_then(|m| m.modified())
-                .ok();
-            let Some(page_time) = page_mtime else { continue };
-            for src in extract_source_files(&content) {
-                let abs = resolve_source_path(source_roots, &src);
-                if let Ok(meta) = std::fs::metadata(&abs)
-                    && let Ok(src_time) = meta.modified()
-                    && src_time > page_time
-                {
-                    issues.push(LintIssue {
-                        kind: "stale",
-                        path: format!("wiki/{lang}/{file_name}"),
-                        message: format!(
-                            "过时: 源文件 {src} 的修改时间晚于页面生成时间(源码已变更,文档可能未更新)"
-                        ),
-                    });
-                }
-            }
-        }
-        // ---- 4. 引用存在性检查（P1-4 零成本评测）：正文中的 `path:line` 引用必须可验证 ----
-        // LLM 正文的源码引用契约（生成层校验 + 重试，见 generate/wiki.rs），此处对磁盘产物
-        // 做静态复核：引用文件必须存在且行号不越界。基准根用 resolve_source_path 逐根尝试
-        //（与过时检查同一路径解析约定），引用相对项目根，source_roots 即项目根下源码目录。
-        for page in &pages {
-            let content = std::fs::read_to_string(page).unwrap_or_default();
-            let file_name = page
-                .file_name()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default();
-            for citation in citation::extract_citations(&content) {
-                // 引用相对项目根：output_dir（.repo-wiki/ 或 wiki/）的上级即项目根
-                // （AGENTS.md 生成同约定）；source_roots 兜底逐根尝试
-                let project_root = output_dir.parent().unwrap_or_else(|| Path::new("."));
-                let abs = project_root.join(&citation.path);
-                let total_lines = std::fs::read_to_string(&abs)
-                    .map(|s| s.lines().count())
-                    .ok()
-                    .or_else(|| {
-                        std::fs::read_to_string(resolve_source_path(source_roots, &citation.path))
-                            .map(|s| s.lines().count())
-                            .ok()
-                    });
-                let message = match total_lines {
-                    None => format!("引用不存在: `{}` 指向的文件找不到", citation.path),
-                    Some(n) if citation.end > n => format!(
-                        "引用越界: `{}` 的 {}-{} 行超出文件总行数 {}",
-                        citation.path, citation.start, citation.end, n
-                    ),
-                    _ => continue,
-                };
+    let mut issues = Vec::new();
+    for page in &stale_targets {
+        let content = std::fs::read_to_string(page).unwrap_or_default();
+        let file_name = page
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let page_mtime = std::fs::metadata(page)
+            .and_then(|m| m.modified())
+            .ok();
+        let Some(page_time) = page_mtime else { continue };
+        for src in extract_source_files(&content) {
+            let abs = resolve_source_path(source_roots, &src);
+            if let Ok(meta) = std::fs::metadata(&abs)
+                && let Ok(src_time) = meta.modified()
+                && src_time > page_time
+            {
                 issues.push(LintIssue {
-                    kind: "bad-citation",
-                    path: format!("wiki/{lang}/{file_name}"),
-                    message,
-                });
-            }
-        }
-
-        // ---- 5. 实体覆盖率检查（P1-4 零成本评测）：模块页核心实体须存在于 api.md ----        // api.md 由 graph 权威渲染（markdown::render_api_reference），页面声称的实体若不在
-        // api.md = LLM 编造实体名（防幻觉的第二道闸）。只检查主语言目录（api.md 仅主语言一份）。
-        let api_path = output_dir.join("wiki").join(lang).join("api.md");
-        if primary_language(output_dir) == *lang
-            && let Ok(api_content) = std::fs::read_to_string(&api_path)
-        {
-            let known: std::collections::HashSet<String> = api_content
-                .lines()
-                .filter(|l| l.trim_start().starts_with("- `"))
-                .filter_map(|l| {
-                    // 签名如 `pub fn authenticate(username: &str) -> Option<User>`：
-                    // 取第一个 '(' 前的最后标识符（跳过 pub/fn 等关键字前缀）
-                    let inner = &l[l.find('`').unwrap() + 1..];
-                    inner
-                        .split('`')
-                        .next()
-                        .and_then(entity_name_from_signature)
-                })
-                .collect();
-            for page in &pages {
-                let content = std::fs::read_to_string(page).unwrap_or_default();
-                let file_name = page
-                    .file_name()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                for entity in extract_entity_names(&content) {
-                    if !known.contains(&entity) {
-                        issues.push(LintIssue {
-                            kind: "entity-coverage",
-                            path: format!("wiki/{lang}/{file_name}"),
-                            message: format!("实体覆盖率: 页面声称的实体 `{entity}` 不在 api.md 清单中（可能是编造或已删除）"),
-                        });
-                    }
-                }
-            }
-        }
-
-        // ---- 6. Mermaid 语法检查（G2）：产物中的 mermaid fence 必须可被
-        // merman 权威解析器解析 ----
-        // 生成层已做校验-重试-降级（坏块不会以 mermaid 形态落盘），此处兜住
-        // 三类来源：历史产物（降级机制上线前生成）、人工手工编辑的页面、
-        // 增量路径未重新生成的遗留页面。发现坏图即报 issue（CI 门禁，
-        // 与 bad-citation 同语义：不自动修复，只阻断）。
-        for page in &pages {
-            let content = std::fs::read_to_string(page).unwrap_or_default();
-            let file_name = page
-                .file_name()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default();
-            for issue in crate::output::mermaid_check::validate_mermaid_blocks(&content) {
-                issues.push(LintIssue {
-                    kind: "bad-mermaid",
+                    kind: "stale",
                     path: format!("wiki/{lang}/{file_name}"),
                     message: format!(
-                        "Mermaid 校验失败（第 {} 个块）: {}",
-                        issue.block_index + 1,
-                        issue.message
+                        "过时: 源文件 {src} 的修改时间晚于页面生成时间(源码已变更,文档可能未更新)"
                     ),
                 });
             }
         }
     }
+    issues
+}
 
+/// 4. 引用存在性检查（P1-4 零成本评测）：正文中的 `path:line` 引用必须可验证
+///    （生成层已校验-重试，此处对磁盘产物静态复核：引用文件存在且行号不越界）
+fn check_citations(pages: &[PathBuf], output_dir: &Path, source_roots: &[PathBuf], lang: &str) -> Vec<LintIssue> {
+    let mut issues = Vec::new();
+    for page in pages {
+        let content = std::fs::read_to_string(page).unwrap_or_default();
+        let file_name = page
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        for citation in citation::extract_citations(&content) {
+            // 引用相对项目根：output_dir 的上级即项目根（AGENTS.md 生成同约定）；
+            // source_roots 兜底逐根尝试
+            let project_root = output_dir.parent().unwrap_or_else(|| Path::new("."));
+            let abs = project_root.join(&citation.path);
+            let total_lines = std::fs::read_to_string(&abs)
+                .map(|s| s.lines().count())
+                .ok()
+                .or_else(|| {
+                    std::fs::read_to_string(resolve_source_path(source_roots, &citation.path))
+                        .map(|s| s.lines().count())
+                        .ok()
+                });
+            let message = match total_lines {
+                None => format!("引用不存在: `{}` 指向的文件找不到", citation.path),
+                Some(n) if citation.end > n => format!(
+                    "引用越界: `{}` 的 {}-{} 行超出文件总行数 {}",
+                    citation.path, citation.start, citation.end, n
+                ),
+                _ => continue,
+            };
+            issues.push(LintIssue {
+                kind: "bad-citation",
+                path: format!("wiki/{lang}/{file_name}"),
+                message,
+            });
+        }
+    }
+    issues
+}
+
+/// 5. 实体覆盖率检查（P1-4 零成本评测）：模块页核心实体须存在于 api.md
+///    （api.md 由 graph 权威渲染，页面声称的实体若不在 = LLM 编造实体名，
+///    防幻觉第二道闸；api.md 仅主语言一份，只检查主语言目录）
+fn check_entity_coverage(pages: &[PathBuf], api_path: &Path, lang: &str, output_dir: &Path) -> Vec<LintIssue> {
+    if primary_language(output_dir) != *lang {
+        return Vec::new();
+    }
+    let Ok(api_content) = std::fs::read_to_string(api_path) else {
+        return Vec::new();
+    };
+    let known: std::collections::HashSet<String> = api_content
+        .lines()
+        .filter(|l| l.trim_start().starts_with("- `"))
+        .filter_map(|l| {
+            // 签名如 `pub fn authenticate(username: &str) -> Option<User>`：
+            // 取第一个 '(' 前的最后标识符（跳过 pub/fn 等关键字前缀）
+            let inner = &l[l.find('`').unwrap() + 1..];
+            inner
+                .split('`')
+                .next()
+                .and_then(entity_name_from_signature)
+        })
+        .collect();
+
+    let mut issues = Vec::new();
+    for page in pages {
+        let content = std::fs::read_to_string(page).unwrap_or_default();
+        let file_name = page
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        for entity in extract_entity_names(&content) {
+            if !known.contains(&entity) {
+                issues.push(LintIssue {
+                    kind: "entity-coverage",
+                    path: format!("wiki/{lang}/{file_name}"),
+                    message: format!("实体覆盖率: 页面声称的实体 `{entity}` 不在 api.md 清单中（可能是编造或已删除）"),
+                });
+            }
+        }
+    }
+    issues
+}
+
+/// 6. Mermaid 语法检查（G2）：产物中的 mermaid fence 必须可被 merman 权威解析器解析
+///    （生成层已做校验-重试-降级，此处兜住历史产物/人工编辑/增量遗留三类来源；
+///    发现坏图即报 issue，CI 门禁语义与 bad-citation 一致：只阻断不自动修复）
+fn check_mermaid(pages: &[PathBuf], lang: &str) -> Vec<LintIssue> {
+    let mut issues = Vec::new();
+    for page in pages {
+        let content = std::fs::read_to_string(page).unwrap_or_default();
+        let file_name = page
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        for issue in crate::output::mermaid_check::validate_mermaid_blocks(&content) {
+            issues.push(LintIssue {
+                kind: "bad-mermaid",
+                path: format!("wiki/{lang}/{file_name}"),
+                message: format!(
+                    "Mermaid 校验失败（第 {} 个块）: {}",
+                    issue.block_index + 1,
+                    issue.message
+                ),
+            });
+        }
+    }
     issues
 }
 

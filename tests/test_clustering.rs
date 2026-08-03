@@ -62,7 +62,7 @@ fn test_community_detection_and_features() {
 
     let root = repo_wiki::project::ProjectRoot::new(tmp.clone());
     let result = (|| -> anyhow::Result<()> {
-        let insights = ingest::scan_and_parse_at(&root, &repo_wiki::config::schema::WikiConfig::default())?;
+        let insights = ingest::scan_and_parse_at(&root, &repo_wiki::config::schema::WikiConfig::default())?.insights;
         assert!(!insights.is_empty(), "应扫描到源文件");
         let mut graph = analysis::build_graph(&insights)?;
         // features 由 lib 层 attach_features 填充（lib 私有函数），

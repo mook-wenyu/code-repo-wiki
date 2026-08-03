@@ -10,6 +10,9 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+mod common;
+use common::copy_dir;
+
 use petgraph::stable_graph::{EdgeIndex, NodeIndex, StableDiGraph};
 
 use repo_wiki::config::schema::WikiConfig;
@@ -287,20 +290,6 @@ default_top_k = 10
     );
 
     let _ = std::fs::remove_dir_all(&work_dir);
-}
-
-/// 递归复制目录（构造 fixture 副本）
-fn copy_dir(src: &Path, dst: &Path) {
-    std::fs::create_dir_all(dst).unwrap();
-    for entry in std::fs::read_dir(src).unwrap() {
-        let entry = entry.unwrap();
-        let target = dst.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
-            copy_dir(&entry.path(), &target);
-        } else {
-            std::fs::copy(entry.path(), target).unwrap();
-        }
-    }
 }
 
 /// U04/D8：阅读指南 LLM 输出坏 mermaid 时降级为 text 块（不重试），

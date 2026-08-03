@@ -12,30 +12,9 @@
 //! （参照 test_cli.rs 手法）。
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// 进程内自增序号：同一进程内多个测试并行时临时目录互不冲突
-static DIR_SEQ: AtomicUsize = AtomicUsize::new(0);
-
-/// 生成唯一临时目录（进程 id + 自增序号）
-fn unique_dir(name: &str) -> PathBuf {
-    let seq = DIR_SEQ.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("repo_wiki_hook_{}_{}_{}", name, std::process::id(), seq))
-}
-
-/// 在指定目录下执行 repo-wiki 二进制（额外环境变量可选），返回完整输出
-fn run_bin(dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_repo-wiki"));
-    cmd.args(args)
-        .current_dir(dir)
-        .env("RUST_LOG", "off") // 关闭 tracing 日志，保证 stdout 只有业务输出
-        .env_remove("OPENAI_API_KEY"); // 避免宿主机真实 Key 被误用
-    for (k, v) in envs {
-        cmd.env(k, v);
-    }
-    cmd.output().expect("执行 repo-wiki 二进制失败")
-}
+mod common;
+use common::{run_bin_with_envs, unique_dir};
 
 /// 隔离 HOME/USERPROFILE（install/uninstall 会读写 opencode 全局配置）
 fn home_envs(home: &Path) -> Vec<(&'static str, String)> {
@@ -85,7 +64,7 @@ fn test_install_writes_git_hooks() {
     let envs: Vec<(&str, String)> = home_envs(&home);
     let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
-    let out = run_bin(&work_dir, &["install-to-opencode"], &envs_ref);
+    let out = run_bin_with_envs(&work_dir, &["install-to-opencode"], &envs_ref);
     assert!(
         out.status.success(),
         "install 应成功，stderr: {}",
@@ -128,7 +107,7 @@ fn test_hook_command_succeeds() {
     let envs: Vec<(&str, String)> = home_envs(&home);
     let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
-    let out = run_bin(&work_dir, &["install-to-opencode"], &envs_ref);
+    let out = run_bin_with_envs(&work_dir, &["install-to-opencode"], &envs_ref);
     assert!(out.status.success(), "install 应成功");
 
     let content = std::fs::read_to_string(hooks_dir.join("post-commit")).unwrap();
@@ -154,7 +133,7 @@ fn test_install_non_git_repo_prints_hint() {
     let envs: Vec<(&str, String)> = home_envs(&home);
     let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
-    let out = run_bin(&work_dir, &["install-to-opencode"], &envs_ref);
+    let out = run_bin_with_envs(&work_dir, &["install-to-opencode"], &envs_ref);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         out.status.success(),
@@ -195,7 +174,7 @@ fn test_uninstall_removes_only_own_hooks() {
     let envs: Vec<(&str, String)> = home_envs(&home);
     let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
-    let out = run_bin(&work_dir, &["uninstall-from-opencode", "--force"], &envs_ref);
+    let out = run_bin_with_envs(&work_dir, &["uninstall-from-opencode", "--force"], &envs_ref);
     assert!(
         out.status.success(),
         "uninstall --force 应成功，stderr: {}",

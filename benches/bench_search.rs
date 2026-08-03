@@ -56,7 +56,7 @@ fn build_bench_repo(dir: &Path) -> Vec<FileInsight> {
         };
         std::fs::write(sub.join(name), content).unwrap();
     }
-    repo_wiki::ingest::scan_and_parse_at(&repo_wiki::project::ProjectRoot::new(dir.to_path_buf()), &bench_config()).unwrap()
+    repo_wiki::ingest::scan_and_parse_at(&repo_wiki::project::ProjectRoot::new(dir.to_path_buf()), &bench_config()).unwrap().insights
 }
 
 /// 500 条索引下 BM25 搜索平均耗时
@@ -130,14 +130,11 @@ fn bench_scan_and_parse() {
     let dir = std::env::temp_dir().join(format!("bench_repo_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let old = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&dir).unwrap();
 
     let start = Instant::now();
     let insights = build_bench_repo(&dir);
     let elapsed = start.elapsed();
 
-    std::env::set_current_dir(old).unwrap();
     assert_eq!(insights.len(), 200);
     eprintln!("bench scan_and_parse: 200 files, {}ms", elapsed.as_millis());
     let _ = std::fs::remove_dir_all(&dir);
@@ -154,11 +151,8 @@ fn bench_graph_build() {
     let dir = std::env::temp_dir().join(format!("bench_graph_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let old = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&dir).unwrap();
 
     let insights = build_bench_repo(&dir);
-    std::env::set_current_dir(old).unwrap();
 
     let start = Instant::now();
     let graph = repo_wiki::analysis::build_graph(&insights).unwrap();
@@ -223,8 +217,6 @@ fn bench_clustering_detection() {
     let dir = std::env::temp_dir().join(format!("bench_cluster_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let old = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&dir).unwrap();
 
     // 20 簇 × 10 文件：每文件定义 f{m}_{i} 与 g{m}_{i}；
     // f 调用同簇全部其他文件的 g（簇内完全图——模拟真实仓库稠密的
@@ -257,8 +249,7 @@ fn bench_clustering_detection() {
         }
     }
 
-    let insights = repo_wiki::ingest::scan_and_parse_at(&repo_wiki::project::ProjectRoot::from_cwd().unwrap(), &bench_config()).unwrap();
-    std::env::set_current_dir(old).unwrap();
+    let insights = repo_wiki::ingest::scan_and_parse_at(&repo_wiki::project::ProjectRoot::new(dir.clone()), &bench_config()).unwrap().insights;
     eprintln!(
         "debug: insights={} first_entities={:?} first_source={:?}",
         insights.len(),

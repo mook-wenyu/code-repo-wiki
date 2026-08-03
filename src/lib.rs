@@ -33,6 +33,9 @@ pub struct AnalysisResult {
 pub struct AnalysisStats {
     pub files_scanned: usize,
     pub files_parsed: usize,
+    /// 扫描范围内解析失败的文件数（非 UTF-8 / tree-sitter 解析错误；
+    /// B5 失败可观测——此前失败文件仅在日志出现，统计无法反映）
+    pub files_failed: usize,
     pub total_entities: usize,
     pub total_edges: usize,
     pub modules_detected: usize,
@@ -244,12 +247,14 @@ pub fn run_pipeline_with_progress(
         .collect();
     let watch_set: std::collections::HashSet<std::path::PathBuf> =
         watch_paths.iter().cloned().collect();
-    let file_insights = if is_incremental {
+    let scan = if is_incremental {
         let cache_path = Path::new(&config.output.dir).join(".state").join("insights_cache.json");
         ingest::scan_and_parse_cached_at(root, &config, &Some(cache_path), &watch_set)?
     } else {
         ingest::scan_and_parse_at(root, &config)?
     };
+    let file_insights = scan.insights;
+    let files_failed = scan.files_failed;
     on_progress(ProgressEvent { stage: "scanning", percent: 10 });
     if file_insights.is_empty() {
         bail!("未找到任何源文件");
@@ -257,6 +262,7 @@ pub fn run_pipeline_with_progress(
     let mut stats = AnalysisStats {
         files_scanned: file_insights.len(),
         files_parsed: file_insights.iter().filter(|f| !f.entities.is_empty()).count(),
+        files_failed,
         ..Default::default()
     };
 
@@ -958,8 +964,8 @@ pub fn execute_search(
             // 调用链补全：重建知识图谱以获得 Calls 边，构建调用索引注入 agent。
             // CLI 场景单次搜索的重建开销可接受（实测本项目约 1.2s）；
             // 失败时静默降级为无补全（索引缺失等，搜索主功能不受影响）。
-            if let Ok(insights) = ingest::scan_and_parse_at(root, &config)
-                && let Ok(graph) = analysis::build_graph(&insights)
+            if let Ok(scan) = ingest::scan_and_parse_at(root, &config)
+                && let Ok(graph) = analysis::build_graph(&scan.insights)
             {
                 let index = search::callgraph::CallGraph::new(&graph).build_call_index();
                 agent = agent.with_call_index(index);
@@ -987,7 +993,7 @@ pub fn execute_ast_search(
         return Ok(Vec::new());
     }
     let config = config::load_config(config_path)?;
-    let insights = ingest::scan_and_parse_at(root, &config)?;
+    let insights = ingest::scan_and_parse_at(root, &config)?.insights;
 
     let mut hits = Vec::new();
     for insight in &insights {

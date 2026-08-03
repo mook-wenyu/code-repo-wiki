@@ -220,17 +220,6 @@ impl ParserRegistry {
         let ext_str = format!(".{}", ext);
         self.parsers.iter().find(|p| p.extensions().contains(&ext_str.as_str())).map(|b| b.as_ref())
     }
-
-    /// 返回所有支持的扩展名列表（含点号前缀）
-    pub fn supported_extensions(&self) -> Vec<String> {
-        let mut exts = Vec::new();
-        for p in &self.parsers {
-            for e in p.extensions() {
-                exts.push(e.to_string());
-            }
-        }
-        exts
-    }
 }
 
 impl Default for ParserRegistry {

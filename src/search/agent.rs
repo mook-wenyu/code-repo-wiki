@@ -82,12 +82,6 @@ impl SearchAgent {
             }
         }
     }
-
-    pub fn text_engine(&self) -> &TextEngine { &self.text }
-
-    pub fn set_rrf_k(&mut self, k: f64) {
-        self.rrf_k = k;
-    }
 }
 
 #[cfg(test)]

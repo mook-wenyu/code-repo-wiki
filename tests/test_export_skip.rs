@@ -10,11 +10,9 @@
 //! 每个测试使用独立临时目录（进程 pid + 自增序号）避免并行冲突。
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// 进程内自增序号：同一进程内多个测试并行时临时目录互不冲突
-static DIR_SEQ: AtomicUsize = AtomicUsize::new(0);
+mod common;
+use common::{copy_dir, run_bin, unique_dir};
 
 /// 共用配置：内置 mock LLM provider（generate 不触网），
 /// output.dir 指向仓库内 .repo-wiki（对齐 CLI 默认约定）
@@ -43,36 +41,6 @@ index_dir = ".search"
 default_engine = "text"
 default_top_k = 10
 "#;
-
-/// 生成唯一临时目录（进程 id + 自增序号）
-fn unique_dir(name: &str) -> PathBuf {
-    let seq = DIR_SEQ.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("repo_wiki_export_{}_{}_{}", name, std::process::id(), seq))
-}
-
-/// 递归复制目录（构造 fixture 副本）
-fn copy_dir(src: &Path, dst: &Path) {
-    std::fs::create_dir_all(dst).unwrap();
-    for entry in std::fs::read_dir(src).unwrap() {
-        let entry = entry.unwrap();
-        let target = dst.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
-            copy_dir(&entry.path(), &target);
-        } else {
-            std::fs::copy(entry.path(), target).unwrap();
-        }
-    }
-}
-
-/// 在指定目录下执行 repo-wiki 二进制，返回完整输出
-fn run_bin(dir: &Path, args: &[&str]) -> Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_repo-wiki"));
-    cmd.args(args)
-        .current_dir(dir)
-        .env("RUST_LOG", "off") // 关闭 tracing 日志，保证 stdout 只有业务输出
-        .env_remove("OPENAI_API_KEY"); // 避免宿主机真实 Key 被误用
-    cmd.output().expect("执行 repo-wiki 二进制失败")
-}
 
 /// 复制 sample-repo 到唯一临时目录并改写 config.toml（mock provider，不触网），返回工作目录
 fn prepare_repo(tag: &str) -> PathBuf {

@@ -173,7 +173,8 @@ fn insights_cache_size_reports() {
         &Some(cache_path.clone()),
         &empty_changed,
     )
-    .expect("首次扫描解析失败");
+    .expect("首次扫描解析失败")
+    .insights;
     assert_eq!(first.len(), 10, "应解析出 10 个文件");
 
     // 第二次：缓存复用路径（不崩溃、结果一致）
@@ -183,7 +184,8 @@ fn insights_cache_size_reports() {
         &Some(cache_path.clone()),
         &empty_changed,
     )
-    .expect("缓存命中扫描失败");
+    .expect("缓存命中扫描失败")
+    .insights;
     assert_eq!(second.len(), 10);
 
     let bytes = std::fs::metadata(&cache_path).expect("缓存文件应存在").len();
