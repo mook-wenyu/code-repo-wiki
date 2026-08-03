@@ -50,28 +50,37 @@ impl SharedProcessor for CSharpProcessor {
     fn handle_special(node: Node, bytes: &[u8], entities: &mut Vec<Entity>, imports: &mut Vec<ImportStmt>) {
         match node.kind() {
             "field_declaration" => {
-                // 遍历子节点查找变量名
-                let mut sub_cursor = node.walk();
-                if sub_cursor.goto_first_child() {
-                    loop {
-                        let child = sub_cursor.node();
-                        if child.kind() == "variable_declarator" {
-                            // tree-sitter-c-sharp 0.23 中 variable_declarator 可能不含 name 字段
-                            // 先尝试 node_name，失败则用节点全文作为名称
-                            let name = Self::node_name(&child, bytes)
-                                .map(|s| s.to_string())
-                                .or_else(|| child.utf8_text(bytes).ok()
-                                    .map(|s| s.trim().to_string()));
-                            if let Some(name) = name {
-                                entities.push(Entity {
-                                    name: name.to_string(), kind: "variable".to_string(),
-                                    line_start: child.start_position().row + 1,
-                                    line_end: child.end_position().row + 1,
-                                    doc_comment: None, signature: None, summary: None,
-                                });
-                            }
+                // t07：tree-sitter-c-sharp 0.23 的字段声明是
+                // field_declaration → variable_declaration → variable_declarator
+                // 三层结构——旧实现只在 field_declaration 的直接子节点里找
+                // variable_declarator，中间多出的 variable_declaration 层使
+                // **字段恒不提取**（Unity 项目的 SerializeField 字段全部丢失）。
+                // 改为两层遍历（variable_declaration 下可有多个 declarator，
+                // 如 `int a, b;`）；tree-sitter 0.25 无 descendants API，用
+                // 显式两层 children 遍历。
+                let mut fd_cursor = node.walk();
+                for decl in node.children(&mut fd_cursor) {
+                    if decl.kind() != "variable_declaration" {
+                        continue;
+                    }
+                    let mut decl_cursor = decl.walk();
+                    for child in decl.children(&mut decl_cursor) {
+                        if child.kind() != "variable_declarator" {
+                            continue;
                         }
-                        if !sub_cursor.goto_next_sibling() { break; }
+                        // 优先取 name 字段；缺失时退化为 declarator 全文
+                        //（跨 tree-sitter 版本兼容，字段名是文档价值所在）
+                        let name = Self::node_name(&child, bytes)
+                            .map(|s| s.to_string())
+                            .or_else(|| child.utf8_text(bytes).ok().map(|s| s.trim().to_string()));
+                        if let Some(name) = name {
+                            entities.push(Entity {
+                                name: name.to_string(), kind: "variable".to_string(),
+                                line_start: child.start_position().row + 1,
+                                line_end: child.end_position().row + 1,
+                                doc_comment: None, signature: None, summary: None,
+                            });
+                        }
                     }
                 }
             }
@@ -260,3 +269,46 @@ namespace MyApp {
         // 字段析取器名称提取依赖 tree-sitter 版本。当前已验证主要类型（类/方法/属性）均可正确识别。
     }
 }
+
+    /// t07：Unity 形态覆盖——MonoBehaviour 类/SerializeField 字段/生命周期方法
+    /// 全部应解析（此前字段提取是已知弱项，见 test_parse_csharp_basics 注释）
+    #[test]
+    fn test_parse_csharp_unity_morphology() {
+        let source = r#"using UnityEngine;
+
+namespace Test.Unity
+{
+    public class PlayerController : MonoBehaviour
+    {
+        [SerializeField]
+        private float moveSpeed = 5f;
+
+        [SerializeField]
+        private string playerName;
+
+        public int Score { get; private set; }
+
+        void Awake() { this.moveSpeed = 1f; }
+
+        void Start() { this.playerName = "hero"; }
+
+        void Update() { this.Score++; }
+
+        public void Move(Vector3 dir) { }
+    }
+}
+"#;
+        let proc = CSharpProcessor::new().unwrap();
+        let result = proc.parse(source, Path::new("PlayerController.cs")).unwrap();
+        // 类（MonoBehaviour 子类作普通 class）
+        assert!(result.entities.iter().any(|e| e.name == "PlayerController" && e.kind == "class"));
+        // SerializeField 字段（私有但序列化——文档应含）
+        assert!(result.entities.iter().any(|e| e.name == "moveSpeed" && e.kind == "variable"), "SerializeField 字段应解析: {:?}", result.entities);
+        assert!(result.entities.iter().any(|e| e.name == "playerName" && e.kind == "variable"));
+        // 属性
+        assert!(result.entities.iter().any(|e| e.name == "Score" && e.kind == "property"));
+        // 生命周期方法
+        for lifecycle in ["Awake", "Start", "Update", "Move"] {
+            assert!(result.entities.iter().any(|e| e.name == lifecycle && e.kind == "function"), "方法 {lifecycle} 应解析");
+        }
+    }
