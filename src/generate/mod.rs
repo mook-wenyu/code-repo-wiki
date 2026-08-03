@@ -589,14 +589,32 @@ async fn generate_global_documents(
                 .await
             {
                 Ok(arch) => documents.push(arch),
-                Err(e) => tracing::warn!("架构概览生成跳过: {}", e),
+                // U06/D12：provider 瞬时失败不再丢页——降级为确定性骨架
+                //（模块/依赖清单，零 LLM），下次成功生成时补齐摘要
+                Err(e) => {
+                    tracing::warn!("架构概览生成失败，降级为确定性骨架: {e}");
+                    documents.push(crate::generate::wiki::fallback_architecture_doc(
+                        graph,
+                        config,
+                        crate::model::DocumentKind::ArchitectureOverview,
+                        "架构概览",
+                    ));
+                }
             }
             match wiki_gen
                 .generate_overview(&output_snapshot, graph, config)
                 .await
             {
                 Ok(overview) => documents.push(overview),
-                Err(e) => tracing::warn!("项目概览生成跳过: {}", e),
+                Err(e) => {
+                    tracing::warn!("项目概览生成失败，降级为确定性骨架: {e}");
+                    documents.push(crate::generate::wiki::fallback_architecture_doc(
+                        graph,
+                        config,
+                        crate::model::DocumentKind::ProjectOverview,
+                        "项目概览",
+                    ));
+                }
             }
         }
     } else if !backfill_global_docs(config, documents, &[
@@ -615,14 +633,31 @@ async fn generate_global_documents(
             .await
         {
             Ok(arch) => documents.push(arch),
-            Err(e) => tracing::warn!("架构概览生成跳过: {}", e),
+            // U06/D12：同 affected 路径——失败降级为确定性骨架而非丢页
+            Err(e) => {
+                tracing::warn!("架构概览生成失败，降级为确定性骨架: {e}");
+                documents.push(crate::generate::wiki::fallback_architecture_doc(
+                    graph,
+                    config,
+                    crate::model::DocumentKind::ArchitectureOverview,
+                    "架构概览",
+                ));
+            }
         }
         match wiki_gen
             .generate_overview(&output_snapshot, graph, config)
             .await
         {
             Ok(overview) => documents.push(overview),
-            Err(e) => tracing::warn!("项目概览生成跳过: {}", e),
+            Err(e) => {
+                tracing::warn!("项目概览生成失败，降级为确定性骨架: {e}");
+                documents.push(crate::generate::wiki::fallback_architecture_doc(
+                    graph,
+                    config,
+                    crate::model::DocumentKind::ProjectOverview,
+                    "项目概览",
+                ));
+            }
         }
     }
 
@@ -964,3 +999,78 @@ mod tests {
         assert_eq!(entity_name_from_signature("   "), None);
     }
 }
+
+    /// U06/D12：确定性骨架——模块名/实体数/依赖清单全部来自图，零 LLM；
+    /// references 指向模块页且按标题字典序（确定性输出）
+    #[test]
+    fn test_fallback_architecture_doc_skeleton() {
+        use crate::model::{CodeNode, EdgeKind, NodeKind};
+        use petgraph::stable_graph::StableDiGraph;
+
+        let mut g = StableDiGraph::<CodeNode, crate::model::CodeEdge>::new();
+        let a = g.add_node(CodeNode {
+            id: crate::model::NodeId::new(0),
+            kind: NodeKind::Function,
+            name: "a_fn".into(),
+            file_path: Some("src/a.rs".into()),
+            line_range: None,
+            doc_comment: None,
+            signature: None,
+            module_path: vec!["net".into()],
+        });
+        let b = g.add_node(CodeNode {
+            id: crate::model::NodeId::new(1),
+            kind: NodeKind::Function,
+            name: "b_fn".into(),
+            file_path: Some("src/b.rs".into()),
+            line_range: None,
+            doc_comment: None,
+            signature: None,
+            module_path: vec!["http".into()],
+        });
+        g.add_edge(a, b, crate::model::CodeEdge {
+            id: petgraph::stable_graph::EdgeIndex::new(0),
+            kind: EdgeKind::Calls,
+            source: a,
+            target: b,
+            weight: 1.0,
+            location: None,
+        });
+        let graph = crate::model::KnowledgeGraph {
+            graph: g,
+            modules: vec![
+                crate::model::ModuleCluster {
+                    name: "net".into(),
+                    node_ids: vec![a],
+                    cohesion: 1.0,
+                    coupling: 0.0,
+                    description: None,
+                },
+                crate::model::ModuleCluster {
+                    name: "http".into(),
+                    node_ids: vec![b],
+                    cohesion: 1.0,
+                    coupling: 0.0,
+                    description: None,
+                },
+            ],
+            features: Vec::new(),
+        };
+
+        let config = WikiConfig::default();
+        let doc = crate::generate::wiki::fallback_architecture_doc(
+            &graph,
+            &config,
+            crate::model::DocumentKind::ArchitectureOverview,
+            "架构概览",
+        );
+        assert!(doc.content.contains("架构概览"), "应含标题: {}", doc.content);
+        assert!(doc.content.contains("net`（1 个实体）"), "应含模块与实体数");
+        assert!(doc.content.contains("http`（1 个实体）"), "应含模块与实体数");
+        assert!(doc.content.contains("依赖 http"), "net 应列出依赖 http");
+        assert_eq!(doc.kind, crate::model::DocumentKind::ArchitectureOverview);
+        // references 覆盖全部模块且按标题字典序
+        let titles: Vec<&str> = doc.references.iter().map(|r| r.target_title.as_str()).collect();
+        assert_eq!(titles, vec!["http", "net"], "references 应按标题字典序: {titles:?}");
+        assert!(doc.references.iter().all(|r| r.target_path.starts_with("wiki/zh/")), "references 应指向主语言模块页");
+    }

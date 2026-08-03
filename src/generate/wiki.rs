@@ -539,6 +539,90 @@ fn build_references(chunk: &Chunk, language: &str) -> Vec<Reference> {
         .collect()
 }
 
+/// 确定性架构/概览骨架（U06/D12）：provider 失败时降级而非丢页
+///
+/// 内容 = 模块列表（名 + 实体数 + 依赖清单），全部来自 knowledge graph
+/// （零 LLM 调用），与 index.md 的确定性骨架同一思路：页面存在性优先，
+/// LLM 摘要可在下次成功生成时补齐。kind/title 由调用方传入（架构概览与
+/// 项目概览共用，避免两份骨架代码漂移）。
+pub fn fallback_architecture_doc(
+    graph: &KnowledgeGraph,
+    config: &WikiConfig,
+    kind: DocumentKind,
+    title: &str,
+) -> WikiDocument {
+    use petgraph::visit::{EdgeRef, IntoEdgeReferences};
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+    // 实体节点 → 所属模块（先到先得，与 index.rs/export_modules 同规则）
+    let mut node_module: HashMap<NodeId, String> = HashMap::new();
+    for module in &graph.modules {
+        for nid in &module.node_ids {
+            node_module
+                .entry(*nid)
+                .or_insert_with(|| module.name.clone());
+        }
+    }
+    // 模块 → 依赖模块名集合（Calls + Imports 跨模块边，BTreeSet 字典序）
+    let mut deps: BTreeMap<String, BTreeSet<String>> = Default::default();
+    for edge in graph.graph.edge_references() {
+        if matches!(
+            graph.graph[edge.id()].kind,
+            EdgeKind::Calls | EdgeKind::Imports
+        ) {
+            let (Some(src), Some(tgt)) = (
+                node_module.get(&edge.source()),
+                node_module.get(&edge.target()),
+            ) else {
+                continue;
+            };
+            if src != tgt {
+                deps.entry(src.clone()).or_default().insert(tgt.clone());
+            }
+        }
+    }
+
+    let mut body = format!(
+        "# {title}\n\n> LLM 生成不可用，本页为确定性骨架：模块与依赖关系由知识图谱自动生成（无 LLM 摘要）。\n\n## 模块\n\n"
+    );
+    for module in &graph.modules {
+        body.push_str(&format!("- `{}`（{} 个实体）", module.name, module.node_ids.len()));
+        if let Some(dl) = deps.get(&module.name)
+            && !dl.is_empty()
+        {
+            body.push_str(&format!(" — 依赖 {}", dl.iter().cloned().collect::<Vec<_>>().join(", ")));
+        }
+        body.push('\n');
+    }
+
+    let mut refs: Vec<Reference> = graph
+        .modules
+        .iter()
+        .map(|m| Reference {
+            target_title: m.name.clone(),
+            target_path: format!(
+                "wiki/{}/{}.md",
+                config.wiki.language,
+                m.name.replace("::", "_")
+            ),
+            relation: "module".into(),
+        })
+        .collect();
+    // 按目标标题字典序，保证输出确定性
+    refs.sort_by(|a, b| a.target_title.cmp(&b.target_title));
+
+    WikiDocument {
+        title: title.to_string(),
+        kind,
+        content: body,
+        language: config.wiki.language.clone(),
+        module_path: vec![],
+        references: refs,
+        last_updated: chrono::Utc::now().to_rfc3339(),
+        fingerprint: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

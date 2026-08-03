@@ -242,3 +242,43 @@ fn test_incremental_git_delete_isolated_file_keeps_others() {
 
     let _ = std::fs::remove_dir_all(&repo);
 }
+
+/// U06/D11 防回归：force=true 的增量模式应退化为全量重生成——
+/// 修改一个文件后 force 增量，documents 应含全部模块文档（而非只变更集）
+#[test]
+fn test_force_incremental_regenerates_all() {
+    let repo = std::env::temp_dir().join(format!("repo_wiki_git_force_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&repo);
+    std::fs::create_dir_all(&repo).expect("构造临时仓库失败");
+    build_git_repo(&repo).expect("构造 fixture 失败");
+
+    let root = repo_wiki::project::ProjectRoot::new(repo.clone());
+    let config_path = repo.join("config.toml");
+    let tcp_mod = repo.join("src").join("net").join("tcp.rs");
+
+    // 首次提交 + 全量生成（基线）
+    git_commit_all(&repo, "init");
+    repo_wiki::run_pipeline(&config_path, None, false, &root, &repo_wiki::GenerationMode::Full)
+        .expect("全量生成失败");
+
+    // 修改一个文件 → force 增量（force=true）
+    std::fs::write(&tcp_mod, "pub fn tcp_process(x: u32) -> u32 { udp_process(x) + 42 }\n").unwrap();
+    git_commit_all(&repo, "change body");
+    let inc = repo_wiki::run_pipeline(
+        &config_path,
+        None,
+        true,
+        &root,
+        &repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None },
+    )
+    .expect("force 增量失败");
+
+    // force 退化全量：net 与 http 两个社区文档都应重生成
+    let titles = doc_titles(&inc);
+    assert!(
+        titles.iter().any(|t| t.contains("net")) && titles.iter().any(|t| t.contains("http")),
+        "force 增量应全量重生成（含未变更的 http 社区），实际: {titles:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo);
+}

@@ -203,7 +203,14 @@ pub fn run_pipeline_with_progress(
     let _span = tracing::info_span!("pipeline", config = %config_path.display());
     let _enter = _span.enter();
     let start = std::time::Instant::now();
-    let is_incremental = matches!(mode, GenerationMode::Incremental { .. });
+    let mut is_incremental = matches!(mode, GenerationMode::Incremental { .. });
+    // U06/D11：force 语义补全——force 时无论增量/全量都按全量重生成。
+    // 旧实现 force 只清保护集，增量仍按 diff 过滤生成，未变更的文档
+    // 不会被重生成，"force 覆盖所有文档"（本函数顶部注释）名不副实。
+    if force && is_incremental {
+        tracing::info!("--force 与增量模式同时使用：退化为全量重生成");
+        is_incremental = false;
+    }
 
     // 保护集：旧 state 的 protected_docs + 检测出的人工修改；force 时清空。
     // old_state 同时供人工修改反向同步组装（collect_manual_edits → 生成前注入）
