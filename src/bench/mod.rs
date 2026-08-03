@@ -117,7 +117,7 @@ pub struct TimeReport {
 pub struct TqsReport {
     /// 完成打分的模块数（旧文档与当前产物都存在的模块）
     pub judged_modules: usize,
-    /// 五维平均分（0-10，两轮顺序消偏后取平均）
+    /// 五维平均分（0-10，顺序消偏 + 复测平均后取平均）
     pub avg_clarity: f64,
     pub avg_readability: f64,
     pub avg_conciseness: f64,
@@ -125,6 +125,18 @@ pub struct TqsReport {
     pub avg_structure: f64,
     /// 五维总分平均（0-10）
     pub avg_total: f64,
+    /// t05/MVVP：每模块的复测次数（AB/BA 各 repeats 轮）
+    pub repeats: usize,
+    /// t05/MVVP：复测一致性（κ 近似）——同一模块任意两轮、同一维度
+    /// 分数绝对差 ≤1 的比例。1.0 = 完全稳定；低值 = 裁判不稳定或
+    /// 文档差异导致敏感（2606.19544 指出高 test-retest 与低位置偏差
+    /// 可并存，一致性是可靠性下限）。
+    pub kappa_like: f64,
+    /// t05/MVVP：五维分数的平均标准差（跨复测轮次；量化波动幅度）
+    pub avg_std: f64,
+    /// 裁判模型（config.llm.model；style 消偏在多裁判轮转下才完整，
+    /// 单裁判时报告模型便于人工判断偏差来源——2604.23178）
+    pub judge_model: String,
 }
 
 /// 收集全部产物页内容（wiki/{lang}/*.md，主语言 + 扩展语言）
@@ -519,38 +531,81 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
     };
     let rt = crate::get_global_runtime();
 
-    let mut sum = [0.0f64; 5];
+    // t05/MVVP：复测次数（AB/BA 各 TQS_REPEATS 轮）。2606.19544 的 MVVP
+    // 协议要求 ≥3 次复测计算可靠性——单次打分不可信（exact-match 高估
+    // 33-41pp κ）。成本：每模块 2×repeats 次 LLM 调用，真实评测可接受。
+    const TQS_REPEATS: usize = 3;
+    let mut sums = [0.0f64; 5];
     let mut judged = 0usize;
+    // 复测一致性（κ 近似）与标准差：跨模块累计
+    let mut consistent_pairs = 0usize;
+    let mut total_pairs = 0usize;
+    let mut std_sum = 0.0f64;
     for (title, old, new) in &pairs {
-        // 两轮打分：AB 与 BA（消偏），任一失败跳过该模块
+        // 每轮 = AB + BA 两次调用（顺序消偏）；共 repeats 轮
         let mut round_scores: Vec<[f64; 5]> = Vec::new();
-        for a_first in [true, false] {
-            let messages = tqs_prompt(&config.wiki.language, old, new, a_first);
-            match rt.block_on(provider.complete(&messages)) {
-                Ok(content) => match parse_tqs_score(&content) {
-                    Ok(s) => round_scores.push(s),
+        let mut failed = false;
+        for _ in 0..TQS_REPEATS {
+            for a_first in [true, false] {
+                let messages = tqs_prompt(&config.wiki.language, old, new, a_first);
+                match rt.block_on(provider.complete(&messages)) {
+                    Ok(content) => match parse_tqs_score(&content) {
+                        Ok(s) => round_scores.push(s),
+                        Err(e) => {
+                            tracing::warn!("TQS 裁判输出解析失败（模块 {title}）: {e}");
+                            failed = true;
+                            break;
+                        }
+                    },
                     Err(e) => {
-                        tracing::warn!("TQS 裁判输出解析失败（模块 {title}）: {e}");
+                        tracing::warn!("TQS 裁判调用失败（模块 {title}）: {e}");
+                        failed = true;
                         break;
                     }
-                },
-                Err(e) => {
-                    tracing::warn!("TQS 裁判调用失败（模块 {title}）: {e}");
-                    break;
+                }
+            }
+            if failed {
+                break;
+            }
+        }
+        let rounds = round_scores.len();
+        if failed || rounds < TQS_REPEATS * 2 {
+            continue;
+        }
+        // 每维均值（全部轮次平均，同时消位置偏差与复测波动）
+        for i in 0..5 {
+            let dim_sum: f64 = round_scores.iter().map(|s| s[i]).sum();
+            sums[i] += dim_sum / rounds as f64;
+            // 该维标准差（复测波动幅度）
+            let mean = dim_sum / rounds as f64;
+            let var: f64 = round_scores.iter().map(|s| (s[i] - mean).powi(2)).sum::<f64>() / rounds as f64;
+            std_sum += var.sqrt();
+        }
+        // κ 一致性：该模块内任意两轮、同一维度分数绝对差 ≤1 的比例
+        for a in 0..rounds {
+            for b in (a + 1)..rounds {
+                for &sa in &round_scores[a] {
+                    for &sb in &round_scores[b] {
+                        total_pairs += 1;
+                        if (sa - sb).abs() <= 1.0 {
+                            consistent_pairs += 1;
+                        }
+                    }
                 }
             }
         }
-        if round_scores.len() == 2 {
-            for i in 0..5 {
-                sum[i] += (round_scores[0][i] + round_scores[1][i]) / 2.0;
-            }
-            judged += 1;
-        }
+        judged += 1;
     }
     if judged == 0 {
         return Ok(None);
     }
-    let avg = |i: usize| sum[i] / judged as f64;
+    let avg = |i: usize| sums[i] / judged as f64;
+    let kappa_like = if total_pairs == 0 {
+        1.0
+    } else {
+        consistent_pairs as f64 / total_pairs as f64
+    };
+    let avg_std = std_sum / (judged * 5) as f64;
     Ok(Some(TqsReport {
         judged_modules: judged,
         avg_clarity: avg(0),
@@ -559,6 +614,10 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
         avg_richness: avg(3),
         avg_structure: avg(4),
         avg_total: (avg(0) + avg(1) + avg(2) + avg(3) + avg(4)) / 5.0,
+        repeats: TQS_REPEATS,
+        kappa_like,
+        avg_std,
+        judge_model: config.llm.model.clone(),
     }))
 }
 
@@ -677,14 +736,18 @@ pub fn render_markdown(report: &BenchReport) -> String {
     out.push_str("## 6. TQS 文本质量（LLM 裁判，--judge）\n\n");
     if let Some(tqs) = &report.tqs {
         out.push_str(&format!(
-            "- 判定模块: {}\n- Clarity: {:.1}\n- Readability: {:.1}\n- Conciseness: {:.1}\n- Richness: {:.1}\n- Structure: {:.1}\n- 总分: {:.1}\n\n",
+            "- 判定模块: {}（复测 {} 轮/模块，裁判 {}\n- Clarity: {:.1}\n- Readability: {:.1}\n- Conciseness: {:.1}\n- Richness: {:.1}\n- Structure: {:.1}\n- 总分: {:.1}\n- 复测一致性（κ 近似）: {:.2}\n- 复测标准差: {:.2}\n\n",
             tqs.judged_modules,
+            tqs.repeats,
+            tqs.judge_model,
             tqs.avg_clarity,
             tqs.avg_readability,
             tqs.avg_conciseness,
             tqs.avg_richness,
             tqs.avg_structure,
-            tqs.avg_total
+            tqs.avg_total,
+            tqs.kappa_like,
+            tqs.avg_std
         ));
     } else {
         out.push_str("- 未启用（使用 --judge 且配置 LLM API key 后启用）\n\n");
@@ -869,9 +932,14 @@ mod tests {
             avg_richness: 7.0,
             avg_structure: 8.5,
             avg_total: 7.4,
+            repeats: 3,
+            kappa_like: 1.0,
+            avg_std: 0.5,
+            judge_model: "mock-model".into(),
         });
         let md_on = render_markdown(&report);
         assert!(md_on.contains("判定模块: 2"), "应输出判定模块数: {md_on}");
         assert!(md_on.contains("Clarity: 8.0"), "应输出五维分数: {md_on}");
+        assert!(md_on.contains("复测一致"), "应输出 MVVP 复测一致性: {md_on}");
     }
 }
