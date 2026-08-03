@@ -719,7 +719,7 @@ mod tests {
     #[test]
     fn test_build_call_edges_no_call() {
         let mut g = petgraph::stable_graph::StableDiGraph::<CodeNode, CodeEdge>::new();
-        let callee = g.add_node(CodeNode {
+        let _callee = g.add_node(CodeNode {
             id: NodeId::new(0),
             kind: NodeKind::Function,
             name: "callee".into(),
