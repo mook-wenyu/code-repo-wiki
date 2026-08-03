@@ -47,6 +47,16 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
         return root ? `${root}/.repo-wiki/config.toml` : ".repo-wiki/config.toml";
     }
 
+    /**
+     * --root 参数（A7）：所有支持 root 的工具必须显式传入。
+     * config 里 output.dir/scope 等路径相对 cwd 解析，插件运行时 cwd 可能
+     * 不是项目根——只传 --config 不传 --root 会让 status/lint/sync/note 等
+     * 以 cwd 解析产物目录而错位（找不到 .repo-wiki/.state 等）。
+     */
+    function rootArg(root?: string): string[] {
+        return root ? ["--root", root] : [];
+    }
+
     /** 从 .repo-wiki/cards/{lang}/ 读取 Knowledge Card（目录不存在时返回空列表） */
     async function readExistingCards(root?: string): Promise<Array<{ name: string; content: string }>> {
         const { readFileSync, existsSync, readdirSync } = await import("fs");
@@ -88,10 +98,13 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
     /** 执行 `repo-wiki search` 并格式化为 Markdown 命中列表 */
     async function searchEntities(query: string, topK: number, engine: string | undefined, root?: string): Promise<string> {
         const cliArgs = [
-            // N18：query 原样传参（execa 无 shell 直接 argv 传递，JSON.stringify\n            // 会带入 JSON 引号污染搜索词——带引号的关键词匹配不到任何实体）\n            "search", "-q", query,
+            // N18：query 原样传参（execa 无 shell 直接 argv 传递，JSON.stringify
+            // 会带入 JSON 引号污染搜索词——带引号的关键词匹配不到任何实体）
+            "search", "-q", query,
             "-k", String(topK),
             "--json",
             "--config", configPath(root),
+            ...rootArg(root),
         ];
         if (engine) cliArgs.push("--engine", engine);
         const result = await runCli(cliArgs);
@@ -136,6 +149,7 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
                     "card", action, args.module,
                     "--instruction", args.instruction,
                     "--config", configPath(args.root),
+                    ...rootArg(args.root),
                 ];
                 if (args.reference?.length) {
                     for (const r of args.reference) cliArgs.push("--reference", r);
@@ -157,7 +171,7 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
                     .describe("项目根目录（默认当前工作目录；提供时从 root/.repo-wiki/ 读写产物）"),
             },
             execute: async (args) => {
-                const result = await runCli([name, "--config", configPath(args.root), ...extraArgs]);
+                const result = await runCli([name, "--config", configPath(args.root), ...rootArg(args.root), ...extraArgs]);
                 return result.code === 0
                     ? (result.stdout || `repo-wiki ${name} 完成`)
                     : `repo-wiki ${name} 失败: ${result.stderr}`;
@@ -178,7 +192,7 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
                 },
                 execute: async (args) => {
                     if (!args.symbol) return "请提供要查找的符号名";
-                    const cliArgs = ["ast-search", args.symbol, "--config", configPath(args.root)];
+                    const cliArgs = ["ast-search", args.symbol, "--config", configPath(args.root), ...rootArg(args.root)];
                     if (args.language) cliArgs.push("--language", args.language);
                     const result = await runCli(cliArgs);
                     return result.code === 0
@@ -236,7 +250,7 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
                         .describe("项目根目录（默认当前工作目录；提供时从 root/.repo-wiki/ 读写产物）"),
                 },
                 execute: async (args) => {
-                    const cliArgs = ["generate", "--config", configPath(args.root)];
+                    const cliArgs = ["generate", "--config", configPath(args.root), ...rootArg(args.root)];
                     if (args.output) cliArgs.push("-o", args.output);
                     if (args.force) cliArgs.push("--force");
                     const result = await runCli(cliArgs);
@@ -273,6 +287,7 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
                     const result = await runCli([
                         "card", "generate", args.module,
                         "--config", configPath(args.root),
+                        ...rootArg(args.root),
                     ]);
                     return result.code === 0
                         ? (result.stdout || `卡片 ${args.module} 生成完成`)
@@ -303,6 +318,7 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
                     const result = await runCli([
                         "note", args.text.trim(),
                         "--config", configPath(args.root),
+                        ...rootArg(args.root),
                     ]);
                     return result.code === 0
                         ? (result.stdout || "知识记录已追加")
@@ -319,6 +335,7 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
                 execute: async (args) => {
                     const result = await runCli([
                         "lint", "--config", configPath(args.root),
+                        ...rootArg(args.root),
                     ]);
                     return result.code === 0
                         ? (result.stdout || "lint: 通过，无孤儿页/断链/过时问题")

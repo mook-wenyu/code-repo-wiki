@@ -14,8 +14,8 @@
 //! LLM 使用内置 mock provider（schema 原生支持，返回固定摘要，全程无网络调用——
 //! 比复制 test_cli.rs 的 mock HTTP server 更轻，产物内容与之一致）。
 //!
-//! sample-repo 自带 config.toml 为 provider="openai"（base_url 缺省会触网），
-//! 因此 prepare_repo 一律改写为 mock provider + output.dir 指向仓库内 .repo-wiki。
+//! sample-repo 自带 config.toml 为 provider="mock"（A13 已消除触网隐患）；
+//! prepare_repo 仍统一改写为 mock provider + output.dir 指向仓库内 .repo-wiki。
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

@@ -39,9 +39,18 @@ impl Message {
 ///
 /// Rust 2024 支持在 trait 中使用 async fn，无需 async-trait crate。
 /// 注意：async fn in trait 不满足 dyn 安全性，请通过泛型或 Provider 枚举使用。
+///
+/// 契约（t09 真流式接线）：**生产路径统一走流式**——`complete` 的默认
+/// 实现 = `complete_stream` 收集并拼接 chunks，实现方只需实现
+/// `complete_stream` 即获得完整语义；需要自定义非流式行为的实现
+/// （如 Mock 返回固定 JSON）显式覆盖 `complete`。未实现 `complete_stream`
+/// 的实现调用 `complete` 会得到显式错误，不静默退化。
 #[allow(async_fn_in_trait)]
 pub trait LlmProvider: Send + Sync {
-    async fn complete(&self, messages: &[Message]) -> Result<String>;
+    async fn complete(&self, messages: &[Message]) -> Result<String> {
+        let chunks = self.complete_stream(messages).await?;
+        Ok(chunks.concat())
+    }
     async fn complete_stream(&self, messages: &[Message]) -> Result<Vec<String>> {
         let _ = messages;
         Err(anyhow::anyhow!("streaming not supported"))
@@ -264,7 +273,9 @@ impl OpenAiProvider {
             .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
 
         let client = Client::builder()
-            .timeout(Duration::from_secs(120))
+            // 不设总超时（t09 真流式）：长生成由流式路径的 SSE_IDLE_TIMEOUT
+            // 空闲超时保护——模型持续产出即不超时，真正停止产出 60s 才失败；
+            // 总超时会在长生成中途整体截断已产出内容（v12 实测 10min 超时前科）
             .build()
             .context("创建 HTTP 客户端失败")?;
 
@@ -336,46 +347,8 @@ impl LlmProvider for OpenAiProvider {
         .await
     }
 
-    async fn complete(&self, messages: &[Message]) -> Result<String> {
-        self.call_count
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-        let url = format!("{}/chat/completions", self.base_url);
-        let body = self.build_chat_body(messages, false);
-
-        let resp = retry_with_backoff(self.max_retries, || {
-            self.client
-                .post(&url)
-                .bearer_auth(&self.api_key)
-                .json(&body)
-                .send()
-        })
-        .await?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            anyhow::bail!("API 返回错误 ({}): {}", status, text);
-        }
-
-        let data: serde_json::Value = resp
-            .json()
-            .await
-            .context("解析 API 响应 JSON 失败")?;
-
-        let content = data["choices"][0]["message"]["content"]
-            .as_str()
-            .map(|s| s.to_string())
-            .with_context(|| {
-                format!(
-                    "API 响应缺少 choices[0].message.content: {}",
-                    serde_json::to_string(&data).unwrap_or_default()
-                )
-            })?;
-
-        Ok(content)
-    }
-
+    // complete 走 trait 默认实现（complete_stream 收集拼接）——
+    // 生产路径统一流式，无整读分支
     fn call_count(&self) -> usize {
         self.call_count.load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -411,7 +384,7 @@ impl AnthropicProvider {
             .unwrap_or_else(|| "https://api.anthropic.com/v1".to_string());
 
         let client = Client::builder()
-            .timeout(Duration::from_secs(180))
+            // 不设总超时（同 OpenAiProvider：长生成由流式路径 SSE_IDLE_TIMEOUT 保护）
             .build()
             .context("创建 HTTP 客户端失败")?;
 
@@ -467,49 +440,6 @@ impl AnthropicProvider {
 }
 
 impl LlmProvider for AnthropicProvider {
-    async fn complete(&self, messages: &[Message]) -> Result<String> {
-        self.call_count
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-        let url = format!("{}/messages", self.base_url);
-        let body = self.build_messages_body(messages, false);
-
-        let resp = retry_with_backoff(self.max_retries, || {
-            self.client
-                .post(&url)
-                .header("x-api-key", &self.api_key)
-                .header("anthropic-version", "2023-06-01")
-                .json(&body)
-                .send()
-        })
-        .await?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            anyhow::bail!("Anthropic API 返回错误 ({}): {}", status, text);
-        }
-
-        let data: serde_json::Value = resp
-            .json()
-            .await
-            .context("解析 Anthropic API 响应 JSON 失败")?;
-
-        let content = data["content"]
-            .as_array()
-            .and_then(|arr| arr.first())
-            .and_then(|block| block["text"].as_str())
-            .map(|s| s.to_string())
-            .with_context(|| {
-                format!(
-                    "API 响应缺少 content[0].text: {}",
-                    serde_json::to_string(&data).unwrap_or_default()
-                )
-            })?;
-
-        Ok(content)
-    }
-
     async fn complete_stream(&self, messages: &[Message]) -> Result<Vec<String>> {
         self.call_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -544,6 +474,8 @@ impl LlmProvider for AnthropicProvider {
         .await
     }
 
+    // complete 走 trait 默认实现（complete_stream 收集拼接）——
+    // 生产路径统一流式，无整读分支
     fn call_count(&self) -> usize {
         self.call_count.load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -731,14 +663,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_openai_request_builds_correct_payload() {
-        // mock 服务器：捕获请求并返回固定 choices[0].message.content
+        // mock 服务器：捕获请求并返回 SSE 流（生产路径统一流式，
+        // complete() 走 trait 默认实现收集流式 chunks 拼接）
         let captured = Arc::new(Mutex::new(None::<MockRequest>));
         let captured_server = captured.clone();
         let base_url = spawn_mock_server(move |req| {
             *captured_server.lock().unwrap() = Some(req);
             MockResponse {
                 status: 200,
-                body: r#"{"choices":[{"message":{"content":"你好，这是 mock 回复"}}]}"#.into(),
+                body: r#"data: {"choices":[{"delta":{"content":"你好，这是 mock 回复"}}]}
+
+data: [DONE]
+
+"#
+                .into(),
             }
         });
 
@@ -746,7 +684,7 @@ mod tests {
         let messages = vec![Message::system("你是测试助手"), Message::user("你好")];
         let reply = provider.complete(&messages).await.unwrap();
 
-        // 回复来自 mock 返回的 choices[0].message.content
+        // 回复来自流式 chunks 的拼接（delta.content）
         assert_eq!(reply, "你好，这是 mock 回复");
 
         // 请求路径：base_url + /chat/completions
@@ -758,7 +696,7 @@ mod tests {
             .find(|(k, _)| k.eq_ignore_ascii_case("authorization"))
             .expect("应携带 Authorization 头");
         assert_eq!(auth.1, "Bearer test-key");
-        // JSON body：model / messages（含 system 角色）/ 可选参数
+        // JSON body：model / messages（含 system 角色）/ stream:true（生产路径流式）/ 可选参数
         let body: serde_json::Value = serde_json::from_str(&req.body).unwrap();
         assert_eq!(body["model"], "gpt-test");
         assert_eq!(body["messages"][0]["role"], "system");
@@ -766,6 +704,11 @@ mod tests {
         assert_eq!(body["messages"][1]["role"], "user");
         assert_eq!(body["max_tokens"].as_u64(), Some(128));
         assert_eq!(body["temperature"].as_f64(), Some(0.5));
+        assert_eq!(
+            body["stream"].as_bool(),
+            Some(true),
+            "生产路径必须请求流式响应（stream:true）"
+        );
     }
 
     #[tokio::test]
@@ -790,6 +733,38 @@ mod tests {
         assert_eq!(chunks.join(""), "你好");
     }
 
+    /// A4：慢流响应（两段 SSE 之间间隔 300ms）不被总超时截断——
+    /// client 不再设总超时，长生成由 60s 空闲超时保护，只要模型
+    /// 持续产出就不会中途失败。响应分两次写入同一连接。
+    #[tokio::test]
+    async fn test_slow_stream_not_truncated_by_total_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                std::thread::spawn(move || {
+                    let _req = read_request(&mut stream);
+                    // 第一段立即写出，间隔 300ms 后再写第二段
+                    let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n";
+                    let _ = stream.write_all(head.as_bytes());
+                    let _ = stream.write_all("data: {\"choices\":[{\"delta\":{\"content\":\"第一段\"}}]}\n\n".as_bytes());
+                    let _ = stream.flush();
+                    std::thread::sleep(Duration::from_millis(300));
+                    let _ = stream.write_all("data: {\"choices\":[{\"delta\":{\"content\":\"第二段\"}}]}\n\n".as_bytes());
+                    let _ = stream.write_all(b"data: [DONE]\n\n");
+                    let _ = stream.flush();
+                });
+            }
+        });
+
+        let provider = OpenAiProvider::new(&openai_config(&base_url)).unwrap();
+        let messages = vec![Message::user("你好")];
+        let reply = provider.complete(&messages).await.unwrap();
+
+        assert_eq!(reply, "第一段第二段", "慢流两段必须完整拼接（无总超时截断）");
+    }
+
     #[tokio::test]
     async fn test_retry_on_server_error() {
         // 第一次返回 500、第二次返回 200；5xx 在可重试白名单内，
@@ -801,7 +776,8 @@ mod tests {
             if n == 0 {
                 MockResponse { status: 500, body: "internal error".into() }
             } else {
-                MockResponse { status: 200, body: r#"{"choices":[{"message":{"content":"重试成功"}}]}"#.into() }
+                // 成功响应为 SSE 流（流式路径的输入格式）
+                MockResponse { status: 200, body: "data: {\"choices\":[{\"delta\":{\"content\":\"重试成功\"}}]}\n\ndata: [DONE]\n\n".into() }
             }
         });
 
@@ -823,7 +799,7 @@ mod tests {
             if n == 0 {
                 MockResponse { status: 429, body: "rate limited".into() }
             } else {
-                MockResponse { status: 200, body: r#"{"choices":[{"message":{"content":"限流后成功"}}]}"#.into() }
+                MockResponse { status: 200, body: "data: {\"choices\":[{\"delta\":{\"content\":\"限流后成功\"}}]}\n\ndata: [DONE]\n\n".into() }
             }
         });
 
@@ -993,7 +969,12 @@ mod tests {
             *captured_server.lock().unwrap() = Some(req);
             MockResponse {
                 status: 200,
-                body: r#"{"content":[{"type":"text","text":"claude 回复"}]}"#.into(),
+                // Anthropic 流式格式（complete 走流式默认实现后 mock 必须返回 SSE）
+                body: concat!(
+                    "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"claude 回复\"}}\n\n",
+                    "data: {\"type\":\"message_stop\"}\n\n",
+                )
+                .into(),
             }
         });
 

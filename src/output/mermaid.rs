@@ -48,7 +48,13 @@ pub fn render_module_dependency_graph(graph: &KnowledgeGraph) -> String {
         }
     }
 
-    for name in &node_names {
+    // 确定性输出：HashSet/HashMap 的迭代序随进程 RandomState 漂移，
+    // 直接遍历会让同一张图两次渲染字节不同（确定性测试夹具无跨模块边
+    // 时恒空无法暴露）；所有集合遍历前先排序，保证同输入同字节
+    let mut sorted_names: Vec<&String> = node_names.iter().collect();
+    sorted_names.sort();
+
+    for name in &sorted_names {
         output.push_str(&format!(
             "    {}[\"{}\"]\n",
             sanitize_id(name),
@@ -62,7 +68,7 @@ pub fn render_module_dependency_graph(graph: &KnowledgeGraph) -> String {
 
     // 标注参与循环依赖的模块节点
     let cycle_module_names = collect_cycle_modules(graph);
-    for name in &node_names {
+    for name in sorted_names {
         if cycle_module_names.contains(name) {
             output.push_str(&format!(
                 "    style {} fill:#ffcccc,stroke:#ff0000\n",
@@ -124,10 +130,16 @@ pub fn render_module_call_graph(graph: &KnowledgeGraph) -> String {
         modules.insert(src.clone());
         modules.insert(tgt.clone());
     }
-    for name in &modules {
+    // 确定性输出：集合与计数表遍历前排序（同 render_module_dependency_graph）
+    let mut sorted_modules: Vec<&String> = modules.iter().collect();
+    sorted_modules.sort();
+    let mut sorted_edges: Vec<(&(String, String), &usize)> = edge_counts.iter().collect();
+    sorted_edges.sort_by(|a, b| a.0.cmp(b.0));
+
+    for name in &sorted_modules {
         output.push_str(&format!("    {}[\"{}\"]\n", sanitize_id(name), name));
     }
-    for ((src, tgt), count) in &edge_counts {
+    for ((src, tgt), count) in &sorted_edges {
         output.push_str(&format!("    {} -->|{}| {}\n", sanitize_id(src), count, sanitize_id(tgt)));
     }
     output
@@ -312,5 +324,23 @@ mod tests {
         let output = render_module_call_graph(&graph);
         assert!(output.starts_with("graph TD"));
         assert_eq!(output, "graph TD\n");
+    }
+
+    /// A3：同一图两次渲染必须字节一致（HashSet/HashMap 迭代序随机，
+    /// 不排序会漂移——确定性契约的回归测试，带跨模块边暴露真实场景）
+    #[test]
+    fn test_render_deterministic_bytes() {
+        let dep1 = render_module_dependency_graph(&make_test_graph());
+        let dep2 = render_module_dependency_graph(&make_test_graph());
+        assert_eq!(dep1, dep2, "依赖图两次渲染必须字节一致");
+
+        let call1 = render_module_call_graph(&make_call_graph());
+        let call2 = render_module_call_graph(&make_call_graph());
+        assert_eq!(call1, call2, "调用图两次渲染必须字节一致");
+
+        // 依赖图输出顺序：节点按字典序（core 在 net 前）
+        let core_pos = call1.find("alpha[\"alpha\"]").unwrap();
+        let beta_pos = call1.find("beta[\"beta\"]").unwrap();
+        assert!(core_pos < beta_pos, "节点应按字典序输出: {}", call1);
     }
 }

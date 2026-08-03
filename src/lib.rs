@@ -544,7 +544,16 @@ pub fn sync_manual_edits_to_cards(
     for (module, notes) in &edits {
         let card_path =
             output::card_page_path(Path::new(&config.output.dir), &config.wiki.language, module);
-        let mut content = std::fs::read_to_string(&card_path).unwrap_or_default();
+        // 卡片读取失败（含不存在/损坏/权限）显式告警并跳过该卡片——
+        // 原实现 unwrap_or_default 会把"读不到"当作"空卡片"，随后追加
+        // 人工修改节写盘，凭空重建被删除的卡片，且吞掉损坏错误。
+        let mut content = match std::fs::read_to_string(&card_path) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("读取卡片失败，跳过人工修改反向同步 {}: {}", card_path.display(), e);
+                continue;
+            }
+        };
         let mut changed = false;
         for note in notes {
             if content.contains(note.as_str()) {
@@ -763,14 +772,25 @@ fn update_search_index_incremental(
                 let probe_dim = if items.is_empty() {
                     None
                 } else {
-                    get_global_runtime()
-                        .block_on(embedder.embed(&items[0].1))
-                        .ok()
-                        .map(|v| v.len())
+                    match get_global_runtime().block_on(embedder.embed(&items[0].1)) {
+                        Ok(v) => Some(v.len()),
+                        Err(e) => {
+                            tracing::warn!("embedding 维度探测失败，跳过维度重建检查: {}", e);
+                            None
+                        }
+                    }
                 };
-                let dim_changed = probe_dim
-                    .zip(semantic_engine.table_dimension())
-                    .is_some_and(|(new_dim, existing)| new_dim != existing);
+                // 维度探测失败（数据库损坏/权限）显式告警并跳过重建检查，
+                // 不静默当作"维度未变"——保持行为的同时错误可见
+                let dim_changed = match semantic_engine.table_dimension() {
+                    Ok(existing_dim) => probe_dim
+                        .zip(existing_dim)
+                        .is_some_and(|(new_dim, existing)| new_dim != existing),
+                    Err(e) => {
+                        tracing::warn!("读取语义索引维度失败，跳过维度重建检查: {}", e);
+                        false
+                    }
+                };
                 if dim_changed {
                     tracing::warn!(
                         "embedding 维度变化，回退全量重建语义索引（增量删除+回填会丢全部既有向量）"
@@ -910,12 +930,29 @@ pub fn execute_search(
                 anyhow::bail!("搜索索引不存在，请先运行 `repo-wiki generate` 或 `repo-wiki update` 构建索引");
             }
             let text_engine = search::text::TextEngine::open(&text_path)?;
+            // hybrid 语义一路：语义引擎构建失败（embedding 配置缺失/key
+            // 无效/数据库损坏）显式告警并降级为纯 text——搜索结果少一路
+            // 召回，但错误可见而非静默（v5 审计：全 .ok() 链把失败全吞掉，
+            // 用户配置了 embed 却永远收不到语义结果且无任何提示）
             let semantic_engine: Option<Box<dyn search::semantic::SemanticSearch>> =
                 if semantic_path.exists() && config.embed.enabled {
-                    generate::embed::EmbeddingEngine::new(&config.embed, get_global_runtime().handle().clone())
-                        .ok()
-                        .and_then(|e| search::semantic::SemanticEngine::open(&semantic_path, Arc::new(e), get_global_runtime().clone()).ok())
-                        .map(|e| Box::new(e) as Box<dyn search::semantic::SemanticSearch>)
+                    match generate::embed::EmbeddingEngine::new(&config.embed, get_global_runtime().handle().clone()) {
+                        Ok(e) => match search::semantic::SemanticEngine::open(
+                            &semantic_path,
+                            Arc::new(e),
+                            get_global_runtime().clone(),
+                        ) {
+                            Ok(engine) => Some(Box::new(engine) as Box<dyn search::semantic::SemanticSearch>),
+                            Err(e) => {
+                                tracing::warn!("语义索引打开失败，hybrid 降级为纯 text: {}", e);
+                                None
+                            }
+                        },
+                        Err(e) => {
+                            tracing::warn!("embedding 引擎初始化失败，hybrid 降级为纯 text: {}", e);
+                            None
+                        }
+                    }
                 } else { None };
             let mut agent = search::agent::SearchAgent::new(text_engine, semantic_engine, config.search.rrf_k as f64);
             // 调用链补全：重建知识图谱以获得 Calls 边，构建调用索引注入 agent。

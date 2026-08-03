@@ -59,7 +59,8 @@ pub fn run_incremental_update_at(
 ) -> Result<IncrementalResult> {
     if !config.incremental.enabled {
         tracing::info!("增量更新已禁用，将执行全量生成");
-        return Ok(IncrementalResult { changed_files: Vec::new(), affected_modules: Vec::new(), entity_changes: EntityChangeSet::default() });
+        let (files, modules) = fallback_to_full(insights);
+        return Ok(IncrementalResult { changed_files: files, affected_modules: modules, entity_changes: EntityChangeSet::default() });
     }
 
     let state_dir = Path::new(&config.output.dir).join(".state");
@@ -95,9 +96,31 @@ fn run_git_diff_incremental(
     state_dir: &Path,
 ) -> Result<(Vec<std::path::PathBuf>, Vec<String>, EntityChangeSet)> {
     // 1. 分析 Git diff
-    let last_commit_hash = GenerationState::load(state_dir)
-        .ok()
-        .and_then(|s| s.last_commit_hash);
+    // 基线 = 上次成功生成时落盘的 last_commit_hash。三种"无基线"场景：
+    // ①全新仓库首次 update（状态文件不存在）；②状态文件损坏/不可读；
+    // ③状态存在但 hash 为空（异常状态）。无基线时 diff 语义不可靠
+    // （analyze_git_diff 只能取 HEAD^..HEAD，会漏掉更早的历史），
+    // 且空 diff 短路会让首次 update 产出空 wiki——统一回退全量生成
+    // （与"非 Git 仓库回退全量"同一语义，避免静默产出空产物）。
+    let loaded_state = match GenerationState::load(state_dir) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            tracing::warn!("状态文件读取失败，按无基线处理（本次回退全量）: {}", e);
+            None
+        }
+    };
+    let has_baseline = loaded_state
+        .as_ref()
+        .and_then(|s| s.last_commit_hash.as_ref())
+        .is_some();
+    if !has_baseline {
+        tracing::info!("无增量基线（首次更新或状态缺失），回退全量生成");
+        let (files, modules) = fallback_to_full(insights);
+        return Ok((files, modules, EntityChangeSet::default()));
+    }
+    let last_commit_hash = loaded_state
+        .as_ref()
+        .and_then(|s| s.last_commit_hash.clone());
     let diff_result = match analyze_git_diff(root.path(), last_commit_hash.as_deref()) {
         Ok(result) => result,
         Err(e) => {
@@ -184,8 +207,10 @@ fn run_git_diff_incremental(
     // 新 commit hash，失败后重试 update 得到空 diff 短路，变更永不重生成）。
     // 生成成功后的最终保存（lib.rs Phase 6 save_generation_state）才推进代码侧状态。
     if let Ok(mut new_state) = GenerationState::from_insights(root, insights, &diff_result.to_commit) {
-        if let Ok(old_state) = GenerationState::load(state_dir) {
-            new_state.preserve_protection(&old_state);
+        // 复用前面已加载的状态（loaded_state 在此处必为 Some——无基线已提前回退），
+        // 不重复读盘，也不存在"二次 load 失败静默跳过保护合并"的路径
+        if let Some(old_state) = &loaded_state {
+            new_state.preserve_protection(old_state);
             new_state.last_commit_hash = old_state.last_commit_hash.clone();
             new_state.file_fingerprints = old_state.file_fingerprints.clone();
         }
@@ -207,8 +232,15 @@ fn run_file_watch_incremental(
     state_dir: &Path,
     watch_paths: &[PathBuf],
 ) -> Result<(Vec<PathBuf>, Vec<String>, EntityChangeSet)> {
-    // 重新加载状态，比较文件指纹
-    let state = GenerationState::load(state_dir).ok();
+    // 重新加载状态，比较文件指纹；状态损坏/缺失时全部文件视为变更
+    // （回退全量），不能静默吞错——与 GitDiff 路径的 warn 处理一致
+    let state = match GenerationState::load(state_dir) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            tracing::warn!("状态文件读取失败，按无基线处理（本次全量变更）: {}", e);
+            None
+        }
+    };
     let mut changed_files: Vec<PathBuf> = Vec::new();
 
     for insight in insights {
@@ -271,10 +303,11 @@ fn run_file_watch_incremental(
     };
 
     // 保存新状态
-    // 同上（票 03）：FileWatch 中途存盘同样合并旧状态保护字段
+    // 同上（票 03）：FileWatch 中途存盘同样合并旧状态保护字段；
+    // 复用前面已加载的 state（Option），不存在二次 load 静默失败路径
     if let Ok(mut new_state) = GenerationState::from_insights(root, insights, "file-watch") {
-        if let Ok(old_state) = GenerationState::load(state_dir) {
-            new_state.preserve_protection(&old_state);
+        if let Some(old_state) = &state {
+            new_state.preserve_protection(old_state);
         }
         if let Err(e) = new_state.save(state_dir) {
             tracing::warn!("保存生成状态失败: {}", e);
@@ -352,6 +385,8 @@ mod tests {
         let tree = repo.find_tree(tree_id).unwrap();
         let sig = git2::Signature::now("test", "test@test.com").unwrap();
         repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+        // 基线 = 第一 commit：diff 才能覆盖第二次提交的超限变更
+        let first_hash = repo.head().unwrap().peel_to_commit().unwrap().id().to_string();
 
         // 第二次提交：超上限行数（超过 MAX_DIFF_LINES 行的内容）
         let big = "x\n".repeat(MAX_DIFF_LINES + 1);
@@ -367,6 +402,16 @@ mod tests {
         let graph = KnowledgeGraph::default();
         let config = make_config();
         let state_dir = dir.join(".state");
+
+        // 基线 = 第一 commit：无基线时首次 update 会走"回退全量"（A1），
+        // 超限回退分支需要基线与有变更两个前提都成立
+        let baseline = GenerationState::from_insights(
+            &crate::project::ProjectRoot::new(dir.clone()),
+            &insights,
+            &first_hash,
+        )
+        .unwrap();
+        baseline.save(&state_dir).unwrap();
 
         let (changed, affected, _entity_changes) =
             run_git_diff_incremental(&ProjectRoot::new(dir.clone()), &insights, &graph, &config, &state_dir).unwrap();
@@ -398,6 +443,8 @@ mod tests {
         let tree = repo.find_tree(tree_id).unwrap();
         let sig = git2::Signature::now("test", "test@test.com").unwrap();
         repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+        // 基线 = 第一 commit：diff 才能覆盖第二次提交的删除变更
+        let first_hash = repo.head().unwrap().peel_to_commit().unwrap().id().to_string();
 
         // 第二次提交：删除 src/foo.rs（index.remove_path 后再提交）
         std::fs::remove_file(src.join("foo.rs")).unwrap();
@@ -413,6 +460,16 @@ mod tests {
         let graph = KnowledgeGraph::default();
         let config = make_config();
         let state_dir = dir.join(".state");
+
+        // 基线 = 第一 commit：删除检测是"有基线增量"的语义，
+        // 无基线时（A1）首次 update 直接回退全量，不经过 diff 路径
+        let baseline = GenerationState::from_insights(
+            &crate::project::ProjectRoot::new(dir.clone()),
+            &insights,
+            &first_hash,
+        )
+        .unwrap();
+        baseline.save(&state_dir).unwrap();
 
         let (changed, _affected, _entity_changes) =
             run_git_diff_incremental(&ProjectRoot::new(dir.clone()), &insights, &graph, &config, &state_dir).unwrap();
@@ -532,6 +589,157 @@ mod tests {
         let saved = GenerationState::load(&state_dir).unwrap();
         assert_eq!(saved.protected_docs, vec!["wiki/zh/manual.md"], "中途存盘不得清空保护集");
         assert_eq!(saved.doc_fingerprints.get("wiki/zh/manual.md").map(String::as_str), Some("fp"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A1：全新仓库首次 update（无基线状态）不得静默短路——
+    /// 空 diff 时应回退全量生成，避免首用产出空 wiki
+    #[test]
+    fn test_first_update_no_baseline_falls_back_full() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_test_first_update_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = git2::Repository::init(&dir).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "test").unwrap();
+        cfg.set_str("user.email", "test@test.com").unwrap();
+
+        // 单 commit 仓库（HEAD 无父）：无基线时 diff 为空
+        std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_all(["*"], git2::IndexAddOption::DEFAULT, None).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("test", "test@test.com").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+
+        let insights = vec![make_insight("a.rs")];
+        let graph = KnowledgeGraph::default();
+        let config = make_config();
+        let state_dir = dir.join(".state");
+
+        let (changed, _affected, _entity_changes) =
+            run_git_diff_incremental(&ProjectRoot::new(dir.clone()), &insights, &graph, &config, &state_dir).unwrap();
+        assert_eq!(
+            changed,
+            vec![PathBuf::from("a.rs")],
+            "首次 update 无基线时应回退全量（changed_files = 全部源文件），不得静默跳过: {:?}",
+            changed
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A1 配套：有基线 + 无变更 → 正常跳过（不被回退全量误伤）
+    #[test]
+    fn test_with_baseline_no_change_skips() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_test_skip_nochange_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = git2::Repository::init(&dir).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "test").unwrap();
+        cfg.set_str("user.email", "test@test.com").unwrap();
+
+        std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_all(["*"], git2::IndexAddOption::DEFAULT, None).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("test", "test@test.com").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+        let head_hash = repo.head().unwrap().peel_to_commit().unwrap().id().to_string();
+
+        let insights = vec![make_insight("a.rs")];
+        let graph = KnowledgeGraph::default();
+        let config = make_config();
+        let state_dir = dir.join(".state");
+
+        // 基线 = 当前 HEAD：diff 为空 → 应跳过（changed_files 为空）
+        let baseline = GenerationState::from_insights(
+            &crate::project::ProjectRoot::new(dir.clone()),
+            &insights,
+            &head_hash,
+        )
+        .unwrap();
+        baseline.save(&state_dir).unwrap();
+
+        let (changed, _affected, _entity_changes) =
+            run_git_diff_incremental(&ProjectRoot::new(dir.clone()), &insights, &graph, &config, &state_dir).unwrap();
+        assert!(changed.is_empty(), "有基线且无变更时应跳过，不得回退全量: {:?}", changed);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A2：incremental.enabled=false 时 update 应真正执行全量生成
+    ///（返回全部文件集），而非日志声称全量却返回空变更集导致跳过
+    #[test]
+    fn test_update_disabled_falls_back_full() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_test_disabled_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let insights = vec![make_insight("src/a.rs"), make_insight("src/b.rs")];
+        let graph = KnowledgeGraph::default();
+        let mut config = make_config();
+        config.incremental.enabled = false;
+
+        let result = run_incremental_update_at(
+            &ProjectRoot::new(dir.clone()),
+            &insights,
+            &graph,
+            &config,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            result.changed_files.len(),
+            2,
+            "增量禁用时应回退全量（changed_files = 全部源文件），不得返回空集跳过: {:?}",
+            result.changed_files
+        );
+        assert!(result.affected_modules.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A6：状态文件损坏（load 失败）时不 panic、按无基线回退全量，
+    /// 且不静默（warn 由 tracing 输出，行为断言为回退全量）
+    #[test]
+    fn test_corrupt_state_falls_back_full() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_test_corrupt_state_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = git2::Repository::init(&dir).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "test").unwrap();
+        cfg.set_str("user.email", "test@test.com").unwrap();
+
+        std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_all(["*"], git2::IndexAddOption::DEFAULT, None).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("test", "test@test.com").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+
+        // 写损坏的状态 JSON
+        let state_dir = dir.join(".state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(state_dir.join("generation_state.json"), "{ 这不是合法 JSON").unwrap();
+
+        let insights = vec![make_insight("a.rs")];
+        let graph = KnowledgeGraph::default();
+        let config = make_config();
+
+        let (changed, _affected, _entity_changes) =
+            run_git_diff_incremental(&ProjectRoot::new(dir.clone()), &insights, &graph, &config, &state_dir).unwrap();
+        assert_eq!(
+            changed,
+            vec![PathBuf::from("a.rs")],
+            "状态损坏应按无基线回退全量（保守：宁可全量也不产出空产物）: {:?}",
+            changed
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

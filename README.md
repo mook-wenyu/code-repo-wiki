@@ -65,8 +65,12 @@ AI 驱动的代码仓库 Wiki 自动生成工具。分析源码结构，通过 L
 | `note` | 知识沉淀记录（追加到 `_log.md`）|
 | `install-to-opencode` | 注册为 OpenCode 插件 |
 | `uninstall-from-opencode` | 移除 OpenCode 插件（需 `--force`）|
+| `install-wiki` | 在项目根 AGENTS.md 注入 Wiki 使用引导块（`<!-- REPO-WIKI:START/END -->`，`--also-claude` 双写 CLAUDE.md）|
+| `uninstall-wiki` | 移除 AGENTS.md 中的 Wiki 引导块（未安装时提示并退出 0）|
+| `mcp` | 启动 MCP (Model Context Protocol) stdio server（Claude Code/Cline 等客户端接入）|
+| `bench` | 自动评测仓库 Wiki 质量（Coverage/Doc Info/lint/Update Recall/Time 五维 + `--judge` TQS 裁判打分）|
 
-`generate`/`update`/`export`/`search`/`ast-search`/`watch` 支持 `--root` 指定项目根（扫描根/git 定位基准，默认当前目录）。
+`generate`/`update`/`sync`/`status`/`lint`/`export`/`init`/`watch`/`search`/`ast-search`/`card`/`install-to-opencode`/`uninstall-from-opencode`/`install-wiki`/`uninstall-wiki`/`mcp` 支持 `--root` 指定项目根（扫描根/git 定位基准，默认当前目录）。
 
 ## 技术栈
 
@@ -144,7 +148,6 @@ documents:                         # 页面白名单（提供时严格只输出�
 
 ```toml
 [wiki]
-template = "architecture"
 language = "zh"
 
 [scope]

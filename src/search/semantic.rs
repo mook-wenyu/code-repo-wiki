@@ -94,8 +94,11 @@ impl SemanticEngine {
 
     /// 当前 vec0 表的向量维度（表不存在返回 None）——U04/D2 维度探测用：
     /// 增量路径在回填前比对 embedding 产出维度，变化则回退全量重建。
-    pub fn table_dimension(&self) -> Option<usize> {
-        self.db.table_dimension().ok().flatten()
+    ///
+    /// 返回 Result：数据库读取错误（损坏/权限）向上传播，由调用方决定
+    /// 处理（lib.rs 维度探测失败 warn + 视为维度未知，不静默吞掉）。
+    pub fn table_dimension(&self) -> Result<Option<usize>> {
+        self.db.table_dimension()
     }
 
     /// 组装实体索引文本（与旧实现一致，保持索引兼容性）
@@ -148,10 +151,11 @@ impl SemanticSearch for SemanticEngine {
     }
 
     fn search(&self, query: &str, limit: usize) -> Result<Vec<(CodeNode, f32)>> {
-        // 空表短路：无候选时直接返回空，避免对空索引发起 embedding 请求
-        //（embedding API 有成本与延迟，空库查询无意义；与旧实现
-        // load_all_vectors 空集早退的语义一致）
-        if self.db.entry_count().unwrap_or(0) == 0 {
+        // 空库路径无命中时直接返回空，免对空库发 embedding 请求
+        //（embedding API 有成本与延迟，空库查询无意义）；实际实现
+        // load_all_vectors 收集时语义与此一致。
+        // 计数失败（数据库损坏）向上传播，不静默当作空库跳过查询。
+        if self.db.entry_count()? == 0 {
             return Ok(Vec::new());
         }
         let q_vec = self.rt.block_on(self.embedder.embed(query))?;
@@ -179,7 +183,15 @@ impl SemanticSearch for SemanticEngine {
     }
 
     fn entry_count(&self) -> usize {
-        self.db.entry_count().unwrap_or(0)
+        // trait 签名不含 Result（计数是幂等只读操作，调用方无错误上下文）；
+        // 数据库损坏时显式告警 + 按空库处理（计数 0），不静默吞错
+        match self.db.entry_count() {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::warn!("语义索引条目计数失败，按空库处理: {}", e);
+                0
+            }
+        }
     }
 }
 
@@ -444,11 +456,11 @@ mod tests {
         let rt = test_runtime();
         let embedder = embedder_with_server(&base_url, &rt);
         let mut engine = SemanticEngine::open(tmp_path("dim"), embedder, rt.clone()).unwrap();
-        assert_eq!(engine.table_dimension(), None, "空库（表未创建）应返回 None");
+        assert_eq!(engine.table_dimension().unwrap(), None, "空库（表未创建）应返回 None");
 
         engine
             .index_batch(&[(make_node("a1", "src/a.rs"), "fn a1()".to_string())])
             .unwrap();
-        assert_eq!(engine.table_dimension(), Some(3), "伪向量统一 3 维, 实际: {:?}", engine.table_dimension());
+        assert_eq!(engine.table_dimension().unwrap(), Some(3), "伪向量统一 3 维");
     }
 }

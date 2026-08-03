@@ -47,11 +47,27 @@ impl GenerationState {
     /// 保存生成状态到目录（原子写：fs::write_file_atomic 临时文件 +
     /// rename 覆盖，防止崩溃留下半截 JSON——半截状态会被 load 判为
     /// 损坏，进而触发调用方的 fail-loud 路径，见 lib.rs load_protection）
+    ///
+    /// 确定性序列化：file_fingerprints/doc_fingerprints/doc_modules 是
+    /// HashMap，迭代序随 RandomState 每次进程而异——直序列化会让状态
+    /// 文件字节级漂移（同样的内容两次写入字节不同，git diff 噪音且
+    /// 破坏"同输入同输出"的确定性契约）。写入前把三个 map 按键排序
+    /// 组装成 serde_json::Map，保证同状态同字节；load 反序列化对
+    /// JSON 对象键序不敏感，旧文件完全兼容。
     pub fn save(&self, state_dir: &Path) -> Result<()> {
         std::fs::create_dir_all(state_dir)
             .with_context(|| format!("创建状态目录失败: {}", state_dir.display()))?;
         let state_path = state_dir.join("generation_state.json");
-        let content = serde_json::to_string_pretty(self)?;
+
+        let mut obj = serde_json::Map::new();
+        obj.insert("last_commit_hash".into(), serde_json::to_value(&self.last_commit_hash)?);
+        obj.insert("file_fingerprints".into(), sorted_json_object(&self.file_fingerprints)?);
+        obj.insert("generated_at".into(), serde_json::to_value(&self.generated_at)?);
+        obj.insert("doc_fingerprints".into(), sorted_json_object(&self.doc_fingerprints)?);
+        obj.insert("doc_modules".into(), sorted_json_object(&self.doc_modules)?);
+        obj.insert("protected_docs".into(), serde_json::to_value(&self.protected_docs)?);
+
+        let content = serde_json::to_string_pretty(&serde_json::Value::Object(obj))?;
         crate::fs::write_file_atomic(&state_path, &content)
     }
 
@@ -204,18 +220,31 @@ impl GenerationState {
 
     /// 比对磁盘文档与生成时指纹，返回人工修改的文档路径集合
     ///
-    /// 磁盘文件不存在或指纹读取失败时不视为人工修改（跳过保护）。
+    /// 磁盘文件不存在时不视为人工修改（跳过保护）；指纹读取失败时
+    /// **保守计入**修改集（保护优先）——宁可多保护一次也不让人工编辑
+    /// 内容在下次生成中被静默覆盖（读取失败通常伴随权限/IO 异常，
+    /// 此时无法确认磁盘内容是否仍是上次生成的原样）。
     pub fn detect_manually_modified(&self) -> Vec<String> {
-        self.doc_fingerprints
-            .iter()
-            .filter(|(path, fp)| {
-                Path::new(path).is_file()
-                    && Self::compute_file_fingerprint(Path::new(path))
-                        .map(|f| &f != *fp)
-                        .unwrap_or(false)
-            })
-            .map(|(path, _)| path.clone())
-            .collect()
+        let mut modified = Vec::new();
+        for (path, fp) in &self.doc_fingerprints {
+            let p = Path::new(path);
+            if !p.is_file() {
+                // 文件不存在（被删除或从未落盘）：不构成"人工修改"
+                continue;
+            }
+            match Self::compute_file_fingerprint(p) {
+                Ok(cur) => {
+                    if &cur != fp {
+                        modified.push(path.clone());
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("文档指纹读取失败，保守计入保护集: {}: {}", path, e);
+                    modified.push(path.clone());
+                }
+            }
+        }
+        modified
     }
 
     /// 检查文件是否已变更
@@ -241,6 +270,18 @@ fn sha256_hex(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
     hex::encode(hasher.finalize())
+}
+
+/// 把字符串→字符串 HashMap 按键排序序列化为 JSON 对象
+/// （save 的确定性序列化用：排序后的 serde_json::Map 保证输出字节稳定）
+fn sorted_json_object(map: &HashMap<String, String>) -> Result<serde_json::Value> {
+    let mut sorted: Vec<(&String, &String)> = map.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(b.0));
+    let mut obj = serde_json::Map::new();
+    for (k, v) in sorted {
+        obj.insert(k.clone(), serde_json::to_value(v)?);
+    }
+    Ok(serde_json::Value::Object(obj))
 }
 
 #[cfg(test)]
@@ -480,5 +521,143 @@ mod tests {
         assert_eq!(fresh.protected_docs, vec!["new.md"], "新状态保护字段非空时应保留新值");
         assert_eq!(fresh.doc_fingerprints.get("new.md").map(String::as_str), Some("new"));
         assert!(!fresh.doc_fingerprints.contains_key("old.md"));
+    }
+
+    /// B1：状态文件字节级确定性——同一状态两次 save 字节完全一致
+    /// （三个 HashMap 的迭代序随机，直序列化会漂移；save 按键排序后
+    /// 保证同状态同字节，防 git diff 噪音与确定性契约破坏）
+    #[test]
+    fn test_save_is_byte_deterministic() {
+        let dir = std::env::temp_dir()
+            .join(format!("repo_wiki_test_state_deterministic_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // 故意乱序插入，且键序跨越不同前缀，确保排序逻辑真正生效
+        let mut file_fps = HashMap::new();
+        file_fps.insert("z.rs".into(), "z-fp".into());
+        file_fps.insert("a/b.rs".into(), "b-fp".into());
+        file_fps.insert("m.rs".into(), "m-fp".into());
+        let mut doc_fps = HashMap::new();
+        doc_fps.insert("wiki/zh/zz.md".into(), "1".into());
+        doc_fps.insert("wiki/zh/aa.md".into(), "2".into());
+        let mut doc_mods = HashMap::new();
+        doc_mods.insert("wiki/zh/zz.md".into(), "z".into());
+        doc_mods.insert("wiki/zh/aa.md".into(), "a".into());
+
+        let state = GenerationState {
+            last_commit_hash: Some("abc".into()),
+            file_fingerprints: file_fps,
+            doc_fingerprints: doc_fps,
+            doc_modules: doc_mods,
+            protected_docs: vec!["wiki/zh/aa.md".into()],
+            generated_at: "2026-01-01T00:00:00Z".into(),
+        };
+
+        state.save(&dir).unwrap();
+        let bytes1 = std::fs::read(dir.join("generation_state.json")).unwrap();
+
+        // 直接调用 save 到另一个目录再比对（同状态两次序列化）
+        let dir2 = dir.join("again");
+        state.save(&dir2).unwrap();
+        let bytes2 = std::fs::read(dir2.join("generation_state.json")).unwrap();
+
+        assert_eq!(
+            bytes1, bytes2,
+            "同一状态两次 save 必须字节一致（HashMap 迭代序不得泄漏到序列化输出）"
+        );
+
+        // load 兼容：排序后的 JSON 反序列化回等值状态
+        let loaded = GenerationState::load(&dir).unwrap();
+        assert_eq!(loaded.file_fingerprints.get("z.rs").map(String::as_str), Some("z-fp"));
+        assert_eq!(loaded.file_fingerprints.get("a/b.rs").map(String::as_str), Some("b-fp"));
+        assert_eq!(loaded.doc_modules.get("wiki/zh/aa.md").map(String::as_str), Some("a"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A5：指纹读取失败（文件存在但不可读）时保守计入保护集，
+    /// 防止人工修改内容在下次生成中被静默覆盖
+    #[cfg(windows)]
+    #[test]
+    fn test_detect_manually_modified_read_failure_is_protected() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let dir = std::env::temp_dir()
+            .join(format!("repo_wiki_test_detect_readfail_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let locked = dir.join("locked.md");
+        std::fs::write(&locked, "content").unwrap();
+
+        // 独占锁定文件：后续 File::open 在 Windows 上会因共享冲突失败
+        let _lock = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&locked)
+            .expect("独占打开应成功");
+
+        let state = GenerationState {
+            last_commit_hash: None,
+            file_fingerprints: HashMap::new(),
+            doc_fingerprints: HashMap::from([(
+                locked.to_string_lossy().to_string(),
+                "旧指纹".to_string(),
+            )]),
+            doc_modules: HashMap::new(),
+            protected_docs: Vec::new(),
+            generated_at: String::new(),
+        };
+
+        let modified = state.detect_manually_modified();
+        assert!(
+            modified.iter().any(|p| Path::new(p) == locked.as_path()),
+            "指纹读取失败的文件应保守计入保护集（否则人工修改会被覆盖）: {:?}",
+            modified
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A5：常规分支——指纹不匹配计入、文件不存在跳过、指纹匹配不计入
+    #[test]
+    fn test_detect_manually_modified_regular_branches() {
+        let dir = std::env::temp_dir()
+            .join(format!("repo_wiki_test_detect_regular_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let unchanged = dir.join("unchanged.md");
+        std::fs::write(&unchanged, "原样").unwrap();
+        let edited = dir.join("edited.md");
+        std::fs::write(&edited, "原样").unwrap();
+
+        let state = GenerationState {
+            last_commit_hash: None,
+            file_fingerprints: HashMap::new(),
+            doc_fingerprints: HashMap::from([
+                (
+                    unchanged.to_string_lossy().to_string(),
+                    GenerationState::compute_file_fingerprint(&unchanged).unwrap(),
+                ),
+                // 指纹与磁盘内容不符 → 人工修改
+                (
+                    edited.to_string_lossy().to_string(),
+                    "definitely-not-matching".to_string(),
+                ),
+                // 文件不存在 → 跳过
+                (dir.join("missing.md").to_string_lossy().to_string(), "x".to_string()),
+            ]),
+            doc_modules: HashMap::new(),
+            protected_docs: Vec::new(),
+            generated_at: String::new(),
+        };
+
+        std::fs::write(&edited, "被人改了").unwrap();
+
+        let modified = state.detect_manually_modified();
+        assert_eq!(modified.len(), 1, "只有内容不符的文件应计入: {:?}", modified);
+        assert!(modified.iter().any(|p| Path::new(p) == edited.as_path()));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

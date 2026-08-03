@@ -5,7 +5,6 @@ exclude = []
 
 [output]
 dir = "wiki"
-format = "markdown"
 
 [llm]
 provider = "mock"

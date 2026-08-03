@@ -15,15 +15,13 @@
 | **KnowledgeCard** | LLM 生成的模块摘要（JSON 格式），包含 summary、key_entities、design_patterns |
 | **WikiDocument** | 单个 wiki 页面，包含 LLM 渲染的 Markdown 内容 |
 | **Embedding** | 代码/文档文本的向量表示，用于语义搜索和相似度匹配 |
-| **IncrementalState** | 持久化的生成状态（commit_hash + 文件指纹） |
-| **ImpactSet** | 变更文件通过依赖传播影响到的模块集合 |
-| **Frontier** | 增量更新时待处理的变更集合 |
-| **SymbolEngine** | 基于 tree-sitter query API 的符号级搜索引擎，支持 AST 模式匹配、精确定位 |
+| **GenerationState** | 持久化的生成状态（last_commit_hash + 文件指纹 + 文档指纹/人工保护集） |
+| **影响传播（propagate_impact）** | 变更文件经依赖传播影响到的模块集合（IncrementalResult.affected_modules） |
 | **TextEngine** | 基于 SQLite FTS5 的全文搜索引擎，支持 BM25 关键字检索 |
-| **SemanticEngine** | 基于 embedding + SQLite BLOB 向量存储（内存余弦相似度，>0.3 阈值过滤）的语义搜索引擎 |
+| **SemanticEngine** | 基于 embedding + sqlite-vec vec0 虚表（KNN 距离检索，距离 0.7 阈值对应相似度 0.3）的语义搜索引擎 |
 | **HybridSearch** | RRF（Reciprocal Rank Fusion）融合 BM25 + 语义搜索的混合检索 |
 | **AstQuery** | 封装 tree-sitter Query 对象的 AST 查询器，用于精确符号定位和引用追踪 |
-| **CodeAgent** | 可自动回溯的搜索 Agent，多轮组合关键词+语义+AST 查询 |
+| **SearchAgent** | 可自动回溯的搜索 Agent，多轮组合关键词+语义+AST 查询 |
 | **CallGraph** | 基于 petgraph 的调用图，支持调用者/被调用者查询和调用链路追踪 |
 
 ## 模块层次

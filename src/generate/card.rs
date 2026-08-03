@@ -158,7 +158,19 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
 
         for chunk in chunks {
             let module = chunk.module_path.join("::");
-            let mut pending = self.recover_pending_manual_edits(&module);
+            // 旧卡片读取失败按失败隔离语义降级（单卡不中断整体生成），
+            // 但显式告警——静默丢人工修改记录会让人工修改保护失效
+            let mut pending = match self.recover_pending_manual_edits(&module) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(
+                        "读取旧卡片人工修改记录失败，本次生成不携带旧记录 {}: {}",
+                        module,
+                        e
+                    );
+                    Vec::new()
+                }
+            };
             if let Some(extra) = extra_edits.get(&module) {
                 for note in extra {
                     if !pending.contains(note) {
@@ -200,12 +212,13 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
     /// 按模块名精确定位卡片文件（read_card 路径规则与渲染层一致），
     /// 解析"## 人工修改待同步"节内容——与单卡重生成路径共用同一解析逻辑，
     /// 保证两条路径对记录的恢复行为一致。
-    fn recover_pending_manual_edits(&self, module: &str) -> Vec<String> {
-        read_card(&self.config, module)
-            .ok()
-            .flatten()
+    ///
+    /// 返回 Result：磁盘读取错误（损坏/权限）向上传播，由调用方按
+    /// 失败隔离语义显式告警并降级（生成时携带空记录），不静默吞掉。
+    fn recover_pending_manual_edits(&self, module: &str) -> Result<Vec<String>> {
+        Ok(read_card(&self.config, module)?
             .map(|content| extract_pending_manual_edits(&content))
-            .unwrap_or_default()
+            .unwrap_or_default())
     }
 }
 
