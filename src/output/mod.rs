@@ -288,7 +288,7 @@ pub fn render_all(
             // 卡片，若一并跳过则反向同步永远无法落盘
             for card in &doc_cards {
                 let card_path = card_page_path(output_dir, &doc.language, &card.module_name);
-                std::fs::write(&card_path, markdown::render_knowledge_card(card))?;
+                crate::fs::write_file_atomic(&card_path, &markdown::render_knowledge_card(card))?;
             }
             continue;
         }
@@ -307,7 +307,7 @@ pub fn render_all(
             continue;
         }
         let api_doc = markdown::render_api_reference(graph);
-        std::fs::write(api_path, api_doc.content)?;
+        crate::fs::write_file_atomic(&api_path, &api_doc.content)?;
     }
 
     // 3. 写入 Knowledge Card 索引（JSON 格式，写入主语言目录）
@@ -324,24 +324,24 @@ pub fn render_all(
         }).collect::<Vec<_>>(),
     });
     let cards_index = output_dir.join("cards").join(primary_lang).join("_index.json");
-    std::fs::write(&cards_index, serde_json::to_string_pretty(&cards_index_json)?)?;
+    crate::fs::write_file_atomic(&cards_index, &serde_json::to_string_pretty(&cards_index_json)?)?;
 
     // 4. 生成目录页（命中保护集跳过写盘）
     let toc_path = toc_doc_path(output_dir);
     if !protected.contains(&toc_path.to_string_lossy().to_string()) {
         let toc = markdown::render_table_of_contents(documents);
-        std::fs::write(toc_path, toc)?;
+        crate::fs::write_file_atomic(&toc_path, &toc)?;
     }
 
     // 5. 生成 Mermaid 依赖图
     let diagrams_dir = assets_dir.join("diagrams");
     std::fs::create_dir_all(&diagrams_dir)?;
     let mermaid_content = mermaid::render_module_dependency_graph(graph);
-    std::fs::write(diagrams_dir.join("module-deps.mermaid"), mermaid_content)?;
+    crate::fs::write_file_atomic(&diagrams_dir.join("module-deps.mermaid"), &mermaid_content)?;
 
     // 5.1 模块级调用关系图（Calls 边按模块聚合）
     let call_graph_content = mermaid::render_module_call_graph(graph);
-    std::fs::write(diagrams_dir.join("call-graph.mermaid"), call_graph_content)?;
+    crate::fs::write_file_atomic(&diagrams_dir.join("call-graph.mermaid"), &call_graph_content)?;
 
     // 5. 生成交叉引用索引
     let crossref = crossref::CrossRefIndex::build(documents);
@@ -431,7 +431,7 @@ pub fn generate_agents_md(output_dir: &Path) -> Result<bool> {
         output_dir.display(),
         output_dir.display()
     );
-    std::fs::write(&agents_path, content)?;
+    crate::fs::write_file_atomic(&agents_path, &content)?;
     tracing::info!("AGENTS.md 已生成: {}", agents_path.display());
     Ok(true)
 }

@@ -524,7 +524,7 @@ pub fn sync_manual_edits_to_cards(
             }
         }
         if changed {
-            std::fs::write(&card_path, content)?;
+            crate::fs::write_file_atomic(&card_path, &content)?;
             synced += 1;
         }
     }

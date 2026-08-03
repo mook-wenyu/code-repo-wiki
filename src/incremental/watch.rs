@@ -56,15 +56,30 @@ pub fn run_watch_loop(
     )
     .with_context(|| "创建文件防抖监听器失败")?;
 
-    let watch_root = watch_root_from_scope(root, config);
+    // U03/D4：监听全部 include 前缀目录（默认 src/** 与 lib/** 都要监听到；
+    // 单目录场景行为不变）。监听根不存在时跳过该根并告警——include 里的
+    // 目录可以尚未创建（如 lib/ 在纯 src 项目里），整体失败会让 watch 无法启动。
+    let watch_roots = watch_roots_from_scope(root, config);
+    for watch_root in &watch_roots {
+        if !watch_root.exists() {
+            tracing::warn!("监听根不存在，跳过: {}", watch_root.display());
+            continue;
+        }
+        // notify-debouncer-full 0.4：Debouncer 自身实现了 Watcher trait，
+        // 可以直接调用 .watch()，无需 .watcher()
+        debouncer
+            .watch(watch_root.as_path(), RecursiveMode::Recursive)
+            .with_context(|| format!("监听目录失败: {}", watch_root.display()))?;
+    }
 
-    // notify-debouncer-full 0.4：Debouncer 自身实现了 Watcher trait，
-    // 可以直接调用 .watch()，无需 .watcher()
-    debouncer
-        .watch(watch_root.as_path(), RecursiveMode::Recursive)
-        .with_context(|| format!("监听目录失败: {}", watch_root.display()))?;
-
-    tracing::info!("文件监听已启动（阻塞模式）: {}", watch_root.display());
+    tracing::info!(
+        "文件监听已启动（阻塞模式）: {}",
+        watch_roots
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
 
     for result in rx {
         match result {
@@ -169,26 +184,32 @@ fn change_kind_of(kind: &notify::EventKind) -> ChangeKind {
     }
 }
 
-/// 从 scope.include[0] 派生监听根目录（glob 模式取通配符前的目录部分，
-/// 如 "src/**" → "src"；文件路径模式原样保留）。
+/// 从 scope.include 派生全部监听根目录（U03/D4：不再只取 include[0]——
+/// 默认配置（src/** 与 lib/**）下 lib/ 的变更此前永不触发事件）
 ///
-/// 与 scanner 语义一致（scanner.rs 中 `include.is_empty()` 分支）：
-/// include 为空或纯通配（如 "**/*.rs"）时监听项目根——空 include 匹配全部文件，
-/// 纯通配模式的最长目录前缀为空，二者都意味着全项目范围。
-fn watch_root_from_scope(root: &Path, config: &WikiConfig) -> PathBuf {
-    let include0 = config
-        .scope
-        .include
-        .first()
-        .map(String::as_str)
-        .unwrap_or_default();
-    // str::split 至少返回一段，unwrap_or_default 仅满足 Option 类型要求（空串返回空段）
-    let dir_part = include0
-        .split('*')
-        .next()
-        .unwrap_or_default()
-        .trim_end_matches('/');
-    root.join(dir_part)
+/// 每个 include 模式取通配符前的目录部分（如 "src/**" → "src"；
+/// 文件路径模式原样保留），去重后逐一注册监听。与 scanner 语义一致
+/// （scanner.rs 中 `include.is_empty()` 分支）：include 为空或纯通配
+/// （如 "**/*.rs"）时监听项目根——空 include 匹配全部文件，纯通配模式
+/// 的最长目录前缀为空，二者都意味着全项目范围。
+fn watch_roots_from_scope(root: &Path, config: &WikiConfig) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for include in &config.scope.include {
+        // str::split 至少返回一段（空串返回空段）
+        let dir_part = include.split('*').next().unwrap_or_default().trim_end_matches('/');
+        let candidate = if dir_part.is_empty() {
+            root.to_path_buf()
+        } else {
+            root.join(dir_part)
+        };
+        if !roots.contains(&candidate) {
+            roots.push(candidate);
+        }
+    }
+    if roots.is_empty() {
+        roots.push(root.to_path_buf());
+    }
+    roots
 }
 
 /// 从 scope.include 提取扩展名列表（含 '*' 通配的模式无法确定扩展名，跳过）
@@ -297,35 +318,41 @@ mod tests {
         assert_eq!(collect_include_exts(&config), vec!["toml"]);
     }
 
-    /// 监听根：include[0] 的 glob 通配前缀被剥离（"src/**" → "src"），
-    /// 文件路径模式原样保留
+    /// 监听根（U03/D4）：全部 include 的 glob 通配前缀被剥离、去重，
+    /// 文件路径模式原样保留——默认配置（src/** 与 lib/**）产出两个监听根
     #[test]
-    fn test_watch_root_from_scope_strips_glob() {
+    fn test_watch_roots_from_scope_strips_glob() {
         let config = make_config(vec!["src/**", "lib/**"]);
         assert_eq!(
-            watch_root_from_scope(Path::new("/repo"), &config),
-            PathBuf::from("/repo/src")
+            watch_roots_from_scope(Path::new("/repo"), &config),
+            vec![PathBuf::from("/repo/src"), PathBuf::from("/repo/lib")]
         );
         let config = make_config(vec!["Cargo.toml"]);
         assert_eq!(
-            watch_root_from_scope(Path::new("/repo"), &config),
-            PathBuf::from("/repo/Cargo.toml")
+            watch_roots_from_scope(Path::new("/repo"), &config),
+            vec![PathBuf::from("/repo/Cargo.toml")]
+        );
+        // 去重：同一目录的多个模式只监听一次
+        let config = make_config(vec!["src/**", "src/**/*.rs"]);
+        assert_eq!(
+            watch_roots_from_scope(Path::new("/repo"), &config),
+            vec![PathBuf::from("/repo/src")]
         );
     }
 
     /// 监听根：include 为空或纯通配（"**/*.rs"）时监听项目根——
     /// 与 scanner 空 include = 全部匹配的语义一致（scanner.rs include.is_empty() 分支）
     #[test]
-    fn test_watch_root_from_scope_empty_or_pure_glob_falls_back_to_root() {
+    fn test_watch_roots_from_scope_empty_or_pure_glob_falls_back_to_root() {
         let config = make_config(vec![]);
         assert_eq!(
-            watch_root_from_scope(Path::new("/repo"), &config),
-            PathBuf::from("/repo")
+            watch_roots_from_scope(Path::new("/repo"), &config),
+            vec![PathBuf::from("/repo")]
         );
         let config = make_config(vec!["**/*.rs"]);
         assert_eq!(
-            watch_root_from_scope(Path::new("/repo"), &config),
-            PathBuf::from("/repo")
+            watch_roots_from_scope(Path::new("/repo"), &config),
+            vec![PathBuf::from("/repo")]
         );
     }
 

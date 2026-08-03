@@ -91,8 +91,13 @@ pub async fn generate_schema_documents_at(
 /// 为单个 SQL 文件生成 Schema 文档
 ///
 /// 文件不含 CREATE TABLE 语句时返回 None（不调用 LLM）。
-async fn generate_schema_document(
-    provider: &Provider,
+///
+/// U03/D1：Schema 文档是 prompt 中唯一强制输出 Mermaid erDiagram 的文档
+/// 类型（prompt.rs schema_doc_prompt），此前直接 complete 绕过校验——
+/// 坏图直接落盘。现接入 `complete_with_mermaid_guard_free`：坏块重试
+/// （注入错误反馈），耗尽后降级为 text 块（与架构/概览一致）。
+async fn generate_schema_document<P: LlmProvider>(
+    provider: &P,
     path: &Path,
     config: &WikiConfig,
     plan: Option<&ResolvedPlan>,
@@ -104,7 +109,9 @@ async fn generate_schema_document(
     }
 
     let messages = prompt::schema_doc_prompt(path, &blocks, &config.wiki.language, plan);
-    let content = provider.complete(&messages).await?;
+    let content =
+        crate::generate::wiki::complete_with_mermaid_guard_free(provider, messages, "Schema 文档", None)
+            .await?;
     Ok(Some(WikiDocument {
         title: format!("Database Schema: {}", path.display()),
         kind: DocumentKind::DatabaseSchema,
@@ -209,3 +216,82 @@ CREATE TABLE "quoted table" (
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+    /// D1 防回归：Schema 文档（唯一强制 erDiagram 的文档类型）接入 mermaid
+    /// 校验-重试-降级——坏图重试耗尽后降级为 text 块，页面照常产出
+    #[tokio::test]
+    async fn test_schema_document_degrades_bad_mermaid() {
+        use crate::generate::llm::Message;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// 恒输出坏 mermaid 的 provider（未闭合标签，merman 报 Unterminated）
+        struct BadMermaidProvider {
+            calls: AtomicUsize,
+        }
+        impl LlmProvider for BadMermaidProvider {
+            async fn complete(&self, _messages: &[Message]) -> Result<String> {
+                self.calls.fetch_add(1, Ordering::Relaxed);
+                Ok("```mermaid\nerDiagram\nA[hello world\n```\n".to_string())
+            }
+        }
+
+        let dir = std::env::temp_dir().join(format!("repo_wiki_test_schema_d1_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sql_path = dir.join("001_init.sql");
+        std::fs::write(&sql_path, "CREATE TABLE users (id INTEGER PRIMARY KEY);\n").unwrap();
+
+        let config = WikiConfig::default();
+        let provider = BadMermaidProvider { calls: AtomicUsize::new(0) };
+        let doc = generate_schema_document(&provider, &sql_path, &config, None)
+            .await
+            .unwrap()
+            .expect("坏图重试耗尽应降级而非失败");
+        assert!(!doc.content.contains("```mermaid"), "坏图不应再以 mermaid 块出现");
+        assert!(doc.content.contains("```text"), "坏块应降级为 text fence");
+        assert!(
+            doc.content.contains("repo-wiki: mermaid parse failed"),
+            "应含降级标记注释"
+        );
+        assert_eq!(
+            provider.calls.load(Ordering::Relaxed),
+            crate::output::mermaid_check::MERMAID_RETRY_MAX + 1,
+            "应调用 MERMAID_RETRY_MAX+1 次后降级"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// D1：好 mermaid（erDiagram 合法）直通，不触发重试
+    #[tokio::test]
+    async fn test_schema_document_passes_good_mermaid() {
+        use crate::generate::llm::Message;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct GoodMermaidProvider {
+            calls: AtomicUsize,
+        }
+        impl LlmProvider for GoodMermaidProvider {
+            async fn complete(&self, _messages: &[Message]) -> Result<String> {
+                self.calls.fetch_add(1, Ordering::Relaxed);
+                Ok("```mermaid\nerDiagram\nUSERS ||--o{ ORDERS : has\n```\n".to_string())
+            }
+        }
+
+        let dir = std::env::temp_dir().join(format!("repo_wiki_test_schema_good_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sql_path = dir.join("001_init.sql");
+        std::fs::write(&sql_path, "CREATE TABLE users (id INTEGER PRIMARY KEY);\n").unwrap();
+
+        let config = WikiConfig::default();
+        let provider = GoodMermaidProvider { calls: AtomicUsize::new(0) };
+        let doc = generate_schema_document(&provider, &sql_path, &config, None)
+            .await
+            .unwrap()
+            .expect("好图应直通");
+        assert!(doc.content.contains("```mermaid"), "好图应保留");
+        assert_eq!(provider.calls.load(Ordering::Relaxed), 1, "好图不应重试");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }

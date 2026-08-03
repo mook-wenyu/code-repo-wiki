@@ -175,12 +175,19 @@ fn run_git_diff_incremental(
         propagate_impact_semantic(&all_changed, &entity_changes, graph, config.incremental.max_depth)
     };
 
-    // 4. 保存新的状态
+    // 4. 保存新的状态（U03/D3 两段式：第一段只合并保护字段，不推进代码侧状态）
     // from_insights 的新状态保护字段为空，LLM 生成（Phase 3）失败时若已落盘
-    // 会丢失人工修改保护——此处合并旧状态保护字段后再存，中途失败不丢保护）
+    // 会丢失人工修改保护——此处合并旧状态保护字段后再存，中途失败不丢保护。
+    // 同时**不推进 last_commit_hash/file_fingerprints**（保持旧值）：若生成失败
+    // （lib.rs Phase 3 `?` 传播），下次 update 的 git diff 仍以旧 commit 为基准，
+    // 能再次看到本次变更——避免"失败变更被状态吞噬"（D3：原实现在此落盘
+    // 新 commit hash，失败后重试 update 得到空 diff 短路，变更永不重生成）。
+    // 生成成功后的最终保存（lib.rs Phase 6 save_generation_state）才推进代码侧状态。
     if let Ok(mut new_state) = GenerationState::from_insights(root, insights, &diff_result.to_commit) {
         if let Ok(old_state) = GenerationState::load(state_dir) {
             new_state.preserve_protection(&old_state);
+            new_state.last_commit_hash = old_state.last_commit_hash.clone();
+            new_state.file_fingerprints = old_state.file_fingerprints.clone();
         }
         if let Err(e) = new_state.save(state_dir) {
             tracing::warn!("保存生成状态失败: {}", e);

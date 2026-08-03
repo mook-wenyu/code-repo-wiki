@@ -305,13 +305,13 @@ pub fn write_document(doc: &WikiDocument, cards: &[&KnowledgeCard], output_dir: 
     // Wiki 页面
     let wiki_path = crate::output::wiki_page_path(output_dir, language, doc);
     let content = render_wiki_page(doc);
-    std::fs::write(&wiki_path, content)?;
+    crate::fs::write_file_atomic(&wiki_path, &content)?;
 
     // 关联的 Knowledge Card
     for card in cards {
         let card_path = crate::output::card_page_path(output_dir, language, &card.module_name);
         let card_content = render_knowledge_card(card);
-        std::fs::write(&card_path, card_content)?;
+        crate::fs::write_file_atomic(&card_path, &card_content)?;
     }
 
     Ok(())

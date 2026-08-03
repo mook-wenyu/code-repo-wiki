@@ -203,39 +203,15 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
     /// text + 注释）而非失败——页面照常产出，坏图不出现在产物中。
     /// 与 generate_wiki_page 的区别：这里只校验 Mermaid（无引用契约——
     /// 全局文档不强制源码引用，与既有行为一致）。
+    /// 实现委托自由函数 `complete_with_mermaid_guard_free`（U03/D1：
+    /// Schema 文档复用同一校验-重试-降级路径），此处只负责调用计数。
     async fn complete_with_mermaid_guard(
         &self,
-        mut messages: Vec<Message>,
+        messages: Vec<Message>,
         label: &str,
     ) -> Result<String> {
-        let mut content = String::new();
-        let mut last_mermaid = Vec::new();
-
-        for attempt in 0..=MERMAID_RETRY_MAX {
-            self.call_count.fetch_add(1, Ordering::Relaxed);
-            content = self.provider.complete(&messages).await?;
-            last_mermaid = crate::output::mermaid_check::validate_mermaid_blocks(&content);
-            if last_mermaid.is_empty() {
-                return Ok(content);
-            }
-            tracing::warn!(
-                "{label} Mermaid 校验失败（第 {} 次，坏块 {} 个）",
-                attempt + 1,
-                last_mermaid.len()
-            );
-            if attempt == MERMAID_RETRY_MAX {
-                break;
-            }
-            messages.push(Message::user(
-                crate::output::mermaid_check::mermaid_retry_feedback(&last_mermaid),
-            ));
-        }
-
-        tracing::warn!("{label} Mermaid 重试耗尽（{} 个坏块），降级为 text 块", last_mermaid.len());
-        Ok(crate::output::mermaid_check::degrade_mermaid_blocks(
-            &content,
-            &last_mermaid,
-        ))
+        complete_with_mermaid_guard_free(self.provider, messages, label, Some(&self.call_count))
+            .await
     }
 
     /// 生成架构概览页面
@@ -405,6 +381,51 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
             fingerprint: None,
         })
     }
+}
+
+/// 带 Mermaid 校验的 LLM 调用（自由函数版，U03/D1 提取）
+///
+/// 与 WikiGenerator::complete_with_mermaid_guard 等价，但直接接受
+/// provider 与可选调用计数指针——Schema 文档生成（generate/schema.rs）
+/// 只有 Provider 没有 WikiGenerator，此前直接 complete 绕过校验（唯一
+/// 强制 erDiagram 输出的文档类型反而无校验-重试-降级，D1）。
+pub async fn complete_with_mermaid_guard_free<P: LlmProvider>(
+    provider: &P,
+    mut messages: Vec<Message>,
+    label: &str,
+    call_count: Option<&std::sync::atomic::AtomicUsize>,
+) -> Result<String> {
+    use std::sync::atomic::Ordering;
+    let mut content = String::new();
+    let mut last_mermaid = Vec::new();
+
+    for attempt in 0..=MERMAID_RETRY_MAX {
+        if let Some(c) = call_count {
+            c.fetch_add(1, Ordering::Relaxed);
+        }
+        content = provider.complete(&messages).await?;
+        last_mermaid = crate::output::mermaid_check::validate_mermaid_blocks(&content);
+        if last_mermaid.is_empty() {
+            return Ok(content);
+        }
+        tracing::warn!(
+            "{label} Mermaid 校验失败（第 {} 次，坏块 {} 个）",
+            attempt + 1,
+            last_mermaid.len()
+        );
+        if attempt == MERMAID_RETRY_MAX {
+            break;
+        }
+        messages.push(Message::user(
+            crate::output::mermaid_check::mermaid_retry_feedback(&last_mermaid),
+        ));
+    }
+
+    tracing::warn!("{label} Mermaid 重试耗尽（{} 个坏块），降级为 text 块", last_mermaid.len());
+    Ok(crate::output::mermaid_check::degrade_mermaid_blocks(
+        &content,
+        &last_mermaid,
+    ))
 }
 
 /// 生成项目概览的 prompt（单条 user 消息，模板风格与 architecture_overview_prompt 一致）
