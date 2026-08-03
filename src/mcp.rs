@@ -148,6 +148,14 @@ impl RepoWikiMcp {
             Err(e) => return format!("配置加载失败: {e}"),
         };
         let lang = lang.unwrap_or_else(|| config.wiki.language.clone());
+        // 语言目录净化（S1，工具暴露给任意 Agent）：lang 直接 join 进产物
+        // 路径，未净化时 `../..` 可穿越到 output_dir 之外读取任意 .md 文件
+        //（曾实测复现）。与 page 同规则但更严：语言目录名只允许
+        // [A-Za-z0-9_-] 单段（zh、en、zh-CN 等），拒绝一切路径分隔符与
+        // 绝对路径形态——校验失败明确报错，不读盘。
+        if let Err(e) = validate_lang_segment(&lang) {
+            return e;
+        }
         // 参数净化（工具暴露给任意 Agent）：拒绝路径穿越与绝对路径，
         // 只允许单段文件名（页面名），防读取 output_dir 之外任意文件
         if page.contains('/') || page.contains('\\') || page.contains("..") || Path::new(&page).is_absolute() {
@@ -174,6 +182,11 @@ impl RepoWikiMcp {
             Err(e) => return format!("配置加载失败: {e}"),
         };
         let lang = lang.unwrap_or_else(|| config.wiki.language.clone());
+        // 语言目录净化（S1）：同 read_wiki_page，lang 直接 join 进路径，
+        // 未净化可穿越读取 output_dir 之外任意 .md（实测复现）。
+        if let Err(e) = validate_lang_segment(&lang) {
+            return e;
+        }
         // 同 read_wiki_page：净化路径穿越
         if card.contains('/') || card.contains('\\') || card.contains("..") || Path::new(&card).is_absolute() {
             return format!("非法的卡片名: {card}（只允许单段文件名）");
@@ -245,6 +258,25 @@ fn clamp_top_k(top_k: usize) -> usize {
     top_k.clamp(1, 50)
 }
 
+/// 语言目录名校验（S1：MCP lang 参数净化）
+///
+/// 只允许单段名（[A-Za-z0-9_-]，如 zh/en/zh-CN/zh_cn），拒绝一切其他字符——
+/// 路径分隔符（/ \）、点段（..）、空格、盘符、绝对路径形态全部落入拒绝集。
+/// 校验失败返回含"非法语言名"的错误串（工具直接回给 Agent），不读盘。
+fn validate_lang_segment(lang: &str) -> Result<(), String> {
+    if lang.is_empty() {
+        return Err("非法语言名: （只允许 [A-Za-z0-9_-] 单段名）".to_string());
+    }
+    if lang
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        Ok(())
+    } else {
+        Err(format!("非法语言名: {lang}（只允许 [A-Za-z0-9_-] 单段名）"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,5 +289,24 @@ mod tests {
         assert_eq!(clamp_top_k(50), 50);
         assert_eq!(clamp_top_k(9999), 50);
         assert_eq!(clamp_top_k(10), 10);
+    }
+
+    /// S1 语言目录名校验：合法单段名通过，穿越/分隔符/空串全部拒绝
+    #[test]
+    fn test_validate_lang_segment() {
+        // 合法：语言目录名形态
+        for ok in ["zh", "en", "zh-CN", "zh_cn", "EN", "pt-BR"] {
+            assert!(validate_lang_segment(ok).is_ok(), "{ok} 应通过校验");
+        }
+        // 非法：路径穿越与分隔符形态（lang 直接 join 进产物路径的攻击面）
+        for bad in [
+            "", "..", "../..", "/", "//a", "a/b", "a\\b", "C:/x", "/abs", "zh..", "zh zh",
+        ] {
+            let err = validate_lang_segment(bad).unwrap_err();
+            assert!(
+                err.contains("非法语言名"),
+                "{bad:?} 应被拒绝且报错可读: {err}"
+            );
+        }
     }
 }

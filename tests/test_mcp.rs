@@ -75,21 +75,24 @@ async fn rpc_call(stdin: &mut tokio::process::ChildStdin, stdout: &mut tokio::pr
         .unwrap();
     stdin.write_all(b"\n").await.unwrap();
 
-    // 读一行（MCP stdio 按行分隔），跳过空行
+    // 读一行（MCP stdio 按行分隔），跳过空行。
+    // 逐字节累积后用 String::from_utf8 统一解码——逐字节 as char 会把
+    // UTF-8 多字节序列拆成乱码（中文错误消息被破坏，S1 穿越测试曾因此误判）。
     loop {
-        let mut line = String::new();
+        let mut line = Vec::new();
         let mut byte = [0u8; 1];
         loop {
             let n = stdout.read(&mut byte).await.unwrap();
             if n == 0 {
                 panic!("MCP 进程提前退出（stdout EOF）");
             }
-            line.push(byte[0] as char);
-            if line.ends_with('\n') {
+            line.push(byte[0]);
+            if line.ends_with(b"\n") {
                 break;
             }
         }
-        let trimmed = line.trim();
+        let trimmed = String::from_utf8(line).expect("MCP 响应应为合法 UTF-8");
+        let trimmed = trimmed.trim();
         if !trimmed.is_empty() {
             return serde_json::from_str(trimmed).unwrap_or_else(|e| panic!("响应非 JSON: {trimmed}: {e}"));
         }
@@ -195,5 +198,89 @@ async fn test_mcp_initialize_lists_tools_and_calls() {
     // 关闭
     drop(stdin);
     let _ = child.wait().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// S1 安全回归：read_wiki_page/read_card 的 lang 参数路径穿越必须被拒绝，
+/// 且不泄漏 output_dir 之外的文件内容（曾实测复现：lang=../.. 可读任意 .md）。
+#[tokio::test]
+async fn test_mcp_lang_traversal_rejected() {
+    let dir = unique_dir("traversal");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join(".repo-wiki")).unwrap();
+    std::fs::write(dir.join(".repo-wiki").join("config.toml"), TEST_CONFIG).unwrap();
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("src").join("main.rs"), "pub fn hello_world() {}\n").unwrap();
+    // 仓库根之外放置秘密文件（穿越攻击的目标）
+    let secret = dir.parent().unwrap().join(format!("secret_{}.md", std::process::id()));
+    std::fs::write(&secret, "SECRET-CONTENT").unwrap();
+    // 合法产物：wiki/zh/architecture.md（穿越被拒后，合法 lang 应正常读取）
+    std::fs::create_dir_all(dir.join(".repo-wiki").join("wiki").join("zh")).unwrap();
+    std::fs::write(
+        dir.join(".repo-wiki").join("wiki").join("zh").join("architecture.md"),
+        "ok-content",
+    )
+    .unwrap();
+
+    let mut child = spawn_mcp(&dir);
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+
+    let resp = rpc_call(
+        &mut stdin,
+        &mut stdout,
+        1,
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "test", "version": "0.0.1"}
+        }),
+    )
+    .await;
+    assert!(resp["result"]["protocolVersion"].is_string());
+    let _ = rpc_call(&mut stdin, &mut stdout, 2, "notifications/initialized", serde_json::json!({})).await;
+
+    // 1. read_wiki_page lang 穿越（相对穿越 ../..）：拒绝且不泄漏内容
+    let resp = rpc_call(
+        &mut stdin,
+        &mut stdout,
+        3,
+        "tools/call",
+        serde_json::json!({"name": "read_wiki_page", "arguments": {"page": "secret", "lang": "../.."}}),
+    )
+    .await;
+    let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
+    assert!(!text.contains("SECRET-CONTENT"), "穿越必须被拒绝, 泄漏: {text}");
+    assert!(text.contains("非法语言名"), "应返回明确的校验错误: {text}");
+
+    // 2. read_card lang 穿越：同样拒绝
+    let resp = rpc_call(
+        &mut stdin,
+        &mut stdout,
+        4,
+        "tools/call",
+        serde_json::json!({"name": "read_card", "arguments": {"card": "secret", "lang": "../../x"}}),
+    )
+    .await;
+    let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
+    assert!(!text.contains("SECRET-CONTENT"), "read_card 穿越必须被拒绝: {text}");
+    assert!(text.contains("非法语言名"), "read_card 应返回明确的校验错误: {text}");
+
+    // 3. 合法 lang 不受影响：正常读取 wiki/zh/architecture.md
+    let resp = rpc_call(
+        &mut stdin,
+        &mut stdout,
+        5,
+        "tools/call",
+        serde_json::json!({"name": "read_wiki_page", "arguments": {"page": "architecture", "lang": "zh"}}),
+    )
+    .await;
+    let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
+    assert!(text.contains("ok-content"), "合法 lang 应正常读取: {text}");
+
+    drop(stdin);
+    let _ = child.wait().await;
+    let _ = std::fs::remove_file(&secret);
     let _ = std::fs::remove_dir_all(&dir);
 }
