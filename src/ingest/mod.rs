@@ -96,6 +96,14 @@ pub fn scan_and_parse_cached_at(
         }
     }
 
+    // N15：缓存按本次扫描文件集裁剪——被删除/移出 include 的源文件
+    // 残留缓存条目（路径+旧解析结果）随文件消失成为死数据，且其
+    // file_path 相对形态与本次扫描不一致（旧前缀目录），写回前剔除，
+    // 防止缓存无限膨胀与陈旧条目误命中（watch 长期运行的场景）
+    let valid_keys: std::collections::HashSet<&std::path::Path> =
+        files.iter().map(|f| f.as_path()).collect();
+    cache.retain(|path, _| valid_keys.contains(std::path::Path::new(path)));
+
     // 写回缓存（辅助产物：失败仅告警，下次扫描降级为空缓存全量重建）
     if let Some(path) = cache_path
         && let Err(e) = save_insights_cache(path, &cache)

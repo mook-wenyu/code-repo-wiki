@@ -385,20 +385,6 @@ pub fn render_all(
     let call_graph_content = mermaid::render_module_call_graph(graph);
     crate::fs::write_file_atomic(&diagrams_dir.join("call-graph.mermaid"), &call_graph_content)?;
 
-    // 5. 生成交叉引用索引
-    let crossref = crossref::CrossRefIndex::build(documents);
-    let broken = crossref.validate(documents);
-    if !broken.is_empty() {
-        tracing::warn!("发现 {} 个断链", broken.len());
-        for link in &broken {
-            tracing::warn!(
-                "  断链: {} -> {} ({})",
-                link.source_doc,
-                link.broken_target,
-                link.link_text
-            );
-        }
-    }
 
     tracing::info!(
         "输出完成: {} 个页面, {} 个卡片, {} 个模块, 目录: {}",

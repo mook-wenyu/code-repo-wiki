@@ -17,8 +17,6 @@ pub enum DocumentKind {
     ProjectOverview,
     /// 目录
     TableOfContents,
-    /// 模块文档
-    ModuleDoc,
     /// API 参考（按模块分组列出公开实体）
     ApiReference,
     /// 数据库 Schema 文档（基于 SQL 建表语句生成）

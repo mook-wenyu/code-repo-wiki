@@ -90,7 +90,7 @@ impl LlmProvider for Provider {
 // ============ 共享骨架：重试 + SSE 解析（OpenAI 与 Anthropic 共用） ============
 
 /// 统一的重试上限（总尝试次数），OpenAiProvider/AnthropicProvider 均从该常量取值
-const MAX_RETRIES: u32 = 3;
+pub(crate) const MAX_RETRIES: u32 = 3;
 
 /// 指数退避：500ms * 2^attempt + 随机抖动 0-250ms。
 /// 抖动用系统时钟纳秒取模实现，避免为单点功能引入 rand 依赖。
@@ -111,7 +111,7 @@ fn is_retryable_status(status: reqwest::StatusCode) -> bool {
 
 /// 统一重试骨架：可重试错误（429/5xx/超时/连接失败）按指数退避重试，
 /// 其余 4xx 立即失败。send_fn 每轮重新构建请求（请求构建仍是协议差异点，留在调用方）。
-async fn retry_with_backoff<F, Fut>(
+pub(crate) async fn retry_with_backoff<F, Fut>(
     max_retries: u32,
     send_fn: F,
 ) -> Result<reqwest::Response>

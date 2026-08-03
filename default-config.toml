@@ -29,7 +29,7 @@ max_concurrent = 4
 
 [embed]
 # 语义搜索与实体级特征聚类的向量来源；false 时特征聚类降级为纯调用边结构聚类
-enabled = true
+enabled = false
 model = "qwen3.7-text-embedding"
 base_url = "https://llm-q0265e4he9m0qs23.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
 #api_key = ""

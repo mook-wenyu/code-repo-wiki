@@ -253,7 +253,6 @@ fn render_toc_line(doc: &WikiDocument) -> String {
         DocumentKind::ProjectOverview => "项目概览",
         DocumentKind::TableOfContents => "目录",
         DocumentKind::KnowledgeCard => "知识卡片",
-        DocumentKind::ModuleDoc => "模块文档",
         DocumentKind::ApiReference => "API 参考",
         DocumentKind::DatabaseSchema => "数据库 Schema",
     };

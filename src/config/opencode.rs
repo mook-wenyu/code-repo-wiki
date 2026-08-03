@@ -63,6 +63,15 @@ impl OpenCodeConfig {
             .unwrap_or_else(|_| "{}".to_string());
         let mut value: serde_json::Value = serde_json::from_str(&content)
             .with_context(|| format!("解析配置文件失败: {}", self.config_path.display()))?;
+        // N12：顶层必须是 JSON 对象——数组/标量/字符串配置本身就是
+        // 损坏（opencode 顶层只有对象合法），此前仅在 plugins 键存在时
+        // 检查，数组 JSON 无键会静默通过并写回原样（错误配置被保留）
+        if !value.is_object() {
+            anyhow::bail!(
+                "opencode.json 顶层应为 JSON 对象: {}",
+                self.config_path.display()
+            );
+        }
 
         // 移除无效的 plugins 键（无论是否数组，都不是官方字段）
         if value.get_mut("plugins").is_some() {
@@ -105,6 +114,13 @@ impl OpenCodeConfig {
             .with_context(|| format!("读取配置文件失败: {}", self.config_path.display()))?;
         let mut value: serde_json::Value = serde_json::from_str(&content)
             .with_context(|| format!("解析配置文件失败: {}", self.config_path.display()))?;
+        // N12：顶层非对象（数组/标量）直接报错——与 install_plugin 同规则
+        if !value.is_object() {
+            anyhow::bail!(
+                "opencode.json 顶层应为 JSON 对象: {}",
+                self.config_path.display()
+            );
+        }
 
         if value.get_mut("plugins").is_some() {
             value
@@ -124,13 +140,20 @@ impl OpenCodeConfig {
     /// 检查插件是否已安装（插件文件 `.opencode/plugins/repo-wiki.ts` 是否存在）
     ///
     /// 以文件存在性为准：opencode 目录自动加载，配置文件不再承载注册信息。
+    /// N10：官方加载器 glob 为 `{plugin,plugins}/*.{ts,js}`——单复数目录
+    /// 都要查（此前只查 plugins/，用户手工放在 plugin/ 时误报未安装）。
     pub fn is_installed(&self) -> Result<bool> {
-        let plugin_file = self
-            .project_root
-            .join(".opencode")
-            .join("plugins")
-            .join("repo-wiki.ts");
-        Ok(plugin_file.exists())
+        for dir in ["plugins", "plugin"] {
+            let plugin_file = self
+                .project_root
+                .join(".opencode")
+                .join(dir)
+                .join("repo-wiki.ts");
+            if plugin_file.exists() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// 将插件模板写入 `{project_root}/.opencode/plugins/repo-wiki.ts`
@@ -149,7 +172,14 @@ impl OpenCodeConfig {
         }
         std::fs::create_dir_all(plugin_path.parent().unwrap())
             .with_context(|| format!("创建插件目录失败: {}", plugin_path.display()))?;
-        std::fs::write(&plugin_path, include_str!("../../.opencode/plugins/repo-wiki.ts"))
+        // N9：模板改为运行时读取仓库内插件文件（include_str 在发布/非仓库
+        // 安装场景失效——二进制内嵌编译时路径，仓库移动后内容仍指旧位置）
+        let template = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/.opencode/plugins/repo-wiki.ts"
+        ))
+        .with_context(|| "读取插件模板失败（仓库 .opencode/plugins/repo-wiki.ts 缺失）")?;
+        std::fs::write(&plugin_path, template)
             .with_context(|| format!("写入插件文件失败: {}", plugin_path.display()))?;
         tracing::info!("插件文件已写入: {}", plugin_path.display());
         Ok(true)
@@ -176,8 +206,10 @@ impl OpenCodeConfig {
 
     /// 获取 OpenCode 配置的根目录 (~/.config/opencode/)
     pub fn config_dir() -> PathBuf {
-        let home = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
+        // N11：Windows 语义——USERPROFILE 优先于 HOME（
+        // 部分 Windows 环境两者都存在时 HOME 可能是 Cygwin/残留值）
+        let home = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
             .unwrap_or_else(|_| ".".to_string());
         PathBuf::from(home).join(".config").join("opencode")
     }
@@ -316,5 +348,55 @@ mod tests {
         assert!(!config.is_installed().unwrap());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// N10：插件文件在单数 plugin/ 目录时同样判定已安装（官方加载器 glob {plugin,plugins}）
+    #[test]
+    fn test_is_installed_singular_plugin_dir() {
+        let (dir, _) = setup_temp_config(None);
+        let plugin_dir = dir.join(".opencode").join("plugin");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        std::fs::write(plugin_dir.join("repo-wiki.ts"), "export const RepoWikiPlugin = () => ({});").unwrap();
+        let config = OpenCodeConfig {
+            config_path: dir.join("opencode.json"),
+            project_root: dir.clone(),
+        };
+        assert!(config.is_installed().unwrap());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// N11：config_dir 优先 USERPROFILE（Windows 语义）
+    #[test]
+    fn test_config_dir_prefers_userprofile() {
+        // Rust 2024：env::set_var/remove_var 为 unsafe（多线程环境写环境变量
+        // 与 getenv 竞态），测试内短暂修改后立即恢复
+        unsafe {
+            std::env::set_var("USERPROFILE", "C:\\Users\\testuser");
+            std::env::remove_var("HOME");
+        }
+        let dir = OpenCodeConfig::config_dir();
+        assert_eq!(
+            dir,
+            PathBuf::from("C:\\Users\\testuser").join(".config").join("opencode"),
+            "USERPROFILE 应优先于 HOME"
+        );
+        // 恢复环境变量（并行测试隔离：其他测试可能依赖 HOME）
+        unsafe {
+            std::env::remove_var("USERPROFILE");
+            std::env::remove_var("HOME");
+        }
+    }
+
+    /// N12：顶层非对象 JSON（数组/标量）→ install/uninstall 显式报错
+    #[test]
+    fn test_non_object_config_errors() {
+        for (tag, initial) in [("arr", "[1,2,3]"), ("str", "\"oops\"")] {
+            let (dir, path) = setup_temp_config(Some(initial));
+            let mut config = OpenCodeConfig { config_path: path.clone(), project_root: dir.clone() };
+            assert!(config.install_plugin().is_err(), "install 对非对象配置应报错 ({tag})");
+            assert!(config.uninstall_plugin().is_err(), "uninstall 对非对象配置应报错 ({tag})");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }

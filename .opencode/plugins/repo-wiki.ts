@@ -88,7 +88,7 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
     /** 执行 `repo-wiki search` 并格式化为 Markdown 命中列表 */
     async function searchEntities(query: string, topK: number, engine: string | undefined, root?: string): Promise<string> {
         const cliArgs = [
-            "search", "-q", JSON.stringify(query),
+            // N18：query 原样传参（execa 无 shell 直接 argv 传递，JSON.stringify\n            // 会带入 JSON 引号污染搜索词——带引号的关键词匹配不到任何实体）\n            "search", "-q", query,
             "-k", String(topK),
             "--json",
             "--config", configPath(root),

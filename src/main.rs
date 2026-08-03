@@ -540,7 +540,8 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
                 None => cfg.search.default_engine.clone(),
             };
             // CLI 显式 -k 优先，未传时回退配置 search.default_top_k
-            let top_k = top_k.unwrap_or(cfg.search.default_top_k);
+            // N17：top_k 下限收敛到 1（top_k=0 的搜索调用无意义，返回空结果）
+            let top_k = top_k.unwrap_or(cfg.search.default_top_k).max(1);
             let root = resolve_root(root.as_deref())?;
             let results = repo_wiki::execute_search(&config, &root, &query, top_k, &engine_type)?;
             if json {
