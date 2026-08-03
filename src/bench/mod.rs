@@ -256,9 +256,27 @@ fn measure_update_recall(
         .statuses(None)
         .context("bench: 读取 git 状态失败")?;
     if !statuses.is_empty() {
+        // 拒绝时列出条目（前 10 条）：安全闸宁可错杀不可放过（回放会
+        // reset --hard 丢弃未提交改动，实测事故），但条目明细能帮助用户
+        // 判断是什么（未跟踪目录/被忽略文件误报等）
+        let detail: Vec<String> = statuses
+            .iter()
+            .take(10)
+            .map(|e| {
+                let path = e.path().unwrap_or("(unknown)");
+                let mut tags = Vec::new();
+                if e.status().contains(git2::Status::INDEX_NEW) { tags.push("已暂存新增"); }
+                if e.status().contains(git2::Status::WT_NEW) { tags.push("未跟踪"); }
+                if e.status().contains(git2::Status::WT_MODIFIED) { tags.push("已修改"); }
+                if e.status().contains(git2::Status::WT_DELETED) { tags.push("已删除"); }
+                if e.status().contains(git2::Status::IGNORED) { tags.push("被忽略"); }
+                format!("{} [{}]", path, tags.join(","))
+            })
+            .collect();
         anyhow::bail!(
-            "评测前工作区必须干净（存在 {} 个未提交改动），请先 git commit 或 stash 后再运行 bench——回放会 reset --hard，未提交改动将被丢弃",
-            statuses.len()
+            "评测前工作区必须干净（存在 {} 个未提交改动），请先 git commit 或 stash 后再运行 bench——回放会 reset --hard，未提交改动将被丢弃。改动明细: {}",
+            statuses.len(),
+            detail.join("; ")
         );
     }
 
