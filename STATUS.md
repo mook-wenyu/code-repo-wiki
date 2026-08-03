@@ -186,3 +186,9 @@
 - 产物:.scratch/wayfinder-v11/map.md + issues/t01-t02(2 research 票)+ IMPLEMENTATION-PLAN.md(9 步完整计划,每 U 含实现要点/文件/测试/提交)
 - 地图:Destination=全量落地;frontier=t01/t02(待 fire 子代理);无未决 grilling(全部拍板)
 - 摸到的文件:STATUS.md、.scratch/wayfinder-v11/*(新建 4 文件)
+
+## 二十四、U01-U11 全部实现完成(2026-08-03,本会话,wayfinder-v11 落地)
+- **11 次提交全落地**:U01(S1 MCP lang 净化,506f66b)→U02(模板动态路径+root 补齐族,879c51b)→U03(D1/D3/D4/D5,f00fa54)→U04(D2/D6/D7/D8+P3,7e698a5)→U05(D9 HTML,210970e)→U06(D11/D12,cc4cff1)→U07(N2-N8,8b17517)→U08(N9-N20,3abd22f)→U09(parser 4 语言,cd28d92)→U10(bench 五维自动评测,86f6991)→U11(TQS LLM 裁判层,3cbb06c)
+- **验证基线:321 lib + 118 集成 = 439 测试全绿**、clippy --all-targets -D warnings 干净、cargo machete 零未使用依赖、git 工作树干净
+- 新功能:bench 评测子命令(五维自动层+--judge TQS 裁判层)、MCP lang 净化、watch 多根、渲染原子写、fence 精确识别、增量两段式状态、force 退化全量、架构骨架降级、配置边界校验、插件清理、parser 覆盖补齐
+- 4 项验证与三张清单详见本会话最终回复;事故恢复路线(wayfinder-v11)全部完成
