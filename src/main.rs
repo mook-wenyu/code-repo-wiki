@@ -182,6 +182,24 @@ enum Commands {
         #[arg(long)]
         root: Option<PathBuf>,
     },
+    /// 评测基准：对目标仓库运行五维自动评测（Coverage/Doc Info/lint/Update Recall/Time）
+    ///
+    /// 注意：Update Recall 维度会回放 git commit（reset --hard 工作区），
+    /// 评测前工作区必须干净（有未提交改动会被拒绝——安全闸）。
+    Bench {
+        /// 目标仓库根目录（必填；git 回放/扫描基准）
+        #[arg(long)]
+        root: PathBuf,
+        /// 仓库名（报告标识，缺省取 root 目录名）
+        #[arg(long)]
+        repo_name: Option<String>,
+        /// 配置文件路径（缺省 root/.repo-wiki/config.toml）
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// 以 JSON 格式输出报告
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// 知识卡片操作子命令（业务动作定义在 lib 的 generate::card::CardAction）
@@ -556,6 +574,28 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
             };
             let root = resolve_root(root.as_deref())?;
             repo_wiki::run_card_command(&config, &root, &action)?;
+        }
+        Commands::Bench { root, repo_name, config, json } => {
+            // 评测基准（U10）：五维自动评测。root 必填（评测对象仓库根），
+            // ProjectRoot::new 会校验目录存在性（N7）。config 缺省取
+            // root/.repo-wiki/config.toml；repo_name 缺省取 root 目录名。
+            // Update Recall 回放前有工作区干净检查（安全闸，事故教训），
+            // 脏工作区会明确报错拒绝评测。
+            let root = repo_wiki::project::ProjectRoot::new(root);
+            let config_path = config.unwrap_or_else(|| root.path().join(".repo-wiki").join("config.toml"));
+            let cfg = repo_wiki::config::load_config(&config_path)?;
+            let repo_name = repo_name.unwrap_or_else(|| {
+                root.path()
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "unknown".to_string())
+            });
+            let report = repo_wiki::bench::run_bench(&config_path, &root, &cfg, &repo_name)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("{}", repo_wiki::bench::render_markdown(&report));
+            }
         }
     }
 

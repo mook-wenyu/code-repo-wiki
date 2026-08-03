@@ -10,6 +10,7 @@ pub mod commands;
 pub mod fs;
 pub mod mcp;
 pub mod project;
+pub mod bench;
 
 use std::collections::HashMap;
 use std::path::Path;
