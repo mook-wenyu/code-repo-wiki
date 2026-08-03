@@ -214,3 +214,12 @@
 - **验证基线:327 lib + 118 集成 = 445 测试全绿**、clippy -D warnings 干净、machete 干净
 - 关键成果:t06 Unity 仓库探测(2165 .cs/238K LOC)→t07 发现并修复 C# 字段三层结构缺陷(SerializeField 字段此前全部丢失);t08 实测 γ=0.5 在 Unity 仓库产生 526 模块(过细,需下调);t11 mock 全链路验证(526 页/522 卡,generate 333s/export 0.6s);t09 流式 LLM 消除长生成总超时截断
 - 决策落地:t10 图谱范式=记录不重构;t12 reranker=不引入(FTS5 短查询基线+论文证据)
+
+## 二十八、v13 深度分析报告(2026-08-03,本会话,/goal 会话)
+- 方法:本地 62 src 文件审计子代理 + 联网 11 次检索(2026-08 最新)+ 主代理逐项查证(子代理三项 P1/P2 全部回源属实)
+- **P1×1**:t09 真流式纸面化——complete 仍非流式(resp.json().await,llm.rs:361)+ client 总超时仍在(267/414)+ complete_stream 零生产调用;v12 87725a9 声称移除总超时实际未生效(PowerShell 转义失败)
+- **P2×3**:TQS κ 混合新旧文档(bench/mod.rs:670 恒取第一份);mermaid degrade 块号与 validate 不一致(嵌套围栏坏块漏降级);collect_sse 逐块边界零测试
+- **P3×7**:死代码(agent set_rrf_k/llm:46)、吞错(mod.rs:398)、过时注释、多 declarator 无测试等
+- 网络对照:Agent Retrieval Bench edit2ripple(增量评测可借鉴);style bias(0.76-0.92)≫position bias;robust-llm-wiki 分层 lint;Karpathy 生态背书
+- 报告:.scratch/research/ANALYSIS-v13-2026-08-03.md(七节:状态/发现/对照/未完成项全景/需求/反思/三清单)
+- 教训:445 全绿测试覆盖纸面路径;声称完成必须有真实调用点证据;语义级测试(非存在性断言)
