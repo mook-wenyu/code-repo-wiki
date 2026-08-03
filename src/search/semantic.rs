@@ -92,6 +92,12 @@ impl SemanticEngine {
         SemanticSearch::entry_count(self)
     }
 
+    /// 当前 vec0 表的向量维度（表不存在返回 None）——U04/D2 维度探测用：
+    /// 增量路径在回填前比对 embedding 产出维度，变化则回退全量重建。
+    pub fn table_dimension(&self) -> Option<usize> {
+        self.db.table_dimension().ok().flatten()
+    }
+
     /// 组装实体索引文本（与旧实现一致，保持索引兼容性）
     fn index_text(node: &CodeNode, source_code: &str) -> String {
         format!(
@@ -429,5 +435,20 @@ mod tests {
 
         engine.clear().unwrap();
         assert_eq!(engine.entry_count(), 0);
+    }
+
+    /// U04/D2：维度探测——空库 None，入库后返回实际维度
+    #[test]
+    fn test_semantic_table_dimension() {
+        let base_url = spawn_pseudo_embed_server();
+        let rt = test_runtime();
+        let embedder = embedder_with_server(&base_url, &rt);
+        let mut engine = SemanticEngine::open(tmp_path("dim"), embedder, rt.clone()).unwrap();
+        assert_eq!(engine.table_dimension(), None, "空库（表未创建）应返回 None");
+
+        engine
+            .index_batch(&[(make_node("a1", "src/a.rs"), "fn a1()".to_string())])
+            .unwrap();
+        assert_eq!(engine.table_dimension(), Some(3), "伪向量统一 3 维, 实际: {:?}", engine.table_dimension());
     }
 }

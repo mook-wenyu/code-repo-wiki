@@ -54,6 +54,37 @@ fn has_valid_extension(path: &str) -> bool {
     }
 }
 
+/// 围栏区间（fence 感知，U04/D7）：行首 ``` 开/闭的行号区间
+///
+/// 返回 `(start, end)` 字节偏移对，start 为围栏开行起点、end 为闭行
+/// 终点（含换行）；文末未闭合的围栏覆盖到文末。仅行首围栏（可带前导
+/// 空白）参与配对，代码内容里的 ``` 行视为闭合。
+fn fence_ranges(content: &str) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut in_fence = false;
+    let mut fence_start = 0usize;
+    let mut offset = 0usize;
+    for line in content.split('\n') {
+        let trimmed = line.trim_start();
+        if in_fence {
+            if trimmed.starts_with("```") {
+                // 闭合行终点含换行符（split 后补回）
+                ranges.push((fence_start, offset + line.len() + 1));
+                in_fence = false;
+            }
+        } else if trimmed.starts_with("```") {
+            in_fence = true;
+            fence_start = offset;
+        }
+        offset += line.len() + 1;
+    }
+    // 文末未闭合：覆盖到文末（防引用被"伪闭合"漏掉）
+    if in_fence {
+        ranges.push((fence_start, offset));
+    }
+    ranges
+}
+
 /// 从文本中提取所有 `path:line` / `path:start-end` 引用
 ///
 /// 规则（最小误报设计）：
@@ -61,11 +92,24 @@ fn has_valid_extension(path: &str) -> bool {
 /// - 路径不含 `//`（排除 URL）且不以 `/` 开头（排除绝对路径，统一相对根）
 /// - 冒号后必须紧跟数字；`-数字` 后缀视为区间结束
 /// - 行号非零
+/// - U04/D7：跳过代码围栏区间（``` 块内/示例代码里的 path:line 是代码
+///   不是引用——示例代码误报会触发引用契约重试耗尽整页 bail，降级后的
+///   ```text 块若含 path:line 又触发 bad-citation，双重盲区）
 pub fn extract_citations(content: &str) -> Vec<Citation> {
+    let fences = fence_ranges(content);
     let bytes = content.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
+    let mut fence_idx = 0usize;
     while i < bytes.len() {
+        // 跳过当前 fence 区间（含未闭合到文末的情况）
+        while fence_idx < fences.len() && i >= fences[fence_idx].1 {
+            fence_idx += 1;
+        }
+        if fence_idx < fences.len() && i >= fences[fence_idx].0 {
+            i = fences[fence_idx].1;
+            continue;
+        }
         if bytes[i] == b':' {
             // 回溯提取路径起点
             let mut p = i;
@@ -326,3 +370,47 @@ mod tests {
         assert!(feedback.contains("重新输出完整文档"));
     }
 }
+
+    /// U04/D7：代码围栏内的 path:line 不应提取（示例代码是代码不是引用）
+    #[test]
+    fn test_extract_skips_fenced_code_blocks() {
+        let text = "见 src/a.rs:1 的实现。\n\n```rust\nlet cfg = load(\"src/config.rs:99\");\n```\n";
+        let cites = extract_citations(text);
+        assert_eq!(cites.len(), 1, "围栏外应提取 1 条, 实际: {cites:?}");
+        assert_eq!(cites[0].path, "src/a.rs");
+    }
+
+    /// U04/D7：mermaid 图内 label 里的 path:line 不应提取
+    #[test]
+    fn test_extract_skips_mermaid_blocks() {
+        let text = "```mermaid\nflowchart LR\nA --> |src/fs.rs:28| B\n```\n正文 src/b.rs:1\n";
+        let cites = extract_citations(text);
+        assert_eq!(cites.len(), 1, "mermaid 块内不应提取, 实际: {cites:?}");
+        assert_eq!(cites[0].path, "src/b.rs");
+    }
+
+    /// U04/D7：未闭合围栏覆盖到文末——其后内容全部跳过（防伪闭合漏检）
+    #[test]
+    fn test_extract_unclosed_fence_skips_to_end() {
+        let text = "```rust\nlet x = load(\"src/a.rs:1\");\n正文 src/b.rs:2\n";
+        let cites = extract_citations(text);
+        assert!(cites.is_empty(), "未闭合围栏后不应提取: {cites:?}");
+    }
+
+    /// U04/D7：正文-代码-正文交替时只提取正文引用
+    #[test]
+    fn test_extract_alternating_fences() {
+        let text = "正文一 src/a.rs:1\n```rust\nsrc/x.rs:2\n```\n正文二 src/b.rs:3\n```text\nsrc/y.rs:4\n```\n正文三 src/c.rs:5\n";
+        let cites = extract_citations(text);
+        let paths: Vec<&str> = cites.iter().map(|c| c.path.as_str()).collect();
+        assert_eq!(paths, vec!["src/a.rs", "src/b.rs", "src/c.rs"], "只应提取正文引用: {paths:?}");
+    }
+
+    /// U04/D7：缩进围栏（前导空白）同样识别
+    #[test]
+    fn test_extract_indented_fence() {
+        let text = "正文 src/a.rs:1\n    ```rust\n    src/b.rs:2\n    ```\n";
+        let cites = extract_citations(text);
+        assert_eq!(cites.len(), 1, "缩进围栏内部不应提取, 实际: {cites:?}");
+        assert_eq!(cites[0].path, "src/a.rs");
+    }

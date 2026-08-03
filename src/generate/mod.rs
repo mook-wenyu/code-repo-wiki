@@ -655,7 +655,7 @@ async fn generate_global_documents(
 /// `wiki.language` 已切换（如 zh→en），回填的旧语言文档会写进旧语言
 /// 目录，新语言目录缺失该页——视为受影响（不匹配即不回填），
 /// 由调用方回退到新语言的 LLM 生成。
-fn backfill_global_docs(
+pub(crate) fn backfill_global_docs(
     config: &WikiConfig,
     documents: &mut Vec<WikiDocument>,
     kinds: &[crate::model::DocumentKind],

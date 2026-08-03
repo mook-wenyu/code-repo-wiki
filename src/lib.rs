@@ -303,19 +303,38 @@ pub fn run_pipeline_with_progress(
     // LLM 失败重试 1 次仍失败 → 降级确定性骨架（模块入度中心度降序的链接列表）；
     // provider 构建失败（理论不可达：run_generation 已保证 LLM 配置可用）同样降级。
     // 错误处理与全局文档（架构/概览）一致：失败只告警，不中断主流程。
-    let index_doc = match generate::create_provider(&config) {
-        Ok(provider) => rt.block_on(generate::index::generate_index_guide(
-            &provider,
-            &graph,
-            &gen_output.cards,
+    //
+    // U04/D8 增量门控：受影响模块为空（纯实现级变更）时 index 内容（模块列表
+    // + 描述）不会变化，从导出快照回填旧 index（零 LLM 调用），与架构/概览的
+    // backfill 语义一致；快照不可用（首次增量/损坏）时回退正常生成。
+    let gated = if is_incremental
+        && inc_result
+            .as_ref()
+            .is_some_and(|i| i.affected_modules.is_empty())
+    {
+        generate::backfill_global_docs(
             &config,
-        )),
-        Err(e) => {
-            tracing::warn!("阅读指南 LLM 不可用，降级为确定性骨架: {e}");
-            generate::index::fallback_index_guide(&graph, &config)
-        }
+            &mut gen_output.documents,
+            &[crate::model::DocumentKind::TableOfContents],
+        )
+    } else {
+        false
     };
-    gen_output.documents.push(index_doc);
+    if !gated {
+        let index_doc = match generate::create_provider(&config) {
+            Ok(provider) => rt.block_on(generate::index::generate_index_guide(
+                &provider,
+                &graph,
+                &gen_output.cards,
+                &config,
+            )),
+            Err(e) => {
+                tracing::warn!("阅读指南 LLM 不可用，降级为确定性骨架: {e}");
+                generate::index::fallback_index_guide(&graph, &config)
+            }
+        };
+        gen_output.documents.push(index_doc);
+    }
 
     // Phase 4: 输出（render_all 内部同步写导出快照；产物集合 diff 清理
     // 全量/增量统一：旧状态记录过但本次未生成的产物（含已删模块的
@@ -624,18 +643,9 @@ fn build_search_index(
     // 构建文件路径 → 源码的查找表
     let source_map = build_source_map(file_insights);
 
-    // 收集所有需要索引的实体
-    let items: Vec<(model::CodeNode, String)> = graph.graph.node_indices()
-        .filter_map(|idx| {
-            let node = graph.graph.node_weight(idx)?;
-            // 跳过项目/模块/文件级别的节点，只索引具体实体
-            if matches!(node.kind, model::NodeKind::Project | model::NodeKind::Module | model::NodeKind::File) {
-                return None;
-            }
-            let source = extract_entity_source(node, &source_map);
-            Some((node.clone(), source))
-        })
-        .collect();
+    // 收集所有需要索引的实体（U04/D2：与增量路径共用 collect_index_items，
+    // 过滤规则单一来源）
+    let items = collect_index_items(graph, &source_map);
 
     // 全量重建 TextEngine
     let text_path = index_dir.join("text_index.db");
@@ -695,26 +705,24 @@ fn update_search_index_incremental(
         total_removed += text_engine.remove_by_file(&file_str)?;
     }
 
-    // 重新索引变更文件中的实体
+    // 重新索引变更文件中的实体（全量 items 提取复用：collect_index_items
+    // 是全量路径与增量路径的公共过滤骨架，避免两处过滤规则漂移）
     let source_map = build_source_map(file_insights);
-    let items: Vec<(model::CodeNode, String)> = graph.graph.node_indices()
-        .filter_map(|idx| {
-            let node = graph.graph.node_weight(idx)?;
-            if matches!(node.kind, model::NodeKind::Project | model::NodeKind::Module | model::NodeKind::File) {
-                return None;
-            }
+    let items: Vec<(model::CodeNode, String)> = collect_index_items(graph, &source_map)
+        .into_iter()
+        .filter(|(node, _)| {
             // 只索引属于变更文件的实体
-            let node_file = node.file_path.as_deref()?;
+            let Some(node_file) = node.file_path.as_deref() else {
+                return false;
+            };
             // 比较前归一化路径分隔符（票 08）：node.file_path 可能是反斜杠
             // 平台路径，changed_files 来自 git diff/watch（正斜杠或相对路径）。
             // 库内 file_path 键已统一正斜杠，比较点必须同基准，否则增量
             // 索引删除/重索引在 Windows 上永不命中。
             let node_file_norm = incremental::norm_sep(node_file);
-            if !changed_files.iter().any(|f| incremental::norm_sep(&f.to_string_lossy()) == node_file_norm) {
-                return None;
-            }
-            let source = extract_entity_source(node, &source_map);
-            Some((node.clone(), source))
+            changed_files
+                .iter()
+                .any(|f| incremental::norm_sep(&f.to_string_lossy()) == node_file_norm)
         })
         .collect();
 
@@ -723,19 +731,71 @@ fn update_search_index_incremental(
     // 增量更新语义索引（如已启用）
     if config.embed.enabled {
         let semantic_path = index_dir.join("semantic_index.db");
-            if semantic_path.exists() && let Ok(embedder) = generate::embed::EmbeddingEngine::new(&config.embed, get_global_runtime().handle().clone()) {
-                let embedder = std::sync::Arc::new(embedder);
-                if let Ok(mut semantic_engine) = search::semantic::SemanticEngine::open(&semantic_path, embedder, get_global_runtime().clone()) {
+        if semantic_path.exists()
+            && let Ok(embedder) = generate::embed::EmbeddingEngine::new(&config.embed, get_global_runtime().handle().clone())
+        {
+            let embedder = std::sync::Arc::new(embedder);
+            if let Ok(mut semantic_engine) = search::semantic::SemanticEngine::open(&semantic_path, embedder.clone(), get_global_runtime().clone()) {
+                // U04/D2：embedding 维度探测——换模型（维度变化）时，增量
+                // 删除 + 只回填变更集会把既有全部向量丢掉（vecdb 维度不匹配
+                // 重建 DROP 全表，仅 warn）。探测到维度变化则回退全量重建
+                // 语义索引（clear + 全量 items），与全量路径行为一致。
+                let probe_dim = if items.is_empty() {
+                    None
+                } else {
+                    get_global_runtime()
+                        .block_on(embedder.embed(&items[0].1))
+                        .ok()
+                        .map(|v| v.len())
+                };
+                let dim_changed = probe_dim
+                    .zip(semantic_engine.table_dimension())
+                    .is_some_and(|(new_dim, existing)| new_dim != existing);
+                if dim_changed {
+                    tracing::warn!(
+                        "embedding 维度变化，回退全量重建语义索引（增量删除+回填会丢全部既有向量）"
+                    );
+                    let all_items = collect_index_items(graph, &source_map);
+                    semantic_engine.clear()?;
+                    semantic_engine.index_batch(&all_items)?;
+                } else {
                     for file in changed_files {
                         let _ = semantic_engine.remove_by_file(&file.to_string_lossy());
                     }
                     let _ = semantic_engine.index_batch(&items);
                 }
             }
+        }
     }
 
     tracing::info!("搜索索引增量更新: 删除 {} 条, 新增 {} 条", total_removed, items.len());
     Ok(())
+}
+
+/// 收集全部可索引实体（项目/模块/文件级节点跳过），全量与增量路径共用
+///
+/// U04/D2 提取：增量路径的"变更文件过滤"是 collect 之后的选择，
+/// 维度变化回退全量重建直接复用本函数，保证过滤规则单一来源。
+fn collect_index_items(
+    graph: &model::KnowledgeGraph,
+    source_map: &std::collections::HashMap<String, String>,
+) -> Vec<(model::CodeNode, String)> {
+    graph
+        .graph
+        .node_indices()
+        .filter_map(|idx| {
+            let node = graph.graph.node_weight(idx)?;
+            // 跳过项目/模块/文件级别的节点，只索引具体实体
+            if matches!(
+                node.kind,
+                model::NodeKind::Project | model::NodeKind::Module | model::NodeKind::File
+            ) {
+                return None;
+            }
+            let source = extract_entity_source(node, source_map);
+            Some((node.clone(), source))
+        })
+        .collect()
 }
 
 /// 构建文件路径 → 文件源码的查找表（直接使用 FileInsight.source 避免重复 I/O）
@@ -803,6 +863,12 @@ pub fn execute_search(
             Ok(search::hybrid::text_results_to_hits(results))
         }
         config::schema::SearchEngineType::Semantic => {
+            // U04/P3：与 hybrid 分支一致——embed 未启用时显式报错而非
+            // 继续打开索引（旧行为只查索引存在性，配置关闭 embed 时
+            // 语义搜索照常运行，与配置意图矛盾且无任何提示）。
+            if !config.embed.enabled {
+                anyhow::bail!("语义搜索未启用（配置 embed.enabled = false），请在配置中启用 embed 后重新运行 `repo-wiki generate`");
+            }
             if !semantic_path.exists() {
                 anyhow::bail!("语义索引不存在，请在配置中启用 embed 并运行 `repo-wiki generate`");
             }

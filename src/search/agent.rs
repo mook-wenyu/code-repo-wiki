@@ -1,8 +1,7 @@
 use std::collections::HashMap;
-use crate::model::CodeNode;
+
 use super::text::TextEngine;
 use super::semantic::SemanticSearch;
-use super::ast::AstQuery;
 use super::hybrid::{self, SearchHit, rrf_merge};
 
 /// 调用链索引：符号名 → (调用者列表, 被调用者列表)
@@ -39,15 +38,30 @@ impl SearchAgent {
         // 第一层：FTS5 全文搜索
         let text_results = match self.text.search(query, top_k) {
             Ok(r) => r,
-            Err(_) => return Vec::new(),
+            // U04/P3：text 索引损坏/不可读时不再静默返回空（此前空结果
+            // 被当作"无命中"，掩盖索引损坏事实）——告警后仍返回空，
+            // 调用方按无命中处理，但日志暴露真实原因。
+            Err(e) => {
+                tracing::warn!("text 索引搜索失败（按无命中处理）: {e}");
+                return Vec::new();
+            }
         };
         let mut hits = if auto_backtrack && text_results.len() < 3 && self.semantic.is_some() {
             let mut all = Vec::new();
             if !text_results.is_empty() {
                 all.push(hybrid::text_results_to_hits(text_results));
             }
-            if let Some(ref sem) = self.semantic && let Ok(sem_results) = sem.search(query, top_k * 2) {
-                all.push(hybrid::semantic_results_to_hits(sem_results));
+            if let Some(ref sem) = self.semantic {
+                // U04/P3：语义搜索失败同样告警（此前 if let Ok 吞掉 Err，
+                // 语义引擎故障时静默退化为纯 text 结果，无任何日志）。
+                match sem.search(query, top_k * 2) {
+                    Ok(sem_results) => {
+                        all.push(hybrid::semantic_results_to_hits(sem_results));
+                    }
+                    Err(e) => {
+                        tracing::warn!("语义搜索失败（跳过语义回溯）: {e}");
+                    }
+                }
             }
             rrf_merge(&all, top_k, self.rrf_k)
         } else {
@@ -69,33 +83,6 @@ impl SearchAgent {
         }
     }
 
-    /// 使用 AST 做精确定位查询
-    pub fn search_ast(&self, source: &str, symbol: &str, language: &str) -> Vec<SearchHit> {
-        let mut q = match AstQuery::new(language) {
-            Ok(q) => q,
-            Err(_) => return Vec::new(),
-        };
-        let mut results = Vec::new();
-        if let Ok(Some(m)) = q.find_definition(source, symbol) && let Some(text) = m.captures.get("name") {
-            results.push(SearchHit {
-                node: CodeNode {
-                    id: crate::model::NodeId::new(0),
-                    kind: crate::model::NodeKind::Function,
-                    name: symbol.to_string(),
-                    file_path: None,
-                    line_range: Some((m.start_line, m.end_line)),
-                    doc_comment: None,
-                    signature: Some(text.clone()),
-                    module_path: vec![],
-                },
-                score: 100.0,
-                source: "ast".into(),
-                callers: vec![], callees: vec![],
-            });
-        }
-        results
-    }
-
     pub fn text_engine(&self) -> &TextEngine { &self.text }
 
     pub fn set_rrf_k(&mut self, k: f64) {
@@ -106,7 +93,7 @@ impl SearchAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{NodeKind, NodeId};
+    use crate::model::{CodeNode, NodeKind, NodeId};
 
     use std::sync::atomic::{AtomicU64, Ordering};
     static AGENT_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -235,14 +222,6 @@ mod tests {
         let results = agent.search("add", 5, false);
         assert!(!results.is_empty());
         assert!(results[0].node.name.contains("add"));
-    }
-
-    #[test]
-    fn test_agent_ast_search() {
-        let agent = SearchAgent::new(make_text_empty(), None, 60.0);
-        let results = agent.search_ast("fn test_fn() {}", "test_fn", "rust");
-        assert!(!results.is_empty());
-        assert_eq!(results[0].source, "ast");
     }
 
     #[test]

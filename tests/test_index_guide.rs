@@ -302,3 +302,33 @@ fn copy_dir(src: &Path, dst: &Path) {
         }
     }
 }
+
+/// U04/D8：阅读指南 LLM 输出坏 mermaid 时降级为 text 块（不重试），
+/// 页面照常产出且坏图不出现在产物中
+#[tokio::test]
+async fn test_index_guide_degrades_bad_mermaid() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct BadMermaidProvider {
+        calls: AtomicUsize,
+    }
+    impl LlmProvider for BadMermaidProvider {
+        async fn complete(&self, _messages: &[Message]) -> anyhow::Result<String> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Ok("# 阅读指南\n\n```mermaid\nflowchart LR\nA[unterminated\n```\n".to_string())
+        }
+    }
+
+    let graph = make_graph();
+    let config = WikiConfig::default();
+    let provider = BadMermaidProvider { calls: AtomicUsize::new(0) };
+
+    let doc = generate_index_guide(&provider, &graph, &[], &config).await;
+    assert!(!doc.content.contains("```mermaid"), "坏图不应以 mermaid 块出现");
+    assert!(doc.content.contains("```text"), "坏块应降级为 text fence");
+    assert!(
+        doc.content.contains("repo-wiki: mermaid parse failed"),
+        "应含降级标记注释"
+    );
+    assert_eq!(provider.calls.load(Ordering::Relaxed), 1, "坏图不应触发重试（只降级）");
+}

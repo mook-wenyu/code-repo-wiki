@@ -430,7 +430,7 @@ fn test_search_semantic_without_embed_errors() {
         "embed 未启用时应显式失败，输出: {combined}"
     );
     assert!(
-        combined.contains("语义索引不存在"),
+        combined.contains("语义搜索未启用"),
         "应提示语义索引缺失并指引启用 embed，实际: {combined}"
     );
 

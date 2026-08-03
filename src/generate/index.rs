@@ -55,7 +55,22 @@ pub async fn generate_index_guide<P: LlmProvider>(
     let mut last_err = None;
     for _ in 0..=INDEX_RETRY_MAX {
         match provider.complete(&messages).await {
-            Ok(content) => return make_document(content, config, &infos),
+            Ok(content) => {
+                // U04/D8：阅读指南页 mermaid 校验——LLM 输出坏图时降级为
+                // text 块（不重试：阅读指南无图也可读，重试只针对通道失败；
+                // 与架构/概览的降级语义一致，坏图不出现在产物中）。
+                let issues = crate::output::mermaid_check::validate_mermaid_blocks(&content);
+                let content = if issues.is_empty() {
+                    content
+                } else {
+                    tracing::warn!(
+                        "阅读指南含 {} 个坏 Mermaid 块，降级为 text 块",
+                        issues.len()
+                    );
+                    crate::output::mermaid_check::degrade_mermaid_blocks(&content, &issues)
+                };
+                return make_document(content, config, &infos);
+            }
             Err(e) => last_err = Some(e),
         }
     }
@@ -130,6 +145,10 @@ fn collect_module_infos(graph: &KnowledgeGraph, cards: &[KnowledgeCard]) -> Vec<
     let mut infos: Vec<ModuleGuideInfo> = graph
         .modules
         .iter()
+        // U04/P3：过滤空模块（node_ids 为空、无实体无文件）——此类模块
+        // 无 chunk 无页面（wiki.rs 空块 bail），骨架链接它们会产断链；
+        // 空 src 兜底模块同理（describe_modules 也跳过它）。
+        .filter(|m| !m.node_ids.is_empty())
         .map(|m| ModuleGuideInfo {
             name: m.name.clone(),
             description: cards

@@ -54,6 +54,19 @@ pub fn validate_mermaid_blocks(content: &str) -> Vec<MermaidIssue> {
     issues
 }
 
+/// 围栏行是否为 Mermaid 块（P3 修复：语言标记精确匹配，大小写不敏感）
+///
+/// ```mermaid 后只能跟空白或行尾——```mermaidx 是别的语言不误命中；
+/// ```MERMAID 大写同样识别（原 starts_with("```mermaid") 两处都错）。
+/// 行首允许前导空白（缩进围栏）。
+fn fence_is_mermaid(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let Some(rest) = trimmed.strip_prefix("```") else {
+        return false;
+    };
+    rest.trim_end().eq_ignore_ascii_case("mermaid")
+}
+
 /// 提取正文中所有 Mermaid 围栏块的代码内容（不含围栏本身）
 fn extract_mermaid_blocks(content: &str) -> Vec<&str> {
     let mut blocks = Vec::new();
@@ -74,7 +87,7 @@ fn extract_mermaid_blocks(content: &str) -> Vec<&str> {
                 }
                 in_fence = false;
             }
-        } else if trimmed.starts_with("```mermaid") {
+        } else if fence_is_mermaid(line) {
             // 起始围栏：记录内容起始（围栏下一行）
             in_fence = true;
             fence_start = i + 1;
@@ -134,6 +147,11 @@ pub fn mermaid_retry_feedback(issues: &[MermaidIssue]) -> String {
 pub fn degrade_mermaid_blocks(content: &str, issues: &[MermaidIssue]) -> String {
     let mut out = String::with_capacity(content.len() + 256);
     let mut pending_degrade: Option<String> = None; // 待降级坏块的错误消息
+    // text 围栏是否已打开且未闭合（U04/D6 修复的核心状态：坏块体有内容时
+    // pending_degrade 在体首行即被消费，文末是否补闭合只能由本状态判定——
+    // 此前文末只补注释与 ```text 开头不补闭合，未闭合 ```text 吞掉其后
+    // 全部内容直到下一个围栏或文末，整页结构损坏）
+    let mut text_fence_open = false;
 
     for (i, line) in content.lines().enumerate() {
         let trimmed = line.trim_start();
@@ -145,9 +163,17 @@ pub fn degrade_mermaid_blocks(content: &str, issues: &[MermaidIssue]) -> String 
                 sanitize_message(&msg),
                 line
             ));
+            text_fence_open = true;
             continue;
         }
-        if trimmed.starts_with("```mermaid") {
+        if text_fence_open && trimmed.starts_with("```") {
+            // 坏块的原文闭合围栏行：充当 text 围栏的闭合行原样输出
+            out.push_str(line);
+            out.push('\n');
+            text_fence_open = false;
+            continue;
+        }
+        if fence_is_mermaid(line) {
             // 围栏行：判断是否坏块。块号 = 此前出现的 mermaid 起始围栏数。
             // 坏块：记录错误消息并跳过围栏行（注释 + text 围栏在块体首行输出）。
             // 好块：围栏原样输出。
@@ -160,12 +186,16 @@ pub fn degrade_mermaid_blocks(content: &str, issues: &[MermaidIssue]) -> String 
         out.push_str(line);
         out.push('\n');
     }
-    // 文末仍在坏块内（未闭合围栏）：补上降级标记
-    if let Some(msg) = pending_degrade {
-        out.push_str(&format!(
-            "<!-- repo-wiki: mermaid parse failed: {} -->\n```text\n",
-            sanitize_message(&msg)
-        ));
+    // 文末围栏仍未闭合（U04/D6）：补上闭合 ```，保证降级产物的结构完整。
+    // pending_degrade 未消费 = 空体坏块（```mermaid 直接到文末），同样补闭合。
+    if text_fence_open || pending_degrade.is_some() {
+        if let Some(msg) = pending_degrade {
+            out.push_str(&format!(
+                "<!-- repo-wiki: mermaid parse failed: {} -->\n```text\n",
+                sanitize_message(&msg)
+            ));
+        }
+        out.push_str("```\n");
     }
     out
 }
@@ -175,13 +205,18 @@ fn count_mermaid_fences_before(content: &str, fence_line: usize) -> usize {
     content
         .lines()
         .take(fence_line)
-        .filter(|l| l.trim_start().starts_with("```mermaid"))
+        .filter(|l| fence_is_mermaid(l))
         .count()
 }
 
 /// 错误消息单行化（HTML 注释内不允许换行，防注释逃逸）
+///
+/// 除换行外，`-->` 序列也会提前终止 HTML 注释（mermaid 语法错误消息
+/// 常含 `-->`，如 "unexpected token '-->'"）——统一替换为 `-→`，
+/// 保证降级注释的闭合语义不被错误消息破坏（P3 修复）。
 fn sanitize_message(msg: &str) -> String {
-    msg.chars()
+    msg.replace("-->", "-→")
+        .chars()
         .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
         .collect()
 }
@@ -267,3 +302,50 @@ mod tests {
         assert_eq!(sanitize_message("a\nb\r\nc"), "a b  c");
     }
 }
+
+    /// U04/D6 防回归：未闭合围栏的坏块降级后必须产出闭合的 ```text 围栏
+    ///（此前只补注释与 ```text 开头，文末缺闭合 → 整页结构损坏）
+    #[test]
+    fn test_degrade_unclosed_fence_closes_fence() {
+        let content = "```mermaid\nflowchart LR\nA[hello world\n";
+        let issues = validate_mermaid_blocks(content);
+        assert_eq!(issues.len(), 1, "未闭合围栏应作为坏块报出");
+        let degraded = degrade_mermaid_blocks(content, &issues);
+        assert!(degraded.contains("```text"), "应降级为 text fence");
+        assert!(degraded.contains("repo-wiki: mermaid parse failed"), "应含降级注释");
+        // 围栏闭合性：恰好 1 对围栏（开+闭），且以闭合围栏结尾
+        let fence_count = degraded.matches("```").count();
+        assert_eq!(fence_count, 2, "应恰好 1 对围栏（开+闭），实际: {degraded}");
+        assert!(degraded.ends_with("```\n"), "降级产物应以闭合围栏结尾, 实际: {degraded}");
+    }
+
+    /// U04/P3：```mermaidx 前缀不应被当作 mermaid 块（围栏语言精确匹配）
+    #[test]
+    fn test_validate_ignores_mermaidx_prefix() {
+        let content = "```mermaidx\nflowchart LR\nA --> B\n```\n";
+        assert!(validate_mermaid_blocks(content).is_empty(), "mermaidx 不是 mermaid 块");
+    }
+
+    /// U04/P3：```MERMAID 大写形式应被识别为 mermaid 块（大小写不敏感）
+    #[test]
+    fn test_validate_case_insensitive_fence() {
+        let content = "```MERMAID\nflowchart LR\nA[unterminated\n```\n";
+        let issues = validate_mermaid_blocks(content);
+        assert_eq!(issues.len(), 1, "大写 MERMAID 围栏应被识别");
+    }
+
+    /// U04/P3：嵌套示例（```text 内含 ```mermaid）不应误报为 mermaid 块
+    #[test]
+    fn test_validate_skips_nested_example_fence() {
+        let content = "```text\n示例:\n```mermaid\nflowchart LR\nA --> B\n```\n```\n";
+        assert!(validate_mermaid_blocks(content).is_empty(), "text 块内的 mermaid 示例不应被当作真实 mermaid 块");
+    }
+
+    /// U04/P3：降级注释中的 `-->` 不得提前终止 HTML 注释（替换为 -→）
+    #[test]
+    fn test_sanitize_message_escapes_comment_terminator() {
+        let msg = "unexpected token '-->' at line 1";
+        let cleaned = sanitize_message(msg);
+        assert!(!cleaned.contains("-->"), "--> 应被替换, 实际: {cleaned}");
+        assert!(cleaned.contains("-→"), "应含替换后的 -→, 实际: {cleaned}");
+    }

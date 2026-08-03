@@ -131,7 +131,7 @@ impl VecDb {
     }
 
     /// 当前虚表的向量维度（表不存在返回 None）
-    fn table_dimension(&self) -> Result<Option<usize>> {
+    pub fn table_dimension(&self) -> Result<Option<usize>> {
         if !self.table_exists()? {
             return Ok(None);
         }
