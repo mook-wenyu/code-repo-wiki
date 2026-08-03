@@ -152,4 +152,24 @@ mod tests {
         assert_eq!(engine.doc_count(), 1);
         Ok(())
     }
+
+    /// t12：短关键词基线——BM25 token 精确匹配对短查询可用
+    /// （CoREB 论文的短查询退化是 embedding 检索问题，FTS5 不受影响；
+    /// 这同时是"不引入 reranker"决策的本地证据之一）
+    #[test]
+    fn test_short_keyword_baseline() -> Result<()> {
+        let mut engine = TextEngine::open(tmp_path("short_keyword"))?;
+        engine.index(&make_node("a_helper", NodeKind::Function), "fn a_helper(x: u32)")?;
+        engine.index(&make_node("udp_send", NodeKind::Function), "fn udp_send(sock: u32)")?;
+        // 1 字符 token 查询：BM25 token 精确匹配，含单字符 token 的实体命中
+        let short = engine.search("a", 10)?;
+        assert!(
+            short.iter().any(|(n, _)| n.name == "a_helper"),
+            "1 字符 token 查询应命中 a_helper"
+        );
+        // 2 字符 token 精确查询
+        let two = engine.search("udp", 10)?;
+        assert!(two.iter().any(|(n, _)| n.name == "udp_send"), "2 字符 token 应命中");
+        Ok(())
+    }
 }
