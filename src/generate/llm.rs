@@ -149,7 +149,9 @@ where
 /// 真实差异在 JSON 字段路径（OpenAI: choices[0].delta.content；
 /// Anthropic: type=content_block_delta 事件的 delta.text），故用提取闭包参数化。
 /// `data: [DONE]` 等非 JSON 行解析失败自然跳过。
-/// 仅测试使用（流式路径已内联同样的按行解析，此处保留整块解析供 mock 断言）\n#[cfg(test)]\nfn parse_sse_stream(
+/// 仅测试使用（流式路径已内联同样的按行解析，此处保留整块解析供 mock 断言）
+#[cfg(test)]
+fn parse_sse_stream(
     bytes: &[u8],
     line_prefix: &str,
     extract: impl Fn(&serde_json::Value) -> Option<String>,
