@@ -208,3 +208,9 @@
 - 产物:.scratch/wayfinder-v12/map.md + issues/t01-t12(12 票,全 open)+ IMPLEMENTATION-PLAN.md(实施蓝图)
 - 地图:Destination=全量落地;frontier=t01-t10,t12;t11 blocked by t06;t08 需 t06 数据(方法论可先行)
 - 摸到的文件:STATUS.md、.scratch/wayfinder-v12/*(新建 14 文件)
+
+## 二十七、v12 全部实现完成(2026-08-03,本会话,wayfinder-v12 落地)
+- **10 次提交全落地**:t01-t04(短期四项,4effa9f)+t04 clippy(ed1206e)+t07(C# Unity 形态,0225101)+t05(MVVP,346d965)+t09(真流式,87725a9)+t09 修复(06cce95)+t12(reranker 评估,dd9a4f2);t06/t08/t10/t11 为研究/任务票(结论已 resolve 于票)
+- **验证基线:327 lib + 118 集成 = 445 测试全绿**、clippy -D warnings 干净、machete 干净
+- 关键成果:t06 Unity 仓库探测(2165 .cs/238K LOC)→t07 发现并修复 C# 字段三层结构缺陷(SerializeField 字段此前全部丢失);t08 实测 γ=0.5 在 Unity 仓库产生 526 模块(过细,需下调);t11 mock 全链路验证(526 页/522 卡,generate 333s/export 0.6s);t09 流式 LLM 消除长生成总超时截断
+- 决策落地:t10 图谱范式=记录不重构;t12 reranker=不引入(FTS5 短查询基线+论文证据)
