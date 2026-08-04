@@ -242,3 +242,12 @@ repo-wiki 提供三种搜索引擎：
 - **hybrid**：RRF 算法融合全文与语义结果，`k=60`
 
 CLI 使用：`repo-wiki search --query "keyword" --engine hybrid --top-k 10`
+
+### Agent 入口文件（llms.txt / llms-full.txt）
+
+面向外部 AI Coding Agent 的机器消费索引，随 `generate`/`update` 写入产物根：
+
+- **`llms.txt`**：站点地图（llmstxt.org 社区规范），列出全部模块页/全局文档/卡片路径——Agent 先读它发现文档位置，再按需打开页面
+- **`llms-full.txt`**：模块职责一句话 + 实体清单（签名级）内联索引（llms.txt 的超集，社区惯例格式非官方规范）。单次读取即获得完整骨架，无需逐页打开；32K token 预算内按启发式裁剪（丢常量级条目 → 丢无源码定位条目 → 实体签名截断 → 整模块省略，模块名始终保留）
+
+两者都是确定性重生成产物，不参与人工修改保护。

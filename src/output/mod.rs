@@ -405,6 +405,14 @@ pub fn render_all(
         tracing::warn!("llms.txt 写入失败: {}", e);
     }
 
+    // 4.2 llms-full.txt（v19 t05）：模块职责 + 实体清单内联索引
+    // （llms.txt 的超集，单次读取即获完整骨架；32K token 预算裁剪）。
+    // 与 llms.txt 同生命周期语义：确定性重生成、不参与人工修改保护、
+    // 写失败仅告警。
+    if let Err(e) = llms_txt::write_llms_full_txt(output_dir, cards, config) {
+        tracing::warn!("llms-full.txt 写入失败: {}", e);
+    }
+
     // 5. 生成 Mermaid 依赖图
     let diagrams_dir = assets_dir.join("diagrams");
     std::fs::create_dir_all(&diagrams_dir)?;
