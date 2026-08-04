@@ -132,7 +132,9 @@ mod tests {
         let config = schema::WikiConfig::default();
         let toml_str = toml::to_string_pretty(&config).unwrap();
         let parsed: schema::WikiConfig = toml::from_str(&toml_str).unwrap();
-        assert_eq!(parsed.llm.model, "gpt-4o");
+        // v17 t05：schema 默认值统一到模板阵营（DeepSeek）
+        assert_eq!(parsed.llm.model, "deepseek-v4-flash");
+        assert_eq!(parsed.llm.api_key_env, "DEEPSEEK_API_KEY");
         assert_eq!(parsed.wiki.language, "zh");
         assert_eq!(parsed.output.dir, ".repo-wiki");
     }

@@ -182,9 +182,9 @@ include = ["src/**"]
 exclude = ["**/test/**", "target/**"]
 
 [llm]
-provider = "openai"
-model = "gpt-4o"
-api_key_env = "OPENAI_API_KEY"
+provider = "openai"        # openai = Responses API（可配 base_url，DeepSeek 归此）
+model = "deepseek-v4-flash" # openai-compatible = chat/completions（兼容端点）
+api_key_env = "DEEPSEEK_API_KEY"
 
 [embed]
 enabled = false  # 启用后开启语义搜索
@@ -198,6 +198,19 @@ default_engine = "hybrid"
 enabled = true
 strategy = "git-diff"
 ```
+
+### LLM Provider 协议说明（v17 t02 拆分）
+
+`provider` 按协议显式绑定，不是品牌选择：
+
+| provider | 协议 | 适用 |
+|----------|------|------|
+| `openai` | OpenAI **Responses API**（`POST /responses`） | OpenAI 官方；DeepSeek（`base_url = "https://api.deepseek.com/v1"`，deepseek-v4-flash 已支持 Responses）；其他提供 /responses 的服务 |
+| `openai-compatible` | **chat/completions**（`POST /chat/completions`） | 阿里云/自建等 OpenAI 兼容端点（无 /responses）；v17 起原 `custom` 并入此值（旧配置需改 `provider = "openai-compatible"`） |
+| `anthropic` | Anthropic Messages API | Claude 系列 |
+| `mock` | 本地模拟（不触网，返回占位内容） | 测试/CI/无 Key 演示 |
+
+`openai`（Responses）请求失败且状态码为 404/400（端点不支持信号）时自动回退同 `base_url` 的 chat/completions 重发一次。
 
 ## 多语言输出
 

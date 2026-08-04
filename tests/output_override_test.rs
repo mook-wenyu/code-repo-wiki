@@ -58,7 +58,7 @@ include = ["**/*.rs"]
 exclude = []
 
 [llm]
-provider = "openai"
+provider = "openai-compatible"
 model = "gpt-4o"
 base_url = "http://127.0.0.1:{}/v1"
 api_key = "mock"

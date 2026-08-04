@@ -25,7 +25,7 @@ dir = ".repo-wiki"
 format = "markdown"
 
 [llm]
-provider = "openai"
+provider = "openai-compatible"
 model = "gpt-4o"
 api_key_env = "OPENAI_API_KEY"
 max_concurrent = 4

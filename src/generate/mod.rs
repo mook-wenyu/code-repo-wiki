@@ -40,17 +40,19 @@ pub struct GenerationStats {
     pub failed_modules: Vec<String>,
 }
 
-/// 根据配置创建 LLM Provider
+/// 根据配置创建 LLM Provider（v17 t02：协议按 provider 类型显式绑定）
 pub fn create_provider(config: &WikiConfig) -> Result<Provider> {
     match config.llm.provider {
+        // openai = OpenAI Responses API 协议（base_url 可配，DeepSeek 归此）
         crate::config::schema::LlmProviderType::OpenAI => {
-            Ok(Provider::OpenAi(OpenAiProvider::new(&config.llm)?))
+            Ok(Provider::OpenAi(OpenAiProvider::new(&config.llm, crate::generate::llm::OpenAiProtocol::Responses)?))
         }
         crate::config::schema::LlmProviderType::Anthropic => {
             Ok(Provider::Anthropic(AnthropicProvider::new(&config.llm)?))
         }
-        crate::config::schema::LlmProviderType::Custom => {
-            Ok(Provider::OpenAi(OpenAiProvider::new(&config.llm)?))
+        // openai-compatible = chat/completions 协议（custom 并入，v17 t02）
+        crate::config::schema::LlmProviderType::OpenAiCompatible => {
+            Ok(Provider::OpenAi(OpenAiProvider::new(&config.llm, crate::generate::llm::OpenAiProtocol::Chat)?))
         }
         crate::config::schema::LlmProviderType::Mock => {
             // 本地模拟：测试/CI/无 API Key 场景，返回固定文本

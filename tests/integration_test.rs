@@ -222,7 +222,9 @@ fn test_config_roundtrip() {
     let toml_str = toml::to_string_pretty(&config).expect("序列化失败");
     let parsed: WikiConfig = toml::from_str(&toml_str).expect("反序列化失败");
 
-    assert_eq!(parsed.llm.model, "gpt-4o");
+    // v17 t05：schema 默认值统一到模板阵营（DeepSeek）
+    assert_eq!(parsed.llm.model, "deepseek-v4-flash");
+    assert_eq!(parsed.llm.api_key_env, "DEEPSEEK_API_KEY");
     assert_eq!(parsed.wiki.language, "zh");
     assert_eq!(parsed.output.dir, ".repo-wiki");
     assert_eq!(parsed.search.default_engine, SearchEngineType::Text);

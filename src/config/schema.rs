@@ -78,12 +78,14 @@ pub struct LlmSection {
 
 impl Default for LlmSection {
     fn default() -> Self {
+        // v17 t05：默认值统一到模板阵营（default-config.toml）——schema 缺省
+        // 填充与模板一致，极简配置（缺 [llm] 段）用户落 DeepSeek 而非 OpenAI
         Self {
             provider: LlmProviderType::OpenAI,
-            model: "gpt-4o".to_string(),
-            base_url: None,
+            model: "deepseek-v4-flash".to_string(),
+            base_url: Some("https://api.deepseek.com/v1".to_string()),
             api_key: None,
-            api_key_env: "OPENAI_API_KEY".to_string(),
+            api_key_env: "DEEPSEEK_API_KEY".to_string(),
             max_concurrent: 4,
             max_tokens: None,
             temperature: None,
@@ -91,14 +93,26 @@ impl Default for LlmSection {
     }
 }
 
+/// LLM Provider 类型（v17 t02 拆分：协议按 provider 类型显式绑定）
+///
+/// - `openai`：OpenAI **Responses API** 协议（base_url 可配——DeepSeek 等
+///   支持 Responses 的服务通过 base_url 接入；默认官方端点）
+/// - `openai-compatible`：**chat/completions** 协议（OpenAI 兼容端点：
+///   阿里云/自建/无 /responses 的服务；v17 起 custom 并入此值）
+/// - `anthropic`：Anthropic Messages API（不变）
+/// - `mock`：本地模拟（测试/CI/无 Key 演示，不触网）
+///
+/// 拆分原因：Responses 与 chat/completions 的请求/响应/SSE 差异大，
+/// 且不是所有 OpenAI 兼容端点都提供 /responses——按 provider 显式绑定
+/// 协议，避免"无脑默认切换"破坏兼容端点。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum LlmProviderType {
     #[serde(rename = "openai")]
     OpenAI,
+    #[serde(rename = "openai-compatible")]
+    OpenAiCompatible,
     #[serde(rename = "anthropic")]
     Anthropic,
-    #[serde(rename = "custom")]
-    Custom,
     /// 本地模拟 Provider（测试/CI/无 API Key 演示），
     /// 返回固定文本，不发起任何网络请求。
     #[serde(rename = "mock")]

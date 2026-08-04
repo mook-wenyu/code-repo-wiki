@@ -249,7 +249,7 @@ dir = "{out_dir}"
 format = "markdown"
 
 [llm]
-provider = "openai"
+provider = "openai-compatible"
 model = "gpt-4o"
 base_url = "http://127.0.0.1:{port}/v1"
 api_key = "mock"

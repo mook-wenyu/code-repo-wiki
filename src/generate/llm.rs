@@ -286,12 +286,29 @@ async fn collect_sse(
     Ok(chunks)
 }
 
-/// OpenAI 兼容 API 的 LLM Provider 实现
+/// OpenAI 协议形态（v17 t02 拆分：协议按 provider 类型显式绑定）
+///
+/// - `Responses`：OpenAI **Responses API**（POST /responses；DeepSeek 等
+///   支持 Responses 的服务经 base_url 接入）
+/// - `Chat`：**chat/completions**（OpenAI 兼容端点：阿里云/自建等）
+///
+/// 拆分原因：两协议的请求体（input/instructions vs messages[]）、响应
+/// 解析（output.items vs choices[]）、SSE 事件（语义化事件 vs
+/// choices[].delta）差异大，且不是所有兼容端点都提供 /responses。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenAiProtocol {
+    Responses,
+    Chat,
+}
+
+/// OpenAI 兼容 API 的 LLM Provider 实现（v17 t02 起支持双协议）
 pub struct OpenAiProvider {
     client: Client,
     api_key: String,
     model: String,
     base_url: String,
+    /// 协议形态（构造时按 provider 类型绑定，见 create_provider）
+    protocol: OpenAiProtocol,
     max_retries: u32,
     max_tokens: Option<u32>,
     temperature: Option<f32>,
@@ -299,13 +316,20 @@ pub struct OpenAiProvider {
 }
 
 impl OpenAiProvider {
-    /// 从配置创建 OpenAI Provider
+    /// 从配置创建 OpenAI Provider（v17 起按 provider 类型绑定协议）
     ///
     /// 优先使用 api_key 字段，其次从环境变量读取。支持自定义 base_url。
-    pub fn new(config: &LlmSection) -> Result<Self> {
+    pub fn new(config: &LlmSection, protocol: OpenAiProtocol) -> Result<Self> {
         let api_key = config.api_key.clone()
             .or_else(|| std::env::var(&config.api_key_env).ok())
-            .with_context(|| format!("LLM API Key 未设置（api_key 为空且环境变量 {} 未定义）", config.api_key_env))?;
+            .with_context(|| {
+                // v17 t04：错误消息附加可操作引导——新用户只需设置环境变量
+                // 或编辑配置文件的 [llm] 段，不猜
+                format!(
+                    "LLM API Key 未设置（api_key 为空且环境变量 {} 未定义）。请设置环境变量 {}，或编辑配置文件的 [llm] 段填入 api_key",
+                    config.api_key_env, config.api_key_env
+                )
+            })?;
         let base_url = config
             .base_url
             .clone()
@@ -323,6 +347,7 @@ impl OpenAiProvider {
             api_key,
             model: config.model.clone(),
             base_url,
+            protocol,
             max_retries: MAX_RETRIES,
             max_tokens: config.max_tokens,
             temperature: config.temperature,
@@ -352,13 +377,68 @@ impl OpenAiProvider {
         }
         body
     }
+
+    /// 构建 Responses API 请求体（v17 B4）
+    ///
+    /// 协议差异（t01 查证，OpenAI 官方迁移指南）：请求从 messages[]
+    /// 改为 `input`（typed items 数组），system 消息分离到顶层
+    /// `instructions` 字段；token 上限参数名从 max_tokens 改为
+    /// `max_output_tokens`（DeepSeek 对不支持的参数静默忽略——参数名
+    /// 写错会静默失效，必须按协议用正确名称）。
+    fn build_responses_body(&self, messages: &[Message], stream: bool) -> serde_json::Value {
+        // system 消息 → 顶层 instructions；user/assistant → input items
+        let system = messages.iter().find(|m| m.role == "system").map(|m| &m.content);
+        let input: Vec<serde_json::Value> = messages
+            .iter()
+            .filter(|m| m.role != "system")
+            .map(|m| {
+                serde_json::json!({
+                    "role": if m.role == "user" { "user" } else { "assistant" },
+                    "content": serde_json::json!([{ "type": "input_text", "text": m.content }]),
+                })
+            })
+            .collect();
+        let mut body = serde_json::json!({
+            "model": self.model,
+            "input": input,
+        });
+        if let Some(s) = system {
+            body["instructions"] = serde_json::json!(s);
+        }
+        if stream {
+            body["stream"] = serde_json::json!(true);
+        }
+        if let Some(maxt) = self.max_tokens {
+            body["max_output_tokens"] = serde_json::json!(maxt);
+        }
+        if let Some(temp) = self.temperature {
+            body["temperature"] = serde_json::json!(temp);
+        }
+        body
+    }
 }
 
 impl LlmProvider for OpenAiProvider {
     async fn complete_stream(&self, messages: &[Message]) -> Result<Vec<String>> {
         self.call_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        match self.protocol {
+            OpenAiProtocol::Chat => self.chat_complete_stream(messages).await,
+            OpenAiProtocol::Responses => self.responses_complete_stream(messages).await,
+        }
+    }
 
+    // complete 走 trait 默认实现（complete_stream 收集拼接）——
+    // 生产路径统一流式，无整读分支
+    fn call_count(&self) -> usize {
+        self.call_count.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl OpenAiProvider {
+    /// chat/completions 协议路径（OpenAI 兼容端点；v17 起为
+    /// openai-compatible provider 的协议）
+    async fn chat_complete_stream(&self, messages: &[Message]) -> Result<Vec<String>> {
         let url = format!("{}/chat/completions", self.base_url);
         let body = self.build_chat_body(messages, true);
 
@@ -377,7 +457,7 @@ impl LlmProvider for OpenAiProvider {
             anyhow::bail!("API 返回错误 ({}): {}", status, text);
         }
 
-        // OpenAI SSE：data: 行内 choices[0].delta.content
+        // chat/completions SSE：data: 行内 choices[0].delta.content
         collect_sse(resp, "data: ", |v| {
             v["choices"][0]["delta"]["content"]
                 .as_str()
@@ -386,10 +466,54 @@ impl LlmProvider for OpenAiProvider {
         .await
     }
 
-    // complete 走 trait 默认实现（complete_stream 收集拼接）——
-    // 生产路径统一流式，无整读分支
-    fn call_count(&self) -> usize {
-        self.call_count.load(std::sync::atomic::Ordering::Relaxed)
+    /// Responses API 协议路径（openai provider 的协议，v17 B4）
+    ///
+    /// 端点不支持信号（404/400，如服务未提供 /responses）→ 自动回退
+    /// chat/completions 重发一次（t02 拍板；429/5xx 由 retry_with_backoff
+    /// 处理，不触发回退——回退只针对"端点不支持"，不掩盖限流/服务端错误）。
+    async fn responses_complete_stream(&self, messages: &[Message]) -> Result<Vec<String>> {
+        let url = format!("{}/responses", self.base_url);
+        let body = self.build_responses_body(messages, true);
+
+        let resp = retry_with_backoff(self.max_retries, || {
+            self.client
+                .post(&url)
+                .bearer_auth(&self.api_key)
+                .json(&body)
+                .send()
+        })
+        .await?;
+
+        if resp.status() == reqwest::StatusCode::NOT_FOUND
+            || resp.status() == reqwest::StatusCode::BAD_REQUEST
+        {
+            // 端点不支持（404）/参数被拒（400）：服务未实现 Responses 协议，
+            // 回退 chat/completions 重发（仅一次——chat 失败按既有错误传播）
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            tracing::warn!(
+                "Responses 端点不支持 ({}: {})，自动回退 chat/completions 重发",
+                status,
+                text.chars().take(500).collect::<String>()
+            );
+            return self.chat_complete_stream(messages).await;
+        }
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("API 返回错误 ({}): {}", status, text);
+        }
+
+        // Responses SSE：语义化事件流——data: 行内 type=response.output_text.delta
+        // 事件的 delta 字段（无 [DONE] 终止符，以流结束为终止，collect_sse 兼容）
+        collect_sse(resp, "data: ", |v| {
+            if v["type"].as_str() == Some("response.output_text.delta") {
+                v["delta"].as_str().map(|s| s.to_string())
+            } else {
+                None
+            }
+        })
+        .await
     }
 }
 
@@ -416,7 +540,7 @@ impl AnthropicProvider {
     pub fn new(config: &LlmSection) -> Result<Self> {
         let api_key = config.api_key.clone()
             .or_else(|| std::env::var(&config.api_key_env).ok())
-            .with_context(|| format!("Anthropic API Key 未设置（api_key 为空且环境变量 {} 未定义）", config.api_key_env))?;
+            .with_context(|| format!("Anthropic API Key 未设置（api_key 为空且环境变量 {} 未定义）。请设置环境变量 {}，或编辑配置文件的 [llm] 段填入 api_key", config.api_key_env, config.api_key_env))?;
         let base_url = config
             .base_url
             .clone()
@@ -719,7 +843,7 @@ data: [DONE]
             }
         });
 
-        let provider = OpenAiProvider::new(&openai_config(&base_url)).unwrap();
+        let provider = OpenAiProvider::new(&openai_config(&base_url), OpenAiProtocol::Chat).unwrap();
         let messages = vec![Message::system("你是测试助手"), Message::user("你好")];
         let reply = provider.complete(&messages).await.unwrap();
 
@@ -763,7 +887,7 @@ data: [DONE]
             body: sse.to_string(),
         });
 
-        let provider = OpenAiProvider::new(&openai_config(&base_url)).unwrap();
+        let provider = OpenAiProvider::new(&openai_config(&base_url), OpenAiProtocol::Chat).unwrap();
         let messages = vec![Message::user("你好")];
         let chunks = provider.complete_stream(&messages).await.unwrap();
 
@@ -797,7 +921,7 @@ data: [DONE]
             }
         });
 
-        let provider = OpenAiProvider::new(&openai_config(&base_url)).unwrap();
+        let provider = OpenAiProvider::new(&openai_config(&base_url), OpenAiProtocol::Chat).unwrap();
         let messages = vec![Message::user("你好")];
         let reply = provider.complete(&messages).await.unwrap();
 
@@ -820,7 +944,7 @@ data: [DONE]
             }
         });
 
-        let provider = OpenAiProvider::new(&openai_config(&base_url)).unwrap();
+        let provider = OpenAiProvider::new(&openai_config(&base_url), OpenAiProtocol::Chat).unwrap();
         let messages = vec![Message::user("你好")];
         let reply = provider.complete(&messages).await.unwrap();
 
@@ -842,7 +966,7 @@ data: [DONE]
             }
         });
 
-        let provider = OpenAiProvider::new(&openai_config(&base_url)).unwrap();
+        let provider = OpenAiProvider::new(&openai_config(&base_url), OpenAiProtocol::Chat).unwrap();
         let messages = vec![Message::user("你好")];
         let reply = provider.complete(&messages).await.unwrap();
 
@@ -860,7 +984,7 @@ data: [DONE]
             MockResponse { status: 401, body: "unauthorized".into() }
         });
 
-        let provider = OpenAiProvider::new(&openai_config(&base_url)).unwrap();
+        let provider = OpenAiProvider::new(&openai_config(&base_url), OpenAiProtocol::Chat).unwrap();
         let messages = vec![Message::user("你好")];
         let result = provider.complete(&messages).await;
 
@@ -878,7 +1002,7 @@ data: [DONE]
             MockResponse { status: 500, body: "internal error".into() }
         });
 
-        let provider = OpenAiProvider::new(&openai_config(&base_url)).unwrap();
+        let provider = OpenAiProvider::new(&openai_config(&base_url), OpenAiProtocol::Chat).unwrap();
         let messages = vec![Message::user("你好")];
         let result = provider.complete(&messages).await;
 
@@ -1061,5 +1185,120 @@ data: [DONE]
         assert_eq!(msgs[0]["content"], "你好");
         assert_eq!(msgs[1]["role"], "assistant");
         assert_eq!(msgs[1]["content"], "在的");
+    }
+
+    // ============ v17 B4/B5：Responses 协议（openai provider） ============
+
+    /// Responses 流式 SSE 解析：语义化事件（response.created →
+    /// output_text.delta ×2 → response.completed），无 [DONE] 终止符，
+    /// 流结束即终止（collect_sse 兼容）
+    #[tokio::test]
+    async fn test_responses_stream_parses_semantic_sse() {
+        let sse = concat!(
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\"}}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"sequence_number\":0,\"delta\":\"你\"}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"delta\":\"好\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\"}}\n\n",
+        );
+        let base_url = spawn_mock_server(move |_req| MockResponse {
+            status: 200,
+            body: sse.to_string(),
+        });
+
+        let config = LlmSection {
+            provider: LlmProviderType::OpenAI,
+            model: "deepseek-v4-flash".into(),
+            base_url: Some(format!("{}/v1", base_url)),
+            api_key: Some("test-key".into()),
+            api_key_env: "DEEPSEEK_API_KEY".into(),
+            max_concurrent: 4,
+            max_tokens: Some(256),
+            temperature: None,
+        };
+        let provider = OpenAiProvider::new(&config, OpenAiProtocol::Responses).unwrap();
+        let chunks = provider.complete_stream(&[Message::user("你好")]).await.unwrap();
+        assert_eq!(chunks, vec!["你", "好"], "语义化事件应提取 delta 文本");
+        assert_eq!(provider.call_count(), 1);
+    }
+
+    /// Responses 请求体：input/instructions/max_output_tokens（v17 B4 协议差异）
+    #[tokio::test]
+    async fn test_responses_request_builds_correct_payload() {
+        let captured = Arc::new(Mutex::new(None::<MockRequest>));
+        let captured_server = captured.clone();
+        let base_url = spawn_mock_server(move |req| {
+            *captured_server.lock().unwrap() = Some(req);
+            MockResponse {
+                status: 200,
+                body: "data: {\"type\":\"response.completed\"}\n\n".into(),
+            }
+        });
+
+        let config = LlmSection {
+            provider: LlmProviderType::OpenAI,
+            model: "deepseek-v4-flash".into(),
+            base_url: Some(format!("{}/v1", base_url)),
+            api_key: Some("test-key".into()),
+            api_key_env: "DEEPSEEK_API_KEY".into(),
+            max_concurrent: 4,
+            max_tokens: Some(256),
+            temperature: Some(0.5),
+        };
+        let provider = OpenAiProvider::new(&config, OpenAiProtocol::Responses).unwrap();
+        let messages = vec![Message::system("你是助手"), Message::user("你好")];
+        let _ = provider.complete_stream(&messages).await.unwrap();
+
+        let req = captured.lock().unwrap().take().expect("应收到一次请求");
+        assert_eq!(req.path, "/v1/responses", "Responses 协议应请求 /responses 端点");
+        let body: serde_json::Value = serde_json::from_str(&req.body).unwrap();
+        assert_eq!(body["model"], "deepseek-v4-flash");
+        // system 消息分离到顶层 instructions；user 进 input items
+        assert_eq!(body["instructions"], "你是助手");
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input.len(), 1, "非 system 消息才进 input");
+        assert_eq!(input[0]["role"], "user");
+        assert_eq!(input[0]["content"][0]["type"], "input_text");
+        assert_eq!(input[0]["content"][0]["text"], "你好");
+        // token 上限参数名：Responses 用 max_output_tokens（chat 用 max_tokens）
+        assert_eq!(body["max_output_tokens"].as_u64(), Some(256));
+        assert!(body.get("max_tokens").is_none(), "Responses 不得用 max_tokens 参数名");
+        assert_eq!(body["temperature"].as_f64(), Some(0.5));
+        assert_eq!(body["stream"].as_bool(), Some(true));
+    }
+
+    /// v17 B5：Responses 端点不支持（404）→ 自动回退 chat/completions 重发成功
+    #[tokio::test]
+    async fn test_responses_falls_back_to_chat_on_404() {
+        let requests: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let requests_server = requests.clone();
+        let base_url = spawn_mock_server(move |req| {
+            requests_server.lock().unwrap().push(req.path.clone());
+            if req.path.ends_with("/responses") {
+                MockResponse { status: 404, body: "not found".into() }
+            } else {
+                MockResponse {
+                    status: 200,
+                    body: "data: {\"choices\":[{\"delta\":{\"content\":\"回退成功\"}}]}\n\ndata: [DONE]\n\n".into(),
+                }
+            }
+        });
+
+        let config = LlmSection {
+            provider: LlmProviderType::OpenAI,
+            model: "deepseek-v4-flash".into(),
+            base_url: Some(format!("{}/v1", base_url)),
+            api_key: Some("test-key".into()),
+            api_key_env: "DEEPSEEK_API_KEY".into(),
+            max_concurrent: 4,
+            max_tokens: None,
+            temperature: None,
+        };
+        let provider = OpenAiProvider::new(&config, OpenAiProtocol::Responses).unwrap();
+        let chunks = provider.complete_stream(&[Message::user("你好")]).await.unwrap();
+        assert_eq!(chunks.join(""), "回退成功");
+        let paths = requests.lock().unwrap();
+        assert_eq!(paths.len(), 2, "应请求 responses + chat 两次");
+        assert!(paths[0].ends_with("/responses"), "第一次应请求 responses: {:?}", paths);
+        assert!(paths[1].ends_with("/chat/completions"), "回退应请求 chat/completions: {:?}", paths);
     }
 }
