@@ -77,7 +77,7 @@ AI 驱动的代码仓库 Wiki 自动生成工具。分析源码结构，通过 L
 - **语言**：Rust (edition 2024)
 - **解析**：tree-sitter（Rust/Python/JS/TS/Go/C#/Java）
 - **图结构**：petgraph 0.8 (StableDiGraph) + leiden-rs（社区检测）
-- **存储**：rusqlite (SQLite FTS5 + 向量 BLOB)
+- **存储**：rusqlite (SQLite FTS5 全文索引 + sqlite-vec vec0 向量表)
 - **LLM**：OpenAI / Anthropic / 兼容 API（含超时重试、流式解析）
 - **嵌入**：text-embedding-3-small 等（embedding 注入特征聚类）
 - **CLI**：clap（derive 模式）
@@ -93,7 +93,9 @@ cargo build --release
 repo-wiki init
 
 # 全量生成 Wiki
-repo-wiki generate# 增量更新
+repo-wiki generate
+
+# 增量更新
 repo-wiki update
 
 # 搜索代码实体

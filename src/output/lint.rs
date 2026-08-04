@@ -6,6 +6,10 @@
 //! 1. **孤儿页**：没有任何其他页面链接指向的模块页（无人可达 = 可能过期/重复）
 //! 2. **断链**：页面内链接指向不存在的产物文件（复制 crossref 语义，但作用于磁盘产物）
 //! 3. **过时**：页面生成时间戳早于其源文件修改时间（源码已变但文档未更新）
+//! 4. **bad-citation**：正文 `path:line` 引用指向不存在的文件或行号越界（引用契约的静态复核）
+//! 5. **entity-coverage**：页面声称的实体不在 api.md 权威清单（LLM 编造的第二道闸）
+//! 6. **bad-mermaid**：产物中的 mermaid fence 无法被 merman 解析（历史产物/人工编辑/增量遗留）
+//! 7. **stale-entity**：api.md 权威清单的实体在当前源码中不存在（文档引用了已删除/重命名的符号）
 //!
 //! 检查对象是**磁盘上的产物文件**（真实用户看到的东西），而非内存中的文档对象。
 
@@ -17,7 +21,7 @@ use crate::output::citation;
 /// 单条 lint 问题
 #[derive(Debug, Clone)]
 pub struct LintIssue {
-    /// 问题类别: orphan / broken / stale
+    /// 问题类别: orphan / broken / stale / bad-citation / entity-coverage / bad-mermaid / stale-entity
     pub kind: &'static str,
     /// 问题文件相对路径（相对 output_dir）
     pub path: String,

@@ -392,7 +392,24 @@ pub fn run_pipeline_with_progress(
 
     // Phase 6: 保存增量状态（含文档指纹用于人工修改保护）
     if config.incremental.enabled {
-        let head_hash = incremental::diff::get_head_commit_hash_at(root).unwrap_or_default();
+        // A3（v14）：git 基线获取失败显式区分——非 git 仓库（info：预期
+        // 场景，无基线则状态不推进、下次 update 回退全量）与 git 仓库内
+        // 失败（warn：仓库损坏/无 HEAD/HEAD 无目标等）。此前 unwrap_or_default
+        // 把两者混为一谈静默吞掉，git 命令失败时用户无从知晓状态为何不推进。
+        let head_hash = match incremental::diff::get_head_commit_hash_at(root) {
+            Ok(h) => h,
+            Err(e) => {
+                if e.downcast_ref::<git2::Error>()
+                    .map(|g| g.code() == git2::ErrorCode::NotFound)
+                    .unwrap_or(false)
+                {
+                    tracing::info!("非 git 仓库，无 git 基线（增量状态不推进）: {}", e);
+                } else {
+                    tracing::warn!("获取 git HEAD 失败（增量状态不推进）: {}", e);
+                }
+                String::new()
+            }
+        };
         save_generation_state(root, &config, &file_insights, &gen_output.documents, &gen_output.cards, &protected, &head_hash);
     }
 
@@ -766,54 +783,68 @@ fn update_search_index_incremental(
     // 增量更新语义索引（如已启用）
     if config.embed.enabled {
         let semantic_path = index_dir.join("semantic_index.db");
-        if semantic_path.exists()
-            && let Ok(embedder) = generate::embed::EmbeddingEngine::new(&config.embed, get_global_runtime().handle().clone())
-        {
-            let embedder = std::sync::Arc::new(embedder);
-            if let Ok(mut semantic_engine) = search::semantic::SemanticEngine::open(&semantic_path, embedder.clone(), get_global_runtime().clone()) {
-                // U04/D2：embedding 维度探测——换模型（维度变化）时，增量
-                // 删除 + 只回填变更集会把既有全部向量丢掉（vecdb 维度不匹配
-                // 重建 DROP 全表，仅 warn）。探测到维度变化则回退全量重建
-                // 语义索引（clear + 全量 items），与全量路径行为一致。
-                let probe_dim = if items.is_empty() {
-                    None
-                } else {
-                    match get_global_runtime().block_on(embedder.embed(&items[0].1)) {
-                        Ok(v) => Some(v.len()),
+        // A1（v14）：入口失败显式告警——此前两处 `if let Ok(...)` 静默吞掉
+        // EmbeddingEngine::new（key 缺失）与 SemanticEngine::open（DB 损坏）的
+        // 失败，增量语义更新在用户不知情时整段跳过（与全量路径 :702/:707 的
+        // warn 语义对齐：保留旧索引可观测，不静默）。
+        if semantic_path.exists() {
+            match generate::embed::EmbeddingEngine::new(&config.embed, get_global_runtime().handle().clone()) {
+                Ok(embedder) => {
+                    let embedder = std::sync::Arc::new(embedder);
+                    match search::semantic::SemanticEngine::open(&semantic_path, embedder.clone(), get_global_runtime().clone()) {
+                        Ok(mut semantic_engine) => {
+                            // U04/D2：embedding 维度探测——换模型（维度变化）时，增量
+                            // 删除 + 只回填变更集会把既有全部向量丢掉（vecdb 维度不匹配
+                            // 重建 DROP 全表，仅 warn）。探测到维度变化则回退全量重建
+                            // 语义索引（clear + 全量 items），与全量路径行为一致。
+                            let probe_dim = if items.is_empty() {
+                                None
+                            } else {
+                                match get_global_runtime().block_on(embedder.embed(&items[0].1)) {
+                                    Ok(v) => Some(v.len()),
+                                    Err(e) => {
+                                        tracing::warn!("embedding 维度探测失败，跳过维度重建检查: {}", e);
+                                        None
+                                    }
+                                }
+                            };
+                            // 维度探测失败（数据库损坏/权限）显式告警并跳过重建检查，
+                            // 不静默当作"维度未变"——保持行为的同时错误可见
+                            let dim_changed = match semantic_engine.table_dimension() {
+                                Ok(existing_dim) => probe_dim
+                                    .zip(existing_dim)
+                                    .is_some_and(|(new_dim, existing)| new_dim != existing),
+                                Err(e) => {
+                                    tracing::warn!("读取语义索引维度失败，跳过维度重建检查: {}", e);
+                                    false
+                                }
+                            };
+                            if dim_changed {
+                                tracing::warn!(
+                                    "embedding 维度变化，回退全量重建语义索引（增量删除+回填会丢全部既有向量）"
+                                );
+                                let all_items = collect_index_items(graph, &source_map);
+                                semantic_engine.clear()?;
+                                semantic_engine.index_batch(&all_items)?;
+                            } else {
+                                // t01/P1-1：删除与回填错误显式传播（与同函数 text 路径一致）。
+                                // 此前 `let _` 吞错：文本索引已更新而向量库停留旧态（新旧混存），
+                                // 搜索返回陈旧/错位结果且无任何日志；语义索引是搜索功能的一部分，
+                                // 静默失败不可接受。函数级隔离哲学不变——调用方（lib.rs Phase 5）
+                                // 仍以 warn 包装，不中断主流程。
+                                for file in changed_files {
+                                    semantic_engine.remove_by_file(&file.to_string_lossy())?;
+                                }
+                                semantic_engine.index_batch(&items)?;
+                            }
+                        }
                         Err(e) => {
-                            tracing::warn!("embedding 维度探测失败，跳过维度重建检查: {}", e);
-                            None
+                            tracing::warn!("语义索引打开失败，增量语义更新跳过（保留旧索引）: {}", e);
                         }
                     }
-                };
-                // 维度探测失败（数据库损坏/权限）显式告警并跳过重建检查，
-                // 不静默当作"维度未变"——保持行为的同时错误可见
-                let dim_changed = match semantic_engine.table_dimension() {
-                    Ok(existing_dim) => probe_dim
-                        .zip(existing_dim)
-                        .is_some_and(|(new_dim, existing)| new_dim != existing),
-                    Err(e) => {
-                        tracing::warn!("读取语义索引维度失败，跳过维度重建检查: {}", e);
-                        false
-                    }
-                };
-                if dim_changed {
-                    tracing::warn!(
-                        "embedding 维度变化，回退全量重建语义索引（增量删除+回填会丢全部既有向量）"
-                    );
-                    let all_items = collect_index_items(graph, &source_map);
-                    semantic_engine.clear()?;
-                    semantic_engine.index_batch(&all_items)?;
-                } else {
-                    // t01/P1-1：删除与回填错误显式传播（与同函数 text 路径一致）。
-                    // 此前 `let _` 吞错：文本索引已更新而向量库停留旧态（新旧混存），
-                    // 搜索返回陈旧/错位结果且无任何日志；语义索引是搜索功能的一部分，
-                    // 静默失败不可接受。函数级隔离哲学不变——调用方（lib.rs Phase 5）
-                    // 仍以 warn 包装，不中断主流程。
-                    for file in changed_files {
-                        semantic_engine.remove_by_file(&file.to_string_lossy())?;
-                    }
-                    semantic_engine.index_batch(&items)?;
+                }
+                Err(e) => {
+                    tracing::warn!("Embedding 引擎初始化失败，增量语义更新跳过（保留旧索引）: {}", e);
                 }
             }
         }

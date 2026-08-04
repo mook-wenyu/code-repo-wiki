@@ -394,8 +394,13 @@ pub fn render_all(
         config.output.dir
     );
 
-    // AGENTS.md 引导文件：不存在才生成（幂等），人工已有 AGENTS.md 时跳过
-    let _ = generate_agents_md(output_dir);
+    // AGENTS.md 引导文件：不存在才生成（幂等），人工已有 AGENTS.md 时跳过。
+    // A2（v14）：写失败显式告警——此前 `let _` 静默吞掉（与下方导出快照
+    // 写失败的 warn 语义对齐；引导文件是辅助产物，失败不中断渲染，但
+    // 必须可观测，否则用户以为生成了导航入口实际没有）。
+    if let Err(e) = generate_agents_md(output_dir) {
+        tracing::warn!("AGENTS.md 引导文件生成失败: {}", e);
+    }
 
     // 6. 写盘完成后同步导出快照（export --skip-generate 消费的对外契约）。
     //    辅助产物：写入失败仅告警不中断——快照缺失时 export --skip-generate

@@ -232,3 +232,25 @@
 - **D 组(c424210)**:D1 stale-entity 符号漂移 lint(api.md 清单实体∉源码 AST→报错,entity-coverage 反向);D2 update 尾部 lint 全量复核 warn 不阻断;D3 前置查证=seed 本就固定(LEIDEN_SEED=42 双处),detect_communities_with_resolution 参数化+新 benchmarks/gamma_scan.rs 评测工具;γ 实测(Unity 2950 文件):γ 0.2-0.6→模块 521-724(差异≤25%),单文件占比 59-69% 不敏感——低模块化是图结构特性,维持默认 0.5,t08 结论修正
 - **验证基线:463 passed**(346 lib + 117 集成,较 v12 445 +18)、clippy -D warnings 0、machete 干净、工作树干净
 - 已知边界:wiki_note 需二进制在 PATH(本机 G1 环境问题,已用 cargo run 完成);wiki 自更新需真实 LLM key 未执行;γ 扫描工具保留于 benches/gamma_scan.rs 供大仓库复测
+
+## 三十、v14 深度分析报告(2026-08-04,本会话,/goal 会话)
+- 方法:并行子代理(本地 62 src+19 测试+插件+文档 全量审计 / 联网 6 主题 30+ 来源检索)+主代理逐项复核(三处 P1 全部回源属实)
+- **P1×3**:lib.rs:769-773 增量语义索引入口两处 if let Ok 无告警(v13 A9 只修内层);output/mod.rs:398 AGENTS.md 引导写失败静默;lib.rs:395 git hash 失败静默空(非 git 与 git 失败不可区分)
+- **P2×3**:README:80 向量 BLOB 失实(sqlite-vec 迁移后残留);README:96 排版断裂;lint.rs 注释"六类"过时(实际 7 类)
+- **P3×2**:update_search_index_incremental 语义分支无端到端测试;全量测试污染仓库根 wiki/ 未根治
+- 网络对照(2026 最新):RepoDoc 四阶段(语义影响传播+交叉引用验证);CodeWikiBench rubrics+三 judge 合成;MVVP judge 校验协议;VeriContext 引用 SHA-256 fail-closed;arXiv:2512.12117 区间算术引用校验(92% 零幻觉);llms.txt 生态;Codebase-Memory LSP 混合解析;edit2ripple 增量检索基准
+- 结论:工程完成度仍第一梯队;结构性差距=引用机械校验(防幻觉硬校验)+评测闭环(rubrics/三文档对比)两个质量闭环;7 项未完成项现状核对表见报告
+- 报告:.scratch/research/ANALYSIS-v14-2026-08-04.md(七节:基线/审计发现/未完成项全景/网络对照/优先差距清单/反思/三清单)
+
+## 三十一、wayfinder 建图:repo-wiki v14 全部差距落地(2026-08-04,本会话)
+- 触发:v14 深度分析(7 项差距 + 3 项历史未完成项)后用户启动 wayfinder 规划,question 一轮拍板
+- 用户拍板:Destination=全部差距(含语义 lint/真实 LLM e2e/PATH,唯一排除 LSP 混合解析);产出=纯规划(地图+tickets+完整实现计划,实施另起);评测=自建 rubrics+真实 DeepSeek;提交策略=每字母组一个(实施时)
+- 研究子代理(并行 2 个,已 resolve):t01 引用机械校验——方案 A 区间算术(arXiv:2512.12117)+lint 升级,不引入 VeriContext SHA-256 fail-closed(漂移过敏与增量场景冲突);实体行区间即"检索块",重叠判定 start≤entity.end&&end≥entity.start;hash 门留 --experimental-hash 实验开关;t02 rubrics 协议——叶子二值 0/1+加权自底向上聚合 S±σ_R+Coverage(CodeWikiBench),维度 7 与 TQS 并存,TQS 补 MVVP 缺口(Cohen kappa/position_bias/low_confidence),--full-regen 三文档闭环可选
+- 产物:.scratch/wayfinder-v14/map.md + issues/t01-t09(2 research resolved + 5 grilling + 2 task open)+ IMPLEMENTATION-PLAN.md(A-G 组完整实施计划,含依赖图/验收判据)
+- 地图:Destination=全部差距落地;frontier=t03-t09;blocking:t03←t01(已 resolve)、t04←t02(已 resolve)、t09←t04
+- 摸到的文件:STATUS.md、.scratch/wayfinder-v14/*(新建 11 文件)
+
+### v14 work-through t03 resolve（2026-08-04，本会话）
+- 一会话一票原则：resolve t03 引用校验失败语义（grilling，question 四轮拍板）——维持 bail/维持重试纠正（不引入 auto-cite 回填）/生成时+lint 双升级/与实体校验独立；关键边界=无实体文件（README 等）引用放行
+- 网络补查证据：OpenAI 官方引用指南（系统侧解析 locator、模型不编造 source ID）；TACL 2026 Citation Failure/GhostCite（LLM 自校验引用仅 38% 准确率→机械校验必须零 LLM）；2026 错误处理范式（验证门+3 次重试后升级）
+- 地图更新：Decisions so far + t03 行；IMPLEMENTATION-PLAN B 组已细化（可实施状态）；frontier 现为 t04（←t02 已解锁）
