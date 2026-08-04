@@ -265,3 +265,11 @@
 - **G 组(环境)**:t08 PATH 修复完成(cargo install --path . → C:\Users\WenYu\.cargo\bin\repo-wiki.exe 验证可运行);t09 真实 LLM 最小验证完成(DeepSeek V4 Flash 真实生成 src::fs 卡片 6.7s 落盘)——Unity 大仓库全链路未做(时间/API 成本,如实未验证)
 - **验证基线:477 passed**(359 lib + 118 集成,较 v13 463 +14)、clippy -D warnings 0、machete 干净、工作树干净、9 张 tickets 全部 resolved
 - 未完成项:Unity 大仓库真实 LLM e2e 全链路(可另起会话);test_cli.rs:172 LSP 陈旧误报(编译通过)
+
+## 三十三、v15 深度分析报告(2026-08-04,本会话,/goal 会话)
+- 方法:并行子代理(本地生产就绪度审计 64 src 文件 / 联网 6 主题 12 轮 2026 最新)+主代理复核(子代理 B 两处过时误判已修正:引用校验/llms.txt 实际 v14 已实现)
+- **生产就绪评估**:通过项 10(单进程契约/原子写/三处 P1 修复/key 无泄露/测试全离线/安全闸/Ctrl-C/规模边界/基准);缺口 11 项——高 1(Linux 动态依赖 openssl/zlib 未声明,"单二进制免依赖"仅 Windows 成立,发布前翻车点)、中 5(README 安装段/无版本管理/llm.rs 等 32 文件零 tracing/缓存 12.8KB 每文件万级≈128MB/插件 PATH)、低 5(lint .. 不对称/状态保存静默/README --root 缺 note+bench/测试污染 wiki//watch e2e 注释失实)
+- **未完成项全景 11 项**:高 1(Unity 真实 LLM e2e);中 5(semantic lint/rubrics 真实验证/插件 PATH/缓存/版本管理);低 3(watch e2e 注释/污染/README);闭环 3(sqlite-vec 登记/LSP 误报/语义 lint 成本控制)
+- **网络对照(2026)**:Karpathy gist 2026-02 演进(矛盾调和/write-back/frontmatter 元数据=新差距);CodeWikiBench 68.79% vs OpenDeepWiki 47.13%(可用 v14 rubrics 跑官方对照);SWD-Bench QA 评测新范式;VeriContext hash 方案(t03 已拍板不引入);llms.txt 生态验证 E 组决策(Claude Code 第二大读取者);sqlite-vec 0.1.9 stable 仍 pre-v1;tree-sitter-language-pack 305 语法可扩展
+- 优先路线:①P0 Linux 依赖声明+README 安装段 ②P1 llm.rs tracing+状态保存告警 ③P1 Unity e2e+真实 LLM 验证 ④P2 lint .. 对齐+watch e2e+README ⑤P2 版本管理+插件 PATH ⑥P3 frontmatter/SWD-Bench/语言扩展
+- 报告:.scratch/research/ANALYSIS-v15-2026-08-04.md(六节:就绪评估/未完成项/网络对照/优先清单/反思/三清单)
