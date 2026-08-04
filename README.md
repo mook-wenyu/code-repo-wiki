@@ -161,6 +161,10 @@ documents:                         # 页面白名单（提供时严格只输出�
 
 `update`（增量）与 `generate` 生成前会比对磁盘文档与上次生成时记录的 SHA256 指纹：人工修改过的文档自动加入保护集，后续更新不覆盖（保护集记录于 `.repo-wiki/.state/generation_state.json`）。使用 `generate --force` 清空保护集强制重写。
 
+## 版本自检（v19 t01）
+
+产物状态记录生成时的工具版本（`generation_state.json` 的 `tool_version` 字段，`llms.txt` 头部亦标注）。`doctor` 会对比状态版本与当前二进制版本：不一致时提示"建议运行一次完整 generate 升级产物"——用于捕获 PATH 中旧版二进制（缺 `doctor`/`--dry-run` 的旧版调用会报 unrecognized subcommand，用户无从判断产物新旧）生成产物后又被新版调用的静默漂移。
+
 ## 配置
 
 ### 配置加载链（全局/项目级）

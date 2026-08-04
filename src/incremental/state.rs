@@ -30,6 +30,15 @@ pub struct GenerationState {
     /// 人工修改过的文档路径集合（保护集：下次自动更新不覆盖，直到 --force 清空）
     #[serde(default)]
     pub protected_docs: Vec<String>,
+    /// 生成时工具版本（v19 t01 版本自检依据）
+    ///
+    /// from_insights 写入 env!("CARGO_PKG_VERSION")；doctor 读取并对比
+    /// 当前二进制版本，捕获「PATH 里的旧版二进制生成产物后又被新版
+    /// 调用」的静默漂移（旧版缺 doctor/dry-run，实测报 unrecognized
+    /// subcommand exit 2，用户无从知道产物是旧格式）。旧状态文件无此
+    /// 字段（serde default None）→ doctor 提示无法判断，不误报。
+    #[serde(default)]
+    pub tool_version: Option<String>,
 }
 
 impl GenerationState {
@@ -66,6 +75,7 @@ impl GenerationState {
         obj.insert("doc_fingerprints".into(), sorted_json_object(&self.doc_fingerprints)?);
         obj.insert("doc_modules".into(), sorted_json_object(&self.doc_modules)?);
         obj.insert("protected_docs".into(), serde_json::to_value(&self.protected_docs)?);
+        obj.insert("tool_version".into(), serde_json::to_value(&self.tool_version)?);
 
         let content = serde_json::to_string_pretty(&serde_json::Value::Object(obj))?;
         crate::fs::write_file_atomic(&state_path, &content)
@@ -125,6 +135,7 @@ impl GenerationState {
             doc_modules: HashMap::new(),
             protected_docs: Vec::new(),
             generated_at: chrono::Utc::now().to_rfc3339(),
+            tool_version: Some(env!("CARGO_PKG_VERSION").to_string()),
         })
     }
 
@@ -318,6 +329,7 @@ mod tests {
             doc_modules: HashMap::new(),
             protected_docs: Vec::new(),
             generated_at: "2025-01-01T00:00:00Z".into(),
+            tool_version: None,
         };
 
         state.save(&dir).unwrap();
@@ -354,6 +366,7 @@ mod tests {
             doc_modules: HashMap::new(),
             protected_docs: Vec::new(),
             generated_at: String::new(),
+            tool_version: None,
         };
 
         assert!(!state.is_file_changed(&ProjectRoot::new(dir.clone()), &file_path).unwrap());
@@ -374,6 +387,7 @@ mod tests {
             doc_modules: HashMap::new(),
             protected_docs: Vec::new(),
             generated_at: String::new(),
+            tool_version: None,
         };
 
         let path = PathBuf::from("nonexistent.rs");
@@ -481,6 +495,7 @@ mod tests {
             doc_modules: HashMap::from([("a.md".to_string(), "src".to_string())]),
             protected_docs: vec!["a.md".to_string()],
             generated_at: String::new(),
+            tool_version: None,
         };
         let mut fresh = GenerationState {
             last_commit_hash: Some("new".into()),
@@ -489,6 +504,7 @@ mod tests {
             doc_modules: HashMap::new(),
             protected_docs: vec![],
             generated_at: String::new(),
+            tool_version: None,
         };
         fresh.preserve_protection(&old);
         assert_eq!(fresh.protected_docs, vec!["a.md"]);
@@ -508,6 +524,7 @@ mod tests {
             doc_modules: HashMap::new(),
             protected_docs: vec!["old.md".to_string()],
             generated_at: String::new(),
+            tool_version: None,
         };
         let mut fresh = GenerationState {
             last_commit_hash: None,
@@ -516,6 +533,7 @@ mod tests {
             doc_modules: HashMap::new(),
             protected_docs: vec!["new.md".to_string()],
             generated_at: String::new(),
+            tool_version: None,
         };
         fresh.preserve_protection(&old);
         assert_eq!(fresh.protected_docs, vec!["new.md"], "新状态保护字段非空时应保留新值");
@@ -551,6 +569,7 @@ mod tests {
             doc_modules: doc_mods,
             protected_docs: vec!["wiki/zh/aa.md".into()],
             generated_at: "2026-01-01T00:00:00Z".into(),
+            tool_version: None,
         };
 
         state.save(&dir).unwrap();
@@ -606,6 +625,7 @@ mod tests {
             doc_modules: HashMap::new(),
             protected_docs: Vec::new(),
             generated_at: String::new(),
+            tool_version: None,
         };
 
         let modified = state.detect_manually_modified();
@@ -650,6 +670,7 @@ mod tests {
             doc_modules: HashMap::new(),
             protected_docs: Vec::new(),
             generated_at: String::new(),
+            tool_version: None,
         };
 
         std::fs::write(&edited, "被人改了").unwrap();

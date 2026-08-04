@@ -70,6 +70,7 @@ pub fn sync_from_git(output_dir: &Path) -> Result<()> {
             doc_modules: HashMap::new(),
             protected_docs: Vec::new(),
             generated_at: chrono::Utc::now().to_rfc3339(),
+            tool_version: None,
         }
     } else {
         GenerationState::load(&state_dir)

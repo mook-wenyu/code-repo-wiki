@@ -121,6 +121,7 @@ fn test_overview_protected() {
         doc_modules: HashMap::new(),
         protected_docs: Vec::new(),
         generated_at: String::new(),
+        tool_version: None,
     };
 
     // 人工修改 overview

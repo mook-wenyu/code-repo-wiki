@@ -20,7 +20,14 @@ pub fn render_llms_txt(
 ) -> String {
     let mut out = String::new();
     out.push_str(&format!("# {repo_name} Wiki\n\n"));
-    out.push_str("> repo-wiki 生成的代码仓库 Wiki 文档索引。\n\n");
+    out.push_str("> repo-wiki 生成的代码仓库 Wiki 文档索引。\n");
+    // v19 t01：版本自检载体——Agent 读取到该行可判断产物由哪个工具版本
+    // 生成（与 doctor 版本检查同源 env!("CARGO_PKG_VERSION")）；产物与
+    // 工具版本相关时提示重跑 generate
+    out.push_str(&format!(
+        "> 由 repo-wiki v{} 生成；发现索引与工具版本不匹配时，请重新运行 generate。\n\n",
+        env!("CARGO_PKG_VERSION")
+    ));
 
     // 模块页：按 (语言目录, title) 排序（确定性；wiki/{lang}/{title}.md 与
     // write_document 落盘路径一致）
@@ -157,6 +164,10 @@ mod tests {
         assert_eq!(first, second, "同输入两次渲染必须字节一致");
 
         assert!(first.contains("# demo Wiki"), "应含仓库名标题");
+        assert!(
+            first.contains(&format!("repo-wiki v{}", env!("CARGO_PKG_VERSION"))),
+            "应含工具版本行（版本自检载体）"
+        );
         assert!(first.contains("## Modules"), "应含模块页节");
         // 模块页：两个语言目录 × 两个模块页
         assert!(first.contains("wiki/zh/src_alpha.md"), "zh 模块页链接");

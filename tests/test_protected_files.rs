@@ -13,6 +13,7 @@ fn test_doc_fingerprints_default_empty() {
         doc_modules: HashMap::new(),
         protected_docs: Vec::new(),
         generated_at: String::new(),
+        tool_version: None,
     };
     assert!(state.doc_fingerprints.is_empty());
     assert!(state.protected_docs.is_empty());
@@ -77,6 +78,7 @@ fn test_detect_manual_edit() {
         doc_modules: HashMap::new(),
         protected_docs: Vec::new(),
         generated_at: String::new(),
+        tool_version: None,
     };
 
     // 未修改 —— 不应标记为变更
@@ -123,6 +125,7 @@ fn test_detect_manually_modified() {
         doc_modules: HashMap::new(),
         protected_docs: Vec::new(),
         generated_at: String::new(),
+        tool_version: None,
     };
 
     // 未修改 → 空
@@ -376,6 +379,7 @@ fn test_manual_edit_recorded_in_card() {
         },
         protected_docs: Vec::new(),
         generated_at: String::new(),
+        tool_version: None,
     };
 
     // 增量管道：检测到的人工修改组装为模块级记录（精确匹配模块名）
@@ -432,6 +436,7 @@ fn test_manual_edit_synced_to_card_without_code_change() {
         },
         protected_docs: Vec::new(),
         generated_at: String::new(),
+        tool_version: None,
     };
 
     // 配置：卡片写盘路径（主语言 zh）与产物目录一致
@@ -488,6 +493,7 @@ fn test_manual_edit_sync_skips_missing_card() {
         },
         protected_docs: Vec::new(),
         generated_at: String::new(),
+        tool_version: None,
     };
 
     let mut config = repo_wiki::config::schema::WikiConfig::default();

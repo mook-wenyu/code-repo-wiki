@@ -1193,6 +1193,7 @@ mod tests {
             doc_modules: std::collections::HashMap::new(),
             protected_docs: vec![],
             generated_at: String::new(),
+            tool_version: None,
         };
         for lang in ["zh", "en"] {
             let stale = dir.join("wiki").join(lang).join("src.md");
@@ -1247,6 +1248,7 @@ mod tests {
             doc_modules: std::collections::HashMap::new(),
             protected_docs: vec![],
             generated_at: String::new(),
+            tool_version: None,
         };
         // 受保护页面被人工编辑过（指纹不匹配）——doc_fingerprints 仍记录其路径
         let manual = dir.join("wiki").join("zh").join("manual.md");
@@ -1286,6 +1288,7 @@ mod tests {
             doc_modules: std::collections::HashMap::new(),
             protected_docs: vec![],
             generated_at: String::new(),
+            tool_version: None,
         };
         // 旧状态：src::fs 模块的页面（模拟增量前生成的产物）
         let fs_page = dir.join("wiki").join("zh").join("src_fs.md");
@@ -1353,6 +1356,7 @@ mod tests {
             doc_modules: std::collections::HashMap::new(),
             protected_docs: vec![],
             generated_at: String::new(),
+            tool_version: None,
         };
         state.doc_fingerprints.insert(
             doc_path.to_string_lossy().to_string(),

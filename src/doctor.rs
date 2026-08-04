@@ -11,6 +11,7 @@ use std::path::Path;
 
 use crate::config::schema::LlmProviderType;
 use crate::config::{load_config, resolve_config_path};
+use crate::incremental::state::GenerationState;
 use crate::project::ProjectRoot;
 
 /// 单项检查结果
@@ -165,6 +166,51 @@ pub fn run(config_path: &Path, root: &ProjectRoot) -> Result<Vec<CheckResult>> {
         });
     }
 
+    // 6. 版本自检（v19 t01）：产物由哪个工具版本生成，与当前二进制是否一致。
+    // 捕获 PATH 旧版二进制静默漂移（旧版缺 doctor/dry-run，调用报
+    // unrecognized subcommand exit 2，用户无从知道产物是旧格式）。
+    // 无状态文件 → 尚未生成，提示首次生成（恒通过，不算失败）。
+    // 状态缺 tool_version 字段（旧版本生成的状态文件）→ 无法判断，提示
+    // 建议重新全量生成（恒通过，不阻断——漂移是告警级问题）。
+    let state_path = output_dir.join(".state").join("generation_state.json");
+    let version_check = if !state_path.exists() {
+        CheckResult {
+            name: "版本",
+            ok: true,
+            detail: Some("尚无生成状态（首次生成将记录工具版本）".to_string()),
+        }
+    } else {
+        let current = env!("CARGO_PKG_VERSION");
+        match GenerationState::load(&output_dir.join(".state")) {
+            Ok(state) => match state.tool_version {
+                Some(recorded) if recorded == current => CheckResult {
+                    name: "版本",
+                    ok: true,
+                    detail: Some(format!("产物由当前版本 {} 生成", current)),
+                },
+                Some(recorded) => CheckResult {
+                    name: "版本",
+                    ok: true,
+                    detail: Some(format!(
+                        "产物由 v{} 生成，当前二进制 v{}——建议运行一次完整 generate 升级产物",
+                        recorded, current
+                    )),
+                },
+                None => CheckResult {
+                    name: "版本",
+                    ok: true,
+                    detail: Some("产物由旧版本生成（状态无版本记录），建议运行一次完整 generate".to_string()),
+                },
+            },
+            Err(e) => CheckResult {
+                name: "版本",
+                ok: true,
+                detail: Some(format!("状态文件读取失败（不阻断）: {}", e)),
+            },
+        }
+    };
+    checks.push(version_check);
+
     Ok(checks)
 }
 
@@ -207,7 +253,7 @@ max_concurrent = 1
         let (dir, config) = temp_config("pass", "");
         let root = ProjectRoot::new(dir.clone());
         let checks = run(&config, &root).unwrap();
-        assert_eq!(checks.len(), 5, "应恰好五项检查: {:?}", checks);
+        assert_eq!(checks.len(), 6, "应恰好六项检查: {:?}", checks);
         for c in &checks {
             assert!(c.ok, "{} 应通过: {:?}", c.name, c.detail);
         }
@@ -263,6 +309,55 @@ max_concurrent = 1
         let checks = run(&config, &root).unwrap();
         let net = checks.iter().find(|c| c.name == "网络").expect("应有网络检查");
         assert!(!net.ok, "未监听端口应报不可达: {:?}", net.detail);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v19 t01：状态无版本记录（旧版产物）→ 版本检查恒通过但提示漂移；
+    /// 版本一致 → 通过且说明由当前版本生成
+    #[test]
+    fn test_doctor_version_reports_drift() {
+        let (dir, config) = temp_config("ver", "");
+        let root = ProjectRoot::new(dir.clone());
+        let checks = run(&config, &root).unwrap();
+        let ver = checks.iter().find(|c| c.name == "版本").expect("应有版本检查");
+        assert!(ver.ok, "无状态文件时应通过: {:?}", ver.detail);
+        assert!(
+            ver.detail.clone().unwrap().contains("尚无生成状态"),
+            "应提示首次生成: {:?}",
+            ver.detail
+        );
+
+        // 写入旧版本状态（tool_version=0.0.0）→ 提示漂移
+        std::fs::create_dir_all(dir.join(".repo-wiki/.state")).unwrap();
+        std::fs::write(
+            dir.join(".repo-wiki/.state/generation_state.json"),
+            r#"{"last_commit_hash":null,"file_fingerprints":{},"generated_at":"2025-01-01T00:00:00Z","tool_version":"0.0.0"}"#,
+        )
+        .unwrap();
+        let checks = run(&config, &root).unwrap();
+        let ver = checks.iter().find(|c| c.name == "版本").expect("应有版本检查");
+        assert!(ver.ok);
+        let detail = ver.detail.clone().unwrap();
+        assert!(detail.contains("0.0.0"), "应报告记录版本: {detail}");
+        assert!(detail.contains("升级产物"), "应建议升级产物: {detail}");
+
+        // 写入当前版本状态 → 一致通过
+        let current = env!("CARGO_PKG_VERSION");
+        std::fs::write(
+            dir.join(".repo-wiki/.state/generation_state.json"),
+            format!(
+                r#"{{"last_commit_hash":null,"file_fingerprints":{{}},"generated_at":"2025-01-01T00:00:00Z","tool_version":"{current}"}}"#
+            ),
+        )
+        .unwrap();
+        let checks = run(&config, &root).unwrap();
+        let ver = checks.iter().find(|c| c.name == "版本").expect("应有版本检查");
+        assert!(ver.ok);
+        assert!(
+            ver.detail.clone().unwrap().contains("由当前版本"),
+            "版本一致应通过: {:?}",
+            ver.detail
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
