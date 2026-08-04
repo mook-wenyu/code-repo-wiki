@@ -106,6 +106,9 @@ enum Commands {
         /// 输出路径（相对 root 解析；缺省走默认配置链——项目级存在则
         /// 用项目级，否则创建全局默认配置；v13 E 组）
         path: Option<PathBuf>,
+        /// 强制覆盖已存在的配置文件（缺省路径已存在时跳过不覆盖）
+        #[arg(long)]
+        force: bool,
         /// 项目根目录（路径定位基准，默认当前目录）
         #[arg(long)]
         root: Option<PathBuf>,
@@ -575,16 +578,28 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
             )?;
             tracing::info!("知识记录已写入 (--config {})", config.display());
         }
-        Commands::Init { path, root } => {
+        Commands::Init { path, force, root } => {
             // --root 提供时 path 相对 root 解析（与产物目录基准一致）；
             // path 缺省走默认配置链：项目级 .repo-wiki/config.toml 存在则
             // 复用（不重复创建），否则创建全局默认配置（E 组引导语义）
             let root = resolve_root(root.as_deref())?;
+            let via_default_chain = path.is_none();
             let path = match path {
                 Some(p) if p.is_absolute() => p,
                 Some(p) => root.path().join(p),
                 None => repo_wiki::config::resolve_default_config_path(&root)?,
             };
+            // v17 t03：仅**缺省链**路径已存在时跳过不覆盖（防数据破坏——
+            // v17 审计发现原实现无条件 write 覆盖用户配置，与注释"复用"
+            // 语义矛盾）；显式 path 是用户明确意图，保持覆盖语义；
+            // --force 对缺省链的跳过生效（强制重写）。
+            if via_default_chain && path.exists() && !force {
+                tracing::info!(
+                    "配置文件已存在，跳过创建（使用 --force 覆盖）: {}",
+                    path.display()
+                );
+                return Ok(());
+            }
             repo_wiki::config::create_default_config(&path)?;
             tracing::info!("默认配置文件已创建: {}", path.display());
         }

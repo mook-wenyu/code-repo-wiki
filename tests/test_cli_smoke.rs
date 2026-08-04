@@ -219,6 +219,45 @@ fn test_init_writes_schema_config() {
     let _ = std::fs::remove_dir_all(&work_dir);
 }
 
+/// v17 t03：init 幂等保护——已存在的配置文件不被缺省链路径覆盖（数据破坏
+/// 修复：v17 审计发现原实现无条件 write 覆盖用户配置）；显式 path 保持
+/// 覆盖语义；--force 两分支都强制重写
+#[test]
+fn test_init_preserves_existing_config() {
+    let work_dir = unique_dir("init_preserve");
+    let _ = std::fs::remove_dir_all(&work_dir);
+    std::fs::create_dir_all(work_dir.join(".repo-wiki")).unwrap();
+    // 预置用户自定义配置（内容哨兵：与默认模板区分）
+    let custom = "[llm]\nprovider = \"anthropic\"\nmodel = \"claude-test\"\n";
+    std::fs::write(work_dir.join(".repo-wiki").join("config.toml"), custom).unwrap();
+
+    // 1. init 无参（缺省链命中项目级）：跳过不覆盖，用户内容保留
+    let out = run_bin(&work_dir, &["init"]);
+    assert!(
+        out.status.success(),
+        "init 跳过已存在配置应退出码 0，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let content = std::fs::read_to_string(work_dir.join(".repo-wiki").join("config.toml")).unwrap();
+    assert_eq!(content, custom, "已存在的配置不得被覆盖");
+
+    // 2. --force：强制重写为默认模板
+    let out = run_bin(&work_dir, &["init", "--force"]);
+    assert!(out.status.success(), "--force 应成功: {}", String::from_utf8_lossy(&out.stderr));
+    let content = std::fs::read_to_string(work_dir.join(".repo-wiki").join("config.toml")).unwrap();
+    assert_ne!(content, custom, "--force 应重写为默认模板");
+    assert!(content.contains("[llm]"), "默认模板应含 [llm] 段");
+
+    // 3. 显式 path：保持覆盖语义（用户明确意图，不保护）
+    std::fs::write(work_dir.join("custom.toml"), custom).unwrap();
+    let out = run_bin(&work_dir, &["init", "custom.toml"]);
+    assert!(out.status.success(), "显式 path init 应成功: {}", String::from_utf8_lossy(&out.stderr));
+    let content = std::fs::read_to_string(work_dir.join("custom.toml")).unwrap();
+    assert_ne!(content, custom, "显式 path 应覆盖为用户意图（重置语义）");
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
+
 /// sync：generate 后手工修改 wiki 页，sync 以工作区内容合入指纹库——
 /// 页面内容保留（不触发 LLM 重生成）、状态文件存在、
 /// doc_fingerprints 中该页指纹更新为修改后内容（工作区为准）
