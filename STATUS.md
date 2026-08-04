@@ -254,3 +254,14 @@
 - 一会话一票原则：resolve t03 引用校验失败语义（grilling，question 四轮拍板）——维持 bail/维持重试纠正（不引入 auto-cite 回填）/生成时+lint 双升级/与实体校验独立；关键边界=无实体文件（README 等）引用放行
 - 网络补查证据：OpenAI 官方引用指南（系统侧解析 locator、模型不编造 source ID）；TACL 2026 Citation Failure/GhostCite（LLM 自校验引用仅 38% 准确率→机械校验必须零 LLM）；2026 错误处理范式（验证门+3 次重试后升级）
 - 地图更新：Decisions so far + t03 行；IMPLEMENTATION-PLAN B 组已细化（可实施状态）；frontier 现为 t04（←t02 已解锁）
+
+## 三十二、v14 全量实施完成(2026-08-04,本会话,wayfinder-v14 落地)
+- **A 组(734117c)**:增量语义索引入口两处 if let Ok 补 else warn;AGENTS.md 引导写失败 warn;git 基线失败区分非 git(info)/git 失败(warn)——git2 0.20.4 ErrorCode::NotFound 查证自源码;README 存储栈/排版/lint 注释失实修复
+- **B 组(90fa8a0)**:引用机械校验(区间重叠,t03 拍板:维持 bail/不引入 auto-cite/双升级/独立双闸)——citation_overlaps_entity 闭区间判定+两级校验 validate_citations_against_entities;无实体文件(README)放行;wiki 重试循环接线(全仓库 insights 实体表,Option 兼容测试);lint 新 kind bad-citation-overlap(共享 collect_source_entities);测试+6(含 Windows 反斜杠表键)
+- **C 组(2990344)**:评测闭环——Rubric 维度 7(CodeWikiBench:docs_tree→3 生成+1 合并→叶子 0/1→加权聚合 S±σ+coverage,容错四形态解析);TQS MVVP 缺口(机会校正 Cohen kappa/position_bias/low_confidence_modules 阈值 2.0);渲染第七节;测试+3
+- **D 组(3899254)**:语义 lint——新 semantic_lint.rs(LLM 跨页矛盾,变更驱动单次调用合并多页 40K 截断,容错解析 kind=semantic-conflict);update 尾部接线失败只告警;测试+2
+- **E 组(c9f627c)**:llms.txt 导出(t07:仅 llms.txt)——确定性生成(模块页/全局文档/卡片三类链接),(lang,title) 排序;render_all 4.1 步接线不参与保护;测试+2
+- **F 组(3c80ba4)**:watch Ctrl-C 优雅退出(t06)——run_watch_loop 加 stop_flag+recv_timeout(500ms) 轮询,tokio signal feature;run_watch 签名不变;测试+1
+- **G 组(环境)**:t08 PATH 修复完成(cargo install --path . → C:\Users\WenYu\.cargo\bin\repo-wiki.exe 验证可运行);t09 真实 LLM 最小验证完成(DeepSeek V4 Flash 真实生成 src::fs 卡片 6.7s 落盘)——Unity 大仓库全链路未做(时间/API 成本,如实未验证)
+- **验证基线:477 passed**(359 lib + 118 集成,较 v13 463 +14)、clippy -D warnings 0、machete 干净、工作树干净、9 张 tickets 全部 resolved
+- 未完成项:Unity 大仓库真实 LLM e2e 全链路(可另起会话);test_cli.rs:172 LSP 陈旧误报(编译通过)
