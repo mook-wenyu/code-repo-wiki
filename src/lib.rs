@@ -11,6 +11,7 @@ pub mod fs;
 pub mod mcp;
 pub mod project;
 pub mod bench;
+pub mod doctor;
 
 use std::collections::HashMap;
 use std::path::Path;

@@ -728,3 +728,34 @@ fn test_default_config_chain_prefers_project_config() {
 
     let _ = std::fs::remove_dir_all(&work_dir);
 }
+
+/// v17 t08：doctor 端到端——mock 配置全过（网络跳过）退出码 0；
+/// 缺失配置退出码 1
+#[test]
+fn test_doctor_reports_and_exits() {
+    let work_dir = prepare_repo("doctor");
+
+    // mock 配置：五项全过（网络项标注跳过，不算失败）
+    let out = run_bin(&work_dir, &["doctor", "-c", "config.toml"]);
+    assert!(
+        out.status.success(),
+        "mock 配置 doctor 应全过，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for name in ["配置", "产物目录可写", "输出目录", "LLM Key", "网络"] {
+        assert!(stdout.contains(name), "应输出检查项 {name}: {stdout}");
+    }
+    assert!(stdout.contains("mock provider：跳过网络检查"), "应标注网络跳过: {stdout}");
+
+    // 配置缺失 → 失败退出码 1
+    let out = run_bin(&work_dir, &["doctor", "-c", "nope.toml"]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "配置缺失应退出码 1，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}

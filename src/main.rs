@@ -78,6 +78,16 @@ enum Commands {
         #[arg(long)]
         root: Option<PathBuf>,
     },
+    /// 环境诊断（v17 t08）：配置/产物目录可写/输出目录状态/LLM Key/网络
+    /// 五查，逐项输出 ✓/✗；全过退出码 0，任一失败退出码 1
+    Doctor {
+        /// 配置文件路径（缺省走默认配置链）
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+        /// 项目根目录（路径定位基准，默认当前目录）
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
     /// 追加一条知识沉淀记录到 _log.md（Karpathy log 模式，人工可读可 grep）
     Note {
         /// 记录文本
@@ -517,6 +527,23 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
                     println!("lint [{}] {}: {}", issue.kind, issue.path, issue.message);
                 }
                 std::process::exit(1);
+            }
+        }
+        Commands::Doctor { config, root } => {
+            // 五查诊断（配置/产物可写/目录状态/Key/网络），逐项输出；
+            // 任一失败退出码 1（与 lint 三态同族，供脚本门禁）
+            let root = resolve_root(root.as_deref())?;
+            let config = resolve_config_path(config.as_deref(), &root)?;
+            let checks = repo_wiki::doctor::run(&config, &root)?;
+            for c in &checks {
+                println!("[{}] {}", if c.ok { "✓" } else { "✗" }, c.name);
+                if let Some(detail) = &c.detail {
+                    println!("     {detail}");
+                }
+            }
+            let failed = checks.iter().filter(|c| !c.ok).count();
+            if failed > 0 {
+                anyhow::bail!("doctor: {} 项未通过", failed);
             }
         }
         Commands::AstSearch { symbol, language, config, json, root } => {
