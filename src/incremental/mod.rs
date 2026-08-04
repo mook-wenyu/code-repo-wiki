@@ -217,6 +217,12 @@ fn run_git_diff_incremental(
         if let Err(e) = new_state.save(state_dir) {
             tracing::warn!("保存生成状态失败: {}", e);
         }
+    } else {
+        // v16 B 组：from_insights 失败（指纹计算 IO 错误等）不再静默——
+        // 中途存盘跳过意味着本次变更的代码侧状态不推进，下次 update 会
+        // 以旧 commit 为基准重看本次 diff（行为与失败保存一致，但失败
+        // 必须可观测，否则用户看到"增量完成"却不知状态没更新）
+        tracing::warn!("构造增量状态失败，中途存盘跳过（本次变更将在下次 update 重看）");
     }
 
     tracing::info!("增量更新分析完成: {} 个模块受影响", affected_modules.len());
