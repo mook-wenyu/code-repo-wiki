@@ -31,6 +31,10 @@ use crate::project::ProjectRoot;
 /// 增量回放的最大 commit 数（对齐 RepoDoc 每仓库 20 commit 协议）
 const MAX_RECALL_COMMITS: usize = 20;
 
+/// v14 C 组（MVVP 缺口）：模块级复测标准差超过该阈值（0-10 分尺度）即
+/// 判为低置信——分数波动过大，该模块的 TQS 结论不可信需人工复核
+const LOW_CONFIDENCE_STD_THRESHOLD: f64 = 2.0;
+
 /// 评测报告（Markdown 与 JSON 的公共数据源，JSON 由 serde 直出）
 #[derive(Debug, Clone, Serialize)]
 pub struct BenchReport {
@@ -45,6 +49,8 @@ pub struct BenchReport {
     pub time: TimeReport,
     /// TQS 裁判打分（--judge 启用且 LLM 可用时 Some；否则 None）
     pub tqs: Option<TqsReport>,
+    /// 维度 7：Rubric 层级完整性打分（--judge 启用且 LLM 可用时 Some）
+    pub rubric: Option<RubricReport>,
 }
 
 /// 维度 1：实体覆盖率
@@ -106,7 +112,59 @@ pub struct TimeReport {
     pub total_ms: u64,
 }
 
-/// 维度 6：TQS 文本质量打分（LLM 裁判层，U11，需 API key）
+/// 维度 7：Rubric 层级完整性打分（v14 C 组，CodeWikiBench 协议，--judge 启用时）
+///
+/// 协议（arXiv:2510.24428）：从被测仓库 README + docs/ 提取 docs_tree →
+/// LLM 独立生成 3 份层级 rubrics（requirement + weight 1-3 + 递归 sub_tasks）
+/// → 第 4 次调用语义合并（名称相似度 >70% 的节点合并，权重取均值）→
+/// 裁判对每个叶子以产物为证据做 0/1 满足判定 → 加权自底向上聚合：
+/// S(n) = Σw(c)·S(c)/Σw(c)；叶子 σ 按二项近似 sqrt(p(1-p))，非叶子
+/// σ² = Σ(w²σ²)/Σw² 传播；Coverage = 满足叶子数 / 总叶子数。
+/// 与 TQS 并存：TQS 是相对对比（新旧文档），rubric 是绝对质量（对
+/// 仓库意图的覆盖度）。mock/无 key 时 None（"失败只告警"策略）。
+#[derive(Debug, Clone, Serialize)]
+pub struct RubricReport {
+    /// 合并后的 rubric 节点总数（含非叶子）
+    pub rubric_nodes: usize,
+    /// 叶子（可判定项）数
+    pub leaf_count: usize,
+    /// 判定为满足（1）的叶子数
+    pub satisfied_leaves: usize,
+    /// 覆盖率 = satisfied / leaf（leaf 为 0 时为 1.0 空集约定）
+    pub coverage: f64,
+    /// 加权总分 S（0-1；×10 可与 TQS 0-10 口径对比）
+    pub score: f64,
+    /// 加权标准差 σ_R（二项近似 + 权重传播）
+    pub score_std: f64,
+    /// 生成轮次（独立生成 3 次 + 合并 1 次 = 4 次 LLM 调用）
+    pub generation_calls: usize,
+    /// 裁判模型（config.llm.model）
+    pub judge_model: String,
+}
+
+/// Rubric 树节点（LLM 生成/合并/聚合的中间形态，仅内部使用）
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+struct RubricNode {
+    /// 需求描述（叶子判定与合并相似度计算的文本基础）
+    requirement: String,
+    /// 权重（1-3，聚合加权；LLM 输出越界时 clamp）
+    weight: f64,
+    /// 递归子任务（空 = 叶子）
+    #[serde(default)]
+    sub_tasks: Vec<RubricNode>,
+}
+
+/// 聚合后的加权分数与标准差（内部形态）
+struct RubricScore {
+    /// 加权总分（0-1）
+    score: f64,
+    /// 加权 σ（二项近似 + 权重传播）
+    std: f64,
+    /// 该子树下叶子总数
+    leaves: usize,
+    /// 该子树下满足叶子数
+    satisfied: usize,
+}
 ///
 /// RepoDocBench 协议：对同一模块的旧文档（导出快照）与当前产物，
 /// 裁判按五维 0-10 打分（Clarity/Readability/Conciseness/Richness/
@@ -132,7 +190,21 @@ pub struct TqsReport {
     /// 文档差异导致敏感（2606.19544 指出高 test-retest 与低位置偏差
     /// 可并存，一致性是可靠性下限）。
     pub kappa_like: f64,
-    /// t05/MVVP：五维分数的平均标准差（跨复测轮次；量化波动幅度）
+    /// v14 C 组（MVVP 缺口）：机会校正 Cohen's κ——把"同一维度分数差 ≤1"
+    /// 视为二分类判定（一致/不一致），一致率经机会一致性 p²+(1-p)² 校正：
+    /// κ = (P_o − P_e)/(1 − P_e)，负值截断为 0。kappa_like 是未校正的
+    /// 原始一致率；κ 衡量的是"超出偶然一致"的稳定性。
+    pub kappa: f64,
+    /// v14 C 组（MVVP 缺口）：位置偏差 |P(A 胜) − 0.5|——对每模块每维度，
+    /// AB 顺序（A 先）轮与 BA 顺序（B 先）轮的分数均值比较出 A 胜/负判定，
+    /// P(A 胜) = A 胜判定数 / 判定总数。接近 0 = 文档顺序不影响裁判；
+    /// 接近 0.5 = 裁判对位置敏感（分数结论可能被顺序污染）。
+    pub position_bias: f64,
+    /// v14 C 组（MVVP 缺口）：低置信模块清单——复测失败（裁判调用/解析
+    /// 失败被跳过，不再静默）或复测标准差超过阈值的模块（分数波动大，
+    /// 结论不可信；2606.19544 要求显式报告而非跳过）
+    pub low_confidence_modules: Vec<String>,
+    /// 五维分数的平均标准差（跨复测轮次；量化波动幅度）
     pub avg_std: f64,
     /// 裁判模型（config.llm.model；style 消偏在多裁判轮转下才完整，
     /// 单裁判时报告模型便于人工判断偏差来源——2604.23178）
@@ -478,6 +550,12 @@ pub fn run_bench(
     } else {
         None
     };
+    // v14 C 组：维度 7 Rubric（docs_tree 缺失/LLM 不可用 → None 不中断）
+    let rubric = if judge {
+        measure_rubrics(config, root)?
+    } else {
+        None
+    };
 
     Ok(BenchReport {
         repo_name: repo_name.to_string(),
@@ -492,6 +570,7 @@ pub fn run_bench(
             total_ms: start.elapsed().as_millis() as u64,
         },
         tqs,
+        rubric,
     })
 }
 
@@ -561,16 +640,23 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
     let mut consistent_pairs = 0usize;
     let mut total_pairs = 0usize;
     let mut std_sum = 0.0f64;
+    // v14 C 组（MVVP 缺口）：位置偏差与低置信模块
+    // a_first 标记随分数记录（AB/BA 分组），position_bias 据此比较胜负
+    let mut position_wins_a = 0usize;
+    let mut position_pairs = 0usize;
+    let mut low_confidence: Vec<String> = Vec::new();
+    // 模块级复测标准差（avg_std 的模块维度来源，低置信判定用）
+    let mut module_stds: Vec<(String, f64)> = Vec::new();
     for (title, old, new) in &pairs {
         // 每轮 = AB + BA 两次调用（顺序消偏）；共 repeats 轮
-        let mut round_scores: Vec<[f64; 5]> = Vec::new();
+        let mut round_scores: Vec<(bool, [f64; 5])> = Vec::new();
         let mut failed = false;
         for _ in 0..TQS_REPEATS {
             for a_first in [true, false] {
                 let messages = tqs_prompt(&config.wiki.language, old, new, a_first);
                 match rt.block_on(provider.complete(&messages)) {
                     Ok(content) => match parse_tqs_score(&content) {
-                        Ok(s) => round_scores.push(s),
+                        Ok(s) => round_scores.push((a_first, s)),
                         Err(e) => {
                             tracing::warn!("TQS 裁判输出解析失败（模块 {title}）: {e}");
                             failed = true;
@@ -590,22 +676,27 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
         }
         let rounds = round_scores.len();
         if failed || rounds < TQS_REPEATS * 2 {
+            // 复测失败：显式记录低置信模块（此前静默跳过，2606.19544
+            // 要求失败可见——裁判不可用本身就是评测结论的一部分）
+            low_confidence.push(title.clone());
             continue;
         }
-        // 每维均值（全部轮次平均，同时消位置偏差与复测波动）
+        // 每维均值（全部轮次平均，同时消位置偏差与复测波动）；
+        // scores 为去掉 a_first 标记的分数数组（一致性/标准差/均值共用）
+        let scores: Vec<[f64; 5]> = round_scores.iter().map(|(_, s)| *s).collect();
         for i in 0..5 {
-            let dim_sum: f64 = round_scores.iter().map(|s| s[i]).sum();
-            sums[i] += dim_sum / rounds as f64;
+            let dim_sum: f64 = scores.iter().map(|s| s[i]).sum();
+            sums[i] += dim_sum / scores.len() as f64;
             // 该维标准差（复测波动幅度）
-            let mean = dim_sum / rounds as f64;
-            let var: f64 = round_scores.iter().map(|s| (s[i] - mean).powi(2)).sum::<f64>() / rounds as f64;
+            let mean = dim_sum / scores.len() as f64;
+            let var: f64 = scores.iter().map(|s| (s[i] - mean).powi(2)).sum::<f64>() / scores.len() as f64;
             std_sum += var.sqrt();
         }
         // κ 一致性：该模块内任意两轮、同一维度分数绝对差 ≤1 的比例
-        for a in 0..rounds {
-            for b in (a + 1)..rounds {
-                for &sa in &round_scores[a] {
-                    for &sb in &round_scores[b] {
+        for a in 0..scores.len() {
+            for b in (a + 1)..scores.len() {
+                for &sa in &scores[a] {
+                    for &sb in &scores[b] {
                         total_pairs += 1;
                         if (sa - sb).abs() <= 1.0 {
                             consistent_pairs += 1;
@@ -614,6 +705,30 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
                 }
             }
         }
+        // v14 C 组（MVVP 缺口）：位置偏差——每维度比较 AB 组与 BA 组
+        // 均值，A 胜判定累计（P(A 胜) 偏离 0.5 即位置敏感）
+        for i in 0..5 {
+            let ab: Vec<f64> = round_scores.iter().filter(|(af, _)| *af).map(|(_, s)| s[i]).collect();
+            let ba: Vec<f64> = round_scores.iter().filter(|(af, _)| !*af).map(|(_, s)| s[i]).collect();
+            if !ab.is_empty() && !ba.is_empty() {
+                position_pairs += 1;
+                let ab_mean = ab.iter().sum::<f64>() / ab.len() as f64;
+                let ba_mean = ba.iter().sum::<f64>() / ba.len() as f64;
+                if ab_mean > ba_mean {
+                    position_wins_a += 1;
+                }
+            }
+        }
+        // v14 C 组：模块级复测标准差（五维平均，低置信判定依据——
+        // 分数波动超过阈值说明该模块结论不可信，需人工复核）
+        let mut mod_var = 0.0f64;
+        for i in 0..5 {
+            let dim_sum: f64 = scores.iter().map(|s| s[i]).sum();
+            let mean = dim_sum / scores.len() as f64;
+            let var: f64 = scores.iter().map(|s| (s[i] - mean).powi(2)).sum::<f64>() / scores.len() as f64;
+            mod_var += var;
+        }
+        module_stds.push((title.clone(), (mod_var / 5.0).sqrt()));
         judged += 1;
     }
     if judged == 0 {
@@ -625,6 +740,34 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
     } else {
         consistent_pairs as f64 / total_pairs as f64
     };
+    // v14 C 组（MVVP 缺口）：机会校正 Cohen's κ——一致率经机会一致性
+    // p²+(1−p)² 校正，衡量"超出偶然一致"的稳定性（kappa_like 是原始率）
+    let kappa = if total_pairs == 0 {
+        0.0
+    } else {
+        let p_obs = consistent_pairs as f64 / total_pairs as f64;
+        let p_exp = p_obs.powi(2) + (1.0 - p_obs).powi(2);
+        if p_exp >= 1.0 {
+            0.0
+        } else {
+            ((p_obs - p_exp) / (1.0 - p_exp)).max(0.0)
+        }
+    };
+    // v14 C 组（MVVP 缺口）：位置偏差 |P(A 胜) − 0.5|
+    let position_bias = if position_pairs == 0 {
+        0.0
+    } else {
+        let p_a = position_wins_a as f64 / position_pairs as f64;
+        (p_a - 0.5).abs()
+    };
+    // v14 C 组：低置信模块 = 复测失败（已收集）+ 模块 σ 超阈值
+    for (module, std) in &module_stds {
+        if *std > LOW_CONFIDENCE_STD_THRESHOLD {
+            low_confidence.push(module.clone());
+        }
+    }
+    low_confidence.sort();
+    low_confidence.dedup();
     let avg_std = std_sum / (judged * 5) as f64;
     Ok(Some(TqsReport {
         judged_modules: judged,
@@ -636,9 +779,334 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
         avg_total: (avg(0) + avg(1) + avg(2) + avg(3) + avg(4)) / 5.0,
         repeats: TQS_REPEATS,
         kappa_like,
+        kappa,
+        position_bias,
+        low_confidence_modules: low_confidence,
         avg_std,
         judge_model: config.llm.model.clone(),
     }))
+}
+
+/// Rubric 独立生成轮次（CodeWikiBench：多模型独立生成后语义合并；
+/// 单裁判下用多次独立生成近似多模型合成）
+const RUBRIC_GENERATIONS: usize = 3;
+
+/// Rubric 打分执行（维度 7）：docs_tree → 3 次独立生成 → 1 次合并 →
+/// 叶子 0/1 判定 → 加权自底向上聚合
+///
+/// root 为被测仓库根（README/docs 收集基准）；产物证据从 config.output.dir
+/// 读取（overview + api + 模块页标题，截断控制 token 成本）。
+/// LLM 不可用或 docs_tree 缺失时返回 None（"失败只告警"，不中断评测）。
+fn measure_rubrics(config: &WikiConfig, root: &ProjectRoot) -> Result<Option<RubricReport>> {
+    // 1. docs_tree 收集：README + docs/*.md（仓库意图的权威来源；
+    //    缺失时无法推导需求，跳过本维度——不是文档质量问题）
+    let mut docs_text = String::new();
+    let readme = root.path().join("README.md");
+    if let Ok(c) = std::fs::read_to_string(&readme) {
+        docs_text.push_str(&format!("# README.md\n{c}\n"));
+    }
+    let docs_dir = root.path().join("docs");
+    if docs_dir.is_dir() {
+        let mut files: Vec<PathBuf> = walk_docs(&docs_dir);
+        files.sort();
+        for f in files {
+            if let Ok(c) = std::fs::read_to_string(&f) {
+                docs_text.push_str(&format!("# {}\n{c}\n", f.display()));
+            }
+        }
+    }
+    if docs_text.trim().is_empty() {
+        tracing::warn!("Rubric 跳过：被测仓库无 README/docs 文档（无法推导仓库意图）");
+        return Ok(None);
+    }
+    // 成本控制：docs 过长时保留前 40K 字符（意图声明通常在前部）
+    docs_text.truncate(40_000);
+
+    let provider = match crate::generate::create_provider(config) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("Rubric 跳过（LLM 不可用）: {e}");
+            return Ok(None);
+        }
+    };
+    let rt = crate::get_global_runtime();
+
+    // 2. 独立生成 3 份 rubric 树（单轮失败不影响其余轮次）
+    let mut trees: Vec<Vec<RubricNode>> = Vec::new();
+    for i in 0..RUBRIC_GENERATIONS {
+        let messages = rubric_generation_prompt(&docs_text);
+        match rt.block_on(provider.complete(&messages)) {
+            Ok(content) => match parse_rubric_tree(&content) {
+                Ok(tree) => trees.push(tree),
+                Err(e) => {
+                    tracing::warn!("Rubric 生成解析失败（第 {} 轮）: {e}", i + 1);
+                }
+            },
+            Err(e) => {
+                tracing::warn!("Rubric 生成调用失败（第 {} 轮）: {e}", i + 1);
+            }
+        }
+    }
+    if trees.is_empty() {
+        tracing::warn!("Rubric 跳过：{} 轮生成全部失败", RUBRIC_GENERATIONS);
+        return Ok(None);
+    }
+    // 3. 第 4 次调用语义合并（>70% 相似度节点合并由 LLM 执行；合并失败
+    //    降级为第一份生成结果——合并是质量增强而非契约）
+    let merged = match rt.block_on(provider.complete(&rubric_merge_prompt(&trees))) {
+        Ok(content) => match parse_rubric_tree(&content) {
+            Ok(tree) => tree,
+            Err(e) => {
+                tracing::warn!("Rubric 合并解析失败，降级使用第一份生成结果: {e}");
+                trees[0].clone()
+            }
+        },
+        Err(e) => {
+            tracing::warn!("Rubric 合并调用失败，降级使用第一份生成结果: {e}");
+            trees[0].clone()
+        }
+    };
+    let leaves = collect_leaves(&merged);
+    if leaves.is_empty() {
+        tracing::warn!("Rubric 跳过：合并后无叶子");
+        return Ok(None);
+    }
+    // 4. 叶子判定证据：产物文档摘要（overview + api 实体清单 + 页面标题；
+    //    页面正文全量在真实评测下 token 成本不可控，用摘要形态做判定）
+    let evidence = build_evidence(Path::new(&config.output.dir), &config.wiki.language);
+    // 5. 叶子 0/1 判定（顺序与 collect_leaves 一致，供聚合索引）
+    let mut verdicts: Vec<bool> = Vec::with_capacity(leaves.len());
+    for leaf in &leaves {
+        let messages = rubric_judge_prompt(&leaf.requirement, &evidence);
+        match rt.block_on(provider.complete(&messages)) {
+            Ok(content) => match parse_rubric_verdict(&content) {
+                Some(true) => verdicts.push(true),
+                Some(false) => verdicts.push(false),
+                None => {
+                    tracing::warn!("Rubric 叶子判定解析失败（按不满足计）: {}", leaf.requirement);
+                    verdicts.push(false);
+                }
+            },
+            Err(e) => {
+                tracing::warn!("Rubric 叶子判定调用失败（按不满足计）: {e}");
+                verdicts.push(false);
+            }
+        }
+    }
+    // 6. 加权自底向上聚合（顶层多根包为虚拟根，weight=1；叶子 σ 二项
+    //    近似，非叶子按权重平方传播）
+    let mut leaf_idx = 0usize;
+    let root = RubricNode {
+        requirement: "root".into(),
+        weight: 1.0,
+        sub_tasks: merged.clone(),
+    };
+    let aggregated = aggregate_score(&root, &verdicts, &mut leaf_idx);
+    let leaf_count = leaves.len();
+    let satisfied = verdicts.iter().filter(|v| **v).count();
+    let coverage = if leaf_count == 0 {
+        1.0
+    } else {
+        satisfied as f64 / leaf_count as f64
+    };
+    Ok(Some(RubricReport {
+        rubric_nodes: count_nodes(&root.sub_tasks),
+        leaf_count,
+        satisfied_leaves: satisfied,
+        coverage,
+        score: aggregated.score,
+        score_std: aggregated.std,
+        generation_calls: RUBRIC_GENERATIONS + 1,
+        judge_model: config.llm.model.clone(),
+    }))
+}
+
+/// Rubric 生成 prompt：docs_tree → 层级 rubric JSON
+fn rubric_generation_prompt(docs_text: &str) -> Vec<crate::generate::llm::Message> {
+    let system = "你是仓库文档需求分析器。根据仓库的 README 与 docs 推导出文档应满足的需求清单（用于评测 Wiki 文档对仓库意图的覆盖度）。输出 JSON：{\"rubrics\": [{\"requirement\": \"需求描述\", \"weight\": 1-3, \"sub_tasks\": [...]}]}，层级最多 3 层，叶子必须无 sub_tasks。只输出 JSON。";
+    vec![
+        crate::generate::llm::Message::system(system),
+        crate::generate::llm::Message::user(docs_text.to_string()),
+    ]
+}
+
+/// Rubric 合并 prompt：多份独立生成的 rubric 树 → 语义合并后的单树
+fn rubric_merge_prompt(trees: &[Vec<RubricNode>]) -> Vec<crate::generate::llm::Message> {
+    let mut user = String::from("合并以下多份独立生成的 rubrics 为一份：语义相同或高度相似（>70%）的需求合并为一条（权重取均值），其余保留；保持层级结构（最多 3 层）。只输出合并后的 JSON：{\"rubrics\": [...]}。\n\n");
+    for (i, tree) in trees.iter().enumerate() {
+        user.push_str(&format!(
+            "--- 第 {} 份 ---\n{}\n",
+            i + 1,
+            serde_json::to_string_pretty(tree).unwrap_or_default()
+        ));
+    }
+    vec![
+        crate::generate::llm::Message::system("你是文档需求合并器。只输出合并后的 JSON。"),
+        crate::generate::llm::Message::user(user),
+    ]
+}
+
+/// Rubric 叶子判定 prompt：需求 vs 产物证据 → 0/1 满足判定
+fn rubric_judge_prompt(requirement: &str, evidence: &str) -> Vec<crate::generate::llm::Message> {
+    let system = "你是 Wiki 文档质量裁判。判断下面的文档产物是否满足给定的需求。只输出 JSON：{\"satisfied\": true 或 false}。";
+    vec![
+        crate::generate::llm::Message::system(system),
+        crate::generate::llm::Message::user(format!(
+            "需求：{}\n\n--- 文档产物摘要 ---\n{}",
+            requirement, evidence
+        )),
+    ]
+}
+
+/// 解析 rubric 生成/合并输出：剥离围栏 → JSON 数组或 {rubrics: [...]}
+fn parse_rubric_tree(content: &str) -> Result<Vec<RubricNode>> {
+    let stripped = content
+        .trim()
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+    let value: serde_json::Value = serde_json::from_str(stripped)
+        .with_context(|| "解析 Rubric JSON 失败")?;
+    // 数组形态直接取；对象形态取 rubrics 键；单对象形态视为单节点树
+    let nodes: Vec<serde_json::Value> = match &value {
+        serde_json::Value::Array(arr) => arr.clone(),
+        serde_json::Value::Object(map) => match map.get("rubrics") {
+            Some(serde_json::Value::Array(arr)) => arr.clone(),
+            _ => vec![value.clone()],
+        },
+        _ => anyhow::bail!("Rubric 输出既非数组也非对象"),
+    };
+    nodes
+        .into_iter()
+        .map(|n| serde_json::from_value::<RubricNode>(n).with_context(|| "Rubric 节点字段缺失"))
+        .collect()
+}
+
+/// 解析叶子判定输出：{"satisfied": true/false}
+fn parse_rubric_verdict(content: &str) -> Option<bool> {
+    let stripped = content
+        .trim()
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+    let value: serde_json::Value = serde_json::from_str(stripped).ok()?;
+    value.get("satisfied")?.as_bool()
+}
+
+/// 递归收集叶子（sub_tasks 为空）
+fn collect_leaves(nodes: &[RubricNode]) -> Vec<&RubricNode> {
+    let mut out = Vec::new();
+    for node in nodes {
+        if node.sub_tasks.is_empty() {
+            out.push(node);
+        } else {
+            out.extend(collect_leaves(&node.sub_tasks));
+        }
+    }
+    out
+}
+
+/// 节点总数（含非叶子）
+fn count_nodes(nodes: &[RubricNode]) -> usize {
+    nodes
+        .iter()
+        .map(|n| 1 + count_nodes(&n.sub_tasks))
+        .sum()
+}
+
+/// 权重 clamp 到 [1, 3]（LLM 输出越界时收敛，聚合分母不因异常权重变形）
+fn node_weight(w: f64) -> f64 {
+    w.clamp(1.0, 3.0)
+}
+
+/// 加权自底向上聚合：S(n)=Σw(c)S(c)/Σw(c)；叶子 σ=sqrt(p(1-p)) 二项近似，
+/// 非叶子 σ²=Σ(w²σ²)/Σw² 权重平方传播（CodeWikiBench 层级聚合公式）
+fn aggregate_score(node: &RubricNode, verdicts: &[bool], leaf_idx: &mut usize) -> RubricScore {
+    if node.sub_tasks.is_empty() {
+        let satisfied = verdicts.get(*leaf_idx).copied().unwrap_or(false) as usize;
+        *leaf_idx += 1;
+        let p = if satisfied == 1 { 1.0 } else { 0.0 };
+        return RubricScore {
+            score: p,
+            std: (p * (1.0 - p)).sqrt(),
+            leaves: 1,
+            satisfied,
+        };
+    }
+    let mut w_sum = 0.0f64;
+    let mut s_sum = 0.0f64;
+    let mut w2_sum = 0.0f64;
+    let mut s2_sum = 0.0f64;
+    let mut leaves = 0usize;
+    let mut satisfied = 0usize;
+    for sub in &node.sub_tasks {
+        let w = node_weight(sub.weight);
+        let rs = aggregate_score(sub, verdicts, leaf_idx);
+        w_sum += w;
+        s_sum += w * rs.score;
+        w2_sum += w * w;
+        s2_sum += w * w * rs.std * rs.std;
+        leaves += rs.leaves;
+        satisfied += rs.satisfied;
+    }
+    RubricScore {
+        score: if w_sum > 0.0 { s_sum / w_sum } else { 0.0 },
+        std: if w2_sum > 0.0 { (s2_sum / w2_sum).sqrt() } else { 0.0 },
+        leaves,
+        satisfied,
+    }
+}
+
+/// 递归收集 docs 目录下全部 .md 文件
+fn walk_docs(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            out.extend(walk_docs(&path));
+        } else if path.extension().is_some_and(|e| e == "md") {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// 构建叶子判定证据：overview + api 实体清单 + 模块页标题（截断控制 token）
+fn build_evidence(output_dir: &Path, lang: &str) -> String {
+    let mut evidence = String::new();
+    for name in ["overview.md", "api.md"] {
+        let path = output_dir.join("wiki").join(lang).join(name);
+        if let Ok(c) = std::fs::read_to_string(&path) {
+            evidence.push_str(&format!("# {name}\n{}\n", truncate(&c, 6_000)));
+        }
+    }
+    let wiki_dir = output_dir.join("wiki").join(lang);
+    if let Ok(entries) = std::fs::read_dir(&wiki_dir) {
+        let mut titles: Vec<String> = entries
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.ends_with(".md")
+                    .then(|| name.trim_end_matches(".md").to_string())
+            })
+            .collect();
+        titles.sort();
+        evidence.push_str(&format!(
+            "# 模块页\n{}\n",
+            titles.iter().map(|t| format!("- {t}")).collect::<Vec<_>>().join("\n")
+        ));
+    }
+    truncate(&evidence, 20_000)
+}
+
+/// 字符串截断（中文字符安全：按 char 边界截断）
+fn truncate(s: &str, max_chars: usize) -> String {
+    s.chars().take(max_chars).collect()
 }
 
 /// TQS 裁判 prompt（五维定义固定措辞 + 0-10 量表 + strict JSON）
@@ -756,7 +1224,7 @@ pub fn render_markdown(report: &BenchReport) -> String {
     out.push_str("## 6. TQS 文本质量（LLM 裁判，--judge）\n\n");
     if let Some(tqs) = &report.tqs {
         out.push_str(&format!(
-            "- 判定模块: {}（复测 {} 轮/模块，裁判 {}\n- Clarity: {:.1}\n- Readability: {:.1}\n- Conciseness: {:.1}\n- Richness: {:.1}\n- Structure: {:.1}\n- 总分: {:.1}\n- 复测一致性（κ 近似）: {:.2}\n- 复测标准差: {:.2}\n\n",
+            "- 判定模块: {}（复测 {} 轮/模块，裁判 {}\n- Clarity: {:.1}\n- Readability: {:.1}\n- Conciseness: {:.1}\n- Richness: {:.1}\n- Structure: {:.1}\n- 总分: {:.1}\n- 复测一致性（κ 近似）: {:.2}\n- 机会校正 Cohen's κ: {:.2}\n- 位置偏差 |P(A胜)−0.5|: {:.2}\n- 复测标准差: {:.2}\n",
             tqs.judged_modules,
             tqs.repeats,
             tqs.judge_model,
@@ -767,10 +1235,35 @@ pub fn render_markdown(report: &BenchReport) -> String {
             tqs.avg_structure,
             tqs.avg_total,
             tqs.kappa_like,
+            tqs.kappa,
+            tqs.position_bias,
             tqs.avg_std
         ));
+        if !tqs.low_confidence_modules.is_empty() {
+            out.push_str(&format!(
+                "- 低置信模块（复测失败或波动大）: {}\n",
+                tqs.low_confidence_modules.join(", ")
+            ));
+        }
     } else {
         out.push_str("- 未启用（使用 --judge 且配置 LLM API key 后启用）\n\n");
+    }
+
+    out.push_str("## 7. Rubric 层级完整性（LLM 裁判，--judge）\n\n");
+    if let Some(rubric) = &report.rubric {
+        out.push_str(&format!(
+            "- 节点 {} 个（叶子 {} 个，满足 {} 个），生成 {} 次 LLM 调用，裁判 {}\n- 覆盖率: {:.1}%\n- 加权总分 S: {:.3}（σ_R {:.3}）\n\n",
+            rubric.rubric_nodes,
+            rubric.leaf_count,
+            rubric.satisfied_leaves,
+            rubric.generation_calls,
+            rubric.judge_model,
+            rubric.coverage * 100.0,
+            rubric.score,
+            rubric.score_std
+        ));
+    } else {
+        out.push_str("- 未启用（使用 --judge 且被测仓库有 README/docs 时启用）\n\n");
     }
 
     out
@@ -904,6 +1397,7 @@ mod tests {
             update_recall: UpdateRecallReport { commits_scanned: 0, commits_with_changes: 0, correctly_updated: 0, recall: 1.0 },
             time: TimeReport { scan_ms: 0, generate_ms: 0, total_ms: 0 },
             tqs: None,
+            rubric: None,
         };
         let md = render_markdown(&report);
         for section in ["实体覆盖率", "文本统计", "lint 健康", "增量召回", "耗时"] {
@@ -940,6 +1434,7 @@ mod tests {
             update_recall: UpdateRecallReport { commits_scanned: 0, commits_with_changes: 0, correctly_updated: 0, recall: 1.0 },
             time: TimeReport { scan_ms: 0, generate_ms: 0, total_ms: 0 },
             tqs: None,
+            rubric: None,
         };
         let md_off = render_markdown(&report);
         assert!(md_off.contains("--judge"), "未启用时应提示 --judge: {md_off}");
@@ -954,6 +1449,9 @@ mod tests {
             avg_total: 7.4,
             repeats: 3,
             kappa_like: 1.0,
+            kappa: 0.5,
+            position_bias: 0.05,
+            low_confidence_modules: Vec::new(),
             avg_std: 0.5,
             judge_model: "mock-model".into(),
         });
@@ -961,5 +1459,97 @@ mod tests {
         assert!(md_on.contains("判定模块: 2"), "应输出判定模块数: {md_on}");
         assert!(md_on.contains("Clarity: 8.0"), "应输出五维分数: {md_on}");
         assert!(md_on.contains("复测一致"), "应输出 MVVP 复测一致性: {md_on}");
+        assert!(md_on.contains("位置偏差"), "应输出位置偏差: {md_on}");
+    }
+
+    /// v14 C 组：Rubric JSON 解析——围栏剥离/数组形态/rubrics 键形态/单对象形态
+    #[test]
+    fn test_parse_rubric_tree_forms() {
+        let array_form = r#"```json
+[{"requirement": "a", "weight": 2, "sub_tasks": [{"requirement": "b", "weight": 1}]}]
+```"#;
+        let tree = parse_rubric_tree(array_form).unwrap();
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].sub_tasks.len(), 1, "子任务应解析");
+
+        let obj_form = r#"{"rubrics": [{"requirement": "x", "weight": 3}]}"#;
+        let tree = parse_rubric_tree(obj_form).unwrap();
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].requirement, "x");
+
+        let single_form = r#"{"requirement": "solo", "weight": 1}"#;
+        let tree = parse_rubric_tree(single_form).unwrap();
+        assert_eq!(tree.len(), 1, "单对象应视为单节点树");
+        assert!(parse_rubric_tree("not json").is_err(), "非 JSON 应报错");
+    }
+
+    /// v14 C 组：叶子判定解析 + 权重 clamp + 加权聚合确定性
+    #[test]
+    fn test_rubric_aggregate_and_verdict() {
+        assert_eq!(parse_rubric_verdict(r#"{"satisfied": true}"#), Some(true));
+        assert_eq!(parse_rubric_verdict("```json\n{\"satisfied\": false}\n```"), Some(false));
+        assert_eq!(parse_rubric_verdict("no json"), None);
+
+        // 树：根(weight 1) → [a(2): 叶子, b(3): [c(1): 叶子, d(1): 叶子]]
+        // 叶子判定 [true, false, true] → a=1, c=0, d=1 → b=(0+1)/2=0.5
+        // S = (2·1 + 3·0.5)/5 = 0.7
+        let node = RubricNode {
+            requirement: "root".into(),
+            weight: 1.0,
+            sub_tasks: vec![
+                RubricNode { requirement: "a".into(), weight: 2.0, sub_tasks: vec![] },
+                RubricNode {
+                    requirement: "b".into(),
+                    weight: 3.0,
+                    sub_tasks: vec![
+                        RubricNode { requirement: "c".into(), weight: 1.0, sub_tasks: vec![] },
+                        RubricNode { requirement: "d".into(), weight: 1.0, sub_tasks: vec![] },
+                    ],
+                },
+            ],
+        };
+        let verdicts = vec![true, false, true];
+        let mut idx = 0usize;
+        let s = aggregate_score(&node, &verdicts, &mut idx);
+        assert!((s.score - 0.7).abs() < 1e-9, "加权总分应为 0.7, 实际: {}", s.score);
+        assert_eq!(s.leaves, 3);
+        assert_eq!(s.satisfied, 2);
+        assert_eq!(idx, 3, "叶子索引应遍历完");
+
+        // 权重越界 clamp：weight=99 → 视为 3（LLM 输出越界收敛）
+        let bad = RubricNode { requirement: "w".into(), weight: 99.0, sub_tasks: vec![] };
+        assert_eq!(node_weight(bad.weight), 3.0);
+    }
+
+    /// v14 C 组：报告渲染第七节——启用时输出 Rubric 指标，未启用时提示
+    #[test]
+    fn test_render_markdown_rubric_section() {
+        let mut report = BenchReport {
+            repo_name: "demo".into(),
+            generated_at: "2026-08-03T00:00:00Z".into(),
+            coverage: CoverageReport { total_entities: 0, covered_entities: 0, ratio: 1.0 },
+            doc_info: DocInfoReport { pages: 0, words: 0, cross_references: 0, code_blocks: 0, diagrams: 0 },
+            lint: LintReport { total_issues: 0, by_kind: Default::default() },
+            update_recall: UpdateRecallReport { commits_scanned: 0, commits_with_changes: 0, correctly_updated: 0, recall: 1.0 },
+            time: TimeReport { scan_ms: 0, generate_ms: 0, total_ms: 0 },
+            tqs: None,
+            rubric: None,
+        };
+        let md_off = render_markdown(&report);
+        assert!(md_off.contains("Rubric"), "应含 Rubric 节: {md_off}");
+
+        report.rubric = Some(RubricReport {
+            rubric_nodes: 5,
+            leaf_count: 3,
+            satisfied_leaves: 2,
+            coverage: 2.0 / 3.0,
+            score: 0.7,
+            score_std: 0.35,
+            generation_calls: 4,
+            judge_model: "mock-model".into(),
+        });
+        let md_on = render_markdown(&report);
+        assert!(md_on.contains("覆盖率: 66.7%"), "应输出覆盖率: {md_on}");
+        assert!(md_on.contains("加权总分 S: 0.700"), "应输出加权总分: {md_on}");
     }
 }
