@@ -305,3 +305,10 @@
 - 产物:.scratch/wayfinder-v17/map.md + issues/t01-t10(1 research resolved + 1 grilling + 8 task open)+ IMPLEMENTATION-PLAN.md(A-E 五线:init 保护/key 引导+Responses/告警+三态+doctor/验证轮)
 - 地图:Destination=傻瓜化+Responses+验证轮;frontier=t02-t09;blocking:t02←t01(已 resolve)、t05←t02、t10←t09
 - 摸到的文件:STATUS.md、.scratch/wayfinder-v17/*(新建 12 文件)
+
+## 三十八、wayfinder-v17 work-through t02(2026-08-04,本会话)
+- 一会话一票:resolve t02 拍板 Responses API 集成形态(grilling,question 两轮)
+- 拍板:provider 拆分——LlmProviderType=openai(Responses 协议,base_url 可配,DeepSeek 归此)/openai-compatible(chat/completions,custom 并入删除)/anthropic/mock;Responses 失败(404/400)自动回退 chat 一次;多轮累积不做(用户:只做 wiki 辅助,不内置对话);迁移直接不兼容
+- 批判性完备性审查(用户要求):发现并补 5 处缺口——max_output_tokens 参数名差异/回退判定边界(仅 404/400)/回退仅一次/system 消息顶层 instructions/ Custom 删除 serde 报错迁移说明
+- 计划更新:IMPLEMENTATION-PLAN B3-B6 细化(拆分/双协议/回退/文档),审查结论追加
+- 地图:Decisions so far + t02 行;Not yet specified 清 Responses 项;frontier 现为 t03(init 保护)
