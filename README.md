@@ -52,12 +52,13 @@ AI 驱动的代码仓库 Wiki 自动生成工具。分析源码结构，通过 L
 | 命令 | 用途 |
 |------|------|
 | `generate` | 全量生成 Wiki 文档（支持 `-o` 输出覆盖、`--force` 强制重写、`--progress-json` 进度输出、`--root` 项目根）|
-| `update` | 增量更新（基于 git diff，支持 `-o` 输出覆盖、`--root` 项目根）|
+| `update` | 增量更新（基于 git diff，支持 `-o` 输出覆盖、`--dry-run` 预览变更不执行、`--root` 项目根）|
 | `sync` | 以 Git 工作区内容同步指纹库（不触发 LLM 生成）|
 | `status` | 查看 Wiki 状态 |
-| `lint` | 产物健康检查（孤儿页/断链/过时），供 CI 使用；发现问题退出码非 0 |
+| `lint` | 产物健康检查（孤儿页/断链/过时/引用错位/坏 mermaid），供 CI 使用；退出码三态：`0` 通过、`1` 发现问题、`2` 配置加载失败 |
 | `export` | 导出为 HTML（支持 `-o` 输出目录、`--skip-generate` 从快照直接导出不重新生成）|
-| `init` | 初始化配置文件 |
+| `doctor` | 环境诊断（配置/产物目录/输出目录/LLM Key/网络/版本自检六查），失败退出码 1 |
+| `init` | 初始化配置（缺省在全局配置目录创建；项目根已有 `.repo-wiki/config.toml` 时跳过不覆盖，`--force` 强制；显式 `--config <path>` 始终覆盖）|
 | `watch` | 监听文件变更并自动更新 |
 | `search` | 搜索代码实体 |
 | `ast-search` | AST 精确符号查找（文件+行号+签名，不依赖搜索索引）|
@@ -70,7 +71,7 @@ AI 驱动的代码仓库 Wiki 自动生成工具。分析源码结构，通过 L
 | `mcp` | 启动 MCP (Model Context Protocol) stdio server（Claude Code/Cline 等客户端接入）|
 | `bench` | 自动评测仓库 Wiki 质量（Coverage/Doc Info/lint/Update Recall/Time 五维 + `--judge` TQS 裁判打分）|
 
-`generate`/`update`/`sync`/`status`/`lint`/`export`/`init`/`watch`/`search`/`ast-search`/`card`/`note`/`install-to-opencode`/`uninstall-from-opencode`/`install-wiki`/`uninstall-wiki`/`mcp` 支持 `--root` 指定项目根（扫描根/git 定位基准，默认当前目录）；`bench` 的 `--root` 为必填项（目标评测仓库根，语义与其他子命令不同）。
+`generate`/`update`/`sync`/`status`/`lint`/`export`/`doctor`/`init`/`watch`/`search`/`ast-search`/`card`/`note`/`install-to-opencode`/`uninstall-from-opencode`/`install-wiki`/`uninstall-wiki`/`mcp` 支持 `--root` 指定项目根（扫描根/git 定位基准，默认当前目录）；`bench` 的 `--root` 为必填项（目标评测仓库根，语义与其他子命令不同）。
 
 ## 技术栈
 
@@ -106,7 +107,8 @@ cargo install --path . --locked
 # 或仅构建（二进制位于 target/release/repo-wiki）
 cargo build --release
 
-# 初始化配置
+# 初始化配置（缺省在全局配置目录创建；项目根已有 .repo-wiki/config.toml
+# 时跳过不覆盖；--force 强制重写）
 repo-wiki init
 
 # 全量生成 Wiki
@@ -196,7 +198,7 @@ model = "text-embedding-3-small"
 
 [search]
 enabled = true
-default_engine = "hybrid"
+default_engine = "text"   # 与 schema 默认一致（v19 t02 统一示例）
 
 [incremental]
 enabled = true

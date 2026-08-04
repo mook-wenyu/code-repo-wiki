@@ -30,10 +30,12 @@ max_concurrent = 4
 [embed]
 # 语义搜索与实体级特征聚类的向量来源；false 时特征聚类降级为纯调用边结构聚类
 enabled = false
-model = "qwen3.7-text-embedding"
-base_url = "https://llm-q0265e4he9m0qs23.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+# 与 schema 默认值保持一致（v19 t02 统一：此前模板残留个人环境的
+# qwen3.7-text-embedding + 百炼 base_url，新用户 init 后与代码默认分裂）
+model = "text-embedding-3-small"
+#base_url = ""
 #api_key = ""
-api_key_env = "BAILIAN_API_KEY"
+api_key_env = "OPENAI_API_KEY"
 batch_size = 20
 
 [search]

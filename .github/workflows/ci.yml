@@ -1,0 +1,34 @@
+# CI：构建 + 测试 + lint 门禁（v19 t02 模板）
+#
+# Linux 上构建需要 OpenSSL 与 zlib 开发库（reqwest native-tls / git2
+# libgit2-sys 动态链接，见 README「前置依赖」）；LLM 调用不在此门禁内
+# （需真实 Key，由下游验证轮 t09 人工执行）。
+# 注意：项目未采用 rustfmt 风格（手写排版），故无 cargo fmt 步骤。
+
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: 安装系统依赖（OpenSSL/zlib）
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev zlib1g-dev
+      - name: 构建（--locked 锁定 Cargo.lock）
+        run: cargo build --locked
+      - name: 单元测试
+        run: cargo test --locked
+      - name: Clippy 门禁（-D warnings）
+        run: cargo clippy --all-targets --locked -- -D warnings
