@@ -289,3 +289,11 @@
 - **E 组(t08/t09)**:Unity 完整仓库真实 LLM e2e 尝试 2 次(①root 未指向→"未找到源文件"②加 --root 后被中断),产物未生成——如实报告**未验证**;真实 LLM 链路可用性已由 v15 单卡验证(src::fs 6.7s 落盘)背书
 - **验证基线:479 passed**(362 lib + 117 集成,较 v14 477 +2)、clippy -D warnings 0、工作树干净、9 张 tickets 全部 resolved
 - 未完成项:Unity 大仓库真实 LLM e2e(需专门会话,预算 2h+);本机 LSP 陈旧误报
+
+## 三十六、v17 深度分析报告(2026-08-04,本会话,/goal 会话)
+- 方法:并行子代理(本地一键路径实机模拟审计/联网 8 主题 9 次检索)+主代理复核(三处 P1/P2 全部回源属实)
+- **一键评估**:最短路径=3 条命令(cargo install → 设 key → generate),全局配置链/非 git/search-status 引导均达标;阻断傻瓜化的 4 缺口——P1 init 无参覆盖既有配置(main.rs:586-588 注释"复用"但无条件 write,数据破坏);P1 key 缺失错误零引导;P2 README 示例失实(gpt-4o/OPENAI vs 模板 deepseek/DEEPSEEK);P2 schema 默认与模板阵营分裂
+- **版本失实修复(5b3d99f)**:v16 D 组 780cab1 声称 version 0.2.0 但 Cargo.toml 未改(--version 输出 0.1.0)——子代理审计发现,本会话立即修正+提交
+- **网络对照(2026)**:ddsyasas llm-wiki 一键向导(免费模型默认/两遍 lint/一键修复)=傻瓜化标杆;docverity 三态退出码+history-aware coverage;autodocs FIND/REPLACE 三重验证;CodeWikiBench ACL 2026 正式收录(68.79% vs 47.13%);CiteCheck 88.7 F1/urlhealth 3-13% 编造背书引用校验;llms.txt 采用 4.2% 反面证据 Google 不抓取;traceSDD 行级引用 TDR 86-88%
+- 优先修复清单:init 覆盖保护→key 引导→README/schema 对齐→mock 告警→lint 三态退出码+--dry-run→doctor 自检
+- 报告:.scratch/research/ANALYSIS-v17-2026-08-04.md(六节:一键评估/未完成项全景/网络对照/优先清单/反思/三清单)
