@@ -312,3 +312,11 @@
 - 批判性完备性审查(用户要求):发现并补 5 处缺口——max_output_tokens 参数名差异/回退判定边界(仅 404/400)/回退仅一次/system 消息顶层 instructions/ Custom 删除 serde 报错迁移说明
 - 计划更新:IMPLEMENTATION-PLAN B3-B6 细化(拆分/双协议/回退/文档),审查结论追加
 - 地图:Decisions so far + t02 行;Not yet specified 清 Responses 项;frontier 现为 t03(init 保护)
+
+## 三十九、v17 实施完成 A-F 组 + t09/t10 真实验证轮(2026-08-05,本会话)
+- 五线落地(7 commits):A c2f188b(init 缺省跳过/--force 覆盖保护,t03);B 2b4807e(provider 拆分 openai=Responses/openai-compatible=chat+key 引导+默认阵营统一 deepseek);C 2af5a26(mock 占位页脚 MOCK_FOOTER_MARK 单一来源含合成页 api.md+lint 三态退出码 0/1/2+update --dry-run 无副作用);D a6097e0(doctor 五查:配置/产物可写探针/目录状态/Key 空串视为未配/网络 5s 探活 mock 跳过);F 798e062(t09 实测三修复:增量误删 preserved_modules+output.dir root 统一 load_config_rooted 收敛 8 处+相对键迁移保守保留)
+- 测试:486→493 passed(clippy -D warnings 0,machete 干净)
+- t09 本仓库真实验证(全部实机):doctor 5/5 退出码 0;lint 三态(有 2 问题→1,缺失配置→2);dry-run 变更清单退出码 0 零副作用;init 幂等/--force;Responses 协议真实 DeepSeek e2e 多次成功(SSE 语义化流 729/835/539 chunks,无回退 warn);增量闭环(src_fs.md 恢复+9 页全保留);全量恢复(9 页产物完整,broken 断链清零)
+- t10 Unity e2e(SimpleToolkits 6655 cs):mock 全链路 56 页产物 exit 0
+- 发现并修复 3 个真实 bug:增量模式未受影响模块页面被 cleanup 误删(6 页断链);--root 场景相对 output.dir 写错目录(root 化收敛);root 化后旧相对键与绝对 rendered 不匹配误删合成页(迁移保护)
+- 未验证:Unity e2e 真实 LLM 版;watch Ctrl-C 交互;semantic lint/rubrics 真实 LLM 质量(均有单测,无真实 e2e)
