@@ -120,6 +120,10 @@ fn is_retryable_status(status: reqwest::StatusCode) -> bool {
 
 /// 统一重试骨架：可重试错误（429/5xx/超时/连接失败）按指数退避重试，
 /// 其余 4xx 立即失败。send_fn 每轮重新构建请求（请求构建仍是协议差异点，留在调用方）。
+///
+/// 可观测性（v16 B 组）：每次可重试失败记录 attempt/原因与下次退避延迟，
+/// 错误响应体保留（截断 2000 字符防日志爆炸）；重试耗尽时汇总 last_error。
+/// 此前本函数零日志——生产排查重试风暴只能看到最终错误，过程全黑。
 pub(crate) async fn retry_with_backoff<F, Fut>(
     max_retries: u32,
     send_fn: F,
@@ -131,21 +135,40 @@ where
     let mut last_error = None;
     for attempt in 0..max_retries {
         if attempt > 0 {
-            tokio::time::sleep(backoff_delay(attempt - 1)).await;
+            let delay = backoff_delay(attempt - 1);
+            tracing::info!(
+                "LLM 请求重试（第 {}/{} 次），退避 {}ms",
+                attempt + 1,
+                max_retries,
+                delay.as_millis()
+            );
+            tokio::time::sleep(delay).await;
         }
         match send_fn().await {
             Ok(resp) if is_retryable_status(resp.status()) => {
                 let status = resp.status();
                 let text = resp.text().await.unwrap_or_default();
+                tracing::warn!(
+                    "LLM API 返回可重试状态 {}（第 {} 次尝试）: {}",
+                    status,
+                    attempt + 1,
+                    text.chars().take(2000).collect::<String>()
+                );
                 last_error = Some(anyhow::anyhow!("API 返回错误 ({}): {}", status, text));
             }
             Ok(resp) => return Ok(resp),
             Err(e) if e.is_timeout() || e.is_connect() => {
+                tracing::warn!(
+                    "LLM 请求超时/连接失败（第 {} 次尝试，将重试）: {}",
+                    attempt + 1,
+                    e
+                );
                 last_error = Some(anyhow::anyhow!("请求失败: {}", e));
             }
             Err(e) => return Err(anyhow::anyhow!("请求失败: {}", e)),
         }
     }
+    tracing::error!("LLM API 调用重试 {} 次后全部失败: {:?}", max_retries, last_error);
     Err(anyhow::anyhow!(
         "LLM API 调用重试 {} 次后全部失败: {:?}",
         max_retries,
@@ -203,16 +226,27 @@ async fn collect_sse(
     let mut buf: Vec<u8> = Vec::new();
     let mut chunks = Vec::new();
 
+    // v16 B 组：流式消费的可观测性——长生成场景（分钟级）若无日志，
+    // 用户无法区分"模型还在产出"与"卡死无响应"。记录流开始与结束
+    // 统计，空闲超时单独 warn（含已收 chunk 数，便于判断进度丢失量）。
+    tracing::info!("SSE 流开始消费（空闲超时保护 {}s）", SSE_IDLE_TIMEOUT.as_secs());
     loop {
         let item = match tokio::time::timeout(SSE_IDLE_TIMEOUT, stream.next()).await {
             Ok(Some(Ok(item))) => item,
             Ok(Some(Err(e))) => return Err(e.into()),
             // 流正常结束：处理尾部残行后返回
             Ok(None) => break,
-            Err(_) => anyhow::bail!(
-                "SSE 流读取空闲超时（{}s 无数据，模型可能已停止产出）",
-                SSE_IDLE_TIMEOUT.as_secs()
-            ),
+            Err(_) => {
+                tracing::warn!(
+                    "SSE 流读取空闲超时（{}s 无数据，已收 {} 个 chunk，模型可能已停止产出）",
+                    SSE_IDLE_TIMEOUT.as_secs(),
+                    chunks.len()
+                );
+                anyhow::bail!(
+                    "SSE 流读取空闲超时（{}s 无数据，模型可能已停止产出）",
+                    SSE_IDLE_TIMEOUT.as_secs()
+                )
+            }
         };
         buf.extend_from_slice(&item);
         // 按行切分处理，保留未完成的尾部残行
@@ -244,6 +278,11 @@ async fn collect_sse(
             chunks.push(text);
         }
     }
+    tracing::info!(
+        "SSE 流消费完成: {} 个 chunk, {} 字符",
+        chunks.len(),
+        chunks.iter().map(|c| c.len()).sum::<usize>()
+    );
     Ok(chunks)
 }
 
