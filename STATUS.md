@@ -273,3 +273,10 @@
 - **网络对照(2026)**:Karpathy gist 2026-02 演进(矛盾调和/write-back/frontmatter 元数据=新差距);CodeWikiBench 68.79% vs OpenDeepWiki 47.13%(可用 v14 rubrics 跑官方对照);SWD-Bench QA 评测新范式;VeriContext hash 方案(t03 已拍板不引入);llms.txt 生态验证 E 组决策(Claude Code 第二大读取者);sqlite-vec 0.1.9 stable 仍 pre-v1;tree-sitter-language-pack 305 语法可扩展
 - 优先路线:①P0 Linux 依赖声明+README 安装段 ②P1 llm.rs tracing+状态保存告警 ③P1 Unity e2e+真实 LLM 验证 ④P2 lint .. 对齐+watch e2e+README ⑤P2 版本管理+插件 PATH ⑥P3 frontmatter/SWD-Bench/语言扩展
 - 报告:.scratch/research/ANALYSIS-v15-2026-08-04.md(六节:就绪评估/未完成项/网络对照/优先清单/反思/三清单)
+
+## 三十四、wayfinder 建图:repo-wiki 生产环境就绪 P0-P2(v16)(2026-08-04,本会话)
+- 触发:v15 深度分析(生产就绪评估+未完成项全景)后用户启动 wayfinder 建图,question 一轮拍板
+- 用户拍板:Destination=P0-P2 全部(发布门槛+可观测性+验证闭环+一致性+工程化,P3 能力扩展排除);产出=纯规划;Linux 依赖=文档声明(不 vendored);Unity e2e=纳入(task);版本管理=纳入;P3=Out of scope
+- 产物:.scratch/wayfinder-v16/map.md + issues/t01-t09(4 grilling + 5 task,全 open)+ IMPLEMENTATION-PLAN.md(A-E 五线:文档分发/可观测性/一致性/工程化/验证闭环)
+- 地图:Destination=生产就绪;frontier=t01-t07(拍板/实施线);blocking:t08←t04、t09←t08;无 research 票(依赖清单本地可查证,v15 网络检索已覆盖)
+- 摸到的文件:STATUS.md、.scratch/wayfinder-v16/*(新建 11 文件)
