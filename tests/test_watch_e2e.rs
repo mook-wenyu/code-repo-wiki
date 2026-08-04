@@ -68,9 +68,13 @@ fn read_opt(path: &Path) -> Option<String> {
 /// 省略可减少失败面。
 ///
 /// 诚实边界标注：
-/// - 不 join watch 线程：run_watch 是阻塞死循环且无停止接口（Arc<AtomicBool>
-///   停止标记不存在），join 会死锁；线程随测试进程退出自然终止
-///   （JoinHandle drop = detach，此处显式 drop 并注释原因）。
+/// - v14 F 组已实现 Ctrl-C 优雅退出（lib.rs run_watch 内部 spawn ctrl_c
+///   线程置 stop_flag，run_watch_loop 500ms 轮询退出）——但本测试进程
+///   无法向自身线程注入 SIGINT（Windows 无 POSIX kill 语义），join 会
+///   死锁（run_watch 阻塞在监听循环且无外部停止入口暴露）。
+///   JoinHandle drop = detach，watch 线程随测试进程退出终止（同 v14
+///   前行为；stop_flag 的单元级退出语义由 incremental::watch 模块测试
+///   test_watch_loop_exits_on_pre_set_stop_flag 覆盖）。
 /// - FileWatch 指纹比对读盘依赖相对路径 + 进程 cwd（GenerationState::
 ///   compute_file_fingerprint 直接 open(insight.path)），测试进程 cwd 是
 ///   仓库根而非临时仓库 → 全量生成时指纹表为空 → 增量阶段 is_file_changed
@@ -101,8 +105,8 @@ fn watch_e2e_file_change_triggers_incremental() {
     let handle = std::thread::spawn(move || {
         repo_wiki::run_watch(&thread_config_path, &thread_root).expect("run_watch 启动失败");
     });
-    // 设计说明：不 join（join 会死锁，run_watch 无停止接口）。
-    // drop JoinHandle = detach，watch 线程随测试进程退出终止。
+    // 设计说明：不 join（见上方诚实边界——测试进程无法注入 SIGINT；
+    // stop_flag 退出语义由模块级单测覆盖）。drop JoinHandle = detach。
     drop(handle);
 
     let api_path = repo.join(".repo-wiki").join("wiki").join("zh").join("api.md");

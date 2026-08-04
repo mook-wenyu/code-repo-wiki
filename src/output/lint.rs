@@ -227,6 +227,19 @@ fn check_citations(
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default();
         for citation in citation::extract_citations(&content) {
+            // 路径越界段 `..` 拒绝（与生成层 citation.rs validate_citations
+            // 同一规则，v16 C 组对齐）：`../src/x.rs` 可逃逸项目根、
+            // `src/../lib.rs` 可跳过目录层级——即使目标文件真实存在也按
+            // 无效处理。此前 lint 层未拒绝（不对称），手工/恶意页面可让
+            // lint 读取项目根外文件的元数据。
+            if citation.path.split(['/', '\\']).any(|seg| seg == "..") {
+                issues.push(LintIssue {
+                    kind: "bad-citation",
+                    path: format!("wiki/{lang}/{file_name}"),
+                    message: format!("路径含越界段 ..: `{}`", citation.path),
+                });
+                continue;
+            }
             // 引用相对项目根：output_dir 的上级即项目根（AGENTS.md 生成同约定）；
             // source_roots 兜底逐根尝试（resolve_source_path 返回实际存在的路径）
             let project_root = output_dir.parent().unwrap_or_else(|| Path::new("."));
@@ -987,6 +1000,36 @@ mod tests {
             "空源码根应跳过 stale-entity 检查, 实际: {:?}",
             issues2
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v16 C 组：lint 层引用越界段拒绝（与生成层 citation.rs 对齐）——
+    /// 页面引用 `../x.rs` 即使文件存在也报 bad-citation（越根读取防护）
+    #[test]
+    fn test_lint_bad_citation_rejects_dotdot() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_lint_dotdot_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let out = dir.join(".repo-wiki");
+        let wiki = out.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        // 项目根外确实存在该文件（证明"文件存在但路径越界"场景）
+        std::fs::create_dir_all(dir.parent().unwrap().join("escape_dir")).unwrap();
+        std::fs::write(
+            dir.parent().unwrap().join("escape_dir").join("x.rs"),
+            "line1\n",
+        )
+        .unwrap();
+        std::fs::write(
+            wiki.join("m.md"),
+            "# M\n\n核心逻辑见 `../escape_dir/x.rs:1`\n",
+        )
+        .unwrap();
+
+        let issues = lint(&out, &[]);
+        let bad: Vec<_> = issues.iter().filter(|i| i.kind == "bad-citation").collect();
+        assert_eq!(bad.len(), 1, "越界段应报 bad-citation, 实际: {:?}", issues);
+        assert!(bad[0].message.contains("越界段 .."), "消息应说明越界: {}", bad[0].message);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

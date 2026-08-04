@@ -70,7 +70,7 @@ AI 驱动的代码仓库 Wiki 自动生成工具。分析源码结构，通过 L
 | `mcp` | 启动 MCP (Model Context Protocol) stdio server（Claude Code/Cline 等客户端接入）|
 | `bench` | 自动评测仓库 Wiki 质量（Coverage/Doc Info/lint/Update Recall/Time 五维 + `--judge` TQS 裁判打分）|
 
-`generate`/`update`/`sync`/`status`/`lint`/`export`/`init`/`watch`/`search`/`ast-search`/`card`/`install-to-opencode`/`uninstall-from-opencode`/`install-wiki`/`uninstall-wiki`/`mcp` 支持 `--root` 指定项目根（扫描根/git 定位基准，默认当前目录）。
+`generate`/`update`/`sync`/`status`/`lint`/`export`/`init`/`watch`/`search`/`ast-search`/`card`/`note`/`install-to-opencode`/`uninstall-from-opencode`/`install-wiki`/`uninstall-wiki`/`mcp` 支持 `--root` 指定项目根（扫描根/git 定位基准，默认当前目录）；`bench` 的 `--root` 为必填项（目标评测仓库根，语义与其他子命令不同）。
 
 ## 技术栈
 
