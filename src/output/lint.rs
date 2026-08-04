@@ -520,21 +520,26 @@ pub fn entity_name_from_signature(sig: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    let tokens = trimmed
-        .split(|c: char| !c.is_alphanumeric() && c != '_')
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>();
-    if let Some(open) = trimmed.find('(') {
+    let candidate = if let Some(open) = trimmed.find('(') {
         // 第一个 '(' 前最后标识符 = 函数/方法名
         trimmed[..open]
             .split(|c: char| !c.is_alphanumeric() && c != '_')
             .filter(|s| !s.is_empty())
             .rfind(|_| true)
-            .map(|s| s.to_string())
     } else {
         // 无括号：裸名（struct/enum）或纯类型 → 最后标识符
-        tokens.into_iter().rfind(|_| true).map(|s| s.to_string())
-    }
+        trimmed
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .filter(|s| !s.is_empty())
+            .rfind(|_| true)
+    };
+    // v19 t03：过滤噪声 token——单字符（LLM 文本常编造 `a`/`_`/`P`）与纯数字
+    // （`42`）会污染 entity-coverage 声称侧造成误报；真实实体名几乎不低于
+    // 2 字符。api.md 权威侧与页面声称侧共用本函数，两侧口径保持一致：
+    // 权威侧同样不收录噪声 token，声称侧匹配不到也不会误报。
+    candidate
+        .filter(|s| s.len() > 1 && !s.chars().all(|c| c.is_ascii_digit()))
+        .map(|s| s.to_string())
 }
 
 /// 从模块页内容提取声称的实体名：`- `Name`` 核心实体行（反引号内实体真名）
@@ -936,6 +941,23 @@ mod tests {
         );
         assert!(!names.contains(&"fn".to_string()), "关键字不应被提取: {:?}", names);
         assert!(names.contains(&"foo_bar".to_string()));
+    }
+
+    /// v19 t03：单字符与纯数字 token 是 LLM 编造噪声（双仓库实测
+    /// `P`/`_`/`a`/`2`），应被过滤以免污染 entity-coverage 声称侧；
+    /// 多字符正常实体不受影响。
+    #[test]
+    fn test_entity_name_filters_noise_tokens() {
+        assert_eq!(entity_name_from_signature("`P`"), None, "单字符应过滤");
+        assert_eq!(entity_name_from_signature("`_`"), None, "下划线单字符应过滤");
+        assert_eq!(entity_name_from_signature("`2`"), None, "纯数字应过滤");
+        assert_eq!(entity_name_from_signature("fn x()"), None, "单字符函数名应过滤");
+        let content = "## 核心实体\n\n- `Server`（struct）\n- `src` — 目录\n- `P` — 噪声\n- `2` — 数字\n";
+        let names = extract_entity_names(content);
+        assert!(names.contains(&"Server".to_string()), "正常实体应保留: {:?}", names);
+        assert!(names.contains(&"src".to_string()), "多字符实体应保留: {:?}", names);
+        assert!(!names.contains(&"P".to_string()), "单字符噪声不应声称: {:?}", names);
+        assert!(!names.contains(&"2".to_string()), "纯数字噪声不应声称: {:?}", names);
     }
 
     /// G2：产物中的 mermaid fence 语法错误 → bad-mermaid；合法图不报

@@ -192,6 +192,10 @@ fn ensure_module_chain(
 
 fn kind_from_str(s: &str) -> NodeKind {
     match s {
+        // v19 t03：parser 合法产出 kind="mod"（Rust mod 声明 rust.rs、
+        // C# namespace csharp.rs），此前落入默认分支产生「未知实体类型」
+        // warn 并误标 Function。Module 为容器节点，api.md 渲染已跳过。
+        "mod" => NodeKind::Module,
         "struct" => NodeKind::Struct,
         "enum" => NodeKind::Enum,
         "fn" | "function" => NodeKind::Function,
@@ -417,6 +421,15 @@ mod tests {
         assert_eq!(kg.graph.node_count(), 1);
         let root = kg.graph.node_weight(NodeId::new(0)).unwrap();
         assert_eq!(root.kind, NodeKind::Project);
+    }
+
+    /// v19 t03：parser 合法产出 kind="mod"（Rust mod / C# namespace），
+    /// 此前落入默认分支产生「未知实体类型」warn 并误标 Function。
+    #[test]
+    fn test_kind_from_str_supports_mod() {
+        assert_eq!(kind_from_str("mod"), NodeKind::Module);
+        assert_eq!(kind_from_str("struct"), NodeKind::Struct);
+        assert_eq!(kind_from_str("fn"), NodeKind::Function);
     }
 
     #[test]

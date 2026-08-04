@@ -320,3 +320,20 @@
 - t10 Unity e2e(SimpleToolkits 6655 cs):mock 全链路 56 页产物 exit 0
 - 发现并修复 3 个真实 bug:增量模式未受影响模块页面被 cleanup 误删(6 页断链);--root 场景相对 output.dir 写错目录(root 化收敛);root 化后旧相对键与绝对 rendered 不匹配误删合成页(迁移保护)
 - 未验证:Unity e2e 真实 LLM 版;watch Ctrl-C 交互;semantic lint/rubrics 真实 LLM 质量(均有单测,无真实 e2e)
+
+## 四十、v18 分析轮：生产可用性/一键全自动/未完成项完备评估（2026-08-05）
+- 3 并行子代理：外部 Agent 视角一键审计（9 问证据化）+ 未完成项全量核对（无 TODO/无 ignore 测试/无未用依赖）+ 网络检索 7 主题（Karpathy llm-wiki 生态爆发 2026-04、CodeWikiBench ACL 2026 68.79%、RepoDoc 增量 -73%/-77%、staledocs/vericontext 确定性检测、AGENTS.md 60k+ 仓库、llms.txt 仅 agent 消费）
+- 实机一键流（全新二进制，全部零参数）：init（创建全局配置）→ generate（真实 DeepSeek 149s，4 页+1 卡+AGENTS.md+索引）→ search ✓ → lint（exit 1 检出 2 条噪声）→ doctor ✓（5 查 exit 0）→ update --dry-run ✓ → update 增量 ✓ → status ✓；环境已清理还原
+- **新发现 P1 版本漂移零自检**：PATH 0.1.0 旧二进制时 doctor/dry-run/lint 三态全部静默不可用（实测 unrecognized subcommand/Usage 错误 exit 2）；本地 release 若构建于 v17 中期同样缺 doctor——agent 无任何提示
+- 新发现 P2 文档 4 处失实：init 全局 vs README 项目级暗示；default_engine 示例 hybrid vs 默认 text；embed 模板(qwen3.7+BAILIAN)/schema(text-embedding-3-small+OPENAI)/README 三方打架；子命令表缺 doctor/dry-run/lint 三态
+- 新发现 P2 lint 噪声误报：entity-coverage 单字符/数字（src/2/P/_/a）真实产物+mini 仓库双复现；graph 'mod' 实体类型 warn
+- 未完成项定案：P1 仅 Unity 真实 LLM e2e（t10）；P2 测试泄漏 wiki/ 未根治+4 项真实 e2e 未验证；P3 CHANGELOG/tickets/README 文档滞后
+- 评估结论：一键=3 命令（install+key+generate）；傻瓜度 6/10（AGENTS.md 优秀，短板=升级自检/文档一致性/lint 噪声）；建议 P0 版本自检+P0 文档统一+P1 lint 噪声过滤（本轮不改代码）
+- 报告：.scratch/research/ANALYSIS-v18-oneclick-2026-08-05.md
+
+## 四十一、wayfinder-v19 建图：傻瓜化/自检/生态对齐（2026-08-05）
+- 用户 six-question 拍板：范围=全部（含 Unity e2e+生态方向）；init 保持全局链+修文档；版本自检=doctor 检版本+产物注入+README；lint 噪声=忽略单字符/纯数字+补 mod 类型；测试泄漏=helper 强制临时目录；Unity e2e+文档同步并入本轮
+- 并行子代理锚点核证：doctor.rs:32 push 式注册（第六查顺加）；state.rs:14 需加 tool_version 字段（前置改造链 G1）；lint.rs:518 entity_name_from_signature 一处改两侧生效；graph.rs:193 kind_from_str 缺 "mod" 分支（parser rust.rs:102/131、csharp.rs:36 合法产出）；llms.txt 确定性重生成=版本注入可靠载体（AGENTS.md 已存在即跳过不可靠）；tests 8 处内联 dir=；impact.rs 双向 BFS 传播已落地（RepoDoc 简化版无需重复）；community.rs:176 命名缺目录频次档
+- 网络核证修正：llms-full.txt 非官方规范（社区惯例，llmstxt-gen 8K/32K 模式）；OpenWiki no-op=git-head+工作树快照（非 SHA-256）；vericontext 仓库实为 amsminn；CodeWikiBench 叶子 0/1 judge 聚合（repo-wiki v14 已实现 rubrics）
+- 建图：.scratch/wayfinder-v19/map.md + issues/t01-t10（t01 版本自检/t02 文档统一+CI/t03 lint 噪声/t04 测试泄漏/t05 llms-full.txt/t06 no-op/t07 社区命名/t08 文档同步/t09 验证轮 blocked by t01-t08/t10 research 行级哈希）+ IMPLEMENTATION-PLAN.md（A-H 组串行+I 验证轮，每字母组一 commit，批判性审查 G1-G10 含 10 项对策）
+- 边界：影响传播实体级分类/二进制分发/评测第二档 → Not yet specified（fog）；Cargo.toml 保持 0.2.0（t08 归档 [0.2.0]，v19 入 Unreleased）
