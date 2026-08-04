@@ -85,8 +85,25 @@ AI 驱动的代码仓库 Wiki 自动生成工具。分析源码结构，通过 L
 
 ## 安装与使用
 
+### 前置依赖（Linux / macOS）
+
+repo-wiki 在 **Windows 上为单二进制免系统依赖**（TLS 用系统 schannel）；
+Linux/macOS 上构建与运行需要 OpenSSL 与 zlib 开发库（`reqwest` 的
+`native-tls` 与 `git2` 的 `libgit2-sys` 动态链接它们，`libssh2` 的 SSH
+传输已内嵌 vendored，不额外要求）：
+
+- Debian/Ubuntu：`sudo apt install libssl-dev zlib1g-dev`
+- RHEL/Fedora：`sudo dnf install openssl-devel zlib-devel`
+- macOS：`brew install openssl`（Homebrew 的 openssl 不在默认搜索路径时，
+  设置环境变量 `OPENSSL_ROOT_DIR` 指向其安装前缀再构建）
+
+### 编译安装
+
 ```bash
-# 编译安装
+# 安装到 ~/.cargo/bin（推荐，自动加入 PATH）
+cargo install --path . --locked
+
+# 或仅构建（二进制位于 target/release/repo-wiki）
 cargo build --release
 
 # 初始化配置
