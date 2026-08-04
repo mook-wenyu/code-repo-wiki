@@ -280,3 +280,12 @@
 - 产物:.scratch/wayfinder-v16/map.md + issues/t01-t09(4 grilling + 5 task,全 open)+ IMPLEMENTATION-PLAN.md(A-E 五线:文档分发/可观测性/一致性/工程化/验证闭环)
 - 地图:Destination=生产就绪;frontier=t01-t07(拍板/实施线);blocking:t08←t04、t09←t08;无 research 票(依赖清单本地可查证,v15 网络检索已覆盖)
 - 摸到的文件:STATUS.md、.scratch/wayfinder-v16/*(新建 11 文件)
+
+## 三十五、v16 实施落地(2026-08-04,本会话,wayfinder-v16)
+- **A 组(fc7f958)**:README 安装段(cargo install --path . --locked)+Linux/macOS 前置依赖声明(t03 拍板纯文档;依赖链 cargo tree 实测:reqwest→native-tls→openssl、git2→libgit2-sys→libssh2-sys vendored→libz,openssl-sys Windows 目标不编译)
+- **B 组(d087047+4f90e95)**:llm.rs 可观测性——retry_with_backoff 每次失败 warn(attempt/原因/错误体截断 2000 字符)+退避 info+耗尽 error;collect_sse 流开始/空闲超时/结束 info;incremental/mod.rs:209 from_insights 失败 else warn;教训=首提交漏 llm.rs 编辑,补 commit(不 amend)
+- **C 组(1df9dc4)**:lint check_citations 补 .. 段拒绝(与生成层对齐,新测试);test_watch_e2e 注释失实修正(v14 F 组已实现 Ctrl-C,说明不 join 真因);README --root 清单补 note/bench
+- **D 组(780cab1+tag v0.2.0)**:CHANGELOG 建档(Keep a Changelog,Unreleased 回填 v13-v16)+version 0.2.0;插件 PATH 根治(t02)——install_plugin_file 注入 current_exe() 绝对路径(JSON 转义),新单测;已安装旧模板不自动升级
+- **E 组(t08/t09)**:Unity 完整仓库真实 LLM e2e 尝试 2 次(①root 未指向→"未找到源文件"②加 --root 后被中断),产物未生成——如实报告**未验证**;真实 LLM 链路可用性已由 v15 单卡验证(src::fs 6.7s 落盘)背书
+- **验证基线:479 passed**(362 lib + 117 集成,较 v14 477 +2)、clippy -D warnings 0、工作树干净、9 张 tickets 全部 resolved
+- 未完成项:Unity 大仓库真实 LLM e2e(需专门会话,预算 2h+);本机 LSP 陈旧误报
