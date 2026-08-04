@@ -174,34 +174,97 @@ pub fn extract_citations(content: &str) -> Vec<Citation> {
     out
 }
 
+/// 单条引用的文件级校验（文件存在 + 行号不越界 + 路径不逃逸项目根），
+/// 返回失败原因；校验通过返回 None。
+///
+/// 从 validate_citations 提取的共享判定（v14 B 组：文件级与区间级两级
+/// 校验共用，避免区间校验重复文件读取逻辑）。
+fn check_citation_file_level(root: &Path, citation: &Citation) -> Option<String> {
+    // .. 段可逃逸项目根（../src/x.rs）或跳过目录层级（src/../lib.rs），
+    // 即使目标文件真实存在也按无效处理——引用路径必须位于项目根内
+    if citation.path.split(['/', '\\']).any(|seg| seg == "..") {
+        return Some("路径含越界段 ..".to_string());
+    }
+    let abs = root.join(&citation.path);
+    let total_lines = std::fs::read_to_string(&abs)
+        .map(|s| s.lines().count())
+        .ok();
+    match total_lines {
+        None => Some("引用文件不存在或不可读".to_string()),
+        Some(n) if citation.end > n => {
+            Some(format!("行号越界: {}-{} 超出文件总行数 {}", citation.start, citation.end, n))
+        }
+        _ => None,
+    }
+}
+
 /// 校验引用：路径在项目根下存在 + 结束行号不超过文件行数
 ///
 /// root 为项目根（相对路径的解析基准）；文件读取失败（非 UTF-8、
 /// 权限等）按无效处理——引用目标必须可读才可验证。
 pub fn validate_citations(root: &Path, content: &str) -> Vec<InvalidCitation> {
-    let mut invalid = Vec::new();
-    for citation in extract_citations(content) {
-        // .. 段可逃逸项目根（../src/x.rs）或跳过目录层级（src/../lib.rs），
-        // 即使目标文件真实存在也按无效处理——引用路径必须位于项目根内
-        if citation.path.split(['/', '\\']).any(|seg| seg == "..") {
+    extract_citations(content)
+        .into_iter()
+        .filter_map(|citation| {
+            check_citation_file_level(root, &citation)
+                .map(|reason| InvalidCitation { citation, reason })
+        })
+        .collect()
+}
+
+/// 文件 → 实体行区间列表 映射（v14 B 组区间重叠校验的输入形态）
+///
+/// 键约定：norm_sep 归一化路径（generate 层 = 相对项目根路径；
+/// lint 层 = 绝对路径；两处各自与自己的引用解析基准一致即可——
+/// validate_citations_against_entities 内部对引用路径做 norm_sep 后
+/// 查表，键必须与调用方构造时同基准）。
+pub type EntityRanges = std::collections::HashMap<String, Vec<(usize, usize)>>;
+
+/// 引用区间与实体行区间重叠判定（v14 B 组，t01 方案 A：区间算术）。
+///
+/// 引用 `path:start-end` 覆盖该文件的任一实体区间即有效：
+/// `start <= entity.end && end >= entity.start`（闭区间相交判定，
+/// 相邻边界触碰（start == entity.end 或 end == entity.start）不算覆盖——
+/// 引用行号必须真正落在实体定义范围内）。
+///
+/// 纯函数（无 I/O），测试直接构造区间。
+pub fn citation_overlaps_entity(c: &Citation, ranges: &[(usize, usize)]) -> bool {
+    ranges
+        .iter()
+        .any(|&(entity_start, entity_end)| c.start <= entity_end && c.end >= entity_start)
+}
+
+/// 文件级 + 区间级两级引用校验（v14 B 组）
+///
+/// `entity_ranges` 键为 norm_sep 归一化后的相对路径（Windows 反斜杠与
+/// 引用提取的正斜杠必须统一后再比较，否则 Windows 上恒不命中），
+/// 值为该文件的实体行区间列表（line_start..=line_end）。
+///
+/// 关键边界（t03 拍板）：**实体表无该文件键的引用放行**——README.md、
+/// 配置文件等非代码文件没有 AST 实体，引用它们（文档引用配置/说明）
+/// 是合法行为，区间校验只对"文件有实体但引用区间不覆盖任何实体"判
+/// 无效（这正是原校验漏掉的最大缺陷类：行号对但内容错——引用 A 函数
+/// 写成 B 行的位置）。
+pub fn validate_citations_against_entities(
+    root: &Path,
+    content: &str,
+    entity_ranges: &EntityRanges,
+) -> Vec<InvalidCitation> {
+    let mut invalid = validate_citations(root, content);
+    let file_level_valid: Vec<Citation> = extract_citations(content)
+        .into_iter()
+        .filter(|c| check_citation_file_level(root, c).is_none())
+        .collect();
+    for citation in file_level_valid {
+        let key = crate::incremental::norm_sep(&citation.path);
+        if let Some(ranges) = entity_ranges.get(&key)
+            && !citation_overlaps_entity(&citation, ranges)
+        {
             invalid.push(InvalidCitation {
                 citation,
-                reason: "路径含越界段 ..".to_string(),
+                reason: "引用区间未覆盖任何实体（行号可能指向错误位置）".to_string(),
             });
-            continue;
         }
-        let abs = root.join(&citation.path);
-        let total_lines = std::fs::read_to_string(&abs)
-            .map(|s| s.lines().count())
-            .ok();
-        let reason = match total_lines {
-            None => "引用文件不存在或不可读".to_string(),
-            Some(n) if citation.end > n => {
-                format!("行号越界: {}-{} 超出文件总行数 {}", citation.start, citation.end, n)
-            }
-            _ => continue,
-        };
-        invalid.push(InvalidCitation { citation, reason });
     }
     invalid
 }
@@ -413,4 +476,70 @@ mod tests {
         let cites = extract_citations(text);
         assert_eq!(cites.len(), 1, "缩进围栏内部不应提取, 实际: {cites:?}");
         assert_eq!(cites[0].path, "src/a.rs");
+    }
+
+    /// v14 B 组：引用区间与实体行区间的重叠判定（闭区间相交，
+    /// 边界触碰不算覆盖——引用行号必须真正落在实体定义范围内）
+    #[test]
+    fn test_citation_overlaps_entity() {
+        let ranges = vec![(10usize, 20usize), (30, 40)];
+        let c = |start: usize, end: usize| Citation { path: "x.rs".into(), start, end };
+        // 完全覆盖 / 部分重叠 / 单行落在区间内
+        assert!(citation_overlaps_entity(&c(12, 18), &ranges));
+        assert!(citation_overlaps_entity(&c(8, 15), &ranges), "跨入区间应算覆盖");
+        assert!(citation_overlaps_entity(&c(15, 25), &ranges), "跨出区间应算覆盖");
+        assert!(citation_overlaps_entity(&c(10, 10), &ranges), "起点即实体起点应覆盖");
+        assert!(citation_overlaps_entity(&c(20, 20), &ranges), "终点即实体终点应覆盖");
+        assert!(citation_overlaps_entity(&c(35, 35), &ranges), "第二个实体单行");
+        // 不覆盖：区间之间空隙、区间前/后、边界外一行
+        assert!(!citation_overlaps_entity(&c(21, 29), &ranges), "实体间隙不应覆盖");
+        assert!(!citation_overlaps_entity(&c(1, 5), &ranges), "实体之前不应覆盖");
+        assert!(!citation_overlaps_entity(&c(41, 50), &ranges), "实体之后不应覆盖");
+        assert!(!citation_overlaps_entity(&c(21, 21), &ranges), "紧邻实体终点外一行不覆盖");
+        // 空区间表
+        assert!(!citation_overlaps_entity(&c(10, 10), &[]));
+    }
+
+    /// v14 B 组：两级校验（文件级 + 区间重叠）——文件存在且行号有效但
+    /// 引用区间不覆盖任何实体 = 新捕获的缺陷类（行号对但内容错）
+    #[test]
+    fn test_validate_against_entities_overlap() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_cite_ovl_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        // 10 行文件：实体区间 (2,4) 与 (7,9)（如 fn a 在 2-4 行、fn b 在 7-9 行）
+        let src = dir.join("src").join("a.rs");
+        let content: String = (1..=10).map(|i| format!("line{i}\n")).collect();
+        std::fs::write(&src, content).unwrap();
+        // README.md 无实体（非代码文件）
+        std::fs::write(dir.join("README.md"), "docs\n").unwrap();
+
+        let mut ranges: EntityRanges = EntityRanges::new();
+        ranges.insert("src/a.rs".to_string(), vec![(2, 4), (7, 9)]);
+
+        // 覆盖实体 → 通过
+        let invalid = validate_citations_against_entities(&dir, "见 src/a.rs:3", &ranges);
+        assert!(invalid.is_empty(), "覆盖实体应通过: {invalid:?}");
+        let invalid = validate_citations_against_entities(&dir, "见 src/a.rs:7-9", &ranges);
+        assert!(invalid.is_empty(), "区间覆盖第二个实体应通过: {invalid:?}");
+        // 文件存在 + 行号有效但区间不覆盖实体 → 无效（新缺陷类）
+        let invalid = validate_citations_against_entities(&dir, "见 src/a.rs:5-6", &ranges);
+        assert_eq!(invalid.len(), 1, "实体间隙引用应无效: {invalid:?}");
+        assert!(invalid[0].reason.contains("未覆盖任何实体"), "原因应说明: {:?}", invalid[0]);
+        let invalid = validate_citations_against_entities(&dir, "见 src/a.rs:1", &ranges);
+        assert_eq!(invalid.len(), 1, "实体之前引用应无效: {invalid:?}");
+        // 无实体文件（README）→ 放行（区间校验只对有实体的文件生效）
+        let invalid = validate_citations_against_entities(&dir, "见 README.md:1", &ranges);
+        assert!(invalid.is_empty(), "无实体文件引用应放行: {invalid:?}");
+        // 文件级错误仍被捕获（越界）
+        let invalid = validate_citations_against_entities(&dir, "见 src/a.rs:99", &ranges);
+        assert_eq!(invalid.len(), 1);
+        assert!(invalid[0].reason.contains("越界"));
+        // Windows 反斜杠键形态：表键为 src\a.rs（norm_sep 后应命中）
+        let mut win_ranges: EntityRanges = EntityRanges::new();
+        win_ranges.insert("src\\a.rs".to_string(), vec![(2, 4)]);
+        let invalid = validate_citations_against_entities(&dir, "见 src/a.rs:3", &win_ranges);
+        assert!(invalid.is_empty(), "反斜杠表键经 norm_sep 应命中: {invalid:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }

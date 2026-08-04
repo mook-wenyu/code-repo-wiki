@@ -91,6 +91,7 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
         card_summary: &str,
         config: &WikiConfig,
         root: &crate::project::ProjectRoot,
+        entity_ranges: Option<&crate::output::citation::EntityRanges>,
     ) -> Result<WikiDocument> {
         if chunk.is_empty() {
             anyhow::bail!("空块，跳过 Wiki 页面生成");
@@ -121,7 +122,18 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
                     reason: "输出为空（未生成任何内容）".into(),
                 }]
             } else {
-                crate::output::citation::validate_citations(root.path(), &content)
+                // v14 B 组（t03 拍板）：生产路径传实体行区间表 → 两级校验
+                // （文件级 + 区间重叠）；None（测试/无表场景）退化为文件级。
+                match entity_ranges {
+                    Some(ranges) => {
+                        crate::output::citation::validate_citations_against_entities(
+                            root.path(),
+                            &content,
+                            ranges,
+                        )
+                    }
+                    None => crate::output::citation::validate_citations(root.path(), &content),
+                }
             };
             last_mermaid = crate::output::mermaid_check::validate_mermaid_blocks(&content);
             if last_invalid.is_empty() && last_mermaid.is_empty() {
@@ -698,7 +710,7 @@ mod tests {
             entity_sources: vec![],
         };
 
-        let result = generator.generate_wiki_page(&empty_chunk, "", &config, &root).await;
+        let result = generator.generate_wiki_page(&empty_chunk, "", &config, &root, None).await;
         assert!(result.is_err());
     }
 
@@ -722,7 +734,7 @@ mod tests {
         let config = WikiConfig::default();
         let chunk = make_test_chunk();
 
-        let doc = generator.generate_wiki_page(&chunk, "摘要", &config, &root).await.unwrap();
+        let doc = generator.generate_wiki_page(&chunk, "摘要", &config, &root, None).await.unwrap();
         assert!(doc.content.contains("src/server.rs:1"), "重试后应使用有效引用");
         assert_eq!(provider.calls.load(std::sync::atomic::Ordering::Relaxed), 2, "应调用 2 次（1 次失败 + 1 次重试）");
 
@@ -746,7 +758,7 @@ mod tests {
         let config = WikiConfig::default();
         let chunk = make_test_chunk();
 
-        let result = generator.generate_wiki_page(&chunk, "摘要", &config, &root).await;
+        let result = generator.generate_wiki_page(&chunk, "摘要", &config, &root, None).await;
         assert!(result.is_err(), "重试耗尽后应报错");
         let err = result.unwrap_err().to_string();
         assert!(err.contains("引用校验失败"), "错误信息应说明引用校验失败: {err}");
@@ -771,7 +783,7 @@ mod tests {
         let config = WikiConfig::default();
         let chunk = make_test_chunk();
 
-        let doc = generator.generate_wiki_page(&chunk, "摘要", &config, &root).await.unwrap();
+        let doc = generator.generate_wiki_page(&chunk, "摘要", &config, &root, None).await.unwrap();
         assert_eq!(doc.content, "模块职责是管理连接。");
         assert_eq!(provider.calls.load(std::sync::atomic::Ordering::Relaxed), 1, "无引用无需重试");
 
@@ -794,9 +806,115 @@ mod tests {
         let config = WikiConfig::default();
         let chunk = make_test_chunk();
 
-        let doc = generator.generate_wiki_page(&chunk, "摘要", &config, &root).await.unwrap();
+        let doc = generator.generate_wiki_page(&chunk, "摘要", &config, &root, None).await.unwrap();
         assert!(doc.content.contains("A[Start] --> B[End]"), "重试后应保留好图");
         assert_eq!(provider.calls.load(std::sync::atomic::Ordering::Relaxed), 2, "应调用 2 次（1 次坏图 + 1 次重试）");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v14 B 组：区间重叠校验——文件存在且行号有效但引用区间不覆盖任何实体
+    /// （行号对但内容错）→ 校验失败 → 重试反馈注入 → 修正后成功
+    #[tokio::test]
+    async fn test_wiki_page_retries_on_overlap_citation() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_test_cite_overlap_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let src = dir.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        // 10 行文件：实体区间 (2,4)（fn Server 定义）
+        let content: String = (1..=10).map(|i| format!("line{i}\n")).collect();
+        std::fs::write(src.join("server.rs"), content).unwrap();
+        let root = crate::project::ProjectRoot::new(dir.clone());
+
+        let mut ranges: crate::output::citation::EntityRanges =
+            crate::output::citation::EntityRanges::new();
+        ranges.insert("src/server.rs".to_string(), vec![(2, 4)]);
+
+        // 第一次输出引用 8 行（文件内但不在实体区间），第二次输出 2 行（覆盖实体）
+        let provider = ScriptedProvider::new(vec![
+            "模块职责是管理连接。核心实体 `Server` 定义见 src/server.rs:8。".to_string(),
+            "模块职责是管理连接。核心实体 `Server` 定义见 src/server.rs:2。".to_string(),
+        ]);
+        let generator = WikiGenerator::new(&provider, None, 0);
+        let config = WikiConfig::default();
+        let chunk = make_test_chunk();
+
+        let doc = generator
+            .generate_wiki_page(&chunk, "摘要", &config, &root, Some(&ranges))
+            .await
+            .unwrap();
+        assert!(doc.content.contains("src/server.rs:2"), "重试后应使用覆盖实体的引用");
+        assert_eq!(
+            provider.calls.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "区间外引用应触发一次重试"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v14 B 组：区间重叠校验重试耗尽 → 页面失败（t03 拍板：维持 bail，
+    /// 与文件级引用校验同一失败语义，Mermaid 才是唯一降级路径）
+    #[tokio::test]
+    async fn test_wiki_page_bails_when_overlap_never_valid() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_test_cite_overlap_fail_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let src = dir.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let content: String = (1..=10).map(|i| format!("line{i}\n")).collect();
+        std::fs::write(src.join("server.rs"), content).unwrap();
+        let root = crate::project::ProjectRoot::new(dir.clone());
+
+        let mut ranges: crate::output::citation::EntityRanges =
+            crate::output::citation::EntityRanges::new();
+        ranges.insert("src/server.rs".to_string(), vec![(2, 4)]);
+
+        // 全部输出区间外引用（8 行）
+        let provider = ScriptedProvider::new(vec![
+            "核心实体 `Server` 见 src/server.rs:8。".to_string(),
+            "核心实体 `Server` 见 src/server.rs:8。".to_string(),
+            "核心实体 `Server` 见 src/server.rs:8。".to_string(),
+        ]);
+        let generator = WikiGenerator::new(&provider, None, 0);
+        let config = WikiConfig::default();
+        let chunk = make_test_chunk();
+
+        let result = generator
+            .generate_wiki_page(&chunk, "摘要", &config, &root, Some(&ranges))
+            .await;
+        assert!(result.is_err(), "区间重叠校验重试耗尽应报错");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("引用校验失败"), "错误信息应说明引用校验失败: {err}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v14 B 组：无实体文件（README.md 等非代码文件）的引用放行——区间
+    /// 校验只对有实体的文件生效（引用配置/说明文件是合法行为）
+    #[tokio::test]
+    async fn test_wiki_page_passes_non_code_file_citation() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_test_cite_noncode_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("README.md"), "docs\n").unwrap();
+        let root = crate::project::ProjectRoot::new(dir.clone());
+
+        // 实体表不含 README.md（无实体）
+        let ranges: crate::output::citation::EntityRanges =
+            crate::output::citation::EntityRanges::new();
+        let provider = ScriptedProvider::new(vec![
+            "模块说明见 README.md:1。".to_string(),
+        ]);
+        let generator = WikiGenerator::new(&provider, None, 0);
+        let config = WikiConfig::default();
+        let chunk = make_test_chunk();
+
+        let doc = generator
+            .generate_wiki_page(&chunk, "摘要", &config, &root, Some(&ranges))
+            .await
+            .unwrap();
+        assert!(doc.content.contains("README.md:1"), "无实体文件引用应放行");
+        assert_eq!(provider.calls.load(std::sync::atomic::Ordering::Relaxed), 1, "无需重试");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -819,7 +937,7 @@ mod tests {
         let config = WikiConfig::default();
         let chunk = make_test_chunk();
 
-        let doc = generator.generate_wiki_page(&chunk, "摘要", &config, &root).await.unwrap();
+        let doc = generator.generate_wiki_page(&chunk, "摘要", &config, &root, None).await.unwrap();
         assert!(!doc.content.contains("```mermaid"), "坏图不应再以 mermaid 块出现");
         assert!(doc.content.contains("```text"), "坏块应降级为 text fence");
         assert!(doc.content.contains("repo-wiki: mermaid parse failed"), "应含降级标记注释");

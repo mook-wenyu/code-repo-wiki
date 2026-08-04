@@ -41,6 +41,10 @@ pub fn lint(output_dir: &Path, source_roots: &[PathBuf]) -> Vec<LintIssue> {
     let mut issues = Vec::new();
     let wiki_root = output_dir.join("wiki");
 
+    // 源码实体表：stale-entity（实体名集合）与 bad-citation-overlap（行区间表）
+    // 共用一次扫描（两检查的输入同源，各自消费不同投影）
+    let (source_entity_ranges, source_entity_names) = collect_source_entities(source_roots);
+
     // 收集主语言目录下的全部 .md 产物（wiki 页 + 全局文档）
     let languages = collect_language_dirs(&wiki_root);
     for lang in &languages {
@@ -58,10 +62,15 @@ pub fn lint(output_dir: &Path, source_roots: &[PathBuf]) -> Vec<LintIssue> {
         issues.extend(check_orphan_pages(&pages, &link_sources, lang));
         issues.extend(check_broken_links(&pages, lang));
         issues.extend(check_stale(&pages, &output_dir.join("cards").join(lang), source_roots, lang));
-        issues.extend(check_citations(&pages, output_dir, source_roots, lang));
+        issues.extend(check_citations(&pages, output_dir, source_roots, lang, &source_entity_ranges));
         issues.extend(check_entity_coverage(&pages, &output_dir.join("wiki").join(lang).join("api.md"), lang, output_dir));
         issues.extend(check_mermaid(&pages, lang));
-        issues.extend(check_stale_entities(&output_dir.join("wiki").join(lang).join("api.md"), source_roots, lang, output_dir));
+        issues.extend(check_stale_entities(
+            &output_dir.join("wiki").join(lang).join("api.md"),
+            lang,
+            output_dir,
+            &source_entity_names,
+        ));
     }
 
     issues
@@ -195,7 +204,16 @@ fn check_stale(pages: &[PathBuf], cards_dir: &Path, source_roots: &[PathBuf], la
 
 /// 4. 引用存在性检查（P1-4 零成本评测）：正文中的 `path:line` 引用必须可验证
 ///    （生成层已校验-重试，此处对磁盘产物静态复核：引用文件存在且行号不越界）
-fn check_citations(pages: &[PathBuf], output_dir: &Path, source_roots: &[PathBuf], lang: &str) -> Vec<LintIssue> {
+///    v14 B 组：叠加区间重叠判定（文件存在且行号有效但区间不覆盖任何实体 =
+///    行号对但内容错，bad-citation-overlap 新 kind；实体表无该文件键的引用
+///    放行——非代码文件引用合法）
+fn check_citations(
+    pages: &[PathBuf],
+    output_dir: &Path,
+    source_roots: &[PathBuf],
+    lang: &str,
+    entity_ranges: &std::collections::HashMap<String, Vec<(usize, usize)>>,
+) -> Vec<LintIssue> {
     let mut issues = Vec::new();
     for page in pages {
         // 页面读取失败（损坏/权限/竞态删除）时显式告警并跳过该页——
@@ -210,33 +228,65 @@ fn check_citations(pages: &[PathBuf], output_dir: &Path, source_roots: &[PathBuf
             .unwrap_or_default();
         for citation in citation::extract_citations(&content) {
             // 引用相对项目根：output_dir 的上级即项目根（AGENTS.md 生成同约定）；
-            // source_roots 兜底逐根尝试
+            // source_roots 兜底逐根尝试（resolve_source_path 返回实际存在的路径）
             let project_root = output_dir.parent().unwrap_or_else(|| Path::new("."));
-            let abs = project_root.join(&citation.path);
+            let primary_abs = project_root.join(&citation.path);
+            let abs = if primary_abs.exists() {
+                primary_abs
+            } else {
+                resolve_source_path(source_roots, &citation.path)
+            };
             let total_lines = std::fs::read_to_string(&abs)
                 .map(|s| s.lines().count())
-                .ok()
-                .or_else(|| {
-                    std::fs::read_to_string(resolve_source_path(source_roots, &citation.path))
-                        .map(|s| s.lines().count())
-                        .ok()
+                .ok();
+            let Some(n) = total_lines else {
+                issues.push(LintIssue {
+                    kind: "bad-citation",
+                    path: format!("wiki/{lang}/{file_name}"),
+                    message: format!("引用不存在: `{}` 指向的文件找不到", citation.path),
                 });
-            let message = match total_lines {
-                None => format!("引用不存在: `{}` 指向的文件找不到", citation.path),
-                Some(n) if citation.end > n => format!(
-                    "引用越界: `{}` 的 {}-{} 行超出文件总行数 {}",
-                    citation.path, citation.start, citation.end, n
-                ),
-                _ => continue,
+                continue;
             };
-            issues.push(LintIssue {
-                kind: "bad-citation",
-                path: format!("wiki/{lang}/{file_name}"),
-                message,
-            });
+            if citation.end > n {
+                issues.push(LintIssue {
+                    kind: "bad-citation",
+                    path: format!("wiki/{lang}/{file_name}"),
+                    message: format!(
+                        "引用越界: `{}` 的 {}-{} 行超出文件总行数 {}",
+                        citation.path, citation.start, citation.end, n
+                    ),
+                });
+                continue;
+            }
+            // 区间重叠判定：实体表键 = norm_sep 绝对路径（与 collect_source_entities
+            // 的键形态一致——引用相对项目根解析出的绝对路径，Windows 反斜杠
+            // 统一为正斜杠后比较）。实体表无该文件键（非代码文件）→ 放行。
+            let key = crate::incremental::norm_sep(&absolutize(&abs).to_string_lossy());
+            if let Some(ranges) = entity_ranges.get(&key)
+                && !citation::citation_overlaps_entity(&citation, ranges)
+            {
+                issues.push(LintIssue {
+                    kind: "bad-citation-overlap",
+                    path: format!("wiki/{lang}/{file_name}"),
+                    message: format!(
+                        "引用位置可疑: `{}` 的 {}-{} 行未覆盖该文件的任何实体（行号可能指向错误位置）",
+                        citation.path, citation.start, citation.end
+                    ),
+                });
+            }
         }
     }
     issues
+}
+
+/// 相对路径绝对化（实体表键的统一形态：相对 cwd 的路径与项目根解析的
+/// 绝对路径在 Windows 下必须同基准比较，否则反斜杠/正斜杠混存不命中）
+fn absolutize(p: &Path) -> PathBuf {
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(p)
+    }
 }
 
 /// 从 api.md 权威清单提取实体名集合（- ` 行 + entity_name_from_signature）
@@ -296,11 +346,59 @@ fn check_entity_coverage(pages: &[PathBuf], api_path: &Path, lang: &str, output_
     issues
 }
 
+/// 扫描源码根并解析全部实体（stale-entity 与 bad-citation-overlap 共用一次
+/// 扫描，避免 lint 对源码做两遍 AST 解析）
+///
+/// 返回 (norm_sep 绝对路径 → 实体行区间列表, 全部实体名集合)。
+/// 解析失败的文件跳过（文件级损坏不是文档问题）；源码根不存在/为空时
+/// 返回空表——调用方据此跳过对应检查（扫描失败 ≠ 文档过期/引用错误，
+/// 两种错误信号不能混淆）。
+fn collect_source_entities(
+    source_roots: &[PathBuf],
+) -> (
+    crate::output::citation::EntityRanges,
+    std::collections::HashSet<String>,
+) {
+    let mut ranges: crate::output::citation::EntityRanges =
+        std::collections::HashMap::new();
+    let mut names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let registry = crate::ingest::parser::ParserRegistry::new();
+    for root in source_roots {
+        if !root.is_dir() {
+            continue;
+        }
+        for entry in walk_files(root) {
+            let Some(processor) = registry.get_for_file(&entry) else { continue };
+            let Ok(source) = std::fs::read_to_string(&entry) else { continue };
+            if let Ok(insight) = processor.parse(&source, &entry) {
+                let key = crate::incremental::norm_sep(&absolutize(&entry).to_string_lossy());
+                ranges.insert(
+                    key,
+                    insight
+                        .entities
+                        .iter()
+                        .map(|e| (e.line_start, e.line_end))
+                        .collect(),
+                );
+                for entity in &insight.entities {
+                    names.insert(entity.name.clone());
+                }
+            }
+        }
+    }
+    (ranges, names)
+}
+
 /// 7. 符号漂移检查（v13 D1，N1）：api.md 权威清单中的实体在当前源码中不存在
 ///    → "文档引用了已删除实体"（entity-coverage 的反向：前者防 LLM 编造，
 ///    本检查防文档过期——增量更新未覆盖、模块重构改名、人工删改产物）。
 ///    零 LLM，源码侧直接 AST 解析（与生成侧同一 parser，口径一致）。
-fn check_stale_entities(api_path: &Path, source_roots: &[PathBuf], lang: &str, output_dir: &Path) -> Vec<LintIssue> {
+fn check_stale_entities(
+    api_path: &Path,
+    lang: &str,
+    output_dir: &Path,
+    source_entity_names: &std::collections::HashSet<String>,
+) -> Vec<LintIssue> {
     if primary_language(output_dir) != *lang {
         return Vec::new();
     }
@@ -311,33 +409,17 @@ fn check_stale_entities(api_path: &Path, source_roots: &[PathBuf], lang: &str, o
     if known.is_empty() {
         return Vec::new();
     }
-
-    // 收集源码实体名集合：递归扫描 source_roots 下 parser 支持的扩展名，
-    // 逐个 AST 解析（解析失败的文件跳过——文件级损坏不是文档问题）
-    let mut source_entities: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let registry = crate::ingest::parser::ParserRegistry::new();
-    for root in source_roots {
-        if !root.is_dir() {
-            continue;
-        }
-        for entry in walk_files(root) {
-            let Some(processor) = registry.get_for_file(&entry) else { continue };
-            let Ok(source) = std::fs::read_to_string(&entry) else { continue };
-            if let Ok(insight) = processor.parse(&source, &entry) {
-                for entity in &insight.entities {
-                    source_entities.insert(entity.name.clone());
-                }
-            }
-        }
-    }
-    if source_entities.is_empty() {
+    if source_entity_names.is_empty() {
         // 源码根为空/全解析失败时无从对比，跳过（避免把"扫描失败"误报成
         // "文档过期"——二者错误信号不同，不能混淆）
         return Vec::new();
     }
 
     let mut issues = Vec::new();
-    let mut stale: Vec<&String> = known.iter().filter(|e| !source_entities.contains(*e)).collect();
+    let mut stale: Vec<&String> = known
+        .iter()
+        .filter(|e| !source_entity_names.contains(*e))
+        .collect();
     stale.sort();
     for entity in stale {
         issues.push(LintIssue {
@@ -750,7 +832,58 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// P1-4 实体覆盖率：页面声称的实体不在 api.md → entity-coverage
+    /// v14 B 组：区间重叠复核——文件存在且行号有效但引用区间不覆盖任何
+    /// 实体（行号对但内容错）→ bad-citation-overlap；覆盖实体 → 通过；
+    /// 无实体文件（README）→ 放行
+    #[test]
+    fn test_lint_bad_citation_overlap_detects_wrong_location() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_lint_overlap_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let out = dir.join(".repo-wiki");
+        let wiki = out.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        let src_root = dir.join("src");
+        std::fs::create_dir_all(&src_root).unwrap();
+        // 10 行源码：实体区间 (2,2)（fn server 定义在第 2 行）
+        let source = "line1\npub fn server() {}\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
+        std::fs::write(src_root.join("server.rs"), source).unwrap();
+        std::fs::write(dir.join("README.md"), "docs\n").unwrap();
+        // 页面：引用 2 行（覆盖实体，合法）+ 引用 8 行（文件内但区间外）+ README（无实体）
+        std::fs::write(
+            wiki.join("m.md"),
+            "# M\n\n- `src/server.rs:2` 核心\n- `src/server.rs:8` 位置可疑\n- `README.md:1` 说明\n",
+        )
+        .unwrap();
+
+        let issues = lint(&out, &[src_root]);
+        let overlaps: Vec<_> = issues
+            .iter()
+            .filter(|i| i.kind == "bad-citation-overlap")
+            .collect();
+        assert_eq!(overlaps.len(), 1, "只应报区间外引用, 实际: {:?}", issues);
+        assert!(
+            overlaps[0].message.contains("src/server.rs") && overlaps[0].message.contains("8"),
+            "应指向 8 行引用: {}",
+            overlaps[0].message
+        );
+        assert!(
+            !issues.iter().any(|i| i.kind == "bad-citation"),
+            "文件级校验不应误报（文件存在且行号合法）: {:?}",
+            issues
+        );
+
+        // 源码根为空：区间检查跳过（扫描失败 ≠ 引用错误）
+        let empty_root = dir.join("empty_src");
+        std::fs::create_dir_all(&empty_root).unwrap();
+        let issues2 = lint(&out, &[empty_root]);
+        assert!(
+            !issues2.iter().any(|i| i.kind == "bad-citation-overlap"),
+            "空源码根应跳过区间检查: {:?}",
+            issues2
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     #[test]
     fn test_lint_entity_coverage_detects_fake() {
         let dir = std::env::temp_dir().join(format!("repo_wiki_lint_cov_{}", std::process::id()));

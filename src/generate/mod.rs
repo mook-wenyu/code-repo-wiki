@@ -124,11 +124,10 @@ pub async fn run_generation(
     tracing::info!("生成进度: 60% - 知识卡片生成完成，共 {} 个卡片", cards.len());
 
     // 4. 按语言独立生成 Wiki 页面（并行，演进计划 T3.1；卡片仅主语言生成一次，
-    // 各语言页面复用主语言卡片摘要）
-    let languages = crate::output::wiki_languages(config);
+    // 各语言页面复用主语言卡片摘要；语言列表在 generate_wiki_pages 内部计算）
     let wiki_gen = WikiGenerator::new(&provider, plan.clone(), config.llm.max_concurrent);
     let mut documents =
-        generate_wiki_pages(&wiki_gen, &chunks, &cards, &languages, config, config.llm.max_concurrent, root).await;
+        generate_wiki_pages(&wiki_gen, &chunks, &cards, config, config.llm.max_concurrent, root, &build_entity_ranges(insights)).await;
     tracing::info!("生成进度: 90% - Wiki 页面生成完成，共 {} 个页面", documents.len());
 
     // 5. 生成全局文档（架构概览 + 数据库 Schema，全量/增量共用同一辅助函数）
@@ -312,10 +311,9 @@ pub async fn run_generation_filtered(
 
     // 4. 按语言独立生成 Wiki 页面（并行，演进计划 T3.1；仅变更块；卡片仅主语言生成一次，
     // 各语言页面复用主语言卡片摘要）
-    let languages = crate::output::wiki_languages(config);
     let wiki_gen = WikiGenerator::new(&provider, plan.clone(), config.llm.max_concurrent);
     let mut documents =
-        generate_wiki_pages(&wiki_gen, &chunks, &cards, &languages, config, config.llm.max_concurrent, root).await;
+        generate_wiki_pages(&wiki_gen, &chunks, &cards, config, config.llm.max_concurrent, root, &build_entity_ranges(insights)).await;
 
     // 5. 生成全局文档（架构概览 + 数据库 Schema）
     // P1-2 全局文档增量（受影响判断）：架构/概览只在接口级实体变化
@@ -352,6 +350,30 @@ pub async fn run_generation_filtered(
         documents,
         generation_stats: stats,
     })
+}
+
+/// 从全仓库解析结果构建"相对路径 → 实体行区间列表"表（v14 B 组）
+///
+/// 供引用区间重叠校验使用（validate_citations_against_entities）：
+/// 键用 norm_sep 归一化的相对路径（与引用提取的正斜杠形态统一，Windows
+/// 下不归一化会恒不命中），值 = 该文件全部实体的 (line_start, line_end)。
+///
+/// 必须用**全仓库** insights 而非变更文件子集——wiki 页面可能引用模块外
+/// 文件（跨模块引用是正常行为），只传变更集会导致模块外引用全部误判
+/// 为"无实体文件"而放行（区间校验失效）。
+fn build_entity_ranges(insights: &[FileInsight]) -> crate::output::citation::EntityRanges {
+    insights
+        .iter()
+        .map(|insight| {
+            let key = crate::incremental::norm_sep(&insight.path.to_string_lossy());
+            let ranges: Vec<(usize, usize)> = insight
+                .entities
+                .iter()
+                .map(|e| (e.line_start, e.line_end))
+                .collect();
+            (key, ranges)
+        })
+        .collect()
 }
 
 /// 按计划文档白名单过滤输出文档
@@ -482,16 +504,17 @@ async fn generate_wiki_pages<P: LlmProvider>(
     wiki_gen: &WikiGenerator<'_, P>,
     chunks: &[Chunk],
     cards: &[KnowledgeCard],
-    languages: &[String],
     config: &WikiConfig,
     max_concurrent: usize,
     root: &crate::project::ProjectRoot,
+    entity_ranges: &crate::output::citation::EntityRanges,
 ) -> Vec<WikiDocument> {
+    let languages = crate::output::wiki_languages(config);
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(max_concurrent.max(1)));
     let mut handles = Vec::with_capacity(chunks.len() * languages.len());
     // 记录每个任务的模块名（失败时写入 wiki_gen 的失败列表，T3.2）
     let mut task_modules = Vec::with_capacity(chunks.len() * languages.len());
-    for lang in languages {
+    for lang in &languages {
         let mut lang_cfg = config.clone();
         lang_cfg.wiki.language = lang.clone();
         for (i, chunk) in chunks.iter().enumerate() {
@@ -505,7 +528,7 @@ async fn generate_wiki_pages<P: LlmProvider>(
                     .await
                     .map_err(|_| anyhow::anyhow!("信号量已关闭"))?;
                 wiki_gen
-                    .generate_wiki_page(chunk, &card_summary, &lang_cfg, root)
+                    .generate_wiki_page(chunk, &card_summary, &lang_cfg, root, Some(entity_ranges))
                     .await
             });
         }
