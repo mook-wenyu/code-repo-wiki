@@ -179,6 +179,23 @@ impl OpenCodeConfig {
             "/.opencode/plugins/repo-wiki.ts"
         ))
         .with_context(|| "读取插件模板失败（仓库 .opencode/plugins/repo-wiki.ts 缺失）")?;
+        // t02（v16）：PATH 硬依赖根治——把模板中 execa 的二进制名替换为
+        // 当前进程的绝对路径。插件经 execa("repo-wiki", ...) 调 CLI，二进制
+        // 不在 PATH 时（cargo install 目标目录未入 PATH、便携部署等）16 个
+        // 工具全部 ENOENT 失效。install 时注入 current_exe() 绝对路径，
+        // 插件不再依赖 PATH。只替换 execa 首参（模板中该字面量唯一）；
+        // 路径经 JSON 字符串转义（Windows 反斜杠/引号安全）。
+        // 已安装的旧模板不自动升级（幂等不覆盖人工修改）：uninstall 后
+        // 重新 install 即获得绝对路径版本。
+        let exe_path = std::env::current_exe()
+            .with_context(|| "无法定位当前可执行文件路径（插件无法绑定绝对路径）")?;
+        let exe_json =
+            serde_json::to_string(&exe_path.to_string_lossy().to_string())
+                .with_context(|| "序列化可执行文件路径失败")?;
+        let template = template.replace(
+            "execa(\"repo-wiki\"",
+            &format!("execa({exe_json}"),
+        );
         std::fs::write(&plugin_path, template)
             .with_context(|| format!("写入插件文件失败: {}", plugin_path.display()))?;
         tracing::info!("插件文件已写入: {}", plugin_path.display());
@@ -398,5 +415,34 @@ mod tests {
             assert!(config.uninstall_plugin().is_err(), "uninstall 对非对象配置应报错 ({tag})");
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    /// t02（v16）：install_plugin_file 注入当前可执行文件绝对路径——
+    /// 插件不再依赖 PATH（exec 目标为注入路径而非 "repo-wiki" 字面量）
+    #[test]
+    fn test_install_plugin_file_injects_absolute_exe_path() {
+        let (dir, _) = setup_temp_config(None);
+        let mut config = OpenCodeConfig { config_path: dir.join("opencode.json"), project_root: dir.clone() };
+
+        let wrote = config.install_plugin_file().unwrap();
+        assert!(wrote, "首次安装应实际写入插件文件");
+
+        let plugin_path = dir.join(".opencode").join("plugins").join("repo-wiki.ts");
+        let content = std::fs::read_to_string(&plugin_path).unwrap();
+
+        // 注入的路径 = 测试进程可执行文件（current_exe 语义），JSON 转义后嵌入
+        let exe_path = std::env::current_exe().unwrap();
+        let exe_json = serde_json::to_string(&exe_path.to_string_lossy().to_string()).unwrap();
+        assert!(
+            content.contains(&format!("execa({exe_json}")),
+            "插件应绑定注入的绝对路径（JSON 转义）, 实际: {}",
+            &content[..content.len().min(400)]
+        );
+        assert!(
+            !content.contains("execa(\"repo-wiki\""),
+            "PATH 字面量版本不应残留"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
