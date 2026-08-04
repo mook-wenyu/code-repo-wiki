@@ -444,6 +444,133 @@ fn test_search_semantic_without_embed_errors() {
 
     let _ = std::fs::remove_dir_all(&work_dir);
 }
+
+/// v17 t06：mock provider 生成的产物页带占位页脚标注（防误读为真实文档）
+#[test]
+fn test_mock_footer_marks_placeholder_pages() {
+    let work_dir = prepare_repo("mock_footer");
+    let out = run_bin(&work_dir, &["generate", "-c", "config.toml"]);
+    assert!(
+        out.status.success(),
+        "generate 应成功，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // 遍历产物 wiki 页面，断言页脚标注存在
+    let wiki_dir = work_dir.join(".repo-wiki").join("wiki").join("zh");
+    let mut found = 0;
+    for entry in std::fs::read_dir(&wiki_dir).unwrap() {
+        let entry = entry.unwrap();
+        if !entry.file_type().unwrap().is_file() {
+            continue;
+        }
+        let content = std::fs::read_to_string(entry.path()).unwrap();
+        assert!(
+            content.contains("<!-- 本页由 mock provider 生成，非真实内容 -->"),
+            "产物页应有 mock 占位页脚: {}",
+            entry.path().display()
+        );
+        found += 1;
+    }
+    assert!(found > 0, "应至少有一个产物页面");
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
+
+/// v17 t07：lint 三态退出码——0 = 干净 / 1 = 发现问题 / 2 = 工具问题（docverity 模式）
+#[test]
+fn test_lint_three_state_exit_codes() {
+    let work_dir = prepare_repo("lint_exit");
+
+    // 态 1：产物未生成（目录不存在）→ 无孤儿/断链 → 0
+    let out = run_bin(&work_dir, &["lint", "-c", "config.toml"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "空产物应视为干净（0），stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // 生成产物（干净态）
+    let out = run_bin(&work_dir, &["generate", "-c", "config.toml"]);
+    assert!(out.status.success(), "generate 应成功");
+    let out = run_bin(&work_dir, &["lint", "-c", "config.toml"]);
+    assert_eq!(out.status.code(), Some(0), "干净产物应为 0: {}", String::from_utf8_lossy(&out.stdout));
+
+    // 态 2：写入孤儿页 → 发现问题 → 1
+    let orphan = work_dir.join(".repo-wiki").join("wiki").join("zh").join("orphan.md");
+    std::fs::create_dir_all(orphan.parent().unwrap()).unwrap();
+    std::fs::write(&orphan, "# 孤儿页\n").unwrap();
+    let out = run_bin(&work_dir, &["lint", "-c", "config.toml"]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "孤儿页应报问题（1），stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("orphan.md"),
+        "应指出孤儿页路径: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    // 态 3：配置加载失败 → 工具问题 → 2（不掩盖绿构建）
+    let out = run_bin(&work_dir, &["lint", "-c", "missing-config.toml"]);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "配置失败应为 2，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
+
+/// v17 t07：update --dry-run 只做变更分析预览，不执行生成（无副作用）
+#[test]
+fn test_update_dry_run_lists_changes_without_generating() {
+    let work_dir = prepare_repo("dry_run");
+    let out = run_bin(&work_dir, &["generate", "-c", "config.toml"]);
+    assert!(out.status.success(), "generate 应成功");
+    let wiki_dir = work_dir.join(".repo-wiki").join("wiki").join("zh");
+    let snapshot: Vec<(String, String)> = std::fs::read_dir(&wiki_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().unwrap().is_file())
+        .map(|e| {
+            (
+                e.file_name().to_string_lossy().into_owned(),
+                std::fs::read_to_string(e.path()).unwrap(),
+            )
+        })
+        .collect();
+
+    // 修改一个源文件，触发增量变更分析
+    let src_file = work_dir.join("src").join("lib.rs");
+    std::fs::write(&src_file, "// 变更\npub fn touched() {}\n").unwrap();
+
+    let out = run_bin(&work_dir, &["update", "-c", "config.toml", "--dry-run"]);
+    assert!(out.status.success(), "--dry-run 应成功: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("--dry-run:"), "应输出预览头: {stdout}");
+    assert!(stdout.contains("未执行生成"), "应声明未执行生成: {stdout}");
+    assert!(stdout.contains("个文件变更"), "应报告变更文件数: {stdout}");
+
+    // 无副作用：产物未被改写
+    let after: Vec<(String, String)> = std::fs::read_dir(&wiki_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().unwrap().is_file())
+        .map(|e| {
+            (
+                e.file_name().to_string_lossy().into_owned(),
+                std::fs::read_to_string(e.path()).unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(snapshot, after, "--dry-run 不得改写任何产物");
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
 // ==================== T5.2/T5.3：update 与 watch CLI 冒烟 ====================
 
 /// update：generate 后修改源文件，update 命令应成功退出并只重建受影响模块

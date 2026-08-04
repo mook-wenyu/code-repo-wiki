@@ -44,6 +44,9 @@ enum Commands {
         /// 以 JSON 行输出流水线进度（供插件解析，如 {"stage":"scanning","progress":10}）
         #[arg(long)]
         progress_json: bool,
+        /// 只分析并预览将更新的页面清单，不执行生成（无副作用）
+        #[arg(long)]
+        dry_run: bool,
         /// 项目根目录（扫描根/git 定位基准，默认当前目录）
         #[arg(long)]
         root: Option<PathBuf>,
@@ -348,10 +351,34 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
                 result.stats.total_entities
             );
         }
-        Commands::Update { config, output, force, progress_json, root } => {
+        Commands::Update { config, output, force, progress_json, dry_run, root } => {
             // update 命令无外部 watch 事件，watch_paths 传空、change_kind 传 None
             let root = resolve_root(root.as_deref())?;
             let config = resolve_config_path(config.as_deref(), &root)?;
+            // v17 t07：--dry-run 只做变更分析预览，不执行生成（无副作用）。
+            // 与 run_pipeline 的差异：跳过 LLM 与渲染，只输出将更新的文件/
+            // 模块清单——用户可先预览再决定是否真正执行。
+            if dry_run {
+                let cfg = repo_wiki::config::load_config(&config)?;
+                // scan_and_parse_at 返回 ScanOutput（v13 B5），取 insights 喂下游
+                let scan = repo_wiki::ingest::scan_and_parse_at(&root, &cfg)?;
+                let graph = repo_wiki::analysis::build_graph(&scan.insights)?;
+                let inc = repo_wiki::incremental::run_incremental_update_at(
+                    &root, &scan.insights, &graph, &cfg, &[],
+                )?;
+                println!(
+                    "--dry-run: {} 个文件变更, {} 个模块受影响（未执行生成）",
+                    inc.changed_files.len(),
+                    inc.affected_modules.len()
+                );
+                for f in &inc.changed_files {
+                    println!("  变更: {}", f.display());
+                }
+                for m in &inc.affected_modules {
+                    println!("  受影响模块: {m}");
+                }
+                return Ok(());
+            }
             let result = if progress_json {
                 // JSONL 进度输出：与 generate --progress-json 同构，供插件流式解析
                 repo_wiki::run_pipeline_with_progress(
@@ -452,12 +479,31 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
             }
         }
         Commands::Lint { config, root } => {
-            // lint 检查产物健康:孤儿页/断链/过时;发现问题时以非 0 退出码结束
-            // (供 CI 门禁使用:git hook 或流水线可据此拒绝合并)
-            // --root 提供时以 root 为产物目录基准（同 status）
-            let root = resolve_root(root.as_deref())?;
-            let config = resolve_config_path(config.as_deref(), &root)?;
-            let mut cfg = repo_wiki::config::load_config(&config)?;
+            // lint 检查产物健康:孤儿页/断链/过时;三态退出码（v17 t07，docverity
+            // 模式）：0 = 干净 / 1 = 有发现问题 / 2 = 工具问题（配置加载失败、
+            // 目录缺失——防止配置 typo 掩盖绿构建）
+            // --root 提供时以 root 为产物目录基准（同 status）。
+            let root = match resolve_root(root.as_deref()) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("lint: 工具问题: {}", e);
+                    std::process::exit(2);
+                }
+            };
+            let config = match resolve_config_path(config.as_deref(), &root) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("lint: 工具问题: {}", e);
+                    std::process::exit(2);
+                }
+            };
+            let mut cfg = match repo_wiki::config::load_config(&config) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("lint: 工具问题（配置加载失败）: {}", e);
+                    std::process::exit(2);
+                }
+            };
             cfg.output.dir = root.path().join(&cfg.output.dir).to_string_lossy().into_owned();
             let output_dir = Path::new(&cfg.output.dir);
             // 源码根从 scope.include 派生(取通配符前的目录前缀,如 "src/**" → "src")：
@@ -470,7 +516,7 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
                 for issue in &issues {
                     println!("lint [{}] {}: {}", issue.kind, issue.path, issue.message);
                 }
-                anyhow::bail!("lint: 发现 {} 个问题", issues.len());
+                std::process::exit(1);
             }
         }
         Commands::AstSearch { symbol, language, config, json, root } => {

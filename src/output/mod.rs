@@ -286,6 +286,18 @@ pub fn rendered_paths(
 ///
 /// `protected` 为人工修改保护集（路径字符串），命中路径跳过写盘，
 /// 覆盖 Wiki 页面与三个全局文档（api.md / overview.md / _toc.md）。
+/// v17 t06：mock provider 占位页脚标注（产物可辨识，防误读为真实文档）。
+/// 单一来源：lib.rs（LLM 文档）与 render_all（合成页 api.md）共用。
+pub const MOCK_FOOTER_MARK: &str = "\n\n<!-- 本页由 mock provider 生成，非真实内容 -->\n";
+
+/// 当前配置是否为 mock provider（占位页脚注入判定）
+fn is_mock_provider(config: &WikiConfig) -> bool {
+    matches!(
+        config.llm.provider,
+        crate::config::schema::LlmProviderType::Mock
+    )
+}
+
 pub fn render_all(
     documents: &[WikiDocument],
     cards: &[KnowledgeCard],
@@ -351,7 +363,15 @@ pub fn render_all(
             continue;
         }
         let api_doc = markdown::render_api_reference(graph);
-        crate::fs::write_file_atomic(&api_path, &api_doc.content)?;
+        // v17 t06：mock 模式下合成页（api.md 非 LLM 文档，不走 lib.rs 的
+        // documents 注入路径）同样追加占位页脚，标注点保持单一来源
+        // MOCK_FOOTER_MARK，与 lib.rs 注入一致
+        let content = if is_mock_provider(config) {
+            format!("{}{}", api_doc.content, MOCK_FOOTER_MARK)
+        } else {
+            api_doc.content
+        };
+        crate::fs::write_file_atomic(&api_path, &content)?;
     }
 
     // 3. 写入 Knowledge Card 索引（JSON 格式，写入主语言目录）

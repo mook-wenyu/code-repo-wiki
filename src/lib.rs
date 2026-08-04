@@ -362,6 +362,20 @@ pub fn run_pipeline_with_progress(
         gen_output.documents.push(index_doc);
     }
 
+    // v17 t06：mock 模式告警——占位内容页脚标注（产物可辨识，防误读为
+    // 真实文档）。mock 产物的页面内容是占位 JSON（MockProvider 固定返回），
+    // 生成层追加页脚（render 层保持纯渲染不感知 provider 类型；合成页
+    // api.md 的注入在 render_all 内，共用 MOCK_FOOTER_MARK 单一来源）。
+    if matches!(
+        config.llm.provider,
+        crate::config::schema::LlmProviderType::Mock
+    ) {
+        tracing::warn!("使用 mock provider：产物为占位内容，非真实文档（仅供测试/CI 演示）");
+        for doc in &mut gen_output.documents {
+            doc.content.push_str(crate::output::MOCK_FOOTER_MARK);
+        }
+    }
+
     // Phase 4: 输出（render_all 内部同步写导出快照；产物集合 diff 清理
     // 全量/增量统一：旧状态记录过但本次未生成的产物（含已删模块的
     // 旧页面/卡片）一律清理，module_{n} 档不再漏删）
