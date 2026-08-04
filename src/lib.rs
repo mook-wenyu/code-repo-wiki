@@ -252,6 +252,32 @@ pub fn run_pipeline_with_progress(
     // old_state 同时供人工修改反向同步组装（collect_manual_edits → 生成前注入）
     let (protected, old_state) = load_protection(&config, force)?;
 
+    // v19 t06：no-op 快速跳过（OpenWiki git-head 模式）——增量模式且上次
+    // 成功生成到同一 commit 且 scope 内工作树无未提交变更且产物存在时，
+    // 在扫描之前直接跳过（定时 CI/watch 免费空转；判定细节与保守边界
+    // 见 incremental::should_skip_noop 注释）。与下方"无代码变更短路"
+    // 同一出口：人工修改反向同步照常执行。
+    if is_incremental && incremental::should_skip_noop(root, &config)? {
+        tracing::info!("无文件变更，跳过更新（no-op 快速判定）");
+        if let Some(state) = &old_state {
+            let synced = sync_manual_edits_to_cards(&config, state)?;
+            if synced > 0 {
+                tracing::info!("人工修改已反向同步到 {} 张卡片", synced);
+            }
+        }
+        let stats = AnalysisStats {
+            files_scanned: 0,
+            generation_time_ms: start.elapsed().as_millis() as u64,
+            ..Default::default()
+        };
+        return Ok(AnalysisResult {
+            graph: model::KnowledgeGraph::default(),
+            documents: Vec::new(),
+            cards: Vec::new(),
+            stats,
+        });
+    }
+
     // Phase 1: 扫描。增量模式启用解析缓存（parse 层增量：内容指纹未变复用
     // 缓存结果，仅变更文件重新 tree-sitter 解析）；全量模式直接全量解析。
     let watch_list: Vec<std::path::PathBuf> = match mode {

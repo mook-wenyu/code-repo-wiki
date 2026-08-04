@@ -22,6 +22,93 @@ use crate::config::schema::IncrementalStrategy;
 /// diff 行数超过该上限时回退全量生成（防止超大变更集导致 LLM 成本失控）
 const MAX_DIFF_LINES: usize = 10_000;
 
+/// no-op 快速跳过判定（v19 t06，OpenWiki git-head 模式）
+///
+/// 定时 CI / watch 常驻场景下，无变更时 update 仍会全量扫描 + 分析
+/// （状态推进前每次跑全量），成本可观。本判定在扫描之前完成，全部
+/// 满足才跳过：
+/// 1. 状态文件可读且 last_commit_hash 存在（上次成功生成过）
+/// 2. 当前 git HEAD == last_commit_hash（无新提交）
+/// 3. scope.include 覆盖范围内工作树无未提交变更（git status 过滤——
+///    产物目录/其他目录的改动不算，否则本仓库自身产物会恒阻断跳过）
+/// 4. 产物信号存在（wiki 目录）——产物被删时不得跳过（no-op 固有盲区）
+///
+/// 为什么不需要 interrupted 标记（与 OpenWiki 方案的差异，G3 批判审查）：
+/// 中途失败（Ctrl-C/panic/LLM 故障）时生成状态不推进 last_commit_hash——
+/// 失败前有新提交则条件 2 不满足；失败前只有未提交变更则条件 3 不满足；
+/// 失败且无任何变更（纯外部故障）则产物与代码均未变化，跳过无损失。
+/// head + statuses 双判据已完备覆盖"防半程状态被误判"，interrupted 冗余。
+///
+/// 保守边界：状态损坏/非 git 仓库/无 HEAD/status 读取失败一律返回 false
+/// （不跳过，走正常路径——正常路径对同样情况有各自的回退语义）。
+pub fn should_skip_noop(root: &ProjectRoot, config: &WikiConfig) -> anyhow::Result<bool> {
+    // 1. 状态可读 + 有基线（生成完成的最后 commit）
+    let state_dir = Path::new(&config.output.dir).join(".state");
+    let state = match GenerationState::load(&state_dir) {
+        Ok(s) => s,
+        Err(_) => return Ok(false),
+    };
+    let Some(last_hash) = state.last_commit_hash else {
+        return Ok(false);
+    };
+    // 4. 产物信号：wiki 目录存在（被删时跳过会让缺失产物保持缺失）
+    if !Path::new(&config.output.dir).join("wiki").exists() {
+        return Ok(false);
+    }
+    // 2. 当前 HEAD 与基线一致（git2 读失败/无 HEAD = 保守不跳过）
+    let repo = match git2::Repository::open(root.path()) {
+        Ok(r) => r,
+        Err(_) => return Ok(false),
+    };
+    let head_hash = match repo.head() {
+        Ok(head) => head.peel_to_commit().ok().map(|c| c.id().to_string()),
+        Err(_) => return Ok(false),
+    };
+    if head_hash.as_deref() != Some(last_hash.as_str()) {
+        return Ok(false);
+    }
+    // 3. scope 范围内工作树无未提交变更
+    if status_in_scope(&repo, config) {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+/// 工作树未提交变更是否落在 scope.include 覆盖范围（相对仓库根判断）
+///
+/// 路径比较统一走 norm_sep（正斜杠）：git2 status 路径恒用正斜杠，
+/// include glob 语义也是正斜杠分隔；Windows 上 Path::starts_with 的
+/// 反斜杠比较会失配。
+fn status_in_scope(repo: &git2::Repository, config: &WikiConfig) -> bool {
+    let patterns: Vec<glob::Pattern> = config
+        .scope
+        .include
+        .iter()
+        .filter_map(|p| glob::Pattern::new(p).ok())
+        .collect();
+    // include 的字面目录前缀（"src/**" → "src"；glob 无法匹配目录内文件）
+    let roots: Vec<String> = config
+        .scope
+        .include
+        .iter()
+        .map(|p| {
+            let dir = p.split('*').next().unwrap_or_default().trim_end_matches('/');
+            norm_sep(if dir.is_empty() { "." } else { dir })
+        })
+        .collect();
+    match repo.statuses(None) {
+        Ok(statuses) => statuses.iter().any(|s| {
+            let Some(path) = s.path() else { return false };
+            let norm = norm_sep(path);
+            patterns.iter().any(|p| p.matches(&norm))
+                || roots.iter().any(|r| norm == *r || norm.starts_with(&format!("{r}/")))
+        }),
+        // status 读取失败：保守视为有变更（不跳过）——no-op 跳过只允许
+        // 在证据齐全时发生，证据缺失时必须走正常路径
+        Err(_) => true,
+    }
+}
+
 /// 路径分隔符归一化（Windows 兼容）
 ///
 /// git2 的 delta 路径恒用正斜杠（"src/net/tcp.rs"），而 scanner/insight
@@ -747,6 +834,152 @@ mod tests {
             changed
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ==================== v19 t06：no-op 快速跳过 ====================
+
+    /// 构造带 config 的 git 仓库 + 首个 commit，返回 (目录, 首个 HEAD hash, config)。
+    /// repo 用完即弃（借用生命周期的元组约束），需要 repo 的用例自行 reopen。
+    /// 目录带原子计数后缀：cargo test 并行跑多个用例，共用目录会竞争 .git/config.lock。
+    fn setup_noop_fixture() -> (PathBuf, String, WikiConfig) {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "repo_wiki_test_noop_{}_{}",
+            std::process::id(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = git2::Repository::init(&dir).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "test").unwrap();
+        cfg.set_str("user.email", "test@test.com").unwrap();
+
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src").join("a.rs"), "fn a() {}\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_all(["*"], git2::IndexAddOption::DEFAULT, None).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("test", "test@test.com").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap().id().to_string();
+
+        let mut config = make_config();
+        config.output.dir = dir.join("out").to_string_lossy().into_owned();
+        config.scope.include = vec!["src/**".to_string()];
+        (dir, head, config)
+    }
+
+    /// 保存生成状态（基线 = 指定 commit）+ 建产物信号目录
+    fn save_baseline(dir: &Path, config: &WikiConfig, commit_hash: &str) {
+        let insights = vec![make_insight("src/a.rs")];
+        let state = GenerationState::from_insights(
+            &ProjectRoot::new(dir.to_path_buf()),
+            &insights,
+            commit_hash,
+        )
+        .unwrap();
+        let state_dir = Path::new(&config.output.dir).join(".state");
+        state.save(&state_dir).unwrap();
+        std::fs::create_dir_all(Path::new(&config.output.dir).join("wiki").join("zh")).unwrap();
+    }
+
+    /// head 相同 + 工作树干净 + 产物存在 → 跳过（true）
+    #[test]
+    fn test_noop_skip_when_head_matches_and_clean() {
+        let (dir, head, config) = setup_noop_fixture();
+        save_baseline(&dir, &config, &head);
+
+        assert!(
+            should_skip_noop(&ProjectRoot::new(dir.clone()), &config).unwrap(),
+            "head 相同 + 工作树干净 + 产物存在应跳过"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// head 变化（新提交）→ 不跳过（false）
+    #[test]
+    fn test_noop_no_skip_when_head_changed() {
+        let (dir, first, config) = setup_noop_fixture();
+        // 基线 = 第一 commit，随后提交第二个 commit → head 变化
+        save_baseline(&dir, &config, &first);
+
+        let repo = git2::Repository::open(&dir).unwrap();
+        std::fs::write(dir.join("src").join("a.rs"), "fn a() { println!(); }\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_all(["*"], git2::IndexAddOption::DEFAULT, None).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("test", "test@test.com").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "second", &tree, &[&repo.head().unwrap().peel_to_commit().unwrap()]).unwrap();
+
+        assert!(
+            !should_skip_noop(&ProjectRoot::new(dir.clone()), &config).unwrap(),
+            "有新提交不得跳过"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// head 相同但工作树有 scope 内未提交变更 → 不跳过；
+    /// scope 外变更（产物目录）→ 仍跳过
+    #[test]
+    fn test_noop_status_scope_filtering() {
+        let (dir, head, config) = setup_noop_fixture();
+        save_baseline(&dir, &config, &head);
+
+        // scope 内（src/）未提交变更 → 不跳过
+        std::fs::write(dir.join("src").join("a.rs"), "fn a() { /* dirty */ }\n").unwrap();
+        assert!(
+            !should_skip_noop(&ProjectRoot::new(dir.clone()), &config).unwrap(),
+            "scope 内未提交变更不得跳过"
+        );
+        // 还原后产物目录（out/，scope 外）出现新文件 → 仍跳过（不阻断）
+        std::fs::write(dir.join("src").join("a.rs"), "fn a() {}\n").unwrap();
+        std::fs::write(
+            Path::new(&config.output.dir).join("out-of-scope.txt"),
+            "not code",
+        )
+        .unwrap();
+        assert!(
+            should_skip_noop(&ProjectRoot::new(dir.clone()), &config).unwrap(),
+            "scope 外变更（产物目录）不应阻断跳过"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 产物目录缺失 → 不跳过（no-op 固有盲区：产物被删不得保持缺失）
+    #[test]
+    fn test_noop_no_skip_when_output_missing() {
+        let (dir, head, config) = setup_noop_fixture();
+        // 只存基线，不建产物目录
+        let insights = vec![make_insight("src/a.rs")];
+        let state = GenerationState::from_insights(
+            &ProjectRoot::new(dir.clone()),
+            &insights,
+            &head,
+        )
+        .unwrap();
+        let state_dir = Path::new(&config.output.dir).join(".state");
+        state.save(&state_dir).unwrap();
+
+        assert!(
+            !should_skip_noop(&ProjectRoot::new(dir.clone()), &config).unwrap(),
+            "产物目录缺失不得跳过"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 无基线（状态缺失/无 last_commit_hash）→ 不跳过（首次 update 走正常路径）
+    #[test]
+    fn test_noop_no_skip_without_baseline() {
+        let (dir, _head, config) = setup_noop_fixture();
+        assert!(
+            !should_skip_noop(&ProjectRoot::new(dir.clone()), &config).unwrap(),
+            "无基线状态不得跳过"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
