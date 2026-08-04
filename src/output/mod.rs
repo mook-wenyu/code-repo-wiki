@@ -3,6 +3,7 @@
 pub mod crossref;
 pub mod citation;
 pub mod lint;
+pub mod semantic_lint;
 pub mod markdown;
 pub mod mermaid;
 pub mod mermaid_check;

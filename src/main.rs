@@ -385,6 +385,20 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
             let output_dir = Path::new(&cfg.output.dir);
             let source_roots = repo_wiki::commands::source_roots_from_include(&cfg.scope.include);
             let issues = repo_wiki::output::lint::lint(output_dir, &source_roots);
+            // v14 D 组（t05 拍板）：语义一致性检查（LLM 跨页矛盾，变更驱动——
+            // 只查本次 update 生成的受影响页；LLM 不可用/失败时"只告警"跳过，
+            // 语义检查是增强项，静态 lint 已覆盖机械问题）
+            if let Err(e) = repo_wiki::output::semantic_lint::check_semantic_consistency(
+                &cfg,
+                &result.documents,
+            )
+            .map(|semantic| {
+                for issue in &semantic {
+                    tracing::warn!("  [{}] {}: {}", issue.kind, issue.path, issue.message);
+                }
+            }) {
+                tracing::warn!("语义一致性检查跳过（LLM 不可用或调用失败）: {e}");
+            }
             if !issues.is_empty() {
                 tracing::warn!(
                     "update 完成后产物检查发现 {} 个问题（不阻断本次更新，详情可用 `repo-wiki lint` 查看）:",
