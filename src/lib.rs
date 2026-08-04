@@ -616,29 +616,49 @@ pub fn run_watch(config_path: &Path, root: &project::ProjectRoot) -> anyhow::Res
     // 监听根 = 注入的项目根（与 scan_and_parse_at 的扫描根一致）
     let watch_root = root.path().to_path_buf();
     let watch_root_for_loop = watch_root.clone();
-    incremental::watch::run_watch_loop(&watch_root_for_loop, &config, move |events| {
-        for event in events {
-            tracing::info!(
-                "检测到 {:?} {} 个文件变更，触发增量更新...",
-                event.kind,
-                event.paths.len()
-            );
-            // 事件类型显式传递：Deleted 直入删除清理（pipeline 内处理），
-            // 其余 kind 走常规增量更新
-            let change_kind = (event.kind == incremental::watch::ChangeKind::Deleted)
-                .then_some(event.kind);
-            let root = project::ProjectRoot::new(watch_root.clone());
-            let mode = GenerationMode::Incremental {
-                watch_paths: event.paths.clone(),
-                change_kind,
-            };
-            if let Err(e) = run_pipeline(&config_path, None, false, &root, &mode) {
-                tracing::error!("增量更新失败: {}", e);
-            } else {
-                tracing::info!("增量更新完成");
+    // v14 F 组（t06 拍板）：Ctrl-C 优雅退出——专用线程等待 SIGINT 后置
+    // 停止标记；run_watch_loop 每 500ms 轮询标记，置位时等当前增量
+    // 生成完成再退出（不会在状态落盘中途打断）。
+    let stop_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let flag = stop_flag.clone();
+        let rt = get_global_runtime();
+        std::thread::spawn(move || {
+            rt.block_on(async {
+                let _ = tokio::signal::ctrl_c().await;
+                flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                tracing::info!("收到 Ctrl-C，等待当前增量更新完成后退出...");
+            });
+        });
+    }
+    incremental::watch::run_watch_loop(
+        &watch_root_for_loop,
+        &config,
+        stop_flag,
+        move |events| {
+            for event in events {
+                tracing::info!(
+                    "检测到 {:?} {} 个文件变更，触发增量更新...",
+                    event.kind,
+                    event.paths.len()
+                );
+                // 事件类型显式传递：Deleted 直入删除清理（pipeline 内处理），
+                // 其余 kind 走常规增量更新
+                let change_kind = (event.kind == incremental::watch::ChangeKind::Deleted)
+                    .then_some(event.kind);
+                let root = project::ProjectRoot::new(watch_root.clone());
+                let mode = GenerationMode::Incremental {
+                    watch_paths: event.paths.clone(),
+                    change_kind,
+                };
+                if let Err(e) = run_pipeline(&config_path, None, false, &root, &mode) {
+                    tracing::error!("增量更新失败: {}", e);
+                } else {
+                    tracing::info!("增量更新完成");
+                }
             }
-        }
-    })
+        },
+    )
 }
 
 // ==================== 搜索索引集成 ====================

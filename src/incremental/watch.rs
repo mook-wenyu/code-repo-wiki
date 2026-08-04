@@ -41,6 +41,7 @@ pub struct WatchEvent {
 pub fn run_watch_loop(
     root: &Path,
     config: &WikiConfig,
+    stop_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     on_change: impl Fn(Vec<WatchEvent>) + Send + 'static,
 ) -> Result<()> {
     let include_exts = collect_include_exts(config);
@@ -84,9 +85,17 @@ pub fn run_watch_loop(
             .join(", ")
     );
 
-    for result in rx {
-        match result {
-            Ok(events) => {
+    // v14 F 组（t06 拍板）：Ctrl-C 优雅退出——主循环每 500ms 检查停止
+    // 标记，置位时退出（当前正在执行的 on_change 完成后才检查，即
+    // "等当前增量生成完成"；不会在生成中途打断状态落盘）。
+    use std::sync::atomic::Ordering;
+    loop {
+        if stop_flag.load(Ordering::Relaxed) {
+            tracing::info!("收到停止信号，文件监听退出");
+            return Ok(());
+        }
+        match rx.recv_timeout(Duration::from_millis(500)) {
+            Ok(Ok(events)) => {
                 // 聚合 + 折叠（同路径跨 kind 按最终态合并），
                 // 事件类型显式传递给下游，删除不再依赖 exists() 推断
                 let watch_events = process_batch(&events, &include_exts);
@@ -94,11 +103,15 @@ pub fn run_watch_loop(
                     on_change(watch_events);
                 }
             }
-            Err(errors) => {
+            Ok(Err(errors)) => {
                 for e in &errors {
                     tracing::warn!("文件监听错误: {:?}", e);
                 }
             }
+            // 超时（轮询停止标记）是正常路径：回到循环顶检查 stop_flag；
+            // Disconnected = 接收端全部 drop，监听无意义
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
     Ok(())
@@ -513,5 +526,26 @@ mod tests {
             .find(|e| e.kind == ChangeKind::Modified)
             .expect("应存在 Modified 事件");
         assert_eq!(modified.paths, vec![PathBuf::from("src/b.rs")]);
+    }
+
+    /// v14 F 组（t06 拍板）：停止标记预置 → 主循环立即退出
+    /// （优雅停止路径：标记在 on_change 完成后才检查，不打断进行中的
+    /// 增量生成；本测试验证预置标记的退出语义与不崩溃）
+    #[test]
+    fn test_watch_loop_exits_on_pre_set_stop_flag() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_watch_stop_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = make_config(vec!["src/**"]);
+        // 标记预置：循环第一次检查即退出（监听根不存在只告警不阻塞）
+        let stop_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let start = std::time::Instant::now();
+        let result = run_watch_loop(&dir, &config, stop_flag, |_| panic!("不应触发回调"));
+        assert!(result.is_ok(), "优雅退出应返回 Ok: {result:?}");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "预置停止标记应在监听启动后立即退出（无需等待事件）"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
