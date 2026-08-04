@@ -81,3 +81,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+// v17 F 组增量闭环验证
