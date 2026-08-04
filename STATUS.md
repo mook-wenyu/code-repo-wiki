@@ -1,5 +1,12 @@
 # 项目状态简报 （AI自动维护，禁止贴代码）
 
+## 四十四、v19 wayfinder 实施完成（2026-08-05，本会话）
+- 修改的功能：wayfinder-v19 十票 A-I 组落地——t01 版本自检（doctor 版本查+llms.txt/llms-full.txt 头注，commit 0db14f2）；t02 文档统一+CI（init 模板 embed 段统一 text-embedding-3-small+OPENAI_API_KEY、README 5 处失实修复、.github/workflows/ci.yml，commit 9ec7d40）；t03 lint 噪声（单字符/纯数字实体过滤+graph mod 类型，commit 46bedf4）；t04 测试泄漏（helper mock_config/openai_compatible_config 强制绝对路径，commit c8c12c2）；t05 llms-full.txt（32K 预算四档裁剪确定性渲染，commit d94f1b1）；t06 update no-op（git-head+工作树状态+产物存在三重判据，commit 77c9b6f）；t07 社区稳定重排序（大小降序+最小路径全序，commit 7fad509）；t08 CHANGELOG 归档 [0.2.0]（v13-v17）+v17 tickets 9/10 resolved
+- 摸到的文件：src/{doctor.rs(新), state.rs, llms_txt.rs, incremental/mod.rs, analysis/{community.rs,module.rs}, output/{lint.rs,mod.rs}, analysis/graph.rs, config/mod.rs, main.rs, lib.rs}+tests 9 文件+CHANGELOG.md+README.md+.github/workflows/ci.yml(新)
+- 是否改变了接口/契约：是（未上线无存量用户）——新增 update --dry-run/lint 三态/doctor 命令/llms-full.txt 产物/GenerationState.tool_version 字段；社区编号从「最小路径序」改「大小降序+最小路径」全序（产物文件名在新增小社区时更稳定）
+- 验证：cargo test --all-targets 512 passed 0 失败；clippy -D warnings 0；machete 干净；实机 no-op e2e（两次 update 第二次秒回「无文件变更，跳过更新」）
+- 遗留：t10 Unity 真实 LLM e2e 未验证（I 组）；t09 rubrics 自评 bench --judge 未跑
+
 ## 十五、外部对标 v7 深度分析（2026-08-03，联网权威检索）
 - 方法：本地全量检索（59 src 文件/19,554 行/17 模块/369 测试全绿）+ 实时联网检索（Karpathy gist 原文、LangChain OpenWiki、FSoft CodeWiki ACL 2026、he-yufeng RepoWiki、repositories-wiki、repowikiagent、doc-wiki、repowiki-cli、AGENTS.md 标准、arXiv 2604.15385/2312.10349/2509.14273、Anthropic Memory/Dreaming）
 - 结论：repo-wiki 是 Karpathy LLM Wiki 模式工程化完成度最高的开源实现之一——增量三层/引用契约/确定性测试/检索多样性四项领先；主要差距在消费引导层与质量闭环

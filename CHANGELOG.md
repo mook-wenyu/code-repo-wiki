@@ -6,8 +6,29 @@
 ## [Unreleased]
 
 ### Added
+- llms-full.txt 完整内容索引（v19 t05）：内联全部实体摘要，32K token 预算内四档裁剪（完整 → 去常量 → 去无定位 → 精简），头部含生成版本行
+- 版本自检（v19 t01）：doctor 新增「版本」检查（状态记录 vs 当前二进制版本漂移提示）；llms.txt / llms-full.txt 头部注入生成版本
+- update no-op 快速判定（v19 t06）：git HEAD + 工作树状态 + 产物存在三重判据，无变更时秒级跳过（含 watch 免费空转）
+- CI 模板（v19 t02）：.github/workflows/ci.yml（build + test + clippy -D warnings）
+
+### Changed
+- 社区命名稳定重排序（v19 t07）：社区按大小降序编号（Graphify 模式），新增小社区不扰动既有大社区编号
+- lint 实体噪声过滤（v19 t03）：单字符/纯数字实体名（LLM 编造噪声）两侧同口径忽略；graph 新增 mod 实体类型（NodeKind::Module）
+- 文档与配置模板统一（v19 t02）：init 模板 embed 段统一 text-embedding-3-small + OPENAI_API_KEY（消除三方失实）；README 补齐 init 全局链/lint 三态/dry-run/doctor/子命令表
+
+### Fixed
+- 测试产物泄漏隐患根治（v19 t04）：测试配置统一绝对路径（helper 强制临时目录）
+
+## [0.2.0] - 2026-08-04
+
+### Added
 - LLM Provider 协议拆分（v17 t02）：provider = openai（Responses API，base_url 可配，DeepSeek 归此）/ openai-compatible（chat/completions，custom 并入）；Responses 端点不支持（404/400）自动回退 chat/completions；旧配置 provider = custom 需改 openai-compatible
-- 生产就绪 P0-P2（v16）：README 安装段与 Linux/macOS 前置依赖声明、插件 PATH 绝对路径注入（install 时绑定 current_exe，不再依赖 PATH）、CHANGELOG 建档
+- doctor 诊断命令（v17 t04）：六查（配置可解析/产物目录可写/输出目录状态/LLM Key 引导/网络探活/版本漂移），mock provider 跳过网络查
+- update --dry-run 预览（v17 t03）：列出变更文件与受影响模块，零副作用
+- init 缺省链保护（v17 t01）：默认配置链已存在时跳过不覆盖，--force 强制重写，显式路径保持覆盖
+- mock 占位页页脚（v17 t03）：mock provider 生成的页面注入「非真实内容」标记
+- lint 三态退出码（v17 t03）：通过 0 / 检出问题 1 / 配置失败 2（CI 可直接消费）
+- 生产就绪 P0-P2（v16）：README 安装段与 Linux/macOS 前置依赖声明、插件 PATH 绝对路径注入（install 时绑定 current_exe，不再依赖 PATH）
 - 评测闭环（v14 C 组）：Rubric 层级完整性维度 7（CodeWikiBench 协议：docs_tree → 3 次独立生成 + 1 次合并 → 叶子 0/1 判定 → 加权聚合 S±σ+coverage）；TQS 补机会校正 Cohen's κ、位置偏差 |P(A胜)−0.5|、低置信模块清单
 - 语义 lint（v14 D 组）：LLM 跨页矛盾检查（变更驱动、单次调用合并多页、失败只告警）
 - llms.txt 导出（v14 E 组）：Agent 站点地图（确定性生成，render_all 同步写）
