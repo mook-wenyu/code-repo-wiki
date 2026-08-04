@@ -35,7 +35,13 @@ pub fn run(config_path: &Path, root: &ProjectRoot) -> Result<Vec<CheckResult>> {
     // 1. 配置存在且可解析（走 resolve_config_path 与主流程一致；
     // 失败即终止——后续检查都依赖配置）
     let config = match resolve_config_path(Some(config_path), root).and_then(|p| load_config(&p)) {
-        Ok(c) => {
+        Ok(mut c) => {
+            // output.dir 相对路径统一解析到 root（与 load_config_rooted 同语义，
+            // doctor 独立于 CLI 层无法复用该入口，此处保持一致性）
+            let output_dir = Path::new(&c.output.dir);
+            if output_dir.is_relative() {
+                c.output.dir = root.path().join(output_dir).to_string_lossy().into_owned();
+            }
             checks.push(CheckResult {
                 name: "配置",
                 ok: true,

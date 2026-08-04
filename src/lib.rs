@@ -69,6 +69,15 @@ fn load_config_with_output(
     } else {
         config
     };
+    // root 统一（v17 F 组，t09 实测发现）：output.dir 是相对路径（默认
+    // .repo-wiki）时必须解析到 root，否则 --root 场景（cwd ≠ root）产物
+    // 写到进程 cwd 错位。此前 main.rs 在 status/lint/note 三分支各自 root
+    // 化（重复且 generate/update 漏掉），收敛到本单一入口后所有下游
+    // （generate/update/lint/status/note/doctor/dry-run）行为一致。
+    let output_dir = Path::new(&config.output.dir);
+    if output_dir.is_relative() {
+        config.output.dir = root.path().join(output_dir).to_string_lossy().into_owned();
+    }
     // wiki_plan.yaml 的 scope 覆盖相对项目根解析（不依赖进程 cwd）
     if let Some(plan) = crate::config::plan::resolve_plan_at(root, &config)?
         && let Some(scope) = plan.scope_override
@@ -76,6 +85,16 @@ fn load_config_with_output(
         config.scope = scope;
     }
     Ok(config)
+}
+
+/// 加载配置并统一解析 output.dir 相对路径到 root（main.rs 各命令入口用；
+/// 与 run_pipeline 内部的 load_config_with_output 同源，保证 CLI 层与
+/// pipeline 层对产物目录的解析一致）
+pub fn load_config_rooted(
+    config_path: &Path,
+    root: &project::ProjectRoot,
+) -> anyhow::Result<config::schema::WikiConfig> {
+    load_config_with_output(config_path, None, root)
 }
 
 /// 加载保护集：旧 state 的 protected_docs + 新检测出的人工修改；force 时清空
@@ -382,9 +401,18 @@ pub fn run_pipeline_with_progress(
     // 旧页面/卡片）一律清理，module_{n} 档不再漏删）
     on_progress(ProgressEvent { stage: "wiki", percent: 90 });
     output::render_all(&gen_output.documents, &gen_output.cards, &graph, &config, &protected)?;
+    // 保留集 = 当前扫描的全部模块（graph.modules 基于全部 insights 检测，
+    // 含增量未受影响的模块）：增量只重新生成受影响模块，未受影响模块的
+    // 旧页面须保留（v17 F 组，t09 实测修复——误删会制造断链）
+    let preserved_modules: std::collections::HashSet<String> = graph
+        .modules
+        .iter()
+        .map(|m| m.name.clone())
+        .collect();
     cleanup_stale_outputs(
         old_state.as_ref(),
         &output::rendered_paths(&gen_output.documents, &gen_output.cards, &config),
+        &preserved_modules,
     );
     on_progress(ProgressEvent { stage: "output", percent: 95 });
 
@@ -504,6 +532,7 @@ pub fn run_card_command(
 pub(crate) fn cleanup_stale_outputs(
     old_state: Option<&incremental::state::GenerationState>,
     rendered: &[std::path::PathBuf],
+    preserved_modules: &std::collections::HashSet<String>,
 ) {
     let Some(state) = old_state else {
         return; // 无旧状态（首次生成）：不存在可清理的旧产物
@@ -518,6 +547,28 @@ pub(crate) fn cleanup_stale_outputs(
     let mut removed = 0usize;
     for path in stale {
         if rendered_set.contains(path) {
+            continue;
+        }
+        // v17 F 组（t09 实测）：root 统一（output.dir 绝对化）后，旧状态
+        // 键可能仍是相对路径（迁移前的生成记录）——相对键无法与绝对
+        // rendered 集可靠比较（旧 cwd 已不可考），保守保留，避免把合成页
+        // 等无模块归属的产物误删（实测：api/architecture/index/overview
+        // 四页被误删）。一次全量生成后状态键全部更新为绝对，后续增量
+        // 的清理语义恢复正常（收敛点明确，非兜底）。
+        if Path::new(path).is_relative() {
+            continue;
+        }
+        // v17 F 组（t09 实测修复）：增量模式下本次只重新生成受影响模块，
+        // 未受影响模块的旧页面是**有效产物**（源码仍在），不能当过期
+        // 清理——否则引用它的页面断链（实测：src_fs.md 被清理后 6 页
+        // broken）。判据：该页面归属的模块仍在当前扫描结果中（preserved
+        // 集合来自 graph.modules——基于全部 insights 的模块检测，未受
+        // 影响模块也在内）→ 保留；模块已从扫描消失（源文件删除）→ 清理。
+        if state
+            .doc_modules
+            .get(path)
+            .is_some_and(|m| preserved_modules.contains(m))
+        {
             continue;
         }
         let p = Path::new(path);
@@ -1164,7 +1215,8 @@ mod tests {
             .map(|lang| dir.join("wiki").join(lang).join("lib.md"))
             .collect();
 
-        cleanup_stale_outputs(Some(&state), &rendered);
+        // preserved 为空：src.md 的模块 src::foo 不在保留集 → 按原语义清理
+        cleanup_stale_outputs(Some(&state), &rendered, &std::collections::HashSet::new());
 
         for lang in ["zh", "en"] {
             assert!(
@@ -1209,12 +1261,61 @@ mod tests {
 
         // 本次渲染集合包含该路径（受保护文档属于生成集）
         let rendered = vec![manual.clone()];
-        cleanup_stale_outputs(Some(&state), &rendered);
+        cleanup_stale_outputs(Some(&state), &rendered, &std::collections::HashSet::new());
 
         assert!(
             manual.exists(),
             "渲染集合内的人工编辑文档不应被清理"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v17 F 组（t09 实测修复）：增量模式下未受影响模块的旧页面必须保留
+    /// ——模块仍在当前扫描（preserved 集合）中，即使本次未重新生成，
+    /// 清理也须跳过（误删会制造断链）
+    #[test]
+    fn test_cleanup_stale_outputs_preserves_modules_still_in_scan() {
+        let dir = std::env::temp_dir()
+            .join(format!("repo_wiki_test_stale_preserve_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut state = incremental::state::GenerationState {
+            last_commit_hash: None,
+            file_fingerprints: std::collections::HashMap::new(),
+            doc_fingerprints: std::collections::HashMap::new(),
+            doc_modules: std::collections::HashMap::new(),
+            protected_docs: vec![],
+            generated_at: String::new(),
+        };
+        // 旧状态：src::fs 模块的页面（模拟增量前生成的产物）
+        let fs_page = dir.join("wiki").join("zh").join("src_fs.md");
+        std::fs::create_dir_all(fs_page.parent().unwrap()).unwrap();
+        std::fs::write(&fs_page, "旧内容").unwrap();
+        state
+            .doc_fingerprints
+            .insert(fs_page.to_string_lossy().to_string(), "fp".into());
+        state
+            .doc_modules
+            .insert(fs_page.to_string_lossy().to_string(), "src::fs".into());
+        // 旧状态：src::deleted 模块的页面（模拟源文件已删除的模块）
+        let gone_page = dir.join("wiki").join("zh").join("src_deleted.md");
+        std::fs::write(&gone_page, "旧内容").unwrap();
+        state
+            .doc_fingerprints
+            .insert(gone_page.to_string_lossy().to_string(), "fp".into());
+        state
+            .doc_modules
+            .insert(gone_page.to_string_lossy().to_string(), "src::deleted".into());
+
+        // 本次渲染集不含任何上述页面（增量只生成其他模块）；
+        // 保留集含 src::fs（模块仍在扫描）但不含 src::deleted（已删除）
+        let preserved: std::collections::HashSet<String> =
+            ["src::fs".to_string()].into_iter().collect();
+        cleanup_stale_outputs(Some(&state), &[], &preserved);
+
+        assert!(fs_page.exists(), "仍在扫描的模块页面应保留");
+        assert!(!gone_page.exists(), "已删除模块的页面应清理");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1224,7 +1325,7 @@ mod tests {
         let dir = std::env::temp_dir()
             .join(format!("repo_wiki_test_stale_noop_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        cleanup_stale_outputs(None, &[]);
+        cleanup_stale_outputs(None, &[], &std::collections::HashSet::new());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

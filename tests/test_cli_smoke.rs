@@ -286,7 +286,8 @@ fn test_sync_merges_manual_edit_into_state() {
     let state_before = std::fs::read_to_string(&state_path)
         .unwrap_or_else(|e| panic!("generate 应写状态文件 {}: {}", state_path.display(), e));
     let before: serde_json::Value = serde_json::from_str(&state_before).unwrap();
-    let key = page.strip_prefix(&work_dir).unwrap().to_string_lossy().to_string();
+    // root 统一后产物路径绝对化（v17 F 组）：状态键为绝对路径，直接匹配
+    let key = page.to_string_lossy().to_string();
     let fp_before = before["doc_fingerprints"][&key].as_str()
         .unwrap_or_else(|| panic!("状态应含文档指纹 {key}: {state_before}"));
 
@@ -727,6 +728,100 @@ fn test_default_config_chain_prefers_project_config() {
     );
 
     let _ = std::fs::remove_dir_all(&work_dir);
+}
+
+/// v17 F 组（t09 实测修复）：增量更新不得误删未受影响模块的页面——
+/// 增量只重新生成受影响模块，未受影响模块的旧页面是有效产物（源码仍在），
+/// 清理须跳过（修复前 src_fs.md 被误删导致 6 页断链）
+#[test]
+fn test_incremental_update_keeps_unaffected_module_pages() {
+    let work_dir = prepare_repo("incr_preserve");
+    init_git(&work_dir, "init");
+    let out = run_bin(&work_dir, &["generate", "-c", "config.toml"]);
+    assert!(
+        out.status.success(),
+        "generate 应成功: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let pages_before = collect_page_stems(&work_dir);
+    assert!(pages_before.len() >= 3, "应有全部模块页: {pages_before:?}");
+
+    // 只做实现级变更（函数体内加代码行，不新增实体/签名/依赖边）：
+    // 增量稳定触发"单模块受影响"；新增实体会让小样本（3 文件）社区检测
+    // 翻转（Leiden 聚类边界，t09 调查确认），页面归属变化与本次修复目标
+    // （未受影响模块页面保留）无关，测试须避开
+    let auth = work_dir.join("src").join("auth.rs");
+    let content = std::fs::read_to_string(&auth).unwrap();
+    std::fs::write(
+        &auth,
+        content.replace(
+            "if username == \"admin\" && password == \"secret\" {",
+            "if username == \"admin\" && password == \"secret\" {\n        let _debug = 0; // 实现级变更",
+        ),
+    )
+    .unwrap();
+    commit_all(&work_dir, "change auth");
+    let out = run_bin(&work_dir, &["update", "-c", "config.toml"]);
+    assert!(
+        out.status.success(),
+        "增量 update 应成功: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // 增量后：全部旧页面必须仍在（未受影响模块页面不得被清理）
+    let pages_after = collect_page_stems(&work_dir);
+    for p in &pages_before {
+        assert!(
+            pages_after.contains(p),
+            "增量更新误删了未受影响模块的页面: {p}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
+
+/// 收集产物 wiki 页面的文件 stem 集合（wiki/zh/*.md，不含合成页）
+fn collect_page_stems(work_dir: &Path) -> std::collections::HashSet<String> {
+    std::fs::read_dir(work_dir.join(".repo-wiki").join("wiki").join("zh"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().unwrap().is_file())
+        .map(|e| {
+            e.path()
+                .file_stem()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect()
+}
+
+/// 用 git2 在目录初始化仓库并提交全部文件（增量 git-diff 基线）
+fn init_git(dir: &Path, message: &str) {
+    let repo = git2::Repository::init(dir).unwrap();
+    let mut cfg = repo.config().unwrap();
+    cfg.set_str("user.name", "test").unwrap();
+    cfg.set_str("user.email", "test@test.com").unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_all(["*"], git2::IndexAddOption::DEFAULT, None).unwrap();
+    index.write().unwrap();
+    let tree_id = index.write_tree().unwrap();
+    let tree = repo.find_tree(tree_id).unwrap();
+    let sig = git2::Signature::now("test", "test@test.com").unwrap();
+    repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[]).unwrap();
+}
+
+/// 提交当前工作树变更（供增量场景构造）
+fn commit_all(dir: &Path, message: &str) {
+    let repo = git2::Repository::open(dir).unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_all(["*"], git2::IndexAddOption::DEFAULT, None).unwrap();
+    index.write().unwrap();
+    let tree_id = index.write_tree().unwrap();
+    let tree = repo.find_tree(tree_id).unwrap();
+    let sig = git2::Signature::now("test", "test@test.com").unwrap();
+    let parent = repo.head().unwrap().peel_to_commit().unwrap();
+    repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent])
+        .unwrap();
 }
 
 /// v17 t08：doctor 端到端——mock 配置全过（网络跳过）退出码 0；

@@ -369,7 +369,7 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
             // 与 run_pipeline 的差异：跳过 LLM 与渲染，只输出将更新的文件/
             // 模块清单——用户可先预览再决定是否真正执行。
             if dry_run {
-                let cfg = repo_wiki::config::load_config(&config)?;
+                let cfg = repo_wiki::load_config_rooted(&config, &root)?;
                 // scan_and_parse_at 返回 ScanOutput（v13 B5），取 insights 喂下游
                 let scan = repo_wiki::ingest::scan_and_parse_at(&root, &cfg)?;
                 let graph = repo_wiki::analysis::build_graph(&scan.insights)?;
@@ -421,7 +421,7 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
             // 跨页一致性问题（断链/引用漂移/符号漂移等）可能残留，此处让
             // 用户立即可见；只告警不改变退出码（"失败只告警"策略——产物
             // 缺陷由 lint 门禁兜底拦截，update 主流程语义不受影响）。
-            let cfg = repo_wiki::config::load_config(&config)?;
+            let cfg = repo_wiki::load_config_rooted(&config, &root)?;
             let output_dir = Path::new(&cfg.output.dir);
             let source_roots = repo_wiki::commands::source_roots_from_include(&cfg.scope.include);
             let issues = repo_wiki::output::lint::lint(output_dir, &source_roots);
@@ -453,12 +453,12 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
         }
         Commands::Sync { config, root } => {
             // sync = Git 内容 → 指纹库（不触发 LLM）；与 update = 代码变更 → 增量生成 边界分离。
-            // 产物目录相对 cwd 解析（与 generate 的 output.dir 同基准，指纹键形态一致——
-            // 若以 root 重定向会破坏与生成状态键的一致性，人工修改保护检测失效）。
-            // --root 仅用于默认配置链的项目级定位（v13 E 组），产物基准语义不变。
+            // 产物目录与 generate 同基准：load_config_rooted 统一将相对 output.dir
+            // 解析到 root（v17 F 组）——指纹键形态必须与生成状态键一致，否则
+            // 人工修改保护检测失效（旧实现 sync 相对 cwd 解析，root 化后错位）。
             let root = resolve_root(root.as_deref())?;
             let config = resolve_config_path(config.as_deref(), &root)?;
-            let cfg = repo_wiki::config::load_config(&config)?;
+            let cfg = repo_wiki::load_config_rooted(&config, &root)?;
             repo_wiki::commands::sync_from_git(Path::new(&cfg.output.dir))?;
             tracing::info!("同步完成 (--config {})", config.display());
         }
@@ -467,8 +467,7 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
             // 缺省 root=cwd 行为不变）
             let root = resolve_root(root.as_deref())?;
             let config = resolve_config_path(config.as_deref(), &root)?;
-            let mut cfg = repo_wiki::config::load_config(&config)?;
-            cfg.output.dir = root.path().join(&cfg.output.dir).to_string_lossy().into_owned();
+            let cfg = repo_wiki::load_config_rooted(&config, &root)?;
             tracing::info!("配置加载成功: {}", config.display());
             let report = repo_wiki::commands::status_report(&cfg);
             // ready 才报告页面统计与 lint 结果；未生成时引导运行 generate
@@ -507,14 +506,13 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
                     std::process::exit(2);
                 }
             };
-            let mut cfg = match repo_wiki::config::load_config(&config) {
+            let cfg = match repo_wiki::load_config_rooted(&config, &root) {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!("lint: 工具问题（配置加载失败）: {}", e);
                     std::process::exit(2);
                 }
             };
-            cfg.output.dir = root.path().join(&cfg.output.dir).to_string_lossy().into_owned();
             let output_dir = Path::new(&cfg.output.dir);
             // 源码根从 scope.include 派生(取通配符前的目录前缀,如 "src/**" → "src")：
             // 过时检查需要对比源文件 mtime,空根会导致检查静默跳过(缺陷修复前行为)
@@ -581,7 +579,7 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
         Commands::Export { config, output, skip_generate, root } => {
             let root = resolve_root(root.as_deref())?;
             let config = resolve_config_path(config.as_deref(), &root)?;
-            let cfg = repo_wiki::config::load_config(&config)?;
+            let cfg = repo_wiki::load_config_rooted(&config, &root)?;
             if skip_generate {
                 // 从导出快照恢复导出（票 06）：不重跑生成流水线。
                 // render_all 每次写盘后同步写 .state/export_snapshot.json，
@@ -642,8 +640,7 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
             // --root 提供时以 root 为产物目录基准（同 status/lint）
             let root = resolve_root(root.as_deref())?;
             let config = resolve_config_path(config.as_deref(), &root)?;
-            let mut cfg = repo_wiki::config::load_config(&config)?;
-            cfg.output.dir = root.path().join(&cfg.output.dir).to_string_lossy().into_owned();
+            let cfg = repo_wiki::load_config_rooted(&config, &root)?;
             repo_wiki::commands::append_note(
                 Path::new(&cfg.output.dir),
                 &cfg.wiki.language,
@@ -685,7 +682,7 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
             // 解析引擎类型：优先用 CLI 参数，否则取配置文件中的 default_engine
             let root = resolve_root(root.as_deref())?;
             let config = resolve_config_path(config.as_deref(), &root)?;
-            let cfg = repo_wiki::config::load_config(&config)?;
+            let cfg = repo_wiki::load_config_rooted(&config, &root)?;
             let engine_type = match engine.as_deref() {
                 Some("text") => repo_wiki::config::schema::SearchEngineType::Text,
                 Some("semantic") => repo_wiki::config::schema::SearchEngineType::Semantic,
@@ -787,7 +784,7 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
             // 脏工作区会明确报错拒绝评测。
             let root = repo_wiki::project::ProjectRoot::new(root);
             let config_path = resolve_config_path(config.as_deref(), &root)?;
-            let cfg = repo_wiki::config::load_config(&config_path)?;
+            let cfg = repo_wiki::load_config_rooted(&config_path, &root)?;
             let repo_name = repo_name.unwrap_or_else(|| {
                 root.path()
                     .file_name()
