@@ -146,22 +146,25 @@ pub fn detect_communities_with_resolution(graph: &KnowledgeGraph, resolution: f6
         groups.entry(comm).or_default().push(file_nodes[i]);
     }
 
-    // 确定性输出：按社区内最小 file_path 排序
+    // 确定性输出：按社区大小降序（Graphify 稳定重索引：大社区编号优先，
+    // 新增小社区不改变既有大社区的相对序，产物文件名/模块编号跨次稳定），
+    // 同大小按最小 file_path 升序（全序确定，不依赖哈希表遍历序）
     let mut communities: Vec<Vec<NodeId>> = groups.into_values().collect();
-    communities.sort_by_key(|files| {
-        files
-            .iter()
-            .map(|nid| {
-                graph
-                    .graph
-                    .node_weight(*nid)
-                    .and_then(|n| n.file_path.clone())
-                    .unwrap_or_default()
-            })
-            .min()
-            .unwrap_or_default()
+    communities.sort_by(|a, b| {
+        b.len()
+            .cmp(&a.len())
+            .then_with(|| min_file_path(graph, a).cmp(&min_file_path(graph, b)))
     });
     communities
+}
+
+/// 社区内最小 file_path（确定性排序键；无路径节点视为空串排最前）
+fn min_file_path(graph: &KnowledgeGraph, files: &[NodeId]) -> String {
+    files
+        .iter()
+        .filter_map(|nid| graph.graph.node_weight(*nid).and_then(|n| n.file_path.clone()))
+        .min()
+        .unwrap_or_default()
 }
 
 /// 社区命名三档规则（T1.3）：
@@ -372,5 +375,83 @@ mod tests {
         let files = vec!["main.rs".to_string()];
         assert_eq!(community_name(&files, 7), "module_7");
         assert_eq!(community_name(&[], 2), "module_2");
+    }
+
+    /// 稳定重排序（t07）：社区按大小降序编号——新增小社区不改变
+    /// 既有大社区的相对序，模块编号/产物文件名跨次稳定
+    #[test]
+    fn test_detect_communities_stable_order() {
+        let mut kg = KnowledgeGraph::default();
+        let g = &mut kg.graph;
+        // 大社区：src/net/ 下 2 文件 + 2 实体（4 节点）
+        let add_comm = |g: &mut petgraph::stable_graph::StableDiGraph<CodeNode, CodeEdge>,
+                            path: &str| {
+            let nid = g.add_node(CodeNode {
+                id: NodeId::new(g.node_count()),
+                kind: NodeKind::File,
+                name: path.into(),
+                file_path: Some(path.into()),
+                line_range: None,
+                doc_comment: None,
+                signature: None,
+                module_path: dir_segments(path),
+            });
+            let eid = g.add_node(CodeNode {
+                id: NodeId::new(g.node_count()),
+                kind: NodeKind::Function,
+                name: format!("f{}", nid.index()),
+                file_path: Some(path.into()),
+                line_range: None,
+                doc_comment: None,
+                signature: None,
+                module_path: Vec::new(),
+            });
+            g.add_edge(
+                nid,
+                eid,
+                CodeEdge {
+                    id: EdgeId::new(g.edge_count()),
+                    kind: EdgeKind::Contains,
+                    source: nid,
+                    target: eid,
+                    weight: 1.0,
+                    location: None,
+                },
+            );
+        };
+        add_comm(g, "src/net/tcp.rs");
+        add_comm(g, "src/net/udp.rs");
+        // 小社区：孤立单文件
+        add_comm(g, "src/util.rs");
+        // 定位 tcp/udp 的 File 节点
+        let f = |g: &mut petgraph::stable_graph::StableDiGraph<CodeNode, CodeEdge>, path: &str| {
+            g.node_indices()
+                .find(|n| g.node_weight(*n).map(|n| n.name == path).unwrap_or(false))
+                .unwrap()
+        };
+        let _tcp = f(g, "src/net/tcp.rs");
+        let _udp = f(g, "src/net/udp.rs");
+        // tcp 的实体 → udp 的实体（Calls 边促成同社区）
+        let fns: Vec<_> = g
+            .node_indices()
+            .filter(|n| g.node_weight(*n).map(|n| n.kind == NodeKind::Function).unwrap_or(false))
+            .collect();
+        g.add_edge(
+            fns[0],
+            fns[1],
+            CodeEdge {
+                id: EdgeId::new(g.edge_count()),
+                kind: EdgeKind::Calls,
+                source: fns[0],
+                target: fns[1],
+                weight: 0.7,
+                location: None,
+            },
+        );
+        let communities = detect_communities(&kg);
+        assert_eq!(communities.len(), 2);
+        // 大社区（2 文件）必须排在单文件社区之前（大小降序）
+        assert_eq!(communities[0].len(), 2, "大社区应排前（稳定重排序）");
+        assert_eq!(communities[1].len(), 1);
     }
 }

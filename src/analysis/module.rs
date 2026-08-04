@@ -34,8 +34,8 @@ impl<'a> ModuleDetector<'a> {
         let mut used_names: HashSet<String> = HashSet::new();
 
         for (idx, community) in communities.iter().enumerate() {
-            // 命名输入 = 社区内文件路径（确定性：communities 已按最小路径排序，
-            // 组内再排序——file_stem 取 first 的消歧后缀依赖组内顺序，N20）
+            // 命名输入 = 社区内文件路径（确定性：communities 已按大小降序 +
+            // 最小路径排序，组内再排序——file_stem 取 first 的消歧后缀依赖组内顺序，N20）
             let mut file_paths: Vec<String> = community
                 .iter()
                 .filter_map(|nid| {
