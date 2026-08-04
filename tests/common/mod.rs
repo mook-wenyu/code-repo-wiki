@@ -9,7 +9,7 @@
 //! HOME/USERPROFILE 等宿主环境变量）、固定 SSE 响应的 mock LLM server。
 //!
 //! 注意：本模块不包含各测试特有的 fixture 构造（prepare_repo /
-//! minimal_config / TEST_CONFIG）——它们与具体测试的断言语义耦合，
+//! minimal_config 等）——它们与具体测试的断言语义耦合，
 //! 保留在各自文件（避免为合并而参数化过度抽象）。
 //!
 //! common 被每个测试 crate 独立编译，各自只用 helper 子集——
@@ -66,6 +66,70 @@ pub fn run_bin_with_envs(dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> Ou
         cmd.env(k, v);
     }
     cmd.output().expect("执行 repo-wiki 二进制失败")
+}
+
+/// mock provider 配置模板（v19 t04：output.dir 强制绝对路径）
+///
+/// 调用方必须传临时目录的绝对路径（如 `unique_dir("x").join(".repo-wiki")`
+/// 的字符串形式）。相对路径依赖进程 cwd——watch 常驻、CI 目录漂移或
+/// 并行测试时可能解析到仓库根，把产物泄漏进工作区（v13 C2 曾清理过
+/// 仓库根 wiki/ 泄漏）。mock provider 不触网，无需 mock server。
+pub fn mock_config(output_dir: &str) -> String {
+    // Windows 绝对路径含反斜杠：TOML 字符串内反斜杠是转义符，必须转义
+    // （`C:\Users\...` 中 \U 是非法转义 → 解析失败；其余平台无影响）
+    let escaped = output_dir.replace('\\', "\\\\");
+    format!(
+        r#"
+[scope]
+include = ["**/*.rs"]
+exclude = []
+
+[output]
+dir = "{escaped}"
+
+[llm]
+provider = "mock"
+model = "mock-model"
+api_key = "mock"
+api_key_env = ""
+max_concurrent = 1
+
+[incremental]
+enabled = true
+strategy = "git-diff"
+"#
+    )
+}
+
+/// openai-compatible 形态配置模板（走本地 mock SSE server）
+///
+/// 与 mock_config 同规则：output_dir 必须传绝对路径（cwd 依赖 = 泄漏
+/// 隐患）。port 为 mock_llm_server() 返回的监听端口。
+pub fn openai_compatible_config(port: u16, output_dir: &str) -> String {
+    let escaped = output_dir.replace('\\', "\\\\");
+    format!(
+        r#"
+[scope]
+include = ["**/*.rs"]
+exclude = []
+
+[output]
+dir = "{escaped}"
+format = "markdown"
+
+[llm]
+provider = "openai-compatible"
+model = "gpt-4o"
+base_url = "http://127.0.0.1:{port}/v1"
+api_key = "mock"
+api_key_env = "OPENAI_API_KEY"
+max_concurrent = 1
+
+[incremental]
+enabled = false
+strategy = "git-diff"
+"#
+    )
 }
 
 /// 启动本地 mock LLM server（返回监听端口）

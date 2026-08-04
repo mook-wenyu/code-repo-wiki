@@ -21,30 +21,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 mod common;
-use common::{copy_dir, run_bin, unique_dir};
+use common::{copy_dir, mock_config, run_bin, unique_dir};
 
-/// 冒烟测试共用配置：内置 mock LLM provider（generate 不触网），
-/// output.dir 指向仓库内 .repo-wiki（对齐 CLI 默认约定）；
-/// incremental 开启（sync 测试需要指纹状态库）、search 开启（search 测试需要文本索引）。
-const TEST_CONFIG: &str = r#"
-[scope]
-include = ["**/*.rs"]
-exclude = []
-
-[output]
-dir = ".repo-wiki"
-
-[llm]
-provider = "mock"
-model = "mock-model"
-api_key = "mock"
-api_key_env = ""
-max_concurrent = 1
-
-[incremental]
-enabled = true
-strategy = "git-diff"
-
+/// 冒烟测试共用 search 段：search 测试需要文本索引
+/// （mock_config helper 已含 scope/output/llm/incremental 段，
+/// v19 t04 起 output.dir 绝对路径化，不依赖进程 cwd）
+const SEARCH_SECTION: &str = r#"
 [search]
 enabled = true
 index_dir = ".search"
@@ -61,7 +43,13 @@ fn prepare_repo(tag: &str) -> PathBuf {
     let work_dir = unique_dir(tag);
     let _ = std::fs::remove_dir_all(&work_dir);
     copy_dir(&fixture, &work_dir);
-    std::fs::write(work_dir.join("config.toml"), TEST_CONFIG).unwrap();
+    // v19 t04：output.dir 指向仓库内 .repo-wiki（对齐 CLI 默认约定），
+    // 以绝对路径写入，杜绝 cwd 依赖导致的产物泄漏
+    let config = format!(
+        "{}{SEARCH_SECTION}",
+        mock_config(&work_dir.join(".repo-wiki").to_string_lossy())
+    );
+    std::fs::write(work_dir.join("config.toml"), config).unwrap();
     work_dir
 }
 
@@ -617,7 +605,7 @@ fn test_watch_command_detects_change() {
     use std::time::{Duration, Instant};
 
     let work_dir = prepare_repo("watch_smoke");
-    // watch 监听根 = scope.include[0] 的通配符前目录；TEST_CONFIG 的 include 是 "**/*.rs"，
+    // watch 监听根 = scope.include[0] 的通配符前目录；mock_config 的 include 是 "**/*.rs"，
     // 监听根为仓库根，src/extra.rs 在其下
     std::fs::create_dir_all(work_dir.join("src")).unwrap();
     let extra = work_dir.join("src").join("extra.rs");
@@ -712,7 +700,11 @@ fn test_default_config_chain_prefers_project_config() {
     let work_dir = unique_dir("e-chain");
     let _ = std::fs::remove_dir_all(&work_dir);
     std::fs::create_dir_all(work_dir.join(".repo-wiki")).unwrap();
-    std::fs::write(work_dir.join(".repo-wiki").join("config.toml"), TEST_CONFIG).unwrap();
+    std::fs::write(
+        work_dir.join(".repo-wiki").join("config.toml"),
+        mock_config(&work_dir.join(".repo-wiki").to_string_lossy()),
+    )
+    .unwrap();
 
     // 不带 --config 运行 status：应命中项目级配置（未生成提示 + 配置路径）
     let out = run_bin(&work_dir, &["status"]);

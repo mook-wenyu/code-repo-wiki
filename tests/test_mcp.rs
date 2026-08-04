@@ -11,28 +11,11 @@ use std::process::Stdio;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 mod common;
-use common::unique_dir;
+use common::{mock_config, unique_dir};
 
-/// 冒烟配置：mock provider + 仓库内 .repo-wiki（search 开启，供 search 工具验证）
-const TEST_CONFIG: &str = r#"
-[scope]
-include = ["**/*.rs"]
-exclude = []
-
-[output]
-dir = ".repo-wiki"
-
-[llm]
-provider = "mock"
-model = "mock-model"
-api_key = "mock"
-api_key_env = ""
-max_concurrent = 1
-
-[incremental]
-enabled = true
-strategy = "git-diff"
-
+/// 冒烟配置：mock provider + 仓库内 .repo-wiki（search 开启，供 search 工具验证）。
+/// v19 t04：基于 common helper（output.dir 绝对路径），追加 search 段
+const SEARCH_SECTION: &str = r#"
 [search]
 enabled = true
 index_dir = ".search"
@@ -98,7 +81,11 @@ async fn test_mcp_initialize_lists_tools_and_calls() {
     let dir = unique_dir("server");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join(".repo-wiki")).unwrap();
-    std::fs::write(dir.join(".repo-wiki").join("config.toml"), TEST_CONFIG).unwrap();
+    let config = format!(
+        "{}{SEARCH_SECTION}",
+        mock_config(&dir.join(".repo-wiki").to_string_lossy())
+    );
+    std::fs::write(dir.join(".repo-wiki").join("config.toml"), &config).unwrap();
     // 建一个源文件供 search/ast_search 扫描
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(dir.join("src").join("main.rs"), "pub fn hello_world() {}\n").unwrap();
@@ -202,7 +189,11 @@ async fn test_mcp_lang_traversal_rejected() {
     let dir = unique_dir("traversal");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join(".repo-wiki")).unwrap();
-    std::fs::write(dir.join(".repo-wiki").join("config.toml"), TEST_CONFIG).unwrap();
+    let config = format!(
+        "{}{SEARCH_SECTION}",
+        mock_config(&dir.join(".repo-wiki").to_string_lossy())
+    );
+    std::fs::write(dir.join(".repo-wiki").join("config.toml"), &config).unwrap();
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(dir.join("src").join("main.rs"), "pub fn hello_world() {}\n").unwrap();
     // 仓库根之外放置秘密文件（穿越攻击的目标）

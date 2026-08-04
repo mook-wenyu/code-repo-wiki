@@ -11,7 +11,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 mod common;
-use common::{copy_dir, unique_dir};
+use common::{copy_dir, openai_compatible_config, unique_dir};
 
 #[test]
 fn test_pipeline_progress_events_monotonic_and_done() {
@@ -48,35 +48,11 @@ fn test_pipeline_progress_events_monotonic_and_done() {
         }
     });
 
+    // v19 t04：基于 common helper（dir 绝对路径，杜绝 cwd 泄漏）；
+    // 本测试内联自定义 mock server（非 SSE 形态），port 取自该 server
     let config = format!(
-        r#"
-[scope]
-include = ["**/*.rs"]
-exclude = []
-
-[output]
-dir = "wiki"
-format = "markdown"
-
-[llm]
-provider = "openai-compatible"
-model = "gpt-4o"
-base_url = "http://127.0.0.1:{}/v1"
-api_key = "mock"
-api_key_env = "OPENAI_API_KEY"
-max_concurrent = 1
-
-[incremental]
-enabled = false
-strategy = "git-diff"
-
-[search]
-enabled = true
-index_dir = ".search"
-default_engine = "text"
-default_top_k = 10
-"#,
-        port
+        "{}[search]\nenabled = true\nindex_dir = \".search\"\ndefault_engine = \"text\"\ndefault_top_k = 10\n",
+        openai_compatible_config(port, work_dir.join("wiki").to_str().unwrap())
     );
     std::fs::write(work_dir.join("config.toml"), config).unwrap();
 

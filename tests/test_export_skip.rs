@@ -12,37 +12,11 @@
 use std::path::{Path, PathBuf};
 
 mod common;
-use common::{copy_dir, run_bin, unique_dir};
-
-/// 共用配置：内置 mock LLM provider（generate 不触网），
-/// output.dir 指向仓库内 .repo-wiki（对齐 CLI 默认约定）
-const TEST_CONFIG: &str = r#"
-[scope]
-include = ["**/*.rs"]
-exclude = []
-
-[output]
-dir = ".repo-wiki"
-
-[llm]
-provider = "mock"
-model = "mock-model"
-api_key = "mock"
-api_key_env = ""
-max_concurrent = 1
-
-[incremental]
-enabled = false
-strategy = "git-diff"
-
-[search]
-enabled = false
-index_dir = ".search"
-default_engine = "text"
-default_top_k = 10
-"#;
+use common::{copy_dir, mock_config, run_bin, unique_dir};
 
 /// 复制 sample-repo 到唯一临时目录并改写 config.toml（mock provider，不触网），返回工作目录
+/// （v19 t04：基于 common helper，output.dir 绝对路径化，不依赖 cwd；
+/// export 用例无需 search 索引，helper 默认形态即可）
 fn prepare_repo(tag: &str) -> PathBuf {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -51,7 +25,11 @@ fn prepare_repo(tag: &str) -> PathBuf {
     let work_dir = unique_dir(tag);
     let _ = std::fs::remove_dir_all(&work_dir);
     copy_dir(&fixture, &work_dir);
-    std::fs::write(work_dir.join("config.toml"), TEST_CONFIG).unwrap();
+    std::fs::write(
+        work_dir.join("config.toml"),
+        mock_config(&work_dir.join(".repo-wiki").to_string_lossy()),
+    )
+    .unwrap();
     work_dir
 }
 

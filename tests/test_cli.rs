@@ -11,41 +11,15 @@
 //! 收敛于 common 模块（v13 B8）。
 
 mod common;
-use common::{copy_dir, mock_llm_server, run_bin_with_envs, unique_dir};
+use common::{copy_dir, mock_llm_server, openai_compatible_config, run_bin_with_envs, unique_dir};
 use std::path::{Path, PathBuf};
 
-/// 最小可用配置：LLM 指向本地 mock server，增量/搜索关闭，输出到相对路径 wiki
-fn minimal_config(port: u16) -> String {
-    format!(
-        r#"
-[scope]
-include = ["**/*.rs"]
-exclude = []
-
-[output]
-dir = "wiki"
-format = "markdown"
-
-[llm]
-provider = "openai-compatible"
-model = "gpt-4o"
-base_url = "http://127.0.0.1:{}/v1"
-api_key = "mock"
-api_key_env = "OPENAI_API_KEY"
-max_concurrent = 1
-
-[incremental]
-enabled = false
-strategy = "git-diff"
-
-[search]
-enabled = false
-index_dir = ".search"
-default_engine = "text"
-default_top_k = 10
-"#,
-        port
-    )
+/// 最小可用配置：LLM 指向本地 mock server，增量/搜索关闭，输出到绝对临时路径
+/// （v19 t04：output.dir 用绝对路径，消除 cwd 依赖的泄漏隐患）
+fn minimal_config(port: u16, out_dir: &Path) -> String {
+    let cfg = openai_compatible_config(port, out_dir.to_str().unwrap());
+    // 与 helper 的差异：搜索段关闭（helper 无 search 段，默认开）
+    format!("{cfg}\n[search]\nenabled = false\nindex_dir = \".search\"\ndefault_engine = \"text\"\ndefault_top_k = 10\n")
 }
 
 /// 复制 fixture 并写入指向 mock LLM 的 config.toml，返回工作目录
@@ -58,7 +32,11 @@ fn prepare_repo(tag: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&work_dir);
     copy_dir(&fixture, &work_dir);
     let port = mock_llm_server();
-    std::fs::write(work_dir.join("config.toml"), minimal_config(port)).unwrap();
+    std::fs::write(
+        work_dir.join("config.toml"),
+        minimal_config(port, &work_dir.join("wiki")),
+    )
+    .unwrap();
     work_dir
 }
 
@@ -414,37 +392,10 @@ fn test_search_hybrid_includes_callchain() {
     copy_dir(&fixture, &work_dir);
 
     // 覆盖 config.toml：启用搜索索引（fixture 自带 config 可能未开）
+    // v19 t04：基于 helper 模板 + 追加 search 段（搜索特例，dir 绝对路径）
     let port = mock_llm_server();
-    let config = format!(
-        r#"
-[scope]
-include = ["**/*.rs"]
-exclude = []
-
-[output]
-dir = "wiki"
-format = "markdown"
-
-[llm]
-provider = "openai-compatible"
-model = "gpt-4o"
-base_url = "http://127.0.0.1:{}/v1"
-api_key = "mock"
-api_key_env = "OPENAI_API_KEY"
-max_concurrent = 1
-
-[incremental]
-enabled = false
-strategy = "git-diff"
-
-[search]
-enabled = true
-index_dir = ".search"
-default_engine = "hybrid"
-default_top_k = 10
-"#,
-        port
-    );
+    let cfg = openai_compatible_config(port, work_dir.join("wiki").to_str().unwrap());
+    let config = format!("{cfg}[search]\nenabled = true\nindex_dir = \".search\"\ndefault_engine = \"hybrid\"\ndefault_top_k = 10\n");
     std::fs::write(work_dir.join("config.toml"), config).unwrap();
 
     let gen_out = run_bin_with_envs(&work_dir, &["generate", "--config", "config.toml"], &[]);
