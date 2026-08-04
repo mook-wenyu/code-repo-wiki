@@ -3,6 +3,7 @@
 pub mod crossref;
 pub mod citation;
 pub mod lint;
+pub mod llms_txt;
 pub mod semantic_lint;
 pub mod markdown;
 pub mod mermaid;
@@ -374,6 +375,14 @@ pub fn render_all(
     if !protected.contains(&toc_path.to_string_lossy().to_string()) {
         let toc = markdown::render_table_of_contents(documents);
         crate::fs::write_file_atomic(&toc_path, &toc)?;
+    }
+
+    // 4.1 llms.txt（v14 E 组，t07 拍板）：Agent 站点地图（llmstxt.org
+    // 规范），列出全部模块页/全局文档/卡片路径。确定性重生成产物，
+    // 不参与人工修改保护（与 _toc.md 的人工编辑语义不同）；写失败
+    // 仅告警——机器消费索引是辅助产物，缺了不破坏 Wiki 主体。
+    if let Err(e) = llms_txt::write_llms_txt(output_dir, documents, cards, config) {
+        tracing::warn!("llms.txt 写入失败: {}", e);
     }
 
     // 5. 生成 Mermaid 依赖图
