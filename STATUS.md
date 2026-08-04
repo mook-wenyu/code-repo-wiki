@@ -297,3 +297,11 @@
 - **网络对照(2026)**:ddsyasas llm-wiki 一键向导(免费模型默认/两遍 lint/一键修复)=傻瓜化标杆;docverity 三态退出码+history-aware coverage;autodocs FIND/REPLACE 三重验证;CodeWikiBench ACL 2026 正式收录(68.79% vs 47.13%);CiteCheck 88.7 F1/urlhealth 3-13% 编造背书引用校验;llms.txt 采用 4.2% 反面证据 Google 不抓取;traceSDD 行级引用 TDR 86-88%
 - 优先修复清单:init 覆盖保护→key 引导→README/schema 对齐→mock 告警→lint 三态退出码+--dry-run→doctor 自检
 - 报告:.scratch/research/ANALYSIS-v17-2026-08-04.md(六节:一键评估/未完成项全景/网络对照/优先清单/反思/三清单)
+
+## 三十七、wayfinder 建图:repo-wiki 傻瓜化+生产就绪补全(v17)(2026-08-04,本会话)
+- 触发:v17 分析报告(一键评估 4 缺口)后用户启动 wayfinder 建图,question 两轮拍板
+- 用户拍板:Destination=v17 清单全部 7 项+验证轮(含 Unity e2e);init=缺省跳过+显式覆盖+--force;key 引导=错误文本+doctor 五查(含网络);默认阵营=统一模板(deepseek);mock 告警=日志+页脚;lint 三态+update --dry-run;**新方向=OpenAI Responses API**(deepseek-v4-flash 已支持,chat/completions 改兼容端点)
+- 研究子代理(resolved):t01 DeepSeek Responses API——官方确认 2026-07-31 上线 POST /v1/responses(为 Codex 适配,无状态);deepseek-v4-flash 唯一支持模型(v4-pro 计划 8 月初);协议差异=input/instructions/output.items/语义化 SSE 无 [DONE];chat/completions 保留未弃用
+- 产物:.scratch/wayfinder-v17/map.md + issues/t01-t10(1 research resolved + 1 grilling + 8 task open)+ IMPLEMENTATION-PLAN.md(A-E 五线:init 保护/key 引导+Responses/告警+三态+doctor/验证轮)
+- 地图:Destination=傻瓜化+Responses+验证轮;frontier=t02-t09;blocking:t02←t01(已 resolve)、t05←t02、t10←t09
+- 摸到的文件:STATUS.md、.scratch/wayfinder-v17/*(新建 12 文件)
