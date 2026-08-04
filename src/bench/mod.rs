@@ -339,11 +339,18 @@ fn measure_update_recall(
     let statuses = repo
         .statuses(None)
         .context("bench: 读取 git 状态失败")?;
-    if !statuses.is_empty() {
+    // 过滤被忽略条目：git reset --hard 只回滚 tracked 内容，ignored
+    // 未跟踪文件（产物目录/依赖缓存等）不受回放影响，不构成数据丢失风险
+    //（实测事故是 tracked 未提交改动被吞，与被忽略文件无关）
+    let dirty: Vec<_> = statuses
+        .iter()
+        .filter(|e| !e.status().contains(git2::Status::IGNORED))
+        .collect();
+    if !dirty.is_empty() {
         // 拒绝时列出条目（前 10 条）：安全闸宁可错杀不可放过（回放会
         // reset --hard 丢弃未提交改动，实测事故），但条目明细能帮助用户
         // 判断是什么（未跟踪目录/被忽略文件误报等）
-        let detail: Vec<String> = statuses
+        let detail: Vec<String> = dirty
             .iter()
             .take(10)
             .map(|e| {
@@ -359,7 +366,7 @@ fn measure_update_recall(
             .collect();
         anyhow::bail!(
             "评测前工作区必须干净（存在 {} 个未提交改动），请先 git commit 或 stash 后再运行 bench——回放会 reset --hard，未提交改动将被丢弃。改动明细: {}",
-            statuses.len(),
+            dirty.len(),
             detail.join("; ")
         );
     }
