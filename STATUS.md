@@ -344,3 +344,22 @@
 - 网络核证修正：llms-full.txt 非官方规范（社区惯例，llmstxt-gen 8K/32K 模式）；OpenWiki no-op=git-head+工作树快照（非 SHA-256）；vericontext 仓库实为 amsminn；CodeWikiBench 叶子 0/1 judge 聚合（repo-wiki v14 已实现 rubrics）
 - 建图：.scratch/wayfinder-v19/map.md + issues/t01-t10（t01 版本自检/t02 文档统一+CI/t03 lint 噪声/t04 测试泄漏/t05 llms-full.txt/t06 no-op/t07 社区命名/t08 文档同步/t09 验证轮 blocked by t01-t08/t10 research 行级哈希）+ IMPLEMENTATION-PLAN.md（A-H 组串行+I 验证轮，每字母组一 commit，批判性审查 G1-G10 含 10 项对策）
 - 边界：影响传播实体级分类/二进制分发/评测第二档 → Not yet specified（fog）；Cargo.toml 保持 0.2.0（t08 归档 [0.2.0]，v19 入 Unreleased）
+
+## 四十二、v19 实施完成 A-H 组（2026-08-05）
+- A 46bedf4 t03 lint 噪声：entity_name_from_signature 统一过滤单字符/纯数字 token（api 权威侧+页面声称侧同口径）；graph kind_from_str 补 "mod" => NodeKind::Module；测试 +2
+- B 0db14f2 t01 版本自检：GenerationState + tool_version Option（serde default 旧状态兼容）；doctor 第六查「版本」三态（首建提示/记录漂移建议升级/损坏不阻断）；llms.txt 头部版本行；测试 +1
+- C 9ec7d40 t02 文档统一+CI：default-config.toml embed 段根因修复（删个人环境残留统一 text-embedding-3-small+OPENAI_API_KEY）；README 5 处失实修正+子命令表+doctor 六查；新增 .github/workflows/ci.yml（无 fmt 步骤，项目未 rustfmt 化有注释）
+- D c8c12c2 t04 测试泄漏根治：common/mod.rs mock_config/openai_compatible_config 两 helper（绝对路径+反斜杠转义），5 文件收敛，496 passed
+- E d94f1b1 t05 llms-full.txt：32K token 预算四档裁剪（完整/去 constant/去无源/精简形态）+省略模块节+确定性排序；测试 +3（确定性/预算裁剪/空卡片）；README Agent 入口文件节
+- F 77c9b6f t06 update no-op 空转：should_skip_noop（git-head+statuses 双判据，G3 论证不做 interrupted——失败前有新提交 head 必然≠last，纯外部故障产物无变化跳过无损失）；早退点=load_protection 后 watch_paths 前，与既有无变更短路同出口（sync_manual_edits 不丢）；测试 +5（AtomicUsize 唯一目录防并行竞争）；实机 0.8s/0.7s 双跑验证
+- G 7fad509 t07 社区稳定重排序：大小降序+最小 file_path 全序（Graphify 模式），测试 +1
+- H d6a5398 t08 CHANGELOG [0.2.0] 归档（v13-v17）+v17 tickets 9 resolved+STATUS 四十四节
+- 验证 512→513 passed，clippy -D warnings 0，machete 干净
+
+## 四十三、v19 I 组验证轮 + t10 research 定案（2026-08-05）
+- bench 安全闸修复 29e8ff4：IGNORED 条目过滤（reset --hard 不碰被忽略文件，产物目录不再误判脏工作区）+ bench-out/ gitignore 8cf41cf
+- **Unity 真实 LLM e2e 完成**（t09 项1，P1 唯一缺口）：SimpleToolkits（D:\UnityProjects，143 cs 文件/2111 实体/5237 边/52 模块），Responses 协议 SSE 全链路无回退 warn，131 分钟（7859084ms），42 页+52 卡+AGENTS.md+llms.txt/llms-full.txt+图；lint 健康：bad-citation 0/bad-mermaid 0/orphan 0/stale 0；948 stale-entity+133 entity-coverage+53 broken 均为 api.md/architecture.md LLM 幻觉类（机制正确工作，质量信号问题）
+- **Update Recall 100%**（t09 项2）：本仓库 mock bench 回放 20 commit（19 有变更全部触发重生成），安全闸修复验证通过
+- rubrics 自评（t09 项3）：未验证——bench --judge 与 recall 耦合需真实 LLM 20 commit 成本不可接受（如实记录）
+- t10 research 定案：不建议实施 vctx 完整格式——repo-wiki 引用真源为正文 path:line（无注式格式），行级哈希与既有 stale/stale-entity/bad-citation-overlap 高度重叠；成本近乎零（lint 已读文件仅增哈希）但增量价值低；报告 .scratch/research/t10-vericontext-2026-08-05.md
+- 全部 10 ticket resolved；STATUS 四十五节；git log：A-H+2 收尾 共 10 commits（46bedf4→8cf41cf）
