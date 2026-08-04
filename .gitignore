@@ -10,3 +10,6 @@
 # 仓库根 wiki/ 是 mock 测试泄漏产物（真实产物按 config output.dir 生成，
 # 本仓库为 .repo-wiki/）；整体不入库，防全量测试产物再次混入提交
 wiki/
+
+# bench 输出目录（--config 指向外部输出时若落在仓库根）
+bench-out/
