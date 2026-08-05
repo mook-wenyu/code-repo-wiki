@@ -389,3 +389,11 @@
 - **rubrics 自评首跑（mock）**：bench --rubrics-only 跑通（coverage 97.4%=1080/1109、doc_info 8 页、update_recall 正确跳过回放、tqs/rubric=null 属 mock 预期——Rubric 生成需真实 LLM 结构化输出，mock 下 3 轮全部「Rubric 节点字段缺失」）
 - 本仓库 lint 回归：退出码 0/1/2 三态不变
 - 遗留：Unity 真实 LLM 重新 generate 后 broken 自然清零（未做——产物更新需 2 小时真实调用）；rubrics 真实自评未跑（需真实 LLM+成本权衡，与 recall 耦合已拆）
+
+## 四十八、v22 删除场景缺陷修复 + Unity 增量实测（2026-08-05）
+
+- **删除场景缺陷（跨轮遗留，用户指定优先）**：changed_insights 空时快照回填分支只按整模块全删过滤，多文件模块删一文件 → 页面残留被删实体。修复（commit 16085af）：回填分支推导 surviving 模块 → 存活文件并入 changed_insights 走正常 LLM 路径；IncrementalResult 新增 has_deleted_files 信号（git-diff 主路径 = deleted 非空 / watch 路径 = 文件消失）；generate_global_documents 与 index 门控放行删除场景（页面/索引/概览不再列已删模块）
+- **新测试**：test_delete_one_file_in_pair_module_regenerates_module（150 文件 fixture 体系新增 build_pair_module_repo：m20 双文件互调同社区 + solo.rs 孤立；判别信号=documents 含 src::m20 不含 solo、长度 ≤5、磁盘模块页保留、solo 页零改写）
+- **Unity 真实增量实测（SimpleToolkits，全部通过）**：改 KitManifestTests.cs 插注释 + commit（92d4e71）；dry-run 1 文件/2 模块；真实 update 成功——状态推进、产物 MOD 9/NEW 11/DEL 0、overview/architecture/35+ 未受影响模块页零改写、无页面误删；生成 5 模块 vs dry-run 2 模块归因=affected 模块文件覆盖的 graph 模块（chunk 遍历取非空，保守放大非回退）；第二次 update 正确 no-op
+- **lint 提取修复补提交（commit 7408719）**：v21 I 轮 entity_name_from_signature 重构（属性宏/继承段/泛型剥离）当时未提交，本轮补交
+- 测试基线：396 lib + 全部集成绿；clippy 0；Unity broken 清零验证（真实 regenerate）后台进行中
