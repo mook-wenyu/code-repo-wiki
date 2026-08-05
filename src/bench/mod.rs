@@ -956,11 +956,28 @@ fn measure_rubrics(config: &WikiConfig, root: &ProjectRoot) -> Result<Option<Rub
         return Ok(None);
     }
     // 4. 叶子判定证据：产物文档摘要（overview + api 实体清单 + 页面标题；
-    //    页面正文全量在真实评测下 token 成本不可控，用摘要形态做判定）
-    let evidence = build_evidence(Path::new(&config.output.dir), &config.wiki.language);
+    //    页面正文全量在真实评测下 token 成本不可控，用摘要形态做判定）。
+    //    检索增强（方案甲）：仅摘要+标题时 LLM 系统性保守判「证据不足→
+    //    不满足」（实测 satisfied 0-12.6%），故按叶子 requirement 关键词
+    //    检索 wiki 页正文 top-K，命中页正文片段拼入证据补足判定依据。
+    //    pages 一次收集全量复用，循环内只做关键词检索（正文读取 I/O 不重复）
+    let pages = collect_wiki_pages(Path::new(&config.output.dir));
     // 5. 叶子 0/1 判定（顺序与 collect_leaves 一致，供聚合索引）
     let mut verdicts: Vec<bool> = Vec::with_capacity(leaves.len());
     for leaf in &leaves {
+        // 每叶子独立构建证据：摘要锚点固定（全局基线），检索节随
+        // requirement 变化；top_k=2（2 页 × 3000 字符 ≈ 6K，叠加摘要
+        // ≈ 19K 仍在 20K cap 内，页数再多检索节尾部会被截断而失去
+        // 意义）；检索节追加后整体截断，总证据仍 cap 20K 防 token 失控
+        let mut evidence = build_evidence(Path::new(&config.output.dir), &config.wiki.language);
+        let retrieved = search_pages(&pages, &extract_keywords(&leaf.requirement), 2);
+        if !retrieved.is_empty() {
+            evidence.push_str("\n\n# 检索到的页面正文\n");
+            for (name, snippet) in &retrieved {
+                evidence.push_str(&format!("- {name}: {snippet}\n"));
+            }
+            evidence = truncate(&evidence, 20_000);
+        }
         let messages = rubric_judge_prompt(&leaf.requirement, &evidence);
         // 同生成轮：判定输出短但需完整 message（推理型模型预算吞没
         // 风险一致），与 TQS/合并同口径给足预算
@@ -1239,6 +1256,75 @@ fn build_evidence(output_dir: &Path, lang: &str) -> String {
 /// 字符串截断（中文字符安全：按 char 边界截断）
 fn truncate(s: &str, max_chars: usize) -> String {
     s.chars().take(max_chars).collect()
+}
+
+/// 判断是否为 CJK 表意文字（统一表意/扩展 A/兼容区；2-gram 切分只对
+/// 汉字有意义，日文假名等非汉字字形不切分，按非 CJK 字符处理）
+fn is_cjk(c: char) -> bool {
+    matches!(c as u32, 0x4E00..=0x9FFF | 0x3400..=0x4DBF | 0xF900..=0xFAFF)
+}
+
+/// 从需求文本提取检索关键词：CJK 连续串按滑动窗口 2-gram 切分
+/// （如「安装配置指南」→ 安装/装配/配置/置指/指南；单字不成词，
+/// 2-gram 覆盖绝大多数中文术语），英文词/数字串保留原样
+/// （"GPT-4" 拆为 "GPT"/"4" 两个关键词）。空串/纯标点返回空 Vec，
+/// 调用方按「无关键词可检索」退化处理（维持现状证据）。
+fn extract_keywords(requirement: &str) -> Vec<String> {
+    let mut keywords = Vec::new();
+    let mut cjk_run: Vec<char> = Vec::new();
+    let mut ascii_run = String::new();
+    let flush_cjk = |run: &mut Vec<char>, out: &mut Vec<String>| {
+        for w in run.windows(2) {
+            out.push(w.iter().collect());
+        }
+        run.clear();
+    };
+    let flush_ascii = |run: &mut String, out: &mut Vec<String>| {
+        if !run.is_empty() {
+            out.push(std::mem::take(run));
+        }
+    };
+    for c in requirement.chars() {
+        if is_cjk(c) {
+            flush_ascii(&mut ascii_run, &mut keywords);
+            cjk_run.push(c);
+        } else if c.is_ascii_alphanumeric() {
+            flush_cjk(&mut cjk_run, &mut keywords);
+            ascii_run.push(c);
+        } else {
+            flush_cjk(&mut cjk_run, &mut keywords);
+            flush_ascii(&mut ascii_run, &mut keywords);
+        }
+    }
+    flush_cjk(&mut cjk_run, &mut keywords);
+    flush_ascii(&mut ascii_run, &mut keywords);
+    keywords
+}
+
+/// 按关键词对 wiki 页正文做计数检索：每页统计全部关键词出现次数之和
+/// （2-gram 各分量各计各的，如正文含「安装」×2 +「配置」×1 则合计 3），
+/// 按命中数降序取 top_k（平局按页名字典序），每页正文截断 3000 字符
+/// （与 build_evidence 同口径控制 token）。返回 (页名, 正文片段)；
+/// 无命中或关键词为空返回空 Vec，调用方维持现状证据（退化安全）。
+fn search_pages(pages: &[(PathBuf, String)], keywords: &[String], top_k: usize) -> Vec<(String, String)> {
+    if keywords.is_empty() || top_k == 0 {
+        return Vec::new();
+    }
+    let mut hits: Vec<(String, usize, String)> = pages
+        .iter()
+        .filter_map(|(path, content)| {
+            let name = path.file_stem()?.to_string_lossy().into_owned();
+            let count: usize = keywords
+                .iter()
+                .filter(|k| !k.is_empty())
+                .map(|k| content.matches(k.as_str()).count())
+                .sum();
+            (count > 0).then(|| (name, count, truncate(content, 3_000)))
+        })
+        .collect();
+    hits.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    hits.truncate(top_k);
+    hits.into_iter().map(|(name, _, snippet)| (name, snippet)).collect()
 }
 
 /// TQS 裁判 prompt（五维定义固定措辞 + 0-10 量表 + strict JSON）
@@ -1733,5 +1819,83 @@ mod tests {
         let md_on = render_markdown(&report);
         assert!(md_on.contains("覆盖率: 66.7%"), "应输出覆盖率: {md_on}");
         assert!(md_on.contains("加权总分 S: 0.700"), "应输出加权总分: {md_on}");
+    }
+
+    /// 方案甲：关键词提取——CJK 连续串 2-gram 切分 / 英文数字保留原样 /
+    /// 空串与纯标点退化返回空 Vec
+    #[test]
+    fn test_extract_keywords() {
+        let kws = extract_keywords("安装配置指南");
+        assert_eq!(
+            kws,
+            vec!["安装", "装配", "配置", "置指", "指南"],
+            "连续中文按滑动窗口 2-gram 切分"
+        );
+        assert!(!kws.contains(&"安".to_string()), "单字不成 2-gram");
+
+        let mixed = extract_keywords("支持 Setup v2 认证");
+        assert!(mixed.contains(&"Setup".to_string()), "英文词保留原样");
+        assert!(mixed.contains(&"v2".to_string()), "英文+数字串保留原样");
+        assert!(mixed.contains(&"认证".to_string()), "中文 2 字串切出一个 2-gram");
+
+        assert!(extract_keywords("").is_empty(), "空串返回空");
+        assert!(extract_keywords("！！！---").is_empty(), "纯标点无关键词返回空");
+    }
+
+    /// 方案甲：计数检索排序——命中数多者排前，无命中页不返回，
+    /// 全无命中/空关键词返回空 Vec
+    #[test]
+    fn test_search_pages_ranks() {
+        let pages = vec![
+            (PathBuf::from("wiki/zh/a.md"), "安装 安装 安装 说明".into()),
+            (PathBuf::from("wiki/zh/b.md"), "安装 安装 配置 配置 指南".into()),
+            (PathBuf::from("wiki/zh/c.md"), "与本需求无关的内容".into()),
+        ];
+        let kws = vec!["安装".to_string(), "配置".to_string()];
+        let ranked = search_pages(&pages, &kws, 2);
+        assert_eq!(ranked.len(), 2, "仅命中页返回: {:?}", ranked);
+        assert_eq!(ranked[0].0, "b", "命中 4 次（安装×2+配置×2）应排前");
+        assert_eq!(ranked[1].0, "a", "命中 3 次排后");
+        assert!(!ranked.iter().any(|(n, _)| n == "c"), "无命中页不返回");
+
+        assert!(search_pages(&pages, &["不存在的关键词".to_string()], 2).is_empty(), "无命中返回空");
+        assert!(search_pages(&pages, &[], 2).is_empty(), "空关键词返回空");
+    }
+
+    /// 方案甲：检索注入——含关键词正文的页面被检索出并拼入证据节
+    /// （拼接格式与 measure_rubrics 完全一致：摘要证据后追加
+    /// 「# 检索到的页面正文」节；tempdir 模式与既有测试一致）
+    #[test]
+    fn test_build_evidence_includes_retrieved_pages() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_bench_retr_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki_zh = dir.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki_zh).unwrap();
+        std::fs::write(wiki_zh.join("a.md"), "# 模块 A\n\n与质量保障无关的说明。\n").unwrap();
+        std::fs::write(
+            wiki_zh.join("b.md"),
+            "# 模块 B\n\n本项目通过认证 认证 双认证流程保证质量。\n",
+        )
+        .unwrap();
+
+        let pages = collect_wiki_pages(&dir);
+        let retrieved = search_pages(&pages, &extract_keywords("认证"), 2);
+        assert_eq!(retrieved.len(), 1, "仅含「认证」正文的页被检索出: {:?}", retrieved);
+        assert_eq!(retrieved[0].0, "b", "命中的应是 b 页");
+
+        // 与 measure_rubrics 相同的拼接路径：摘要证据 + 检索节 + 整体 cap
+        let mut evidence = "基线摘要".to_string();
+        if !retrieved.is_empty() {
+            evidence.push_str("\n\n# 检索到的页面正文\n");
+            for (name, snippet) in &retrieved {
+                evidence.push_str(&format!("- {name}: {snippet}\n"));
+            }
+            evidence = truncate(&evidence, 20_000);
+        }
+        assert!(evidence.contains("# 检索到的页面正文"), "证据应含检索节标题: {evidence}");
+        assert!(evidence.contains("- b: "), "证据应含命中的 b 页: {evidence}");
+        assert!(evidence.contains("认证"), "检索节应含关键词命中正文");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

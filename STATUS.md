@@ -1,5 +1,12 @@
 # 项目状态简报 （AI自动维护，禁止贴代码）
 
+## 五十三、rubrics 判定证据检索注入（方案甲）（2026-08-06，本会话）
+- 修改的功能：measure_rubrics 叶子判定证据增强——判定前按叶子 requirement 提取关键词（CJK 连续串滑动窗口 2-gram 切分，英文词/数字保留原样），对 wiki 页正文做计数检索 top-2（命中数降序、平局按页名字典序，每页正文截断 3000 字符），命中页以「# 检索到的页面正文」节追加到摘要证据后，追加后整体截断总证据仍 cap 20K；无命中维持现状证据（退化安全）。背景：仅 overview/api 摘要+页面标题时 LLM 系统性保守判「证据不足→不满足」（实测 satisfied 0-12.6%），正文证据缺失是主因
+- 摸到的文件：src/bench/mod.rs（+166 行：新 is_cjk/extract_keywords/search_pages 三函数、measure_rubrics 循环内证据组装改造、3 测试）
+- 是否改变了接口/契约：否（纯内部函数与循环内证据组装，RubricReport/CLI/prompt 契约不变）
+- 验证：cargo test --lib bench 18 passed 0 failed；cargo clippy --all-targets 0 警告
+- 提交：方案甲证据检索注入（1 commit）
+
 ## 五十二、v25 配置链三合一（2026-08-06，本会话）
 - 修改的功能：init 与 install 合并为 install（install 无参=确保用户级 default-config.toml 存在+原插件/MCP/hooks 步骤）；配置链重构——项目级 config.toml 字段级合并覆盖用户级 default-config.toml（uv/Claude Code/cargo 语义），创建只发生在用户级；v24 敏感键净化保留但收窄为 base_url+api_key_env 两键（provider/model 移出，项目级 mock 配置是 CI 常态）；default-config.toml 模板协议统一 openai（Responses，DeepSeek 官方推荐）；v24 .repo-wiki.toml 与旧全局 config.toml 不再读取
 - 摸到的文件：src/config/mod.rs（load_default_config 三链+merge_config+strip_injected+sanitize 收窄）、src/main.rs（删 Init/InstallToOpencode、新增 Install、12 处 Option 化）、src/lib.rs（8 函数签名 Option<&Path>）、src/mcp.rs（config_path Option+resolve_mcp_config）、src/doctor.rs、src/bench/{mod.rs,manifest.rs}、src/commands.rs、default-config.toml、README.md、CHANGELOG.md、tests 13 文件
