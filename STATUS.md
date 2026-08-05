@@ -363,3 +363,13 @@
 - rubrics 自评（t09 项3）：未验证——bench --judge 与 recall 耦合需真实 LLM 20 commit 成本不可接受（如实记录）
 - t10 research 定案：不建议实施 vctx 完整格式——repo-wiki 引用真源为正文 path:line（无注式格式），行级哈希与既有 stale/stale-entity/bad-citation-overlap 高度重叠；成本近乎零（lint 已读文件仅增哈希）但增量价值低；报告 .scratch/research/t10-vericontext-2026-08-05.md
 - 全部 10 ticket resolved；STATUS 四十五节；git log：A-H+2 收尾 共 10 commits（46bedf4→8cf41cf）
+
+## 四十四、v20 分析轮：生产可用性完备度 + 未完成项全量核查（2026-08-05）
+- 3 并行子代理：A 外部 Agent 视角审计（P0 0/P1 0/P2 3/P3 5）；B 未完成项 8 项核查；C 网络 8 主题
+- **关键归因修正：948 stale-entity 非 LLM 幻觉**——抽样 50/50 真实存在于源码，真相=C# 解析器把私有字段/属性当实体提取（口径比文档覆盖细）；改口径需联动 measure_coverage（bench 共用实体源）
+- **git2 三通告逐条核证**（RUSTSEC-2026-0008 Patched>=0.20.4 已满足；0183/0184 影响 Remote::list/Blame 两 API repo-wiki 零使用）——不构成实际风险，无需升级 0.21；子代理 C「需升 0.20.5」失实（该版本不存在）
+- **P2-1 实锤：no-op 后 stdout 误导**——无变更跳过时 stdout 仍打「增量更新完成: 扫描 0 个文件」+「产物检查通过」（main.rs:413-417 vs lib.rs:261），跳过消息仅 stderr tracing；外部 Agent 解析 stdout 误判已更新
+- 新发现：graph 未知实体类型 'static'（rust.rs 生命周期误解析，v19 'mod' 同类，P3）
+- 实机验证：中途被杀 update 状态未破坏（防失败吞噬生效）；mock 配置必填项逐字段报错引导良好
+- 其余未完成项（rubrics 独立 flag S/Unity 增量规模测试 M/Linux CI 实跑/实体级 diff L/分发 S 卡账号/第二档评测 M）保持开放
+- 报告：.scratch/research/ANALYSIS-v20-production-2026-08-05.md
