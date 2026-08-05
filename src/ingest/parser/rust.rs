@@ -180,4 +180,38 @@ const MAX: usize = 100;
         assert!(result.entities.iter().find(|e| e.name == "Point").unwrap().doc_comment.is_some());
         assert_eq!(result.imports[0].alias.as_deref(), Some("Map"));
     }
+
+    /// v21 t06：static_item（Rust 静态变量）必须解析为 kind="static" 实体
+    /// （graph.rs kind_from_str 已映射到 NodeKind::Constant）——此前该 kind
+    /// 落入 graph 默认分支产生「未知实体类型 'static'」warn。附带验证
+    /// 生命周期标注（'static 出现在函数签名类型里）不会产生伪实体。
+    #[test]
+    fn test_parse_rust_static_item_and_lifetime() {
+        let source = r#"static VERSION: &'static str = "1.0";
+
+fn read<'a>(buf: &'a mut [u8]) -> &'a str { "" }
+"#;
+        let proc = RustProcessor::new().unwrap();
+        let result = proc.parse(source, Path::new("test.rs")).unwrap();
+        let statics: Vec<&str> = result
+            .entities
+            .iter()
+            .filter(|e| e.kind == "static")
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(statics, vec!["VERSION"], "static_item 应产出 kind=static 实体");
+        // 'a 生命周期是类型标注不是实体：read 是唯一 function，且不出现 'a/'static 实体
+        let funcs: Vec<&str> = result
+            .entities
+            .iter()
+            .filter(|e| e.kind == "function")
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(funcs, vec!["read"]);
+        assert!(
+            !result.entities.iter().any(|e| e.name.contains('\'')),
+            "生命周期标注不得产出实体: {:?}",
+            result.entities
+        );
+    }
 }

@@ -202,8 +202,8 @@ fn kind_from_str(s: &str) -> NodeKind {
         "trait" => NodeKind::Trait,
         "impl" => NodeKind::Impl,
         "type" => NodeKind::Type,
-        "const" | "constant" => NodeKind::Constant,
-        "variable" | "let" => NodeKind::Variable,
+        "const" | "constant" | "static" => NodeKind::Constant,
+        "variable" | "let" | "property" => NodeKind::Variable,
         "interface" => NodeKind::Interface,
         "class" => NodeKind::Class,
         "macro" => NodeKind::Macro,
@@ -430,6 +430,17 @@ mod tests {
         assert_eq!(kind_from_str("mod"), NodeKind::Module);
         assert_eq!(kind_from_str("struct"), NodeKind::Struct);
         assert_eq!(kind_from_str("fn"), NodeKind::Function);
+    }
+
+    /// v21 t06：parser 合法产出 kind="static"（Rust static_item 静态变量）
+    /// 与 kind="property"（C# 属性）——此前落入默认分支产生「未知实体
+    /// 类型 'static'/'property'」warn 并误标 Function。static 语义上是
+    /// 常量，property 语义上是字段/变量，归入对应 NodeKind。
+    #[test]
+    fn test_kind_from_str_supports_static_and_property() {
+        assert_eq!(kind_from_str("static"), NodeKind::Constant);
+        assert_eq!(kind_from_str("property"), NodeKind::Variable);
+        assert_eq!(kind_from_str("function"), NodeKind::Function);
     }
 
     #[test]
