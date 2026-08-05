@@ -496,11 +496,15 @@ pub fn run_pipeline_with_progress(
                 String::new()
             }
         };
-        save_generation_state(root, &config, &file_insights, &gen_output.documents, &gen_output.cards, &protected, &head_hash, &stats.failed_modules);
+        save_generation_state(root, &config, &file_insights, &gen_output.documents, &gen_output.cards, &protected, &head_hash, &gen_output.generation_stats.failed_modules);
     }
 
     on_progress(ProgressEvent { stage: "done", percent: 100 });
     stats.generation_time_ms = start.elapsed().as_millis() as u64;
+    // 展示用统计（失败模块真源在 generation_stats；save 调用已直接使用
+    // generation_stats.failed_modules——顺序修复：此前在此处才赋值，晚于
+    // Phase 6 的 save_generation_state，导致失败模块恒为空数组落盘，
+    // v22 补偿机制对全量 generate 的失败静默失效（v23 C 组实测发现））
     stats.failed_modules = gen_output.generation_stats.failed_modules.clone();
     tracing::info!("流水线完成: {} 个文件, {} 个实体, {} 条边, {} 个模块, 耗时 {}ms",
         stats.files_scanned, stats.total_entities, stats.total_edges,

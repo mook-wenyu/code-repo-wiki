@@ -342,7 +342,7 @@ mod tests {
             protected_docs: Vec::new(),
             generated_at: "2025-01-01T00:00:00Z".into(),
             tool_version: None,
-            failed_modules: vec![],
+            failed_modules: vec!["src::output".into(), "tests::edge".into()],
         };
 
         state.save(&dir).unwrap();
@@ -354,6 +354,10 @@ mod tests {
             loaded.file_fingerprints.get("src/main.rs").unwrap(),
             "deadbeef"
         );
+        // v23 C 组防回归：失败模块必须随状态落盘（此前 lib.rs 顺序错误
+        // 导致恒为空数组，v22 补偿机制静默失效——实测全量 generate 的
+        // 3 个失败模块未被记录）
+        assert_eq!(loaded.failed_modules, vec!["src::output", "tests::edge"]);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
