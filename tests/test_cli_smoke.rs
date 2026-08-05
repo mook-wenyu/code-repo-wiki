@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 mod common;
-use common::{copy_dir, mock_config, run_bin, unique_dir};
+use common::{copy_dir, mock_config, run_bin, run_bin_with_envs, unique_dir};
 
 /// 冒烟测试共用 search 段：search 测试需要文本索引
 /// （mock_config helper 已含 scope/output/llm/incremental 段，
@@ -814,6 +814,65 @@ fn commit_all(dir: &Path, message: &str) {
     let parent = repo.head().unwrap().peel_to_commit().unwrap();
     repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent])
         .unwrap();
+}
+
+/// v21 A 组（t03）：no-op stdout 契约——外部 AI Coding Agent 以 stdout 为
+/// 事实源，无变更跳过时必须打印明确消息且不得再打印「增量更新完成」。
+/// 场景：generate 建立基线后，同一 commit 下直接 update（should_skip_noop
+/// 为真，lib.rs 早退返回空结果）。
+#[test]
+fn test_update_noop_stdout_contract() {
+    let work_dir = prepare_repo("noop_stdout");
+    init_git(&work_dir, "init");
+    let out = run_bin(&work_dir, &["generate", "-c", "config.toml"]);
+    assert!(
+        out.status.success(),
+        "generate 应成功: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // 同 head 无任何变更：update 必须走 no-op 早退
+    let out = run_bin(&work_dir, &["update", "-c", "config.toml"]);
+    assert!(out.status.success(), "no-op update 应成功退出");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("无文件变更，跳过更新（no-op）"),
+        "stdout 必须包含跳过消息: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("增量更新完成"),
+        "no-op 不得打印「增量更新完成」: {stdout:?}"
+    );
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
+
+/// v21 A 组（t04a）：仓库已存在 AGENTS.md 时生成端跳过注入（保护人工维护），
+/// 但必须 warn 提示（含补救路径 install-wiki），不得静默。
+#[test]
+fn test_generate_warns_when_agents_md_exists() {
+    let work_dir = prepare_repo("agents_md_warn");
+    // 预置人工维护的 AGENTS.md（内容哨兵：事后必须原样保留）
+    let agents = work_dir.join("AGENTS.md");
+    std::fs::write(&agents, "# 人工维护的 AGENTS.md\n\n自定义内容\n").unwrap();
+    // RUST_LOG=warn 捕获 tracing 警告（run_bin 默认 RUST_LOG=off 关日志）
+    let out = run_bin_with_envs(&work_dir, &["generate", "-c", "config.toml"], &[("RUST_LOG", "warn")]);
+    assert!(
+        out.status.success(),
+        "generate 应成功: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("跳过注入"),
+        "已存在 AGENTS.md 时必须 warn 提示: {stderr:?}"
+    );
+    assert!(
+        stderr.contains("install-wiki"),
+        "warn 必须给出补救路径: {stderr:?}"
+    );
+    // 人工内容不得被覆盖
+    let content = std::fs::read_to_string(&agents).unwrap();
+    assert!(content.contains("自定义内容"), "人工 AGENTS.md 被覆盖: {content}");
+    let _ = std::fs::remove_dir_all(&work_dir);
 }
 
 /// v17 t08：doctor 端到端——mock 配置全过（网络跳过）退出码 0；

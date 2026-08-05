@@ -327,7 +327,14 @@ fn resolve_config_path(
     repo_wiki::config::resolve_config_path(config, root)
 }
 
-fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
+fn main() -> anyhow::Result<()> {
+    // t03 契约（v21 实证发现）：tracing_subscriber::fmt() 默认 writer 是
+    // stdout——所有日志会混入业务 stdout，破坏外部 AI Coding Agent 的
+    // stdout 事实源（update 一次几十行 info 日志）。显式切到 stderr：
+    // stdout 只承载业务输出（println），日志（info/warn/error）全部走
+    // stderr，两者可独立解析。
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
@@ -410,11 +417,21 @@ fn main() -> anyhow::Result<()> {    tracing_subscriber::fmt()
                     },
                 )?
             };
-            tracing::info!(
-                "增量更新完成: 扫描 {} 个文件, {} 个模块受影响",
-                result.stats.files_scanned,
-                result.stats.modules_detected
-            );
+            // t03（v21）：no-op 早退出口的 stdout 契约——lib.rs 在扫描前即
+            // 判定"无文件变更"并返回空结果（documents 空且扫描 0 文件，
+            // 与"空 diff 但已扫描"的普通更新路径可唯一区分）。外部 AI
+            // Coding Agent 以 stdout 为事实源：两种结果必须可区分——
+            // "增量更新完成"只属于真实执行路径，跳过时向 stdout 打印
+            // 明确消息且不再打印完成行（跳过细节仍走 stderr tracing）。
+            if result.documents.is_empty() && result.stats.files_scanned == 0 {
+                println!("无文件变更，跳过更新（no-op）");
+            } else {
+                tracing::info!(
+                    "增量更新完成: 扫描 {} 个文件, {} 个模块受影响",
+                    result.stats.files_scanned,
+                    result.stats.modules_detected
+                );
+            }
 
             // D2（N2）：update 尾部一致性校验——复用 lint 全部检查对产物做
             // 全量复核（本轮受影响页 + 存量页）。增量更新只重建受影响模块，

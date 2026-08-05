@@ -372,7 +372,18 @@ API 参考页面面向开发者，逐条列出公开接口，格式紧凑、无�
 ## Trait / 接口
 - `TraitName` — 用途说明
 
-未出现的类别省略。请用 {} 语言输出。保持简洁。"#,
+未出现的类别省略。
+
+## 防编造契约（必须遵守）
+- 只列出输入实体列表中真实存在的符号：不得编造不存在的函数、类型或
+  接口名（api-ref 是全量 API 清单，编造一个不存在的 API 比遗漏危害更大）。
+- 符号名称保持输入给出的拼写与形态（含私有字段/属性等细粒度实体时，
+  照实列出，不猜测可见性或语义）。
+- 不编写任何源码引用/行号（api-ref 不做引用声明，确定性渲染的实体行
+  已自带定位信息）。
+- 每个 API 条目只写一行，不得添加输入中不存在的说明性细节。
+
+请用 {} 语言输出。保持简洁。"#,
         language
     )
 }
@@ -621,5 +632,19 @@ mod tests {
         assert!(user.contains("CREATE TABLE users"));
         assert!(user.contains("```sql"));
         assert!(messages[0].content.contains("erDiagram"));
+    }
+
+    /// t04b（v21）：api-ref 模板必须携带防编造契约——api-ref 是全量 API 清单，
+    /// 编造一个不存在的 API 比遗漏危害更大；且明确禁止编写源码引用
+    /// （确定性渲染的实体行自带定位，LLM 不参与定位声明）。
+    #[test]
+    fn test_api_ref_prompt_has_anti_fabrication_contract() {
+        let system = api_ref_system_prompt("zh");
+        assert!(system.contains("防编造契约"));
+        assert!(system.contains("不得编造不存在的函数、类型或"));
+        assert!(system.contains("不编写任何源码引用"));
+        // 契约措辞与 wiki 页模板同一强度层级（都含"不得编造"字样）
+        let wiki_system = crate::generate::prompt::wiki_page_system_prompt("zh");
+        assert!(wiki_system.contains("不得编造"));
     }
 }
