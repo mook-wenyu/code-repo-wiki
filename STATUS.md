@@ -373,3 +373,9 @@
 - 实机验证：中途被杀 update 状态未破坏（防失败吞噬生效）；mock 配置必填项逐字段报错引导良好
 - 其余未完成项（rubrics 独立 flag S/Unity 增量规模测试 M/Linux CI 实跑/实体级 diff L/分发 S 卡账号/第二档评测 M）保持开放
 - 报告：.scratch/research/ANALYSIS-v20-production-2026-08-05.md
+
+## 四十五、wayfinder-v21 建图：生产就绪收尾（2026-08-05）
+- 用户加载 wayfinder skill：question 两轮拍板——①范围=全部含 M 项（P2/P3/S + Unity 规模 fixture + 第二档评测框架；实体级 diff/分发/CI 推送排除）②实体口径=「文档覆盖也要更细」③rubrics 拆独立 flag ④'static' 修复 ⑤合成大 fixture ⑥publish/CI 全排除留 fog
+- t01/t08 research 子代理完成：NodeKind 14 变体无 Field/Property（C# 字段→variable 无可见性过滤 csharp.rs:52-85）；api.md 确定性渲染已含 variable（markdown.rs:72）——「覆盖更细」缺口在 lint 假漂移与 prompt 名额而非渲染端；prompt 注入 take(30) 无排序（wiki.rs:341），30/60 实为描述字数（澄清 v19 fog）；字段级 ×1.29 挤占名额；api-ref 模板无防编造条款
+- t02 三拍板（question 第三轮）：渲染端增强标注（api.md 实体行加 kind/可见性，数据源已备）+ stale 根因先实机核证再修（I 轮 Unity 抽样 20 条）+ prompt 30 排序+排除字段级
+- 建图落地：.scratch/wayfinder-v21/{map.md, issues/t01-t10.md, IMPLEMENTATION-PLAN.md}；t01/t02/t08 resolved，t03-t10 open；计划 A-I 组（A stdout 契约+AGENTS.md+api-ref 契约 / B P3 文案 / C 'static' / D rubrics-only / E 清单跑分 / F 150 文件 fixture / G 渲染标注 / H prompt 名额 / I 验证轮）+ G1-G12 批判性审查 + 防回归矩阵
