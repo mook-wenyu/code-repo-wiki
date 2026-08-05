@@ -418,7 +418,11 @@ pub fn run_pipeline_with_progress(
     ) {
         tracing::warn!("使用 mock provider：产物为占位内容，非真实文档（仅供测试/CI 演示）");
         for doc in &mut gen_output.documents {
-            doc.content.push_str(crate::output::MOCK_FOOTER_MARK);
+            // 幂等追加：纯删除场景（增量快照回填）的旧文档已含页脚，
+            // 重复注入会产出双页脚——已以页脚结尾的跳过（v21 F 组实测）
+            if !doc.content.ends_with(crate::output::MOCK_FOOTER_MARK) {
+                doc.content.push_str(crate::output::MOCK_FOOTER_MARK);
+            }
         }
     }
 

@@ -142,18 +142,18 @@ pub fn run_manifest(
         let repo_path = match (&entry.url, &entry.local) {
             (Some(url), _) => {
                 let dest = work_dir.join(&entry.name);
-                if !dest.exists() {
-                    if let Err(e) = git2::Repository::clone(url, &dest) {
-                        repos.push(RepoReport {
-                            name: entry.name.clone(),
-                            coverage: empty_coverage(),
-                            doc_info: empty_doc_info(),
-                            lint: empty_lint(),
-                            time: empty_time(),
-                            error: Some(format!("clone 失败: {e}")),
-                        });
-                        continue;
-                    }
+                if !dest.exists()
+                    && let Err(e) = git2::Repository::clone(url, &dest)
+                {
+                    repos.push(RepoReport {
+                        name: entry.name.clone(),
+                        coverage: empty_coverage(),
+                        doc_info: empty_doc_info(),
+                        lint: empty_lint(),
+                        time: empty_time(),
+                        error: Some(format!("clone 失败: {e}")),
+                    });
+                    continue;
                 }
                 dest
             }
@@ -197,9 +197,9 @@ pub fn run_manifest(
         let result = match res {
             Ok(_) => {
                 let pages = collect_wiki_pages(&out_dir);
-                let cov = measure_coverage(&root, &template_config, &pages);
+                let cov = measure_coverage(&root, template_config, &pages);
                 let doc_info = measure_doc_info(&pages);
-                let lint = measure_lint(&out_dir, &template_config);
+                let lint = measure_lint(&out_dir, template_config);
                 RepoReport {
                     name: entry.name.clone(),
                     coverage: cov.unwrap_or_else(|e| {
