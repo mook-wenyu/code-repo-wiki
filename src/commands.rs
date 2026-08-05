@@ -356,8 +356,10 @@ pub fn wiki_block_template(output_dir: &str, lang: &str) -> String {
 
 ## AI 代理使用指引
 
-1. 先读 `{output_dir}/wiki/{lang}/overview.md` 与 `{output_dir}/wiki/{lang}/architecture.md` 建立全局认知，
-   再按需深入模块页。
+1. 先读 `{output_dir}/llms.txt` 定位目标页面（站点地图），再读
+   `{output_dir}/wiki/{lang}/overview.md` 与 `{output_dir}/wiki/{lang}/architecture.md`
+   建立全局认知，按需深入模块页；上下文预算充足时用 `{output_dir}/llms-full.txt`
+   一次获得完整实体骨架。
 2. 查找实体（函数/结构体/类）用 `repo-wiki search -q \"<关键词>\"`（支持
    text/semantic/hybrid 三引擎，hybrid 含调用链补全）。
 3. 修改代码后运行 `repo-wiki update` 增量更新；`repo-wiki lint` 检查产物健康。

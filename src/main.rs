@@ -78,8 +78,9 @@ enum Commands {
         #[arg(long)]
         root: Option<PathBuf>,
     },
-    /// 环境诊断（v17 t08）：配置/产物目录可写/输出目录状态/LLM Key/网络
-    /// 五查，逐项输出 ✓/✗；全过退出码 0，任一失败退出码 1
+    /// 环境诊断（v17 t08，v21 文案对齐）：配置可解析/产物目录可写/输出
+    /// 目录状态/LLM Key/网络/版本漂移 六查，逐项输出 ✓/✗；全过退出码 0，
+    /// 任一失败退出码 1
     Doctor {
         /// 配置文件路径（缺省走默认配置链）
         #[arg(short, long)]
@@ -545,7 +546,7 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Doctor { config, root } => {
-            // 五查诊断（配置/产物可写/目录状态/Key/网络），逐项输出；
+            // 六查诊断（配置/产物可写/输出状态/Key/网络/版本漂移），逐项输出；
             // 任一失败退出码 1（与 lint 三态同族，供脚本门禁）
             let root = resolve_root(root.as_deref())?;
             let config = resolve_config_path(config.as_deref(), &root)?;

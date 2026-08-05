@@ -11,7 +11,12 @@ use crate::project::ProjectRoot;
 /// 从文件加载配置，缺失字段用默认值填充
 pub fn load_config(path: &Path) -> Result<schema::WikiConfig> {
     if !path.exists() {
-        anyhow::bail!("配置文件不存在: {}", path.display());
+        // t05（v21）：显式 --config 缺失时给出一键引导——裸报"文件不存在"
+        // 会让外部 Agent 无从下手；init 命令是创建默认配置的官方入口。
+        anyhow::bail!(
+            "配置文件不存在: {}（可运行 `repo-wiki init` 创建默认配置）",
+            path.display()
+        );
     }
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("读取配置文件失败: {}", path.display()))?;

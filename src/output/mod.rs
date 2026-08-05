@@ -402,7 +402,9 @@ pub fn render_all(
     // 不参与人工修改保护（与 _toc.md 的人工编辑语义不同）；写失败
     // 仅告警——机器消费索引是辅助产物，缺了不破坏 Wiki 主体。
     if let Err(e) = llms_txt::write_llms_txt(output_dir, documents, cards, config) {
-        tracing::warn!("llms.txt 写入失败: {}", e);
+        // t05（v21）：llms.txt 是外部 Agent 的入口文件（站点地图），缺失
+        // 会静默削弱 Agent 的发现路径——失败必须显式说明影响面。
+        tracing::warn!("llms.txt 写入失败（Agent 入口文件缺失，搜索类 Agent 将无法发现本 Wiki）: {}", e);
     }
 
     // 4.2 llms-full.txt（v19 t05）：模块职责 + 实体清单内联索引
@@ -480,6 +482,8 @@ pub fn generate_agents_md(output_dir: &Path) -> Result<bool> {
 
 ## 产物布局
 
+- `{}/llms.txt` — Agent 站点地图（llmstxt.org 规范，目录+摘要，首选入口）
+- `{}/llms-full.txt` — 完整内容索引（32K token 预算内联实体清单，超预算模块页内注明省略）
 - `{}/wiki/{{lang}}/` — 模块页（每模块一份，含职责/实体/依赖/使用示例）
 - `{}/wiki/{{lang}}/api.md` — API 参考（按模块分组）
 - `{}/wiki/{{lang}}/architecture.md` — 架构概览
@@ -489,8 +493,9 @@ pub fn generate_agents_md(output_dir: &Path) -> Result<bool> {
 
 ## AI 代理使用指引
 
-1. 先读 `{}/wiki/{{lang}}/overview.md` 与 `architecture.md` 建立全局认知，
-   再按需深入模块页。
+1. 先读 `{}/llms.txt` 定位目标页面，再读 `{}/wiki/{{lang}}/overview.md` 与
+   `architecture.md` 建立全局认知，按需深入模块页；上下文预算充足时用
+   `llms-full.txt` 一次获得完整实体骨架。
 2. 查找实体（函数/结构体/类）用 `repo-wiki search -q "<关键词>"`（支持
    text/semantic/hybrid 三引擎，hybrid 含调用链补全）。
 3. 修改代码后运行 `repo-wiki update` 增量更新；`repo-wiki sync` 以 Git 内容
@@ -499,6 +504,9 @@ pub fn generate_agents_md(output_dir: &Path) -> Result<bool> {
    （pending_manual_edits 节）。
 5. 知识沉淀：`repo-wiki note "<记录>"` 追加到 `{}/wiki/{{lang}}/_log.md`。
 "#,
+        output_dir.display(),
+        output_dir.display(),
+        output_dir.display(),
         output_dir.display(),
         output_dir.display(),
         output_dir.display(),

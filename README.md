@@ -98,34 +98,35 @@ Linux/macOS 上构建与运行需要 OpenSSL 与 zlib 开发库（`reqwest` 的
 - macOS：`brew install openssl`（Homebrew 的 openssl 不在默认搜索路径时，
   设置环境变量 `OPENSSL_ROOT_DIR` 指向其安装前缀再构建）
 
-### 编译安装
+### 编译安装与一键启动
+
+外部 AI Coding Agent 进入新仓库的最短路径（3 条命令，其余命令见下表）：
 
 ```bash
-# 安装到 ~/.cargo/bin（推荐，自动加入 PATH）
+# 1. 安装到 ~/.cargo/bin（自动加入 PATH；或仅构建：cargo build --release）
 cargo install --path . --locked
 
-# 或仅构建（二进制位于 target/release/repo-wiki）
-cargo build --release
+# 2. 配置 LLM Key（默认 deepseek-v4-flash，配置链：项目 .repo-wiki/config.toml
+#    → 全局配置目录 → init 自动创建）
+export DEEPSEEK_API_KEY="sk-..."
 
-# 初始化配置（缺省在全局配置目录创建；项目根已有 .repo-wiki/config.toml
-# 时跳过不覆盖；--force 强制重写）
-repo-wiki init
-
-# 全量生成 Wiki
+# 3. 生成 Wiki（首次零参数全自动：无配置自动创建，产物在 .repo-wiki/）
 repo-wiki generate
-
-# 增量更新
-repo-wiki update
-
-# 搜索代码实体
-repo-wiki search --query "fn_name"
-
-# 监听文件变更
-repo-wiki watch
-
-# 知识卡片操作（Qoder /knowledge 对等）
-repo-wiki card modify config_plan --instruction "补充错误处理说明"
 ```
+
+常用命令一览（完整用法见各命令 `--help`）：
+
+| 命令 | 作用 |
+|---|---|
+| `repo-wiki init` | 创建默认配置（缺省全局目录；已存在跳过，`--force` 重写） |
+| `repo-wiki generate` | 全量生成 Wiki（模块页/API 参考/知识卡片/llms.txt/AGENTS.md） |
+| `repo-wiki update` | 增量更新（无变更时秒级 no-op 跳过；`--dry-run` 预览） |
+| `repo-wiki search -q "关键词"` | 搜索代码实体（text/semantic/hybrid 三引擎） |
+| `repo-wiki lint` | 产物健康检查（三态退出码：0 通过 / 1 有问题 / 2 配置失败） |
+| `repo-wiki doctor` | 环境六查诊断（配置/可写/状态/Key/网络/版本漂移） |
+| `repo-wiki watch` | 监听文件变更自动增量更新 |
+| `repo-wiki note "记录"` | 追加知识记录（_log.md） |
+| `repo-wiki card modify <模块> --instruction "..."` | 修改知识卡片 |
 
 ## 生成干预（wiki_plan.yaml）
 
