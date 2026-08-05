@@ -58,6 +58,7 @@ AI 驱动的代码仓库 Wiki 自动生成工具。分析源码结构，通过 L
 | `lint` | 产物健康检查（孤儿页/断链/过时/引用错位/坏 mermaid），供 CI 使用；退出码三态：`0` 通过、`1` 发现问题、`2` 配置加载失败 |
 | `export` | 导出为 HTML（支持 `-o` 输出目录、`--skip-generate` 从快照直接导出不重新生成）|
 | `doctor` | 环境诊断（配置/产物目录/输出目录/LLM Key/网络/版本自检六查），失败退出码 1 |
+| `key` | 交互式配置 LLM API key（写入用户级 `default-config.toml`，不随 Git 共享；`--env` 改用环境变量引用）|
 | `install` | 确保用户级默认配置就绪（缺失自动创建）并注册 OpenCode 插件（含 MCP/hooks） |
 | `watch` | 监听文件变更并自动更新 |
 | `search` | 搜索代码实体 |
@@ -72,7 +73,7 @@ AI 驱动的代码仓库 Wiki 自动生成工具。分析源码结构，通过 L
 | `bench` | 自动评测仓库 Wiki 质量（Coverage/Doc Info/lint/Update Recall/Time 五维 + `--judge` TQS 裁判打分 + `--rubrics-only` 跳过 git 回放）|
 | `bench-manifest` | 清单批量跑分：每行一个仓库（本地路径或 git URL），输出仓库×维度矩阵（mock 可跑，不触网）|
 
-`generate`/`update`/`sync`/`status`/`lint`/`export`/`doctor`/`install`/`watch`/`search`/`ast-search`/`card`/`note`/`uninstall-from-opencode`/`install-wiki`/`uninstall-wiki`/`mcp` 支持 `--root` 指定项目根（扫描根/git 定位基准，默认当前目录）；`bench` 的 `--root` 为必填项（目标评测仓库根，语义与其他子命令不同）。
+`generate`/`update`/`sync`/`status`/`lint`/`export`/`doctor`/`key`/`install`/`watch`/`search`/`ast-search`/`card`/`note`/`uninstall-from-opencode`/`install-wiki`/`uninstall-wiki`/`mcp` 支持 `--root` 指定项目根（扫描根/git 定位基准，默认当前目录）；`bench` 的 `--root` 为必填项（目标评测仓库根，语义与其他子命令不同）。
 
 ### 评测（bench / bench-manifest）
 

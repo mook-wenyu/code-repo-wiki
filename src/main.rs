@@ -89,6 +89,22 @@ enum Commands {
         #[arg(long)]
         root: Option<PathBuf>,
     },
+    /// 交互式配置 LLM API key（写入用户级 default-config.toml，不随 Git 共享）
+    ///
+    /// 安全底线（用户拍板）：明文 key 只写用户级配置；--env 改写入建议的
+    /// 环境变量名引用（openai→DEEPSEEK_API_KEY、anthropic→ANTHROPIC_API_KEY），
+    /// key 本体由 shell 环境提供。非交互终端（管道/CI/Agent）打印引导并退出 0。
+    Key {
+        /// 改用环境变量方式：写 api_key_env 引用而非明文
+        #[arg(long)]
+        env: bool,
+        /// 配置文件路径（仅用于读取 provider 判定；写入目标始终是用户级配置）
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+        /// 项目根目录（路径定位基准，默认当前目录）
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
     /// 追加一条知识沉淀记录到 _log.md（Karpathy log 模式，人工可读可 grep）
     Note {
         /// 记录文本
@@ -565,6 +581,14 @@ fn main() -> anyhow::Result<()> {
             if failed > 0 {
                 anyhow::bail!("doctor: {} 项未通过", failed);
             }
+        }
+        Commands::Key { env, config, root } => {
+            // key：交互式配置 LLM API key。写入目标固定为用户级
+            // default-config.toml——安全底线：明文凭据绝不写项目级
+            // config.toml（随 Git 共享）。--config 仅用于读取 provider
+            // 判定（如项目级 provider=mock 时提示无需 key）。
+            let root = resolve_root(root.as_deref())?;
+            repo_wiki::key::run(env, config.as_deref(), &root)?;
         }
         Commands::AstSearch { symbol, language, config, json, root } => {
             // AST 精确符号查找：不依赖搜索索引，直接扫描源文件解析 AST 定位定义

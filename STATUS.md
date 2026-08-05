@@ -1,5 +1,13 @@
 # 项目状态简报 （AI自动维护，禁止贴代码）
 
+## 五十四、key 交互命令（2026-08-06，本会话）
+- 修改的功能：新增 `repo-wiki key` 交互式配置 LLM API key——明文只写用户级 default-config.toml（安全底线：绝不写项目级 config.toml，随 Git 共享会泄露）；流程 ①目标文件缺失时 create_default_config ②provider=mock 打印无需 key ③api_key_env 对应环境变量已设打印已配置 ④--env 模式写建议 env 名引用（openai→DEEPSEEK_API_KEY、anthropic→ANTHROPIC_API_KEY）⑤非 TTY 打印引导退出 0 ⑥stdin 交互读入（空输入取消）⑦行替换写入（非注释行→注释占位→段末追加，无 [llm] 段回退 toml 往返）+写后 load_config 验证
+- 摸到的文件：src/key.rs（新建，+360 行：run/run_with_io/suggested_env_name/guidance_text/write_field/set_llm_field/escape_toml_string+6 测试）、src/lib.rs（pub mod key）、src/main.rs（Commands::Key + dispatch）、README.md（子命令表+--root 列表）
+- 是否改变了接口/契约：是（新增 CLI 子命令 key，无存量冲突）；lib 新增 pub mod key + pub fn run + pub(crate) fn guidance_text
+- 验证：cargo test --lib 414 passed 0 failed（含 6 新测试）；cargo clippy --all-targets 0 警告；cargo machete 干净（未加依赖）；实机冒烟（fake-APPDATA 隔离）：env 已设分支/key 非 TTY 引导/key --env 写引用/-c mock.toml 提示无需 key 四路径全部符合预期
+- 提交：feat(key): 交互式配置 LLM API key（1 commit）
+- 遗留：无新增风险（明文写用户级是用户拍板；TTY 交互无法脚本化实机验证，由注入测试覆盖）
+
 ## 五十三、rubrics 判定证据检索注入（方案甲）（2026-08-06，本会话）
 - 修改的功能：measure_rubrics 叶子判定证据增强——判定前按叶子 requirement 提取关键词（CJK 连续串滑动窗口 2-gram 切分，英文词/数字保留原样），对 wiki 页正文做计数检索 top-2（命中数降序、平局按页名字典序，每页正文截断 3000 字符），命中页以「# 检索到的页面正文」节追加到摘要证据后，追加后整体截断总证据仍 cap 20K；无命中维持现状证据（退化安全）。背景：仅 overview/api 摘要+页面标题时 LLM 系统性保守判「证据不足→不满足」（实测 satisfied 0-12.6%），正文证据缺失是主因
 - 摸到的文件：src/bench/mod.rs（+166 行：新 is_cjk/extract_keywords/search_pages 三函数、measure_rubrics 循环内证据组装改造、3 测试）
