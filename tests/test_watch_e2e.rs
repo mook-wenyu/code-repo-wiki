@@ -288,6 +288,7 @@ fn watch_path_dot_slash_prefix_boundary() {
         protected_docs: Vec::new(),
         generated_at: "test".into(),
         tool_version: None,
+        failed_modules: vec![],
     };
     state.save(&state_dir).expect("保存状态失败");
 

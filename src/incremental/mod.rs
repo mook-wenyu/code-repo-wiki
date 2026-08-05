@@ -51,6 +51,11 @@ pub fn should_skip_noop(root: &ProjectRoot, config: &WikiConfig) -> anyhow::Resu
     let Some(last_hash) = state.last_commit_hash else {
         return Ok(false);
     };
+    // 5. 失败补偿信号（v22 修复）：上次生成有模块失败待重试时不可跳过——
+    // 无变更时的快速判定会把失败模块的补生成一并跳过，使失败永久残留
+    if !state.failed_modules.is_empty() {
+        return Ok(false);
+    }
     // 4. 产物信号：wiki 目录存在（被删时跳过会让缺失产物保持缺失）
     if !Path::new(&config.output.dir).join("wiki").exists() {
         return Ok(false);
@@ -170,6 +175,38 @@ pub fn run_incremental_update_at(
             run_file_watch_incremental(root, insights, graph, &state_dir, watch_paths)?
         }
     };
+
+    // v22 失败补偿重试：上次生成失败的模块并入本次变更集（存活文件）。
+    // 失败隔离（record_failure）只跳过失败模块不中断整体，但失败模块若
+    // 源码不再变更将永远无法补生成（增量以 git diff 触发，失败模块不在
+    // diff 中）。重试语义：模块的存活文件视同本次变更，走正常生成路径；
+    // 依赖方由传播机制（module_files 已含受影响文件）自然覆盖。
+    // 清空时机：重试成功（生成路径不再产出失败）或全量生成。
+    let mut changed_files = changed_files;
+    if let Ok(state) = GenerationState::load(&state_dir)
+        && !state.failed_modules.is_empty()
+    {
+        let failed_files = crate::incremental::impact::module_files(
+            &state.failed_modules,
+            graph,
+        );
+        let mut merged = changed_files.clone();
+        // 存活判定相对仓库根（graph 的 file_path 是相对路径，直接
+        // exists() 会相对进程 cwd 误判——与 status_in_scope 的 root 语义一致）
+        for f in failed_files {
+            if root.path().join(&f).exists() && !merged.contains(&f) {
+                merged.push(f);
+            }
+        }
+        if merged.len() > changed_files.len() {
+            tracing::warn!(
+                "检测到上次生成失败模块（{} 个），并入本次变更集补偿重试",
+                state.failed_modules.len()
+            );
+            changed_files = merged;
+        }
+    }
+
     Ok(IncrementalResult { changed_files, affected_modules, entity_changes, has_deleted_files })
 }
 
@@ -981,6 +1018,99 @@ mod tests {
             !should_skip_noop(&ProjectRoot::new(dir.clone()), &config).unwrap(),
             "无基线状态不得跳过"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v22 失败补偿重试：状态含 failed_modules 且 git 无变更时，
+    /// 失败模块的存活文件并入 changed_files（下次 update 补生成），
+    /// no-op 快速判定同时放行（failed_modules 非空不跳过）。
+    #[test]
+    fn test_incremental_merges_failed_modules_from_state() {
+        let dir = std::env::temp_dir()
+            .join(format!("repo_wiki_test_failed_retry_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = ProjectRoot::new(dir.clone());
+        std::fs::create_dir_all(dir.join("src").join("m20")).unwrap();
+
+        // git 仓库：一个提交（a.rs/b.rs），此后无任何变更
+        let repo = git2::Repository::init(&dir).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "test").unwrap();
+        cfg.set_str("user.email", "test@test.com").unwrap();
+        std::fs::write(dir.join("src").join("m20").join("a.rs"), "pub fn fa() {}\n").unwrap();
+        std::fs::write(dir.join("src").join("m20").join("b.rs"), "pub fn fb() {}\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_all(["*"], git2::IndexAddOption::DEFAULT, None).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("test", "test@test.com").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap().id().to_string();
+
+        // 状态：基线 = 当前 HEAD，failed_modules = ["src::m20"]
+        let state_dir = dir.join(".state");
+        let mut state = GenerationState::from_insights(&root, &[], &head).unwrap();
+        state.failed_modules = vec!["src::m20".into()];
+        state.save(&state_dir).unwrap();
+
+        // insights/graph：src/m20 模块（File 节点 module_path=["src","m20"]）
+        let insights = vec![make_insight("src/m20/a.rs"), make_insight("src/m20/b.rs")];
+        let mut g = petgraph::stable_graph::StableGraph::new();
+        let f1 = g.add_node(crate::model::CodeNode {
+            id: petgraph::stable_graph::NodeIndex::new(0),
+            kind: crate::model::NodeKind::File,
+            name: "a.rs".into(),
+            file_path: Some("src/m20/a.rs".into()),
+            line_range: None,
+            doc_comment: None,
+            signature: None,
+            visibility: None,
+            module_path: vec!["src".into(), "m20".into()],
+        });
+        let f2 = g.add_node(crate::model::CodeNode {
+            id: petgraph::stable_graph::NodeIndex::new(1),
+            kind: crate::model::NodeKind::File,
+            name: "b.rs".into(),
+            file_path: Some("src/m20/b.rs".into()),
+            line_range: None,
+            doc_comment: None,
+            signature: None,
+            visibility: None,
+            module_path: vec!["src".into(), "m20".into()],
+        });
+        let graph = KnowledgeGraph {
+            graph: g,
+            modules: vec![crate::model::ModuleCluster {
+                name: "src::m20".into(),
+                node_ids: vec![f1, f2],
+                cohesion: 1.0,
+                coupling: 0.0,
+                description: None,
+            }],
+            features: Vec::new(),
+        };
+
+        // git 无变更：changed_files 应为空 → 补偿并入失败模块存活文件
+        // （output.dir 指向 dir，与 save 状态目录一致）
+        let mut config = make_config();
+        config.output.dir = dir.to_string_lossy().into_owned();
+        let result = run_incremental_update_at(&root, &insights, &graph, &config, &[]).unwrap();
+        assert!(
+            result.changed_files.contains(&PathBuf::from("src/m20/a.rs")),
+            "失败模块的存活文件必须并入变更集（补生成）"
+        );
+        assert!(
+            result.changed_files.contains(&PathBuf::from("src/m20/b.rs")),
+            "同模块全部存活文件都并入"
+        );
+
+        // no-op 判据：failed_modules 非空 → 不跳过（补偿重试必须可达）
+        assert!(
+            !should_skip_noop(&root, &config).unwrap(),
+            "存在失败模块时 no-op 快速判定不得跳过"
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

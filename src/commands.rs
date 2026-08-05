@@ -96,6 +96,7 @@ pub fn sync_from_git(output_dir: &Path) -> Result<()> {
             protected_docs: Vec::new(),
             generated_at: chrono::Utc::now().to_rfc3339(),
             tool_version: None,
+            failed_modules: vec![],
         }
     } else {
         GenerationState::load(&state_dir)

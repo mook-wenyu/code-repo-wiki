@@ -122,6 +122,7 @@ fn test_overview_protected() {
         protected_docs: Vec::new(),
         generated_at: String::new(),
         tool_version: None,
+        failed_modules: vec![],
     };
 
     // 人工修改 overview

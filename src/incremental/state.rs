@@ -39,6 +39,16 @@ pub struct GenerationState {
     /// 字段（serde default None）→ doctor 提示无法判断，不误报。
     #[serde(default)]
     pub tool_version: Option<String>,
+    /// 上次生成失败被隔离的模块名（卡片或页面生成失败，v22 修复）
+    ///
+    /// 失败隔离（generate_wiki_pages/generate_all_cards 的 record_failure）
+    /// 只跳过失败模块、不中断整体生成——但失败模块若源码不再变更将永远
+    /// 无法补生成（增量以 git diff 触发，失败模块不在 diff 中）。
+    /// 本轮生成结束时把失败模块写入状态，下次 update 时并入变更集重试；
+    /// no-op 快速判定（should_skip_noop）也因非空跳过。清空时机：
+    /// 成功重试（该模块生成成功）或全量生成（自然覆盖）。
+    #[serde(default)]
+    pub failed_modules: Vec<String>,
 }
 
 impl GenerationState {
@@ -76,6 +86,7 @@ impl GenerationState {
         obj.insert("doc_modules".into(), sorted_json_object(&self.doc_modules)?);
         obj.insert("protected_docs".into(), serde_json::to_value(&self.protected_docs)?);
         obj.insert("tool_version".into(), serde_json::to_value(&self.tool_version)?);
+        obj.insert("failed_modules".into(), serde_json::to_value(&self.failed_modules)?);
 
         let content = serde_json::to_string_pretty(&serde_json::Value::Object(obj))?;
         crate::fs::write_file_atomic(&state_path, &content)
@@ -136,6 +147,7 @@ impl GenerationState {
             protected_docs: Vec::new(),
             generated_at: chrono::Utc::now().to_rfc3339(),
             tool_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            failed_modules: Vec::new(),
         })
     }
 
@@ -330,6 +342,7 @@ mod tests {
             protected_docs: Vec::new(),
             generated_at: "2025-01-01T00:00:00Z".into(),
             tool_version: None,
+            failed_modules: vec![],
         };
 
         state.save(&dir).unwrap();
@@ -367,6 +380,7 @@ mod tests {
             protected_docs: Vec::new(),
             generated_at: String::new(),
             tool_version: None,
+            failed_modules: vec![],
         };
 
         assert!(!state.is_file_changed(&ProjectRoot::new(dir.clone()), &file_path).unwrap());
@@ -388,6 +402,7 @@ mod tests {
             protected_docs: Vec::new(),
             generated_at: String::new(),
             tool_version: None,
+            failed_modules: vec![],
         };
 
         let path = PathBuf::from("nonexistent.rs");
@@ -496,6 +511,7 @@ mod tests {
             protected_docs: vec!["a.md".to_string()],
             generated_at: String::new(),
             tool_version: None,
+            failed_modules: vec![],
         };
         let mut fresh = GenerationState {
             last_commit_hash: Some("new".into()),
@@ -505,6 +521,7 @@ mod tests {
             protected_docs: vec![],
             generated_at: String::new(),
             tool_version: None,
+            failed_modules: vec![],
         };
         fresh.preserve_protection(&old);
         assert_eq!(fresh.protected_docs, vec!["a.md"]);
@@ -525,6 +542,7 @@ mod tests {
             protected_docs: vec!["old.md".to_string()],
             generated_at: String::new(),
             tool_version: None,
+            failed_modules: vec![],
         };
         let mut fresh = GenerationState {
             last_commit_hash: None,
@@ -534,6 +552,7 @@ mod tests {
             protected_docs: vec!["new.md".to_string()],
             generated_at: String::new(),
             tool_version: None,
+            failed_modules: vec![],
         };
         fresh.preserve_protection(&old);
         assert_eq!(fresh.protected_docs, vec!["new.md"], "新状态保护字段非空时应保留新值");
@@ -570,6 +589,7 @@ mod tests {
             protected_docs: vec!["wiki/zh/aa.md".into()],
             generated_at: "2026-01-01T00:00:00Z".into(),
             tool_version: None,
+            failed_modules: vec![],
         };
 
         state.save(&dir).unwrap();
@@ -626,6 +646,7 @@ mod tests {
             protected_docs: Vec::new(),
             generated_at: String::new(),
             tool_version: None,
+            failed_modules: vec![],
         };
 
         let modified = state.detect_manually_modified();
@@ -671,6 +692,7 @@ mod tests {
             protected_docs: Vec::new(),
             generated_at: String::new(),
             tool_version: None,
+            failed_modules: vec![],
         };
 
         std::fs::write(&edited, "被人改了").unwrap();

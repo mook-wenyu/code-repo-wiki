@@ -321,27 +321,21 @@ pub fn wiki_file_name(doc: &WikiDocument) -> String {
 
 /// 写文件到磁盘
 ///
-/// 将 WikiDocument 渲染后写入 `{output_dir}/wiki/{language}/{module_path}.md`，
-/// 关联的 Knowledge Card 写入 `{output_dir}/cards/{language}/{module_name}.md`。
-/// 路径统一由 output::wiki_page_path / card_page_path 产出，与 render_all
-/// 的保护判定路径同一规则，保证命名不会漂移。
-pub fn write_document(doc: &WikiDocument, cards: &[&KnowledgeCard], output_dir: &Path, language: &str) -> Result<()> {
+/// 将 WikiDocument 渲染后写入 `{output_dir}/wiki/{language}/{module_path}.md`。
+/// 路径统一由 output::wiki_page_path 产出，与 render_all 的保护判定路径
+/// 同一规则，保证命名不会漂移。
+///
+/// v22 修复（Unity 实测）：Knowledge Card 写盘原先绑定在本函数（页面成功
+/// 才写卡片）——模块页面 LLM 生成失败时卡片也丢失，产出「快照/_index
+/// 有、磁盘无」的不一致。卡片写盘已移至 render_all 独立循环（页面失败
+/// 不影响卡片落盘），本函数只负责页面。
+pub fn write_document(doc: &WikiDocument, output_dir: &Path, language: &str) -> Result<()> {
     let wiki_dir = output_dir.join("wiki").join(language);
-    let cards_dir = output_dir.join("cards").join(language);
     std::fs::create_dir_all(&wiki_dir)?;
-    std::fs::create_dir_all(&cards_dir)?;
 
-    // Wiki 页面
     let wiki_path = crate::output::wiki_page_path(output_dir, language, doc);
     let content = render_wiki_page(doc);
     crate::fs::write_file_atomic(&wiki_path, &content)?;
-
-    // 关联的 Knowledge Card
-    for card in cards {
-        let card_path = crate::output::card_page_path(output_dir, language, &card.module_name);
-        let card_content = render_knowledge_card(card);
-        crate::fs::write_file_atomic(&card_path, &card_content)?;
-    }
 
     Ok(())
 }
@@ -591,30 +585,13 @@ mod tests {
     #[test]
     fn test_write_document_roundtrip() {
         let doc = make_test_doc("TestModule");
-        let card = KnowledgeCard {
-            module_name: "crate::test_module".into(),
-            module_type: "module".into(),
-            summary: "测试".into(),
-            key_entities: vec![],
-            dependencies: vec![],
-            dependents: vec![],
-            design_patterns: vec![],
-            todo_notes: vec![],
-            related_files: vec![],
-            coding_spec: None,
-            tech_stack: vec![],
-            architecture: None,
-            pending_manual_edits: vec![],
-            features: Vec::new(),
-        };
 
         let dir = std::env::temp_dir().join("repo-wiki-test-markdown");
         let _ = std::fs::remove_dir_all(&dir);
 
-        write_document(&doc, &[&card], &dir, "zh").unwrap();
+        write_document(&doc, &dir, "zh").unwrap();
 
         assert!(dir.join("wiki").join("zh").join("crate_testmodule.md").exists());
-        assert!(dir.join("cards").join("zh").join("crate_test_module.md").exists());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

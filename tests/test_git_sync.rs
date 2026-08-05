@@ -24,6 +24,7 @@ fn save_state(dir: &Path, doc_fps: HashMap<String, String>, protected: Vec<Strin
         protected_docs: protected,
         generated_at: String::new(),
         tool_version: None,
+        failed_modules: vec![],
     };
     state.save(&dir.join(".state")).unwrap();
 }

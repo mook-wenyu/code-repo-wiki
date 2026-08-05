@@ -37,6 +37,42 @@ pub const CITATION_RETRY_MAX: usize = 2;
 /// 与 CITATION_RETRY_MAX 合并进同一重试循环（上限取两者最大值）。
 pub const MERMAID_RETRY_MAX: usize = crate::output::mermaid_check::MERMAID_RETRY_MAX;
 
+/// 调用级失败重试上限（v22 修复）：瞬时网络错误（连接重置/超时/5xx）
+/// 重试最多 CALL_RETRY_MAX 次（含首次），间隔 500ms/1000ms 指数退避。
+/// 所有错误统一按可重试处理：持久错误（参数/鉴权 4xx）最多多等 1.5s
+/// 后仍原样返回给外层失败隔离——不吞错、不掩盖，与「重试语义只补偿
+/// 瞬时故障」的边界一致；校验类失败不在此处处理（走既有反馈循环）。
+const CALL_RETRY_MAX: usize = 3;
+
+/// 带退避的 LLM 调用重试
+///
+/// provider 泛型化（Mock 也走此路径）：mock/测试注入的失败因此最多
+/// 慢 1.5s，换来真实 provider 的瞬时错误自愈——长流水线中每模块一次
+/// 重试比整轮重跑便宜两个数量级。
+async fn complete_with_retry<P: LlmProvider>(
+    provider: &P,
+    messages: &[Message],
+    module: &str,
+) -> Result<String> {
+    let mut last_err = None;
+    for attempt in 0..CALL_RETRY_MAX {
+        match provider.complete(messages).await {
+            Ok(content) => return Ok(content),
+            Err(e) => {
+                tracing::warn!(
+                    "LLM 调用失败（第 {} 次重试）: {} {}",
+                    attempt + 1,
+                    module,
+                    e
+                );
+                last_err = Some(e);
+                tokio::time::sleep(std::time::Duration::from_millis(500 << attempt)).await;
+            }
+        }
+    }
+    Err(last_err.expect("CALL_RETRY_MAX 至少为 1"))
+}
+
 impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
     /// 使用指定的 LLM Provider 创建 WikiGenerator
     ///
@@ -110,7 +146,12 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
         let retry_max = CITATION_RETRY_MAX.max(MERMAID_RETRY_MAX);
         for attempt in 0..=retry_max {
             self.call_count.fetch_add(1, Ordering::Relaxed);
-            content = self.provider.complete(&messages).await?;
+            // v22 修复：调用级失败（连接重置/超时/5xx 等瞬时错误）原先
+            // 直接 `?` 抛出——长任务中瞬时错误会让整个模块页静默丢失
+            // （Unity 实测 10 个模块页因调用失败而缺失，卡片页一并丢失）。
+            // 此处只重试调用错误；校验失败走下方既有反馈循环。
+            content = complete_with_retry(self.provider, &messages, &chunk.module_path.join("::"))
+                .await?;
             // 空/纯空白内容同样视为校验失败（重试语义：不产出空白页面）
             last_invalid = if content.trim().is_empty() {
                 vec![crate::output::citation::InvalidCitation {
@@ -715,6 +756,57 @@ mod tests {
                 .next()
                 .ok_or_else(|| anyhow::anyhow!("预设响应耗尽"))
         }
+    }
+
+    /// 前 n 次调用失败、之后成功的 provider（调用级重试测试用）
+    struct FlakyProvider {
+        fail_times: std::sync::atomic::AtomicUsize,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl FlakyProvider {
+        fn new(fail_times: usize) -> Self {
+            Self {
+                fail_times: std::sync::atomic::AtomicUsize::new(fail_times),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl LlmProvider for FlakyProvider {
+        async fn complete(&self, _messages: &[Message]) -> Result<String> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            // 剩余失败次数 > 0 时失败，减到 0 后成功
+            let remaining = self.fail_times.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            if remaining > 0 {
+                Err(anyhow::anyhow!("模拟瞬时网络错误"))
+            } else {
+                Ok("重试成功".to_string())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_complete_with_retry_recovers_after_transient_failure() {
+        // 首次失败、第二次成功：重试自愈，返回内容正确
+        let provider = FlakyProvider::new(1);
+        let content = complete_with_retry(&provider, &[], "src::test").await.unwrap();
+        assert_eq!(content, "重试成功");
+        assert_eq!(provider.calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn test_complete_with_retry_gives_up_after_max_attempts() {
+        // 持续失败：重试耗尽后原样返回错误（不吞错、不掩盖）
+        let provider = FlakyProvider::new(10);
+        let err = complete_with_retry(&provider, &[], "src::test")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("模拟瞬时网络错误"));
+        assert_eq!(
+            provider.calls.load(std::sync::atomic::Ordering::Relaxed),
+            CALL_RETRY_MAX
+        );
     }
 
     fn make_test_chunk() -> Chunk {

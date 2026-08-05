@@ -23,6 +23,9 @@
 
 ### Changed
 - 配置项硬编码简化（v22）：10 项低频配置移入代码常量（src/config/schema.rs 顶部单一真源）——llm.max_concurrent=16 / llm.max_tokens / llm.temperature（模型默认）/ embed.batch_size=20 / search.index_dir=.search / search.default_engine=text / search.default_top_k=10 / search.rrf_k=60.0 / incremental.max_depth=3 / plan.path=wiki_plan.yaml；schema 与 install 模板同步删键，旧配置残留键被 serde 忽略可安全删除
+- 卡片写盘与页面生成解耦（v22）：Knowledge Card 独立全量落盘，不再绑定页面成功（Unity 实测 10 个模块页 LLM 失败时卡片一并丢失，产出「快照/_index 有、磁盘无」的不一致）；卡片只按主语言写盘
+- 失败补偿重试（v22）：生成失败的模块（failed_modules）写入状态，下次 update 并入变更集补生成，no-op 快速判定不再跳过含失败模块的仓库
+- LLM 调用级重试（v22）：Wiki 页面调用瞬时网络错误（连接重置/超时/5xx）自动退避重试 3 次（此前直接失败丢页，长任务中静默丢 10+ 页面）
 
 ## [0.2.0] - 2026-08-04
 

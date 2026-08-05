@@ -320,35 +320,31 @@ pub fn render_all(
     for doc in documents {
         // 路径计算与 write_document 落盘共用 wiki_page_path（人工修改保护判定依据）
         let wiki_path = wiki_page_path(output_dir, &doc.language, doc);
-        // 精确关联：doc 的模块路径（join("::")）与卡片 module_name 精确相等
-        // （两者同源于 chunk.module_path）。子串匹配曾误关联 src::test2 与
-        // src::test（"src::test2".contains("test")）；无模块归属的全局文档
-        // （module_path 为空）join 后为空串，不匹配任何卡片。
-        let doc_module = doc.module_path.join("::");
-        let doc_cards: Vec<&KnowledgeCard> = cards
-            .iter()
-            .filter(|c| c.module_name == doc_module)
-            // 卡片与 wiki 页同规则保护：命中保护集的卡片跳过写盘，
-            // 保留人工编辑版本（人工编辑过的卡片由指纹检测纳入保护集）
-            .filter(|c| {
-                !protected.contains(
-                    &card_page_path(output_dir, &doc.language, &c.module_name)
-                        .to_string_lossy()
-                        .to_string(),
-                )
-            })
-            .collect();
         if protected.contains(&wiki_path.to_string_lossy().to_string()) {
-            // 页面受人工修改保护：跳过页面写盘（保留人工版），但关联卡片
-            // 仍写盘——人工修改记录（pending_manual_edits）随本次生成注入
-            // 卡片，若一并跳过则反向同步永远无法落盘
-            for card in &doc_cards {
-                let card_path = card_page_path(output_dir, &doc.language, &card.module_name);
-                crate::fs::write_file_atomic(&card_path, &markdown::render_knowledge_card(card))?;
-            }
+            // 页面受人工修改保护：跳过页面写盘（保留人工版）。卡片写盘
+            // 已移至下方独立循环（v22 修复），不在此处处理。
             continue;
         }
-        write_document(doc, &doc_cards, output_dir, &doc.language)?;
+        write_document(doc, output_dir, &doc.language)?;
+    }
+
+    // 1.3 独立写入 Knowledge Card（v22 修复：原卡片写盘绑定在 write_document
+    // 内，模块页面 LLM 生成失败时卡片一并丢失，产出「快照/_index 有、磁盘
+    // 无」的不一致（Unity 实测：52 卡仅 42 页对应卡落盘）。卡片与页面解耦：
+    // 无论页面是否生成成功，卡片都按语言目录全量落盘；受人工修改保护的
+    // 卡片跳过（保留人工版）。卡片仅主语言生成一次（generate_all_cards 以
+    // 主语言调用），各语言目录写同一份内容——与旧实现语义一致。
+    for lang in &languages {
+        for card in cards {
+            let card_path = card_page_path(output_dir, lang, &card.module_name);
+            if protected.contains(&card_path.to_string_lossy().to_string()) {
+                continue;
+            }
+            crate::fs::write_file_atomic(
+                &card_path,
+                &markdown::render_knowledge_card(card),
+            )?;
+        }
     }
 
     // 1.5 写入 API 参考页（按模块分组的实体清单；内容与语言无关，只写主语言一份；
@@ -644,6 +640,38 @@ mod tests {
         assert!(
             dir.join("wiki").join("zh").join("src_testmodule.md").exists(),
             "wiki 页应正常写盘"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v22 修复：卡片写盘与页面生成解耦——页面全部失败（documents 为空）
+    /// 时卡片仍全量落盘，杜绝「快照/_index 有、磁盘无」的不一致
+    /// （Unity 实测：52 卡仅 42 页对应卡落盘的根因是卡片写盘绑定
+    /// write_document，页面 LLM 失败即连带丢卡）。
+    #[test]
+    fn test_render_all_writes_cards_without_documents() {
+        let dir = std::env::temp_dir()
+            .join(format!("repo_wiki_test_cards_no_docs_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut config = WikiConfig::default();
+        config.output.dir = dir.to_string_lossy().into_owned();
+
+        let card = make_card();
+        let graph = KnowledgeGraph::default();
+        let empty_docs: [WikiDocument; 0] = [];
+        let empty_protected = std::collections::HashSet::new();
+
+        render_all(&empty_docs, std::slice::from_ref(&card), &graph, &config, &empty_protected)
+            .unwrap();
+
+        assert!(
+            dir.join("cards").join("zh").join("src_testmodule.md").exists(),
+            "页面全部失败时卡片必须独立落盘"
+        );
+        assert!(
+            !dir.join("wiki").join("zh").join("src_testmodule.md").exists(),
+            "无文档时不应产出页面"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

@@ -38,7 +38,7 @@ max_concurrent = 4
 /// 验证 write_document 支持语言参数（独立写盘到对应语言目录）
 #[test]
 fn test_write_document_language_param() {
-    use repo_wiki::model::{KnowledgeCard, WikiDocument, Reference, DocumentKind};
+    use repo_wiki::model::{WikiDocument, Reference, DocumentKind};
     let doc = WikiDocument {
         title: "Test".into(),
         kind: DocumentKind::WikiPage,
@@ -53,36 +53,18 @@ fn test_write_document_language_param() {
         last_updated: "2025-01-01T00:00:00Z".into(),
         fingerprint: None,
     };
-    let card = KnowledgeCard {
-        module_name: "crate::test".into(),
-        module_type: "module".into(),
-        summary: "test".into(),
-        key_entities: vec![],
-        dependencies: vec![],
-        dependents: vec![],
-        design_patterns: vec![],
-        todo_notes: vec![],
-        related_files: vec![],
-        coding_spec: None,
-        tech_stack: vec![],
-        architecture: None,
-        pending_manual_edits: vec![],
-        features: Vec::new(),
-    };
 
     let dir = std::env::temp_dir().join(format!("repo_wiki_test_multilang_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
 
     // 写入中文版
-    repo_wiki::output::markdown::write_document(&doc, &[&card], &dir, "zh").unwrap();
+    repo_wiki::output::markdown::write_document(&doc, &dir, "zh").unwrap();
     assert!(dir.join("wiki").join("zh").join("crate_test.md").exists());
-    assert!(dir.join("cards").join("zh").join("crate_test.md").exists());
 
     // 写入英文版
-    repo_wiki::output::markdown::write_document(&doc, &[&card], &dir, "en").unwrap();
+    repo_wiki::output::markdown::write_document(&doc, &dir, "en").unwrap();
     assert!(dir.join("wiki").join("en").join("crate_test.md").exists());
-    assert!(dir.join("cards").join("en").join("crate_test.md").exists());
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -130,8 +112,8 @@ fn test_render_all_multi_lang_dirs() {
     repo_wiki::output::render_all(&docs, &[], &graph, &multi_config, &std::collections::HashSet::new()).unwrap();
     assert!(dir.join("wiki").join("zh").join("core.md").exists());
     assert!(dir.join("wiki").join("en").join("core.md").exists());
+    // v22 起卡片只按配置语言（主语言）独立写盘——卡片不随页面语言复制
     assert!(dir.join("cards").join("zh").exists());
-    assert!(dir.join("cards").join("en").exists());
 
     // api.md 内容与语言无关，只写主语言一份（en 是 expand_languages 扩展语言）
     assert!(dir.join("wiki").join("zh").join("api.md").exists());

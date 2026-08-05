@@ -41,6 +41,9 @@ pub struct AnalysisStats {
     pub total_edges: usize,
     pub modules_detected: usize,
     pub generation_time_ms: u64,
+    /// 本次生成失败被隔离的模块名（卡片或页面生成失败，v22 修复）：
+    /// 写入生成状态供下次 update 补偿重试；也供调用方（doctor/报告）观测
+    pub failed_modules: Vec<String>,
 }
 
 /// 全局 tokio 运行时（流水线与 MCP server 共用，避免重复初始化）
@@ -135,7 +138,12 @@ fn load_protection(
 }
 
 /// 保存生成状态：doc_fingerprints 只记录实际写盘的文档（跳过保护集），
-/// protected_docs 合并本次保护集写回
+/// protected_docs 合并本次保护集写回；failed_modules 记录本次失败隔离的
+/// 模块（v22：下次 update 并入变更集重试，防止失败模块永远无法补生成）
+///
+/// 8 个参数均为不同来源的独立输入（无共享结构可归并），与
+/// generate_global_documents 同一例外模式，保留平铺参数。
+#[allow(clippy::too_many_arguments)]
 fn save_generation_state(
     root: &project::ProjectRoot,
     config: &config::schema::WikiConfig,
@@ -144,6 +152,7 @@ fn save_generation_state(
     cards: &[model::KnowledgeCard],
     protected: &std::collections::HashSet<String>,
     commit_hash: &str,
+    failed_modules: &[String],
 ) {
     let output_dir = Path::new(&config.output.dir);
     let state_dir = output_dir.join(".state");
@@ -152,6 +161,7 @@ fn save_generation_state(
     // 的目标矛盾；与 incremental/mod.rs 前置保存的 warn 处理对齐）。
     match incremental::state::GenerationState::from_insights(root, insights, commit_hash) {
         Ok(mut state) => {
+            state.failed_modules = failed_modules.to_vec();
             let mut protected_docs: Vec<String> = protected.iter().cloned().collect();
             protected_docs.sort();
             state.protected_docs = protected_docs;
@@ -486,11 +496,12 @@ pub fn run_pipeline_with_progress(
                 String::new()
             }
         };
-        save_generation_state(root, &config, &file_insights, &gen_output.documents, &gen_output.cards, &protected, &head_hash);
+        save_generation_state(root, &config, &file_insights, &gen_output.documents, &gen_output.cards, &protected, &head_hash, &stats.failed_modules);
     }
 
     on_progress(ProgressEvent { stage: "done", percent: 100 });
     stats.generation_time_ms = start.elapsed().as_millis() as u64;
+    stats.failed_modules = gen_output.generation_stats.failed_modules.clone();
     tracing::info!("流水线完成: {} 个文件, {} 个实体, {} 条边, {} 个模块, 耗时 {}ms",
         stats.files_scanned, stats.total_entities, stats.total_edges,
         stats.modules_detected, stats.generation_time_ms);
@@ -1227,6 +1238,7 @@ mod tests {
             protected_docs: vec![],
             generated_at: String::new(),
             tool_version: None,
+            failed_modules: vec![],
         };
         for lang in ["zh", "en"] {
             let stale = dir.join("wiki").join(lang).join("src.md");
@@ -1282,6 +1294,7 @@ mod tests {
             protected_docs: vec![],
             generated_at: String::new(),
             tool_version: None,
+            failed_modules: vec![],
         };
         // 受保护页面被人工编辑过（指纹不匹配）——doc_fingerprints 仍记录其路径
         let manual = dir.join("wiki").join("zh").join("manual.md");
@@ -1322,6 +1335,7 @@ mod tests {
             protected_docs: vec![],
             generated_at: String::new(),
             tool_version: None,
+            failed_modules: vec![],
         };
         // 旧状态：src::fs 模块的页面（模拟增量前生成的产物）
         let fs_page = dir.join("wiki").join("zh").join("src_fs.md");
@@ -1390,6 +1404,7 @@ mod tests {
             protected_docs: vec![],
             generated_at: String::new(),
             tool_version: None,
+            failed_modules: vec![],
         };
         state.doc_fingerprints.insert(
             doc_path.to_string_lossy().to_string(),
