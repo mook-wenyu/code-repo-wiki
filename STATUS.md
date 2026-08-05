@@ -406,3 +406,9 @@
 - **验证**：523 passed（394 lib + 129 集成）、clippy -D warnings 0、machete 干净；旧配置残留键被 serde 忽略（向后安全）
 - **Unity 真实 regenerate 完成**（7808 进程，max_concurrent 实测并发 8 生效）：54 页产物（42→54 补全），全量 LLM 生成无回退 warn；broken 链路待 lint 复核（生成 131 分钟）
 - 未验证：Linux CI 实跑（需 remote）、rubrics --judge 真实自评（需真实 LLM 且与 recall 耦合）
+
+## 四十九节（v22 修复轮收尾：评测框架真实首跑）
+- 评测首次真实 LLM 端到端成功（rubrics 3 轮生成+合并+叶子判定全过，此前因推理型模型吞输出预算全败）
+- 根因修复：trait 新增 complete_with_budget（OpenAI/Anthropic 流式+显式预算），BENCH_MAX_OUTPUT_TOKENS=16384；parse_rubric_tree 容错（字符串 sub_tasks/权重）
+- 实测（repo-wiki 自评，deepseek-v4-flash，11 分钟）：coverage 93.1%（1124/1046）、TQS avg_total 7.73（kappa 0.27/pb 0.3）、Rubric score 0.111（163 节点/115 叶/12 满足）、lint 187 项（bad-citation-overlap 81 主项）
+- 提交 e5626ff；529 passed（400 lib + 129 集成），clippy 0，machete 干净
