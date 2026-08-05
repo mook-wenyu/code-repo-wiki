@@ -412,3 +412,11 @@
 - 根因修复：trait 新增 complete_with_budget（OpenAI/Anthropic 流式+显式预算），BENCH_MAX_OUTPUT_TOKENS=16384；parse_rubric_tree 容错（字符串 sub_tasks/权重）
 - 实测（repo-wiki 自评，deepseek-v4-flash，11 分钟）：coverage 93.1%（1124/1046）、TQS avg_total 7.73（kappa 0.27/pb 0.3）、Rubric score 0.111（163 节点/115 叶/12 满足）、lint 187 项（bad-citation-overlap 81 主项）
 - 提交 e5626ff；529 passed（400 lib + 129 集成），clippy 0，machete 干净
+
+## 第五十节（v23：实体级 diff 分类 + 验证轮实机闭环）
+- **A1 实体级 diff**（commit ad3e0f0）：change.rs compare_entities 同 kind 精化（body 三元组逐对比较）+ no_entity_change_files 公共函数；GitDiff/FileWatch 双路径 classification_failed 保守回退（不剔除）；generate 过滤跳过无实体变更文件；防回归=空格-only 变更测试（场景 F）；顺带修复 read_old_entities 二进制旧文件 Err 与 default-config.toml 个人环境残留
+- **B1 实体表键形态**（commit 08333a9）：lint.rs citation_key 统一（绝对化+过滤 CurDir+norm_sep），修复 include 通配派生 ./ 前缀导致的 overlap 检查静默失效（SA2）；citation.rs 注释闭区间语义修正；防回归测试（./ 与常规形态一致）
+- **C1 失败模块落盘顺序**（commit 410bfb2）：save_generation_state 读取真源 failed_modules（此前在赋值前执行恒为空数组，v22 补偿对全量 generate 静默失效）；实机闭环=全量 generate 3 模块失败→状态含 failed→update 补偿补生成→状态清空；401 lib 绿
+- **D 组 rubrics 三轮基线**（budget 修复 + measure_lint root 化，未提交）：e5626ff 漏改 2 处 complete_with_budget（rubric 生成/叶子判定轮）；measure_lint 用未 root 化的 source_roots（v21 遗漏，bench 与 CLI lint 口径分裂 12 vs 1）；修复后第 3 轮预期 lint 回 44 口径
+- **实机数值（本仓库）**：coverage 1.0（1340/1340）；TQS judged 2-3 模块、avg_total 7.5-7.86、kappa 0.277-0.352、pb 0.1；Rubric score 0.033-0.111（satisfied_leaves 0-2/52-60，判定证据=摘要形态保守 bias，设计权衡非缺陷）
+- 存疑项：tests_edge.md 独立页漂移（tests::edge 并入 tests 社区聚类）→ broken 引用残留；stale-entity/entity-coverage 为 LLM 内容噪声（lint 可检出不可根治）

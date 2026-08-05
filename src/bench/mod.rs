@@ -306,8 +306,12 @@ fn measure_doc_info(pages: &[(PathBuf, String)]) -> DocInfoReport {
 }
 
 /// 维度 3：lint 健康（复用 lint 6 类检查，问题数即质量分）
-fn measure_lint(output_dir: &Path, config: &WikiConfig) -> LintReport {
-    let source_roots = crate::commands::source_roots_from_include(&config.scope.include);
+fn measure_lint(output_dir: &Path, root: &ProjectRoot, config: &WikiConfig) -> LintReport {
+    // 源码根必须 root 化：lint 内部以相对路径扫描时基于进程 cwd 解析，
+    // --root 指向其他仓库时会把 cwd 误当源码根（v21 修复过 CLI lint/status/
+    // update 三处与 mcp，此处是 bench 的遗漏——实测 --root 场景下 stale-entity
+    // 检查扫错目录，实体表与引用键失配，区间重叠检查静默失效同源问题）
+    let source_roots = crate::commands::source_roots_from_include_rooted(&config.scope.include, root);
     let issues = crate::output::lint::lint(output_dir, &source_roots);
     let mut by_kind: std::collections::BTreeMap<String, usize> = Default::default();
     for issue in &issues {
@@ -559,7 +563,7 @@ pub fn run_bench(
     let scan_ms = scan_start.elapsed().as_millis() as u64;
 
     let doc_info = measure_doc_info(&pages);
-    let lint = measure_lint(Path::new(&config.output.dir), config);
+    let lint = measure_lint(Path::new(&config.output.dir), root, config);
 
     let gen_start = Instant::now();
     let update_recall = measure_update_recall(config_path, root)?;
@@ -615,7 +619,7 @@ pub fn run_rubrics_only(
     let scan_ms = scan_start.elapsed().as_millis() as u64;
 
     let doc_info = measure_doc_info(&pages);
-    let lint = measure_lint(Path::new(&config.output.dir), config);
+    let lint = measure_lint(Path::new(&config.output.dir), root, config);
 
     // Update Recall 回放成本不可接受（v21 D 组）：大仓库跳过，
     // 语义上等价于"快照缺失"——回放入口（run_bench）仍可单独跑。
@@ -908,7 +912,11 @@ fn measure_rubrics(config: &WikiConfig, root: &ProjectRoot) -> Result<Option<Rub
     let mut trees: Vec<Vec<RubricNode>> = Vec::new();
     for i in 0..RUBRIC_GENERATIONS {
         let messages = rubric_generation_prompt(&docs_text);
-        match rt.block_on(provider.complete(&messages)) {
+        // 预算显式给足：deepseek-v4-flash 等推理型模型会消耗 reasoning
+        // 输出预算，无预算时 max_output_tokens 交服务器默认（实测 4096
+        // 档偶发只有 reasoning 块无 message，见 llm.rs 注释）；e5626ff
+        // 修复时漏改本调用点，与 TQS/合并保持同口径
+        match rt.block_on(provider.complete_with_budget(&messages, Some(BENCH_MAX_OUTPUT_TOKENS))) {
             Ok(content) => match parse_rubric_tree(&content) {
                 Ok(tree) => trees.push(tree),
                 Err(e) => {
@@ -954,7 +962,9 @@ fn measure_rubrics(config: &WikiConfig, root: &ProjectRoot) -> Result<Option<Rub
     let mut verdicts: Vec<bool> = Vec::with_capacity(leaves.len());
     for leaf in &leaves {
         let messages = rubric_judge_prompt(&leaf.requirement, &evidence);
-        match rt.block_on(provider.complete(&messages)) {
+        // 同生成轮：判定输出短但需完整 message（推理型模型预算吞没
+        // 风险一致），与 TQS/合并同口径给足预算
+        match rt.block_on(provider.complete_with_budget(&messages, Some(BENCH_MAX_OUTPUT_TOKENS))) {
             Ok(content) => match parse_rubric_verdict(&content) {
                 Some(true) => verdicts.push(true),
                 Some(false) => verdicts.push(false),
