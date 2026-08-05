@@ -420,3 +420,10 @@
 - **D 组 rubrics 三轮基线**（budget 修复 + measure_lint root 化，未提交）：e5626ff 漏改 2 处 complete_with_budget（rubric 生成/叶子判定轮）；measure_lint 用未 root 化的 source_roots（v21 遗漏，bench 与 CLI lint 口径分裂 12 vs 1）；修复后第 3 轮预期 lint 回 44 口径
 - **实机数值（本仓库）**：coverage 1.0（1340/1340）；TQS judged 2-3 模块、avg_total 7.5-7.86、kappa 0.277-0.352、pb 0.1；Rubric score 0.033-0.111（satisfied_leaves 0-2/52-60，判定证据=摘要形态保守 bias，设计权衡非缺陷）
 - 存疑项：tests_edge.md 独立页漂移（tests::edge 并入 tests 社区聚类）→ broken 引用残留；stale-entity/entity-coverage 为 LLM 内容噪声（lint 可检出不可根治）
+
+## 第五十一节：v24 配置分层重构
+- **用户需求**（m02837）：分清全局（用户级）与项目级文件夹；配置等非项目内容必须在用户级；项目级不得自动创建配置文件。
+- **拍板三项**（m02840）：项目级独立文件 .repo-wiki.toml / Codex DENYLIST 敏感键净化模式 / MCP 同链。
+- **变更**（commit 5a871d8，11 files）：项目级配置独立文件与产物目录 .repo-wiki/ 物理分离；敏感键净化（llm 4 键+embed 3 键忽略+告警+注入 schema 默认防必填缺失）；移除 install 项目级自动创建点（历轮审计漏检的真实违规点）；install_wiki/MCP/init 适配。
+- **验证**：29 套件全绿（404 lib+集成）、clippy 0、machete 干净；实机三验（fake-APPDATA 隔离：自动创建用户级全局/净化 warn 生效/项目级未被创建）。
+- 边界：显式 --config 指向 .repo-wiki.toml 同样净化（逃生门不豁免）；其他文件名不净化（逃生门）。
