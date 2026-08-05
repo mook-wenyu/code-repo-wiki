@@ -581,6 +581,59 @@ pub fn run_bench(
     })
 }
 
+/// 运行纯裁判层评测（--rubrics-only）：只执行快维度（Coverage/Doc Info/lint）
+/// 与 LLM 裁判维度（TQS/Rubric），**跳过 Update Recall 的 git commit 回放**。
+///
+/// 适用场景：对大型仓库（数万文件）跑分时 Update Recall 回放成本不可接受
+/// （每次回放都触发真实生成），而裁判打分只需当前产物与快照即可完成。
+/// 返回的 `update_recall` 为「跳过」占位（commits_scanned=0/with_changes=0/
+/// correctly_updated=0/recall=1.0 空集约定），`time.generate_ms=0`；
+/// 渲染层 `render_markdown` 对无回放的 recall 会标注「跳过（--rubrics-only）」。
+pub fn run_rubrics_only(
+    root: &ProjectRoot,
+    config: &WikiConfig,
+    repo_name: &str,
+) -> Result<BenchReport> {
+    let start = Instant::now();
+
+    let scan_start = Instant::now();
+    let pages = collect_wiki_pages(Path::new(&config.output.dir));
+    let coverage = measure_coverage(root, config, &pages)?;
+    let scan_ms = scan_start.elapsed().as_millis() as u64;
+
+    let doc_info = measure_doc_info(&pages);
+    let lint = measure_lint(Path::new(&config.output.dir), config);
+
+    // Update Recall 回放成本不可接受（v21 D 组）：大仓库跳过，
+    // 语义上等价于"快照缺失"——回放入口（run_bench）仍可单独跑。
+    tracing::info!("bench --rubrics-only: 跳过 Update Recall git 回放");
+    let update_recall = UpdateRecallReport {
+        commits_scanned: 0,
+        commits_with_changes: 0,
+        correctly_updated: 0,
+        recall: 1.0,
+    };
+
+    let tqs = measure_tqs(config)?;
+    let rubric = measure_rubrics(config, root)?;
+
+    Ok(BenchReport {
+        repo_name: repo_name.to_string(),
+        generated_at: chrono::Utc::now().to_rfc3339(),
+        coverage,
+        doc_info,
+        lint,
+        update_recall,
+        time: TimeReport {
+            scan_ms,
+            generate_ms: 0,
+            total_ms: start.elapsed().as_millis() as u64,
+        },
+        tqs,
+        rubric,
+    })
+}
+
 /// TQS 打分执行：对每个"旧文档（快照）与当前产物都存在"的模块页，
 /// 两轮裁判（顺序 AB/BA）取五维平均。LLM 不可用（create_provider 失败）
 /// 或快照缺失时返回 None（与自动层"失败只告警"策略一致，不中断评测）。
@@ -1213,14 +1266,19 @@ pub fn render_markdown(report: &BenchReport) -> String {
     }
 
     out.push_str("## 4. 增量召回（Update Recall）\n\n");
-    out.push_str(&format!(
-        "- 回放 commit: {}（上限 {}）\n- 有变更: {}\n- 正确更新: {}（{:.1}%）\n\n",
-        report.update_recall.commits_scanned,
-        MAX_RECALL_COMMITS,
-        report.update_recall.commits_with_changes,
-        report.update_recall.correctly_updated,
-        report.update_recall.recall * 100.0
-    ));
+    if report.update_recall.commits_scanned == 0 {
+        // v21 D 组：--rubrics-only 明确标注跳过，避免误读为"无 commit 可回放"
+        out.push_str("- 跳过（--rubrics-only 模式：不执行 git commit 回放）\n\n");
+    } else {
+        out.push_str(&format!(
+            "- 回放 commit: {}（上限 {}）\n- 有变更: {}\n- 正确更新: {}（{:.1}%）\n\n",
+            report.update_recall.commits_scanned,
+            MAX_RECALL_COMMITS,
+            report.update_recall.commits_with_changes,
+            report.update_recall.correctly_updated,
+            report.update_recall.recall * 100.0
+        ));
+    }
 
     out.push_str("## 5. 耗时（Time）\n\n");
     out.push_str(&format!(
@@ -1388,6 +1446,29 @@ mod tests {
         assert_eq!(report.commits_with_changes, 1, "第 2 个 commit 有变更");
         assert_eq!(report.correctly_updated, 1, "变更 commit 应正确触发重生成");
         assert!((report.recall - 1.0).abs() < 1e-9);
+
+        let _ = std::fs::remove_dir_all(root.path());
+    }
+
+    /// v21 D 组：--rubrics-only 模式跳过 git 回放，快维度仍正常
+    /// （在已有产物、多 commit 的仓库上验证：recall 占位 0/1.0，渲染标注跳过）
+    #[test]
+    fn test_run_rubrics_only_skips_replay() {
+        let (root, config_path, config) = bench_repo("rubonly");
+        commit_all(root.path(), "init");
+        crate::run_pipeline(&config_path, None, false, &root, &crate::GenerationMode::Full).unwrap();
+        std::fs::write(root.path().join("src").join("b.rs"), "pub fn beta(x: u32) -> u32 { x + 100 }\n").unwrap();
+        commit_all(root.path(), "change beta");
+
+        let report = run_rubrics_only(&root, &config, "demo").unwrap();
+        assert_eq!(report.update_recall.commits_scanned, 0, "rubrics-only 不执行回放");
+        assert_eq!(report.update_recall.correctly_updated, 0);
+        assert_eq!(report.time.generate_ms, 0, "无生成耗时");
+        assert_eq!(report.coverage.total_entities, 2, "快维度（Coverage）仍正常");
+        assert!(report.doc_info.pages > 0, "mock 生成后应有产物页（快维度 Doc Info 正常）");
+        // lint 计数本身有效即可（mock 产物可能存在已知噪声，不在此处断言为 0）
+        let md = render_markdown(&report);
+        assert!(md.contains("跳过（--rubrics-only 模式"), "渲染应标注回放跳过: {md}");
 
         let _ = std::fs::remove_dir_all(root.path());
     }

@@ -242,6 +242,11 @@ enum Commands {
         /// LLM 不可用时该维度跳过）
         #[arg(long)]
         judge: bool,
+        /// 只跑裁判层（Coverage/Doc Info/lint + TQS/Rubric），跳过
+        /// Update Recall 的 git commit 回放——大仓库评测时回放成本
+        /// 不可接受，用此模式单独完成裁判打分（与 --judge 互斥）
+        #[arg(long, conflicts_with = "judge")]
+        rubrics_only: bool,
     },
 }
 
@@ -793,13 +798,15 @@ fn main() -> anyhow::Result<()> {
             let config = resolve_config_path(config.as_deref(), &root)?;
             repo_wiki::run_card_command(&config, &root, &action)?;
         }
-        Commands::Bench { root, repo_name, config, json, judge } => {
+        Commands::Bench { root, repo_name, config, json, judge, rubrics_only } => {
             // 评测基准（U10）：五维自动评测。root 必填（评测对象仓库根），
             // ProjectRoot::new 会校验目录存在性（N7）。config 缺省走默认
             // 配置链（E 组：项目级 → 全局 → 创建全局）；repo_name 缺省取
             // root 目录名。
             // Update Recall 回放前有工作区干净检查（安全闸，事故教训），
             // 脏工作区会明确报错拒绝评测。
+            // --rubrics-only（v21 D 组）：跳过回放只做裁判层——大仓库
+            // 评测成本控制（clap conflicts_with 已保证与 --judge 互斥）。
             let root = repo_wiki::project::ProjectRoot::new(root);
             let config_path = resolve_config_path(config.as_deref(), &root)?;
             let cfg = repo_wiki::load_config_rooted(&config_path, &root)?;
@@ -809,7 +816,11 @@ fn main() -> anyhow::Result<()> {
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "unknown".to_string())
             });
-            let report = repo_wiki::bench::run_bench(&config_path, &root, &cfg, &repo_name, judge)?;
+            let report = if rubrics_only {
+                repo_wiki::bench::run_rubrics_only(&root, &cfg, &repo_name)?
+            } else {
+                repo_wiki::bench::run_bench(&config_path, &root, &cfg, &repo_name, judge)?
+            };
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
