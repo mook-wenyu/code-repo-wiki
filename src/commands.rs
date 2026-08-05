@@ -18,12 +18,17 @@ pub struct StatusReport {
 /// 汇总产物状态：页面/卡片数量 + lint 健康检查（供 `repo-wiki status` 使用）
 ///
 /// 目录不存在时数量计 0、lint 无问题，不算缺陷（未生成也是合法状态）。
-pub fn status_report(config: &WikiConfig) -> StatusReport {
+pub fn status_report(config: &WikiConfig, root: &crate::project::ProjectRoot) -> StatusReport {
     let output_dir = Path::new(&config.output.dir);
     // ready = wiki 目录存在且含 .md 文件（有产物才算生成过）
     let wiki_pages = collect_md_files(&output_dir.join("wiki")).len();
     let cards = collect_md_files(&output_dir.join("cards")).len();
-    let issues = lint(output_dir, &source_roots_from_include(&config.scope.include));
+    // 源码根必须相对 root 解析（见 source_roots_from_include_rooted）：
+    // status 跨 cwd 运行时（--root 指向其他仓库）lint 才能扫到目标仓库
+    let issues = lint(
+        output_dir,
+        &source_roots_from_include_rooted(&config.scope.include, root),
+    );
     StatusReport {
         ready: wiki_pages > 0,
         wiki_pages,
@@ -43,6 +48,26 @@ pub fn source_roots_from_include(include: &[String]) -> Vec<PathBuf> {
         .map(|p| {
             let dir = p.split('*').next().unwrap_or_default().trim_end_matches('/');
             PathBuf::from(if dir.is_empty() { "." } else { dir })
+        })
+        .collect()
+}
+
+/// 源码根 root 化版本：include 派生出的目录前缀是相对路径（如 "."），
+/// 在 root ≠ 当前工作目录时（--root 指向其他仓库）必须相对 root 解析，
+/// 否则 lint 会扫描 cwd 而非目标仓库——v21 I 轮 Unity 实机核证：
+/// 1000 条 stale 误报全部由此而来（扫到的是 repo-wiki 自己的 .rs 源码）。
+pub fn source_roots_from_include_rooted(
+    include: &[String],
+    root: &crate::project::ProjectRoot,
+) -> Vec<PathBuf> {
+    source_roots_from_include(include)
+        .into_iter()
+        .map(|p| {
+            if p.is_relative() {
+                root.path().join(p)
+            } else {
+                p
+            }
         })
         .collect()
 }

@@ -211,7 +211,14 @@ impl RepoWikiMcp {
             Ok(c) => c,
             Err(e) => return format!("配置加载失败: {e}"),
         };
-        let report = crate::commands::status_report(&config);
+        // MCP server 由项目内启动，root = 当前工作目录；
+        // 源码根须相对 root 解析（见 commands::source_roots_from_include_rooted），
+        // 否则跨 cwd 调用时 lint 会扫到错误目录
+        let root = match crate::project::ProjectRoot::from_cwd() {
+            Ok(r) => r,
+            Err(e) => return format!("无法确定当前工作目录: {e}"),
+        };
+        let report = crate::commands::status_report(&config, &root);
         if !report.ready {
             return "Wiki 未生成（运行 repo-wiki generate 生成后可用）".to_string();
         }
