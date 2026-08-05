@@ -1,7 +1,7 @@
 //! -o/--output 覆盖 output.dir 的集成测试
 //!
 //! 将 fixtures/sample-repo 复制到唯一临时目录（避免与其他测试并发写 fixture 的
-//! config.toml 冲突），LLM 指向本地 mock server（返回固定 JSON 响应，
+//! mock-server.toml 冲突），LLM 指向本地 mock server（返回固定 JSON 响应，
 //! 生成调用成功且零重试延迟）。断言 run_pipeline(cfg, Some(out_dir), false)
 //! 的输出落在 out_dir 下，而非配置默认的 .repo-wiki。
 //!
@@ -77,9 +77,9 @@ default_top_k = 10
 "#,
         port
     );
-    std::fs::write(work_dir.join("config.toml"), config).unwrap();
+    std::fs::write(work_dir.join("mock-server.toml"), config).unwrap();
 
-    let result = repo_wiki::run_pipeline(&work_dir.join("config.toml"), Some(&out_dir), false, &root, &repo_wiki::GenerationMode::Full);
+    let result = repo_wiki::run_pipeline(Some(&work_dir.join("mock-server.toml")), Some(&out_dir), false, &root, &repo_wiki::GenerationMode::Full);
     assert!(result.is_ok(), "流水线应成功（LLM 失败被容错跳过）: {:?}", result.err());
 
     // 输出落在覆盖目录下：wiki 页面目录（主语言 zh）+ 全局文档

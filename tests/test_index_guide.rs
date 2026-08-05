@@ -269,10 +269,10 @@ default_top_k = 10
         out_dir = out_dir.to_string_lossy().replace('\\', "/"),
         port = port,
     );
-    std::fs::write(work_dir.join("config.toml"), config).unwrap();
+    std::fs::write(work_dir.join("mock-server.toml"), config).unwrap();
 
     let result = repo_wiki::run_pipeline(
-        &work_dir.join("config.toml"),
+        Some(&work_dir.join("mock-server.toml")),
         None,
         true,
         &root,

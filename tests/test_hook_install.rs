@@ -21,6 +21,7 @@ fn home_envs(home: &Path) -> Vec<(&'static str, String)> {
     vec![
         ("HOME", home.to_string_lossy().into_owned()),
         ("USERPROFILE", home.to_string_lossy().into_owned()),
+        ("APPDATA", home.to_string_lossy().into_owned()),
     ]
 }
 
@@ -64,7 +65,7 @@ fn test_install_writes_git_hooks() {
     let envs: Vec<(&str, String)> = home_envs(&home);
     let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
-    let out = run_bin_with_envs(&work_dir, &["install-to-opencode"], &envs_ref);
+    let out = run_bin_with_envs(&work_dir, &["install"], &envs_ref);
     assert!(
         out.status.success(),
         "install 应成功，stderr: {}",
@@ -107,7 +108,7 @@ fn test_hook_command_succeeds() {
     let envs: Vec<(&str, String)> = home_envs(&home);
     let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
-    let out = run_bin_with_envs(&work_dir, &["install-to-opencode"], &envs_ref);
+    let out = run_bin_with_envs(&work_dir, &["install"], &envs_ref);
     assert!(out.status.success(), "install 应成功");
 
     let content = std::fs::read_to_string(hooks_dir.join("post-commit")).unwrap();
@@ -133,7 +134,7 @@ fn test_install_non_git_repo_prints_hint() {
     let envs: Vec<(&str, String)> = home_envs(&home);
     let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
-    let out = run_bin_with_envs(&work_dir, &["install-to-opencode"], &envs_ref);
+    let out = run_bin_with_envs(&work_dir, &["install"], &envs_ref);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         out.status.success(),

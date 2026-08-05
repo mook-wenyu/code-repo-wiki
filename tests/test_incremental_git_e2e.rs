@@ -118,7 +118,7 @@ fn test_incremental_git_diff_scenarios() {
 
     // ---- 首次提交 + 全量生成（建立基线） ----
     git_commit_all(&repo, "init");
-    let base = repo_wiki::run_pipeline(&config_path, None, false, &root, &repo_wiki::GenerationMode::Full).expect("全量生成失败");
+    let base = repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &repo_wiki::GenerationMode::Full).expect("全量生成失败");
     let base_api = read_api(&repo);
     assert!(base_api.contains("tcp_process"), "基线 api.md 应含 tcp_process 签名");
     // 社区划分护栏：net 与 http 应检出为独立模块（依赖传播断言的前提）
@@ -134,7 +134,7 @@ fn test_incremental_git_diff_scenarios() {
     // 跳过重生成——A1 的已知边界（仅行号+签名参与判定，见 change.rs 注释）。
     std::fs::write(&tcp_mod, "pub fn tcp_process(x: u32) -> u32 {\n    udp_process(x) + 42\n}\n").unwrap();
     git_commit_all(&repo, "change body");
-    let inc_a = repo_wiki::run_pipeline(&config_path, None, false, &root, &repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
+    let inc_a = repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
         .expect("增量生成失败");
     let titles_a = doc_titles(&inc_a);
     assert!(
@@ -155,7 +155,7 @@ fn test_incremental_git_diff_scenarios() {
     // 签名变更 → api.md 反映新签名 + 调用方 http 社区文档被重生成（依赖传播接线）
     std::fs::write(&tcp_mod, "pub fn tcp_process(x: u32, y: u32) -> u32 { udp_process(x) + y }\n").unwrap();
     git_commit_all(&repo, "change signature");
-    let inc_b = repo_wiki::run_pipeline(&config_path, None, false, &root, &repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
+    let inc_b = repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
         .expect("增量生成失败");
     let new_api = read_api(&repo);
     assert!(
@@ -169,7 +169,7 @@ fn test_incremental_git_diff_scenarios() {
     );
 
     // ---- 场景 C：无变更 → 增量跳过 ----
-    let inc_c = repo_wiki::run_pipeline(&config_path, None, false, &root, &repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
+    let inc_c = repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
         .expect("无变更增量失败");
     assert!(
         inc_c.documents.is_empty(),
@@ -197,14 +197,14 @@ fn test_incremental_git_whitespace_only_change_keeps_pages() {
 
     // ---- 首次提交 + 全量生成（基线） ----
     git_commit_all(&repo, "init");
-    repo_wiki::run_pipeline(&config_path, None, false, &root, &repo_wiki::GenerationMode::Full)
+    repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &repo_wiki::GenerationMode::Full)
         .expect("全量生成失败");
     let base_api = read_api(&repo);
 
     // ---- 纯空白变化（行尾空格）：签名与行号均不变，实体级分类无记录 ----
     std::fs::write(&tcp_mod, "pub fn tcp_process(x: u32) -> u32 { udp_process(x) + 42 } \n").unwrap();
     git_commit_all(&repo, "whitespace only");
-    let inc = repo_wiki::run_pipeline(&config_path, None, false, &root, &repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
+    let inc = repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
         .expect("纯空白增量失败");
 
     // 回填语义：文档集合 = 快照全集（含未变化的 http 模块——与场景 A 的
@@ -243,7 +243,7 @@ fn test_incremental_git_delete_isolated_file_keeps_others() {
 
     // ---- 首次提交 + 全量生成（基线） ----
     git_commit_all(&repo, "init with standalone");
-    repo_wiki::run_pipeline(&config_path, None, false, &root, &repo_wiki::GenerationMode::Full)
+    repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &repo_wiki::GenerationMode::Full)
         .expect("全量生成失败");
     let wiki_dir = repo.join(".repo-wiki").join("wiki").join("zh");
     let pages_before: Vec<String> = std::fs::read_dir(&wiki_dir)
@@ -263,7 +263,7 @@ fn test_incremental_git_delete_isolated_file_keeps_others() {
     std::fs::remove_file(&isolated).expect("删除 standalone.rs 失败");
     git_commit_all(&repo, "delete standalone");
     repo_wiki::run_pipeline(
-        &config_path,
+        Some(&config_path),
         None,
         false,
         &root,
@@ -303,14 +303,14 @@ fn test_force_incremental_regenerates_all() {
 
     // 首次提交 + 全量生成（基线）
     git_commit_all(&repo, "init");
-    repo_wiki::run_pipeline(&config_path, None, false, &root, &repo_wiki::GenerationMode::Full)
+    repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &repo_wiki::GenerationMode::Full)
         .expect("全量生成失败");
 
     // 修改一个文件 → force 增量（force=true）
     std::fs::write(&tcp_mod, "pub fn tcp_process(x: u32) -> u32 { udp_process(x) + 42 }\n").unwrap();
     git_commit_all(&repo, "change body");
     let inc = repo_wiki::run_pipeline(
-        &config_path,
+        Some(&config_path),
         None,
         true,
         &root,

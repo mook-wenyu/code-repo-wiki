@@ -102,7 +102,7 @@ fn watch_e2e_file_change_triggers_incremental() {
     let thread_root = root.clone();
     let thread_config_path = config_path.clone();
     let handle = std::thread::spawn(move || {
-        repo_wiki::run_watch(&thread_config_path, &thread_root).expect("run_watch 启动失败");
+        repo_wiki::run_watch(Some(&thread_config_path), &thread_root).expect("run_watch 启动失败");
     });
     // 设计说明：不 join（见上方诚实边界——测试进程无法注入 SIGINT；
     // stop_flag 退出语义由模块级单测覆盖）。drop JoinHandle = detach。

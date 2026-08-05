@@ -54,7 +54,7 @@ fn test_install_writes_plugin_file() {
     let (work_dir, home, envs) = setup("writes_plugin");
     let envs_ref = as_env_refs(&envs);
 
-    let out = run_bin_with_envs(&work_dir, &["install-to-opencode"], &envs_ref);
+    let out = run_bin_with_envs(&work_dir, &["install"], &envs_ref);
     assert!(
         out.status.success(),
         "install 应成功，stderr: {}",
@@ -71,7 +71,7 @@ fn test_install_writes_plugin_file() {
     let mtime_before = std::fs::metadata(&path).unwrap().modified().unwrap();
 
     // 重复 install：文件未被覆盖（mtime/内容不变）
-    let out = run_bin_with_envs(&work_dir, &["install-to-opencode"], &envs_ref);
+    let out = run_bin_with_envs(&work_dir, &["install"], &envs_ref);
     assert!(out.status.success(), "重复 install 应成功");
     let content_after = std::fs::read_to_string(&path).unwrap();
     let mtime_after = std::fs::metadata(&path).unwrap().modified().unwrap();
@@ -92,7 +92,7 @@ fn test_install_does_not_create_project_config() {
     let (work_dir, home, envs) = setup("no_default_config");
     let envs_ref = as_env_refs(&envs);
 
-    let out = run_bin_with_envs(&work_dir, &["install-to-opencode"], &envs_ref);
+    let out = run_bin_with_envs(&work_dir, &["install"], &envs_ref);
     assert!(
         out.status.success(),
         "install 应成功，stderr: {}",
@@ -113,7 +113,7 @@ fn test_install_does_not_create_project_config() {
     // 输出应包含配置引导提示
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("repo-wiki init"),
+        stdout.contains("repo-wiki install"),
         "install 应提示配置引导，实际 stdout: {stdout}"
     );
 
@@ -128,7 +128,7 @@ fn test_uninstall_removes_plugin_file() {
     let (work_dir, home, envs) = setup("remove_plugin");
     let envs_ref = as_env_refs(&envs);
 
-    let out = run_bin_with_envs(&work_dir, &["install-to-opencode"], &envs_ref);
+    let out = run_bin_with_envs(&work_dir, &["install"], &envs_ref);
     assert!(out.status.success(), "install 应成功");
     assert!(plugin_file(&work_dir).exists(), "install 后插件文件应存在");
 
@@ -166,7 +166,7 @@ fn test_install_plugin_file_preserves_existing() {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, "export const CustomPlugin = () => ({});\n").unwrap();
 
-    let out = run_bin_with_envs(&work_dir, &["install-to-opencode"], &envs_ref);
+    let out = run_bin_with_envs(&work_dir, &["install"], &envs_ref);
     assert!(
         out.status.success(),
         "install 应成功，stderr: {}",

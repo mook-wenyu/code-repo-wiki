@@ -1,7 +1,7 @@
 //! run_pipeline_with_progress 进度事件测试
 //!
 //! 将 fixtures/sample-repo 复制到唯一临时目录（避免污染 fixture 目录，
-//! 也避免与其他测试并发写 fixture 的 config.toml 冲突），LLM 指向本地
+//! 也避免与其他测试并发写 fixture 的 mock-server.toml 冲突），LLM 指向本地
 //! mock server（返回固定 JSON 响应，生成调用成功且零重试延迟），验证回调事件序列。
 //!
 //! root 显式注入：以 work_dir 为 ProjectRoot 传入流水线，不再依赖进程 cwd，
@@ -54,11 +54,11 @@ fn test_pipeline_progress_events_monotonic_and_done() {
         "{}[search]\nenabled = true\nindex_dir = \".search\"\ndefault_engine = \"text\"\ndefault_top_k = 10\n",
         openai_compatible_config(port, work_dir.join("wiki").to_str().unwrap())
     );
-    std::fs::write(work_dir.join("config.toml"), config).unwrap();
+    std::fs::write(work_dir.join("mock-server.toml"), config).unwrap();
 
     let events: Mutex<Vec<repo_wiki::ProgressEvent>> = Mutex::new(Vec::new());
     let result = repo_wiki::run_pipeline_with_progress(
-        &work_dir.join("config.toml"),
+        Some(&work_dir.join("mock-server.toml")),
         None,
         true,
         &root,

@@ -92,7 +92,7 @@ fn test_e2e_full_pipeline() {
     let config_path = repo.join("config.toml");
 
     // ---- 1. 全量生成：断言产物完整 ----
-    let result = repo_wiki::run_pipeline(&config_path, None, false, &root, &repo_wiki::GenerationMode::Full).expect("全量生成失败");
+    let result = repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &repo_wiki::GenerationMode::Full).expect("全量生成失败");
     assert!(result.stats.files_scanned >= 2, "应扫描到至少 2 个文件");
     assert!(result.stats.total_entities >= 2, "应解析出至少 2 个实体");
     assert!(!result.documents.is_empty(), "应生成文档");
@@ -139,7 +139,7 @@ impl Alpha {
     )
     .expect("修改 a/mod.rs 失败");
 
-    let inc = repo_wiki::run_pipeline(&config_path, None, false, &root, &repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
+    let inc = repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
         .expect("增量更新失败");
     assert!(!inc.documents.is_empty(), "增量更新应重新生成文档");
 
@@ -156,7 +156,7 @@ impl Alpha {
     let deleted_path = repo.join("src").join("a").join("mod.rs");
 
     let del = repo_wiki::run_pipeline(
-        &config_path,
+        Some(&config_path),
         None,
         false,
         &root,
@@ -202,7 +202,7 @@ fn test_e2e_delete_only_module_keeps_other_modules() {
     let config_path = repo.join("config.toml");
 
     // 1. 全量生成：a、b 两模块页面均落盘
-    repo_wiki::run_pipeline(&config_path, None, false, &root, &repo_wiki::GenerationMode::Full)
+    repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &repo_wiki::GenerationMode::Full)
         .expect("全量生成失败");
     let before = list_wiki_pages(&repo);
     let b_page = repo.join(".repo-wiki").join("wiki").join("zh").join("src_b.md");
@@ -213,7 +213,7 @@ fn test_e2e_delete_only_module_keeps_other_modules() {
     std::fs::remove_file(&a_file).expect("删除 a/mod.rs 失败");
 
     repo_wiki::run_pipeline(
-        &config_path,
+        Some(&config_path),
         None,
         false,
         &root,

@@ -3,7 +3,7 @@
 //! 通过 env!("CARGO_BIN_EXE_repo-wiki") 调用真实二进制，覆盖：
 //! 1. status：就绪状态输出
 //! 2. note：Karpathy log 追加式知识记录（日期节 + 序号递增）
-//! 3. init：默认配置生成（schema 8 段键，无死键 [project]/[generate]）
+//! 3. install：合并 init——确保用户级默认配置就绪（项目级绝不自动创建）
 //! 4. sync：Git 内容合入指纹库（工作区手工修改不被覆盖、指纹以工作区为准）
 //! 5. search -e text：文本引擎 JSON 命中
 //!    （semantic 引擎需 embed 启用 + 真实 embedding API key，违反"generate 不触网"
@@ -160,96 +160,54 @@ fn test_note_appends_karpathy_log() {
     let _ = std::fs::remove_dir_all(&work_dir);
 }
 
-/// init：生成 schema 对齐的默认配置（8 段键，无死键 [project]/[generate]），
-/// 且产物可被真实二进制加载
+/// v25：install 合并 init——无参执行确保用户级默认配置就绪
+/// （缺失自动创建于用户级目录，绝不创建项目级配置）；产物含 schema
+/// 8 段键、无死键 [project]/[generate]，可被二进制真实加载。
 #[test]
-fn test_init_writes_schema_config() {
-    let work_dir = unique_dir("init");
+fn test_install_ensures_user_default_config() {
+    let work_dir = unique_dir("install");
     let _ = std::fs::remove_dir_all(&work_dir);
     std::fs::create_dir_all(&work_dir).unwrap();
 
-    // 路径含子目录：验证父目录自动创建（create_default_config 行为）
-    let out = run_bin(&work_dir, &["init", "configs/default.toml"]);
+    // 用户级目录隔离：APPDATA/USERPROFILE/HOME 全部指向临时目录，
+    // 防止测试写穿到真实用户配置
+    let home = unique_dir("install_home");
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let envs = [
+        ("APPDATA", home.to_string_lossy().into_owned()),
+        ("USERPROFILE", home.to_string_lossy().into_owned()),
+        ("HOME", home.to_string_lossy().into_owned()),
+    ];
+    let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
+
+    let out = run_bin_with_envs(&work_dir, &["install"], &envs_ref);
     assert!(
         out.status.success(),
-        "init 应成功，stderr: {}",
+        "install 应成功，stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let cfg_path = work_dir.join("configs").join("default.toml");
+    // 用户级默认配置被创建（含 schema 8 段，无死键）
+    let cfg_path = home.join("repo-wiki").join("default-config.toml");
     let content = std::fs::read_to_string(&cfg_path)
-        .unwrap_or_else(|e| panic!("配置应生成 {}: {}", cfg_path.display(), e));
-    // schema 8 段键逐一存在
+        .unwrap_or_else(|e| panic!("用户级配置应存在 {}: {}", cfg_path.display(), e));
     for section in ["[wiki]", "[scope]", "[llm]", "[embed]", "[output]", "[incremental]", "[search]", "[plan]"] {
-        assert!(
-            content.contains(section),
-            "默认配置应含 {section} 段，实际:\n{content}"
-        );
+        assert!(content.contains(section), "默认配置应含 {section} 段，实际:\n{content}");
     }
-    // 无死键：schema 无 [project]/[generate]，生成的配置不得出现
-    assert!(
-        !content.contains("[project]"),
-        "默认配置不应含死键 [project]，实际:\n{content}"
-    );
-    assert!(
-        !content.contains("[generate]"),
-        "默认配置不应含死键 [generate]，实际:\n{content}"
-    );
+    assert!(!content.contains("[project]"), "默认配置不应含 [project]，实际:\n{content}");
+    assert!(!content.contains("[generate]"), "默认配置不应含 [generate]，实际:\n{content}");
 
-    // 产物可被真实二进制加载（status 只加载配置不触网）
-    let out = run_bin(&work_dir, &["status", "-c", "configs/default.toml"]);
+    // 项目级配置不被自动创建（v24 用户要求的边界）
     assert!(
-        out.status.success(),
-        "init 产物应可被加载，stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
+        !work_dir.join("config.toml").exists(),
+        "install 不得在项目级自动创建 config.toml"
     );
+    assert!(!work_dir.join(".repo-wiki.toml").exists());
 
     let _ = std::fs::remove_dir_all(&work_dir);
+    let _ = std::fs::remove_dir_all(&home);
 }
-
-/// v17 t03：init 幂等保护——已存在的配置文件不被缺省链路径覆盖（数据破坏
-/// 修复：v17 审计发现原实现无条件 write 覆盖用户配置）；显式 path 保持
-/// 覆盖语义；--force 两分支都强制重写
-#[test]
-fn test_init_preserves_existing_config() {
-    let work_dir = unique_dir("init_preserve");
-    let _ = std::fs::remove_dir_all(&work_dir);
-    std::fs::create_dir_all(&work_dir).unwrap();
-    // 预置用户自定义项目级配置（v24 起独立文件 .repo-wiki.toml；
-    // 内容哨兵：与默认模板区分）
-    let custom = "[llm]\nprovider = \"anthropic\"\nmodel = \"claude-test\"\napi_key_env = \"X\"\n";
-    std::fs::write(work_dir.join(".repo-wiki.toml"), custom).unwrap();
-
-    // 1. init 无参（缺省链命中项目级）：跳过不覆盖，用户内容保留
-    let out = run_bin(&work_dir, &["init"]);
-    assert!(
-        out.status.success(),
-        "init 跳过已存在配置应退出码 0，stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let content = std::fs::read_to_string(work_dir.join(".repo-wiki.toml")).unwrap();
-    assert_eq!(content, custom, "已存在的配置不得被覆盖");
-
-    // 2. --force：强制重写为默认模板
-    let out = run_bin(&work_dir, &["init", "--force"]);
-    assert!(out.status.success(), "--force 应成功: {}", String::from_utf8_lossy(&out.stderr));
-    let content = std::fs::read_to_string(work_dir.join(".repo-wiki.toml")).unwrap();
-    assert_ne!(content, custom, "--force 应重写为默认模板");
-    assert!(content.contains("[llm]"), "默认模板应含 [llm] 段");
-
-    // 3. 显式 path：保持覆盖语义（用户明确意图，不保护）
-    std::fs::write(work_dir.join("custom.toml"), custom).unwrap();
-    let out = run_bin(&work_dir, &["init", "custom.toml"]);
-    assert!(out.status.success(), "显式 path init 应成功: {}", String::from_utf8_lossy(&out.stderr));
-    let content = std::fs::read_to_string(work_dir.join("custom.toml")).unwrap();
-    assert_ne!(content, custom, "显式 path 应覆盖为用户意图（重置语义）");
-
-    let _ = std::fs::remove_dir_all(&work_dir);
-}
-
-/// sync：generate 后手工修改 wiki 页，sync 以工作区内容合入指纹库——
-/// 页面内容保留（不触发 LLM 重生成）、状态文件存在、
-/// doc_fingerprints 中该页指纹更新为修改后内容（工作区为准）
 #[test]
 fn test_sync_merges_manual_edit_into_state() {
     let work_dir = prepare_repo("sync");
@@ -695,9 +653,10 @@ fn test_default_config_chain_prefers_project_config() {
     let work_dir = unique_dir("e-chain");
     let _ = std::fs::remove_dir_all(&work_dir);
     std::fs::create_dir_all(&work_dir).unwrap();
+    // v25：项目级配置 = config.toml（独立于产物目录）
     std::fs::write(
-        work_dir.join(".repo-wiki.toml"),
-        mock_config(&work_dir.join(".repo-wiki").to_string_lossy()),
+        work_dir.join("config.toml"),
+        mock_config(&work_dir.join("out").to_string_lossy()),
     )
     .unwrap();
 
@@ -710,7 +669,7 @@ fn test_default_config_chain_prefers_project_config() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        stdout.replace('\\', "/").contains(".repo-wiki.toml"),
+        stdout.replace('\\', "/").contains("config.toml"),
         "默认链应命中项目级配置，实际: {stdout}"
     );
 

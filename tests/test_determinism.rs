@@ -105,7 +105,7 @@ fn test_full_generate_artifact_set_deterministic() {
     let config_path = repo.join("config.toml");
 
     // 第一次全量生成
-    let first = repo_wiki::run_pipeline(&config_path, None, false, &root, &repo_wiki::GenerationMode::Full).expect("第一次生成失败");
+    let first = repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &repo_wiki::GenerationMode::Full).expect("第一次生成失败");
     let out_dir = repo.join(".repo-wiki");
     let paths_a = artifact_paths(&out_dir);
     assert!(!paths_a.is_empty(), "产物集合不应为空");
@@ -147,7 +147,7 @@ fn test_full_generate_artifact_set_deterministic() {
         .to_string();
 
     // 第二次全量生成（force=false 保留人工修改保护）
-    let second = repo_wiki::run_pipeline(&config_path, None, false, &root, &repo_wiki::GenerationMode::Full).expect("第二次生成失败");
+    let second = repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &repo_wiki::GenerationMode::Full).expect("第二次生成失败");
     let paths_b = artifact_paths(&out_dir);
     let hashes_b = hash_all(&paths_b);
 

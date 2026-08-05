@@ -150,7 +150,7 @@ fn test_large_fixture_incremental_impact() {
 
     // ---- 首轮：git init 提交 + 全量生成（基线快照） ----
     git_commit_all(&repo, "init 150 files");
-    repo_wiki::run_pipeline(&config_path, None, false, &root, &repo_wiki::GenerationMode::Full)
+    repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &repo_wiki::GenerationMode::Full)
         .expect("全量生成失败");
     let base_pages = wiki_pages_snapshot(&repo);
     let base_names = page_names(&base_pages);
@@ -168,7 +168,7 @@ fn test_large_fixture_incremental_impact() {
     .unwrap();
     git_commit_all(&repo, "rename m07 f00_0 signature");
     let inc = repo_wiki::run_pipeline(
-        &config_path,
+        Some(&config_path),
         None,
         false,
         &root,
@@ -243,7 +243,7 @@ fn test_large_fixture_delete_file_keeps_pages() {
     let config_path = repo.join("config.toml");
 
     git_commit_all(&repo, "init 150 files");
-    repo_wiki::run_pipeline(&config_path, None, false, &root, &repo_wiki::GenerationMode::Full)
+    repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &repo_wiki::GenerationMode::Full)
         .expect("全量生成失败");
     let base_pages = wiki_pages_snapshot(&repo);
     let base_names = page_names(&base_pages);
@@ -253,7 +253,7 @@ fn test_large_fixture_delete_file_keeps_pages() {
     std::fs::remove_file(repo.join("src").join("m09").join("f07.rs")).unwrap();
     git_commit_all(&repo, "delete m09 f07");
     repo_wiki::run_pipeline(
-        &config_path,
+        Some(&config_path),
         None,
         false,
         &root,
@@ -360,7 +360,7 @@ fn test_delete_one_file_in_pair_module_regenerates_module() {
     let config_path = repo.join("config.toml");
 
     git_commit_all(&repo, "init pair module");
-    repo_wiki::run_pipeline(&config_path, None, false, &root, &repo_wiki::GenerationMode::Full)
+    repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &repo_wiki::GenerationMode::Full)
         .expect("全量生成失败");
     // 基线：m20 模块页存在（社区合并后为目录级模块页，或 a/b 各自文件页）
     let base_pages = wiki_pages_snapshot(&repo);
@@ -373,7 +373,7 @@ fn test_delete_one_file_in_pair_module_regenerates_module() {
     std::fs::remove_file(repo.join("src").join("m20").join("a.rs")).unwrap();
     git_commit_all(&repo, "delete m20/a.rs");
     let inc = repo_wiki::run_pipeline(
-        &config_path,
+        Some(&config_path),
         None,
         false,
         &root,

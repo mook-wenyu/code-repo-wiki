@@ -22,7 +22,7 @@ fn minimal_config(port: u16, out_dir: &Path) -> String {
     format!("{cfg}\n[search]\nenabled = false\nindex_dir = \".search\"\ndefault_engine = \"text\"\ndefault_top_k = 10\n")
 }
 
-/// 复制 fixture 并写入指向 mock LLM 的 config.toml，返回工作目录
+/// 复制 fixture 并写入指向 mock LLM 的 mock-server.toml，返回工作目录
 fn prepare_repo(tag: &str) -> PathBuf {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -33,7 +33,7 @@ fn prepare_repo(tag: &str) -> PathBuf {
     copy_dir(&fixture, &work_dir);
     let port = mock_llm_server();
     std::fs::write(
-        work_dir.join("config.toml"),
+        work_dir.join("mock-server.toml"),
         minimal_config(port, &work_dir.join("wiki")),
     )
     .unwrap();
@@ -99,7 +99,7 @@ fn test_uninstall_requires_force() {
 fn test_progress_json_cli() {
     let work_dir = prepare_repo("progress_json");
 
-    let out = run_bin_with_envs(&work_dir, &["generate", "--config", "config.toml", "--progress-json"], &[]);
+    let out = run_bin_with_envs(&work_dir, &["generate", "--config", "mock-server.toml", "--progress-json"], &[]);
     assert!(
         out.status.success(),
         "generate --progress-json 应成功，stderr: {}",
@@ -147,7 +147,7 @@ fn test_update_progress_json_cli() {
     let work_dir = prepare_repo("update_progress_json");
 
     // 先全量 generate 建立基线（增量路径需要产物与状态）
-    let gen_out = run_bin_with_envs(&work_dir, &["generate", "--config", "config.toml"], &[]);
+    let gen_out = run_bin_with_envs(&work_dir, &["generate", "--config", "mock-server.toml"], &[]);
     assert!(
         gen_out.status.success(),
         "generate 应成功，stderr: {}",
@@ -160,7 +160,7 @@ fn test_update_progress_json_cli() {
     content.push_str("\n// update --progress-json 触发注释\n");
     std::fs::write(&src, content).unwrap();
 
-    let out = run_bin_with_envs(&work_dir, &["update", "--config", "config.toml", "--progress-json"], &[]);
+    let out = run_bin_with_envs(&work_dir, &["update", "--config", "mock-server.toml", "--progress-json"], &[]);
     assert!(
         out.status.success(),
         "update --progress-json 应成功，stderr: {}",
@@ -191,7 +191,7 @@ fn test_card_cli_commands() {
     let work_dir = prepare_repo("card");
 
     // 1. 全量 generate（mock LLM 返回卡片 JSON）→ 卡片文件落盘
-    let out = run_bin_with_envs(&work_dir, &["generate", "--config", "config.toml"], &[]);
+    let out = run_bin_with_envs(&work_dir, &["generate", "--config", "mock-server.toml"], &[]);
     assert!(
         out.status.success(),
         "generate 应成功，stderr: {}",
@@ -218,7 +218,7 @@ fn test_card_cli_commands() {
         &[
             "card", "modify", &module,
             "--instruction", "补充一段总结",
-            "--config", "config.toml",
+            "--config", "mock-server.toml",
         ],
         &[],
     );
@@ -243,7 +243,7 @@ fn test_card_cli_commands() {
 fn test_card_reference_validation() {
     let work_dir = prepare_repo("card_ref");
 
-    let out = run_bin_with_envs(&work_dir, &["generate", "--config", "config.toml"], &[]);
+    let out = run_bin_with_envs(&work_dir, &["generate", "--config", "mock-server.toml"], &[]);
     assert!(
         out.status.success(),
         "generate 应成功，stderr: {}",
@@ -270,7 +270,7 @@ fn test_card_reference_validation() {
             "card", "modify", &module,
             "--instruction", "补充总结",
             "--reference", "missing.md",
-            "--config", "config.toml",
+            "--config", "mock-server.toml",
         ],
         &[],
     );
@@ -301,7 +301,7 @@ fn test_card_reference_validation() {
             "card", "modify", &module,
             "--instruction", "补充总结",
             "--reference", "refs.md",
-            "--config", "config.toml",
+            "--config", "mock-server.toml",
         ],
         &[],
     );
@@ -325,7 +325,7 @@ fn test_export_produces_html_artifacts() {
 
     let gen_out = run_bin_with_envs(
         &work_dir,
-        &["generate", "--config", "config.toml"],
+        &["generate", "--config", "mock-server.toml"],
         &[],
     );
     assert!(
@@ -336,7 +336,7 @@ fn test_export_produces_html_artifacts() {
 
     let out = run_bin_with_envs(
         &work_dir,
-        &["export", "--config", "config.toml"],
+        &["export", "--config", "mock-server.toml"],
         &[],
     );
     assert!(
@@ -391,14 +391,14 @@ fn test_search_hybrid_includes_callchain() {
     let _ = std::fs::remove_dir_all(&work_dir);
     copy_dir(&fixture, &work_dir);
 
-    // 覆盖 config.toml：启用搜索索引（fixture 自带 config 可能未开）
+    // 覆盖 mock-server.toml：启用搜索索引（fixture 自带 config 可能未开）
     // v19 t04：基于 helper 模板 + 追加 search 段（搜索特例，dir 绝对路径）
     let port = mock_llm_server();
     let cfg = openai_compatible_config(port, work_dir.join("wiki").to_str().unwrap());
     let config = format!("{cfg}[search]\nenabled = true\nindex_dir = \".search\"\ndefault_engine = \"hybrid\"\ndefault_top_k = 10\n");
-    std::fs::write(work_dir.join("config.toml"), config).unwrap();
+    std::fs::write(work_dir.join("mock-server.toml"), config).unwrap();
 
-    let gen_out = run_bin_with_envs(&work_dir, &["generate", "--config", "config.toml"], &[]);
+    let gen_out = run_bin_with_envs(&work_dir, &["generate", "--config", "mock-server.toml"], &[]);
     assert!(
         gen_out.status.success(),
         "generate 应成功, stderr: {}",
@@ -407,7 +407,7 @@ fn test_search_hybrid_includes_callchain() {
 
     let out = run_bin_with_envs(
         &work_dir,
-        &["search", "-q", "authenticate", "-k", "3", "--engine", "hybrid", "--json", "--config", "config.toml"],
+        &["search", "-q", "authenticate", "-k", "3", "--engine", "hybrid", "--json", "--config", "mock-server.toml"],
         &[],
     );
     assert!(
@@ -461,7 +461,7 @@ fn test_lint_detects_issues_in_artifacts() {
         "# 目录\n\n- [Core](wiki/zh/core.md)\n",
     )
     .unwrap();
-    std::fs::write(work_dir.join("config.toml"), "\
+    std::fs::write(work_dir.join("mock-server.toml"), "\
 [scope]
 include = [\"**/*.rs\"]
 exclude = []
@@ -489,7 +489,7 @@ default_top_k = 10
 ").unwrap();
 
     // 干净产物 → lint 通过(无孤儿页)
-    let clean = run_bin_with_envs(&work_dir, &["lint", "--config", "config.toml"], &[]);
+    let clean = run_bin_with_envs(&work_dir, &["lint", "--config", "mock-server.toml"], &[]);
     assert!(
         clean.status.success(),
         "干净产物 lint 应通过, stderr: {}",
@@ -503,7 +503,7 @@ default_top_k = 10
     )
     .unwrap();
 
-    let dirty = run_bin_with_envs(&work_dir, &["lint", "--config", "config.toml"], &[]);
+    let dirty = run_bin_with_envs(&work_dir, &["lint", "--config", "mock-server.toml"], &[]);
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&dirty.stdout),
@@ -533,7 +533,7 @@ fn test_ast_search_finds_definition() {
 
     let out = run_bin_with_envs(
         &work_dir,
-        &["ast-search", "authenticate", "--config", "config.toml"],
+        &["ast-search", "authenticate", "--config", "mock-server.toml"],
         &[],
     );
     assert!(
@@ -558,7 +558,7 @@ fn test_ast_search_finds_definition() {
     // 不存在的符号 → 明确提示
     let miss = run_bin_with_envs(
         &work_dir,
-        &["ast-search", "definitely_missing", "--config", "config.toml"],
+        &["ast-search", "definitely_missing", "--config", "mock-server.toml"],
         &[],
     );
     let miss_out = format!(
