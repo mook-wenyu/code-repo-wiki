@@ -58,7 +58,7 @@ AI 驱动的代码仓库 Wiki 自动生成工具。分析源码结构，通过 L
 | `lint` | 产物健康检查（孤儿页/断链/过时/引用错位/坏 mermaid），供 CI 使用；退出码三态：`0` 通过、`1` 发现问题、`2` 配置加载失败 |
 | `export` | 导出为 HTML（支持 `-o` 输出目录、`--skip-generate` 从快照直接导出不重新生成）|
 | `doctor` | 环境诊断（配置/产物目录/输出目录/LLM Key/网络/版本自检六查），失败退出码 1 |
-| `init` | 初始化配置（缺省在全局配置目录创建；项目根已有 `.repo-wiki/config.toml` 时跳过不覆盖，`--force` 强制；显式 `--config <path>` 始终覆盖）|
+| `init` | 初始化配置（缺省在全局配置目录创建；项目根已有 `.repo-wiki.toml` 时跳过不覆盖，`--force` 强制；显式 `--config <path>` 始终覆盖）|
 | `watch` | 监听文件变更并自动更新 |
 | `search` | 搜索代码实体 |
 | `ast-search` | AST 精确符号查找（文件+行号+签名，不依赖搜索索引）|
@@ -112,8 +112,8 @@ Linux/macOS 上构建与运行需要 OpenSSL 与 zlib 开发库（`reqwest` 的
 # 1. 安装到 ~/.cargo/bin（自动加入 PATH；或仅构建：cargo build --release）
 cargo install --path . --locked
 
-# 2. 配置 LLM Key（默认 deepseek-v4-flash，配置链：项目 .repo-wiki/config.toml
-#    → 全局配置目录 → init 自动创建）
+# 2. 配置 LLM Key（默认 deepseek-v4-flash，配置链：项目 .repo-wiki.toml
+#    → 全局配置目录 → 自动创建全局配置；敏感键只放用户级）
 export DEEPSEEK_API_KEY="sk-..."
 
 # 3. 生成 Wiki（首次零参数全自动：无配置自动创建，产物在 .repo-wiki/）
@@ -178,13 +178,19 @@ documents:                         # 页面白名单（提供时严格只输出�
 
 ### 配置加载链（全局/项目级）
 
-不带 `--config` 时按以下链解析配置文件（v13 E 组）：
+不带 `--config` 时按以下链解析配置文件（v13 E 组，v24 调整）：
 
-1. **项目级**：`{root}/.repo-wiki/config.toml`（root 为当前目录或 `--root` 指定）
+1. **项目级**：`{root}/.repo-wiki.toml`（root 为当前目录或 `--root` 指定；项目契约如 scope/语言/输出随 Git 提交共享，与产物目录 `.repo-wiki/` 物理分离）
 2. **全局（用户级）**：Windows `%APPDATA%\repo-wiki\config.toml`，其他平台 `~/repo-wiki/config.toml`
-3. **创建**：两者都不存在时自动创建全局目录与默认配置（引导式，无需先手动 init）
+3. **创建**：两者都不存在时自动创建**全局**目录与默认配置（引导式，无需先手动 init）——自动创建只发生在用户级目录，项目级永不自动创建（v24 用户要求）
 
 显式 `--config <path>` 指定时原样使用（缺失则报错，不走创建链）。
+
+> **敏感键净化（v24）**：项目级配置 `.repo-wiki.toml` 中的机器属性键——
+> `llm.provider/model/base_url/api_key_env`、`embed.model/base_url/api_key_env`——
+> 会被**忽略并告警**（Codex DENYLIST 模式）：凭据、提供商、模型归属用户级配置
+> 或 `--config` 显式指定，防止随仓库传播造成凭据重定向/模型锁死。
+> 项目级配置只应放项目契约：`scope`、`wiki.language`、`output.dir` 等。
 
 ```toml
 [wiki]

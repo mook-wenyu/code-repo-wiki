@@ -8,6 +8,66 @@ use anyhow::{Context, Result};
 
 use crate::project::ProjectRoot;
 
+/// 项目级独立配置文件名（v24 拍板：与产物目录 `.repo-wiki/` 物理分离，
+/// 配置属非产物内容；自动创建只发生在用户级目录）
+pub const PROJECT_CONFIG_FILE: &str = ".repo-wiki.toml";
+
+/// 项目级配置中禁止携带的敏感/机器属性键（Codex DENYLIST 模式，
+/// v24 用户拍板）：凭据、提供商、模型归属用户级配置或 `--config`
+/// 显式指定——防止随仓库传播造成凭据重定向、模型锁死
+pub const PROJECT_CONFIG_DENY_KEYS: &[(&str, &str)] = &[
+    ("llm", "provider"),
+    ("llm", "model"),
+    ("llm", "base_url"),
+    ("llm", "api_key_env"),
+    ("embed", "model"),
+    ("embed", "base_url"),
+    ("embed", "api_key_env"),
+];
+
+/// 敏感键净化后的注入默认值（schema LlmSection 三字段必填无 serde 默认，
+/// 与 schema Default 阵营对齐：OpenAI 协议 + DeepSeek 模板）——
+/// 「敏感键不生效」而非「配置缺失报错」
+const SANITIZE_DEFAULT_INJECT: &[(&str, &str, &str)] = &[
+    ("llm", "provider", "openai"),
+    ("llm", "model", "deepseek-v4-flash"),
+    ("llm", "api_key_env", "DEEPSEEK_API_KEY"),
+    // embed.model/api_key_env 同为必填（无 serde 默认）：默认模板自身含
+    // 这些键，净化后需回填，否则 init 写出的 .repo-wiki.toml 无法再加载
+    ("embed", "model", "text-embedding-3-small"),
+    ("embed", "api_key_env", "OPENAI_API_KEY"),
+];
+
+/// 项目级配置净化：移除敏感键并告警（返回净化后的 TOML 文本）
+///
+/// 用 `toml::Value` 中间层移除命中键后重新序列化——净化结果只用于本次
+/// 解析，丢失注释无碍。TOML 本身非法或序列化失败时原样返回（由后续
+/// 解析报出真实错误，不吞错）。
+fn sanitize_project_config(text: &str) -> String {
+    let mut value: toml::Value = match toml::from_str(text) {
+        Ok(v) => v,
+        Err(_) => return text.to_string(),
+    };
+    for (section, key) in PROJECT_CONFIG_DENY_KEYS {
+        if let Some(tbl) = value.get_mut(*section).and_then(|v| v.as_table_mut())
+            && tbl.remove(*key).is_some()
+        {
+            tracing::warn!(
+                "项目级配置 {section}.{key} 属敏感/机器属性键，已忽略——请移入用户级配置或使用 --config 显式指定"
+            );
+        }
+    }
+    // 必填字段净化后注入 schema 默认，防止解析失败（见常量注释）
+    for (section, key, default) in SANITIZE_DEFAULT_INJECT {
+        if let Some(tbl) = value.get_mut(*section).and_then(|v| v.as_table_mut())
+            && !tbl.contains_key(*key)
+        {
+            tbl.insert(key.to_string(), toml::Value::String((*default).to_string()));
+        }
+    }
+    toml::to_string(&value).unwrap_or_else(|_| text.to_string())
+}
+
 /// 从文件加载配置，缺失字段用默认值填充
 pub fn load_config(path: &Path) -> Result<schema::WikiConfig> {
     if !path.exists() {
@@ -20,7 +80,15 @@ pub fn load_config(path: &Path) -> Result<schema::WikiConfig> {
     }
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("读取配置文件失败: {}", path.display()))?;
-    let config: schema::WikiConfig = toml::from_str(&content)
+    // v24：项目级独立配置文件（文件名 .repo-wiki.toml）执行敏感键净化——
+    // 显式 --config 指向该文件同样生效（该文件语义即"项目级配置"，逃生门
+    // 不豁免安全护栏；其余文件名/全局配置不净化）
+    let text = if path.file_name().is_some_and(|n| n == PROJECT_CONFIG_FILE) {
+        sanitize_project_config(&content)
+    } else {
+        content
+    };
+    let config: schema::WikiConfig = toml::from_str(&text)
         .with_context(|| format!("解析配置文件失败: {}", path.display()))?;
     validate_config(&config)?;
     Ok(config)
@@ -69,19 +137,21 @@ pub fn global_config_dir() -> Result<PathBuf> {
     global_config_dir_from(appdata.as_deref(), home.as_deref())
 }
 
-/// 默认配置文件解析：项目级 → 全局 → 创建全局（用户拍板，v13 E 组）
+/// 默认配置文件解析：项目级 → 全局 → 创建全局（用户拍板，v13 E 组；
+/// v24 调整：项目级配置为独立文件 `.repo-wiki.toml`，与产物目录分离）
 ///
 /// 搜索链（无 `--config` 显式指定时）：
-/// 1. `{项目根}/.repo-wiki/config.toml` 存在 → 用它（项目级配置优先，
-///    随 Git 提交共享，多项目隔离）；
+/// 1. `{项目根}/.repo-wiki.toml` 存在 → 用它（项目级配置优先，
+///    随 Git 提交共享，多项目隔离；敏感键净化见 [`sanitize_project_config`]）；
 /// 2. 全局 `{用户级目录}/config.toml` 存在 → 用它（用户默认偏好）；
 /// 3. 都不存在 → 创建全局目录 + 写入默认配置模板，返回全局路径
-///    （引导式就绪：无配置时自动落位，不需要用户先手动 init）。
+///    （引导式就绪：自动创建只发生在用户级目录，项目级永不自动创建——
+///    v24 用户要求，install 命令的项目级配置创建点已移除）。
 ///
 /// global_dir 由调用方注入（测试传临时目录），生产入口传
 /// [`global_config_dir`] 的结果。
 pub fn resolve_default_config_path_with(root: &ProjectRoot, global_dir: &Path) -> Result<PathBuf> {
-    let project_config = root.path().join(".repo-wiki").join("config.toml");
+    let project_config = root.path().join(PROJECT_CONFIG_FILE);
     if project_config.exists() {
         return Ok(project_config);
     }
@@ -169,24 +239,95 @@ mod tests {
         assert!(global_config_dir_from(None, Some(Path::new(""))).is_err());
     }
 
-    /// E 组搜索链：项目级配置存在 → 返回项目级（项目级优先）
+    /// E 组搜索链：项目级配置存在 → 返回项目级（项目级优先；v24 起为
+    /// 独立文件 `.repo-wiki.toml`，不再混入产物目录）
     #[test]
     fn test_resolve_prefers_project_config() {
         let dir = std::env::temp_dir().join(format!("repo_wiki_e_project_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join(".repo-wiki")).unwrap();
-        std::fs::write(dir.join(".repo-wiki").join("config.toml"), "dummy").unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(PROJECT_CONFIG_FILE), "dummy").unwrap();
         let global_dir = dir.join("global");
         std::fs::create_dir_all(&global_dir).unwrap();
         std::fs::write(global_dir.join("config.toml"), "dummy-global").unwrap();
 
         let resolved = resolve_default_config_path_with(&ProjectRoot::new(dir.clone()), &global_dir).unwrap();
-        assert_eq!(resolved, dir.join(".repo-wiki").join("config.toml"));
+        assert_eq!(resolved, dir.join(PROJECT_CONFIG_FILE));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// E 组搜索链：项目级缺失、全局存在 → 返回全局
+    /// v24：项目级独立配置文件加载时，敏感键（provider/base_url/api_key_env/
+    /// model）被移除并回退默认值——不随仓库传播
+    #[test]
+    fn test_load_project_config_sanitizes_sensitive_keys() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_sanitize_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(PROJECT_CONFIG_FILE);
+        // 项目级配置只声明项目契约（scope/语言/输出），敏感键被写入也无效
+        std::fs::write(
+            &path,
+            r#"
+[wiki]
+language = "en"
+
+[scope]
+include = ["src/**"]
+exclude = ["target/**"]
+
+[output]
+dir = "docs"
+
+[llm]
+provider = "anthropic"
+model = "claude-opus"
+api_key_env = "HACKED_KEY"
+"#,
+        )
+        .unwrap();
+
+        let config = load_config(&path).unwrap();
+        // 净化后敏感键回退 schema 默认（模板阵营 deepseek）
+        assert_eq!(config.llm.provider, crate::config::schema::LlmProviderType::OpenAI);
+        assert_eq!(config.llm.model, "deepseek-v4-flash");
+        assert_eq!(config.llm.api_key_env, "DEEPSEEK_API_KEY");
+        // 项目契约保留
+        assert_eq!(config.wiki.language, "en");
+        assert_eq!(config.output.dir, "docs");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v24：非项目级文件名（全局配置/显式 --config 其他文件）不净化
+    #[test]
+    fn test_load_explicit_config_keeps_sensitive_keys() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_nosanitize_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("my.toml");
+        std::fs::write(
+            &path,
+            r#"
+[scope]
+include = ["src/**"]
+exclude = ["target/**"]
+
+[llm]
+provider = "anthropic"
+model = "claude-opus"
+api_key_env = "ANTHROPIC_API_KEY"
+"#,
+        )
+        .unwrap();
+
+        let config = load_config(&path).unwrap();
+        // 用户级/显式配置完整保留敏感键
+        assert_eq!(config.llm.provider, crate::config::schema::LlmProviderType::Anthropic);
+        assert_eq!(config.llm.model, "claude-opus");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     #[test]
     fn test_resolve_falls_back_to_global() {
         let dir = std::env::temp_dir().join(format!("repo_wiki_e_global_{}", std::process::id()));

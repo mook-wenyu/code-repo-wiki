@@ -223,13 +223,15 @@ pub fn install(agent: &str, root: &crate::project::ProjectRoot) -> Result<()> {
         false => println!("✓ .mcp.json 已存在，跳过（保留人工修改）"),
     }
 
-    // 3. 创建默认 .repo-wiki/config.toml (如果不存在)
-    let config_path = project_root.join(".repo-wiki").join("config.toml");
-    if !config_path.exists() {
-        std::fs::create_dir_all(config_path.parent().unwrap())?;
-        let default_config = include_str!("../default-config.toml");
-        std::fs::write(&config_path, default_config)?;
-        println!("✓ 默认配置已创建: .repo-wiki/config.toml");
+    // 3. 配置引导（v24：不再在项目级自动创建配置文件——配置属非项目
+    //    内容，自动创建只发生在用户级目录；这里只提示入口，由用户决定
+    //    是 `repo-wiki init`（创建用户级默认）还是 `--config` 显式指定）
+    let project_cfg = project_root.join(crate::config::PROJECT_CONFIG_FILE);
+    if !project_cfg.exists() {
+        println!(
+            "? 未检测到项目级配置 {}：可运行 `repo-wiki init` 创建用户级默认配置，或使用 --config 显式指定",
+            crate::config::PROJECT_CONFIG_FILE
+        );
     }
 
     // 3. 安装 git hooks
@@ -512,13 +514,14 @@ fn remove_wiki_block_from_file(path: &Path) -> Result<bool> {
 /// 文件不存在则创建；已存在完整标记对则整块替换（只动标记之间内容）；
 /// 半标记报错（不修，理由见 `wiki_block_state`）。
 ///
-/// 注入块按目标仓库配置渲染（U02）：读 `root/.repo-wiki/config.toml` 取
-/// output.dir 与 wiki.language；配置缺失（首次运行/未 init）时用默认值
-/// (".repo-wiki", "zh") 并提示——与 init 先例一致，不因配置缺失阻断注入。
+/// 注入块按目标仓库配置渲染（U02）：读 `root/.repo-wiki.toml` 取
+/// output.dir 与 wiki.language；配置缺失（首次运行/未 init）时回退默认值
+/// (".repo-wiki", "zh") 不报错——wiki 块缺失比注入失败更隐蔽。
 pub fn install_wiki(root: &crate::project::ProjectRoot, also_claude: bool) -> Result<()> {
-    // 目标仓库产物路径：config 优先，缺失回退默认（与 create_default_config
-    // 的引导语义一致；输出目录解析相对 root，与 generate 的产物基准一致）
-    let config_path = root.join(Path::new(".repo-wiki/config.toml"));
+    // 目标仓库配置路径（v24：独立文件 .repo-wiki.toml，与产物目录分离）；
+    // 缺失时回退默认——注意该路径含敏感键时 load_config 会净化（.repo-wiki.toml
+    // 形态自动生效），此处取的是 output.dir/language（项目契约，不受净化影响）
+    let config_path = root.join(Path::new(crate::config::PROJECT_CONFIG_FILE));
     let (output_dir, lang) = match crate::config::load_config(&config_path) {
         Ok(c) => (c.output.dir, c.wiki.language),
         Err(e) => {

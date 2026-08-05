@@ -154,9 +154,9 @@ fn test_half_marker_errors_and_preserves_file() {
 #[test]
 fn test_install_wiki_template_uses_config_paths() {
     let work_dir = setup("template_config");
-    std::fs::create_dir_all(work_dir.join(".repo-wiki")).unwrap();
+    std::fs::create_dir_all(&work_dir).unwrap();
     std::fs::write(
-        work_dir.join(".repo-wiki").join("config.toml"),
+        work_dir.join(".repo-wiki.toml"),
         "[wiki]\nlanguage = \"en\"\n\n[output]\ndir = \"docs\"\n",
     )
     .unwrap();

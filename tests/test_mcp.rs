@@ -26,7 +26,7 @@ default_top_k = 10
 /// 启动 repo-wiki mcp 子进程，返回子进程句柄
 fn spawn_mcp(dir: &Path) -> tokio::process::Child {
     tokio::process::Command::new(env!("CARGO_BIN_EXE_repo-wiki"))
-        .args(["mcp", "--config", ".repo-wiki/config.toml", "--root", "."])
+        .args(["mcp", "--config", "mcp-test.toml", "--root", "."])
         .current_dir(dir)
         .env("RUST_LOG", "off")
         .env_remove("OPENAI_API_KEY")
@@ -85,7 +85,7 @@ async fn test_mcp_initialize_lists_tools_and_calls() {
         "{}{SEARCH_SECTION}",
         mock_config(&dir.join(".repo-wiki").to_string_lossy())
     );
-    std::fs::write(dir.join(".repo-wiki").join("config.toml"), &config).unwrap();
+    std::fs::write(dir.join("mcp-test.toml"), &config).unwrap();
     // 建一个源文件供 search/ast_search 扫描
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(dir.join("src").join("main.rs"), "pub fn hello_world() {}\n").unwrap();
@@ -193,7 +193,7 @@ async fn test_mcp_lang_traversal_rejected() {
         "{}{SEARCH_SECTION}",
         mock_config(&dir.join(".repo-wiki").to_string_lossy())
     );
-    std::fs::write(dir.join(".repo-wiki").join("config.toml"), &config).unwrap();
+    std::fs::write(dir.join("mcp-test.toml"), &config).unwrap();
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(dir.join("src").join("main.rs"), "pub fn hello_world() {}\n").unwrap();
     // 仓库根之外放置秘密文件（穿越攻击的目标）

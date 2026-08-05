@@ -14,7 +14,7 @@ struct Cli {
 enum Commands {
     /// 全量生成 Wiki 文档
     Generate {
-        /// 配置文件路径（默认 .repo-wiki/config.toml）
+        /// 配置文件路径（默认缺省链：项目级 .repo-wiki.toml → 用户级全局 → 创建全局）
         #[arg(short, long)]
         config: Option<PathBuf>,
         /// 输出目录（覆盖配置文件中的 output.dir）
@@ -232,7 +232,7 @@ enum Commands {
         /// 仓库名（报告标识，缺省取 root 目录名）
         #[arg(long)]
         repo_name: Option<String>,
-        /// 配置文件路径（缺省 root/.repo-wiki/config.toml）
+        /// 配置文件路径（缺省 root/.repo-wiki.toml）
         #[arg(long)]
         config: Option<PathBuf>,
         /// 以 JSON 格式输出报告
@@ -345,7 +345,7 @@ fn resolve_root(root: Option<&Path>) -> anyhow::Result<repo_wiki::project::Proje
 }
 
 /// 解析 --config 参数：显式指定原样使用；缺省走默认配置链
-/// （项目级 .repo-wiki/config.toml → 全局用户级目录 → 创建全局，
+/// （项目级 .repo-wiki.toml → 全局用户级目录 → 创建全局，
 /// 见 config::resolve_default_config_path；E 组 v13）
 fn resolve_config_path(
     config: Option<&Path>,
@@ -696,7 +696,7 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Init { path, force, root } => {
             // --root 提供时 path 相对 root 解析（与产物目录基准一致）；
-            // path 缺省走默认配置链：项目级 .repo-wiki/config.toml 存在则
+            // path 缺省走默认配置链：项目级 .repo-wiki.toml 存在则
             // 复用（不重复创建），否则创建全局默认配置（E 组引导语义）
             let root = resolve_root(root.as_deref())?;
             let via_default_chain = path.is_none();

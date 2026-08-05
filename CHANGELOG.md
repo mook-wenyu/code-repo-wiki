@@ -5,6 +5,9 @@
 
 ## [Unreleased]
 
+### Changed
+- 配置分层重构（v24）：项目级配置迁移为独立文件 `.repo-wiki.toml`（与产物目录 `.repo-wiki/` 物理分离）；install 命令不再在项目级自动创建配置文件（自动创建只发生在用户级目录）；项目级配置执行敏感键净化（Codex DENYLIST 模式：`llm.provider/model/base_url/api_key_env`、`embed.model/base_url/api_key_env` 被忽略并告警，凭据/提供商/模型归属用户级配置或 `--config` 显式指定）
+
 ### Added
 - llms-full.txt 完整内容索引（v19 t05）：内联全部实体摘要，32K token 预算内四档裁剪（完整 → 去常量 → 去无定位 → 精简），头部含生成版本行
 - 版本自检（v19 t01）：doctor 新增「版本」检查（状态记录 vs 当前二进制版本漂移提示）；llms.txt / llms-full.txt 头部注入生成版本

@@ -214,10 +214,11 @@ fn test_init_writes_schema_config() {
 fn test_init_preserves_existing_config() {
     let work_dir = unique_dir("init_preserve");
     let _ = std::fs::remove_dir_all(&work_dir);
-    std::fs::create_dir_all(work_dir.join(".repo-wiki")).unwrap();
-    // 预置用户自定义配置（内容哨兵：与默认模板区分）
-    let custom = "[llm]\nprovider = \"anthropic\"\nmodel = \"claude-test\"\n";
-    std::fs::write(work_dir.join(".repo-wiki").join("config.toml"), custom).unwrap();
+    std::fs::create_dir_all(&work_dir).unwrap();
+    // 预置用户自定义项目级配置（v24 起独立文件 .repo-wiki.toml；
+    // 内容哨兵：与默认模板区分）
+    let custom = "[llm]\nprovider = \"anthropic\"\nmodel = \"claude-test\"\napi_key_env = \"X\"\n";
+    std::fs::write(work_dir.join(".repo-wiki.toml"), custom).unwrap();
 
     // 1. init 无参（缺省链命中项目级）：跳过不覆盖，用户内容保留
     let out = run_bin(&work_dir, &["init"]);
@@ -226,13 +227,13 @@ fn test_init_preserves_existing_config() {
         "init 跳过已存在配置应退出码 0，stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let content = std::fs::read_to_string(work_dir.join(".repo-wiki").join("config.toml")).unwrap();
+    let content = std::fs::read_to_string(work_dir.join(".repo-wiki.toml")).unwrap();
     assert_eq!(content, custom, "已存在的配置不得被覆盖");
 
     // 2. --force：强制重写为默认模板
     let out = run_bin(&work_dir, &["init", "--force"]);
     assert!(out.status.success(), "--force 应成功: {}", String::from_utf8_lossy(&out.stderr));
-    let content = std::fs::read_to_string(work_dir.join(".repo-wiki").join("config.toml")).unwrap();
+    let content = std::fs::read_to_string(work_dir.join(".repo-wiki.toml")).unwrap();
     assert_ne!(content, custom, "--force 应重写为默认模板");
     assert!(content.contains("[llm]"), "默认模板应含 [llm] 段");
 
@@ -686,15 +687,16 @@ fn test_root_missing_dir_errors() {
 
 // ==================== E 组：默认配置链（v13） ====================
 
-/// E 组：无 --config 时默认配置链取项目级 .repo-wiki/config.toml（项目级优先）。
+/// E 组：无 --config 时默认配置链取项目级 .repo-wiki.toml（项目级优先；
+/// v24 起为独立文件，不再混入产物目录 .repo-wiki/）。
 /// 项目级存在时不触达全局目录（resolve 先查项目级），测试无需隔离 APPDATA。
 #[test]
 fn test_default_config_chain_prefers_project_config() {
     let work_dir = unique_dir("e-chain");
     let _ = std::fs::remove_dir_all(&work_dir);
-    std::fs::create_dir_all(work_dir.join(".repo-wiki")).unwrap();
+    std::fs::create_dir_all(&work_dir).unwrap();
     std::fs::write(
-        work_dir.join(".repo-wiki").join("config.toml"),
+        work_dir.join(".repo-wiki.toml"),
         mock_config(&work_dir.join(".repo-wiki").to_string_lossy()),
     )
     .unwrap();
@@ -708,7 +710,7 @@ fn test_default_config_chain_prefers_project_config() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        stdout.replace('\\', "/").contains(".repo-wiki/config.toml"),
+        stdout.replace('\\', "/").contains(".repo-wiki.toml"),
         "默认链应命中项目级配置，实际: {stdout}"
     );
 

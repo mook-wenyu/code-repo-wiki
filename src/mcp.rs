@@ -6,7 +6,7 @@
 //!
 //! 设计：server 无状态（每次工具调用现场加载配置与索引），与 CLI 共享
 //! 同一 lib 入口（execute_search / execute_ast_search），不复制业务逻辑。
-//! 项目根由 `--root` 参数指定（缺省解析 cwd 的 .repo-wiki/config.toml）。
+//! 项目根由 `--root` 参数指定（缺省解析 cwd 的 .repo-wiki.toml 项目级配置）。
 
 use std::path::{Path, PathBuf};
 
@@ -25,7 +25,7 @@ pub struct RepoWikiMcp {
     /// 工具路由（tool_handler 宏访问）
     #[expect(dead_code, reason = "tool_handler 宏访问此路由字段")]
     tool_router: ToolRouter<Self>,
-    /// 配置文件路径（.repo-wiki/config.toml 或 --config 指定）
+    /// 配置文件路径（.repo-wiki.toml 项目级、全局或 --config 指定）
     config_path: PathBuf,
     /// 项目根（代码扫描/git 定位基准）
     root: ProjectRoot,
