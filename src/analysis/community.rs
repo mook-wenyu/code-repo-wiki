@@ -31,6 +31,23 @@ const LEIDEN_RESOLUTION: f64 = 0.5;
 pub const WEIGHT_IMPORTS: f64 = 0.8;
 pub const WEIGHT_CALLS: f64 = 0.7;
 
+/// 文件所属目录键：反斜杠归一正斜杠、去尾分隔符、根目录文件归 "<root>"
+fn file_dir_key(graph: &KnowledgeGraph, nid: NodeId) -> String {
+    let path = graph
+        .graph
+        .node_weight(nid)
+        .and_then(|n| n.file_path.as_deref())
+        .unwrap_or("");
+    let norm = path.replace('\\', "/");
+    let dir = norm.rsplit_once('/').map(|(d, _)| d).unwrap_or(".");
+    let dir = dir.trim_end_matches('/');
+    if dir.is_empty() {
+        "<root>".to_string()
+    } else {
+        dir.to_string()
+    }
+}
+
 /// 文件级社区检测：返回 File 节点的社区划分（每社区一个 Vec<NodeId>）
 ///
 /// 输出确定性：社区内按 file_path 字典序排序后作为分组键排序。
@@ -55,67 +72,54 @@ pub fn detect_communities_with_resolution(graph: &KnowledgeGraph, resolution: f6
         return vec![file_nodes];
     }
 
+    // ===== 大仓库目录页分流（v26 方案 D 修正版）=====
+    // 目录超节点 + Leiden 的实测结论：CPM 合并增益按绝对边权重计算
+    // （期望量级=实体级单边 0.7~0.8），而超节点图的聚合边权重是跨
+    // 目录依赖条数之和（几十到几百），γ=0.5 下几乎任何聚合边都满足
+    // 合并条件 → 密集调用仓库全部并入一个社区（实测 99 文件仓库只剩
+    // 2 个模块页，信息丢失）。因此目录超节点图上的 Leiden 不可用。
+    // 修正：目录数 ≥ MIN_DIRS_FOR_SUPERNODE 的仓库直接以目录为社区
+    // （页面名=目录路径，新增/删除文件不改变划分，零随机参数）；
+    // 中小仓库仍走实体级 Leiden（γ=0.5 已实测调优，粒度/成本最优）。
+    // 阈值 24 的依据：Unity（52 目录）与 repo-wiki 自身（30 目录）属
+    // 大仓库；150 文件测试 fixture（15 目录）以下走实体级。
+    const MIN_DIRS_FOR_SUPERNODE: usize = 24;
+    let mut dirs: std::collections::BTreeMap<String, Vec<NodeId>> = std::collections::BTreeMap::new();
+    for &nid in &file_nodes {
+        let d = file_dir_key(graph, nid);
+        dirs.entry(d).or_default().push(nid);
+    }
+    if dirs.len() >= MIN_DIRS_FOR_SUPERNODE {
+        return dirs.into_values().collect();
+    }
+
+    // File 节点 → 紧凑索引（leiden-rs 要求 0..n 连续，StableDiGraph 有洞）
+    let compact: HashMap<NodeId, usize> = file_nodes
+        .iter()
+        .enumerate()
+        .map(|(i, &nid)| (nid, i))
+        .collect();
+
     // 实体 → 所属 File 映射（经 Contains 边反查）。
     // 关键语义：Calls/Imports 边都挂在**实体节点**上（File 节点
     // 只有 Contains 边），社区划分的单位是 File，必须先归位。
     let mut entity_to_file: HashMap<NodeId, NodeId> = HashMap::new();
     for edge in graph.graph.edge_references() {
         let kind = graph.graph.edge_weight(edge.id()).map(|e| e.kind.clone());
-        let src_is_file = graph
-            .graph
-            .node_weight(edge.source())
-            .map(|n| n.kind == NodeKind::File)
-            .unwrap_or(false);
-        if kind == Some(EdgeKind::Contains) && src_is_file {
+        if kind == Some(EdgeKind::Contains) && compact.contains_key(&edge.source()) {
             entity_to_file.insert(edge.target(), edge.source());
         }
     }
     // 端点归位：File 节点取自身，实体节点取其所属 File
     let file_of = |nid: NodeId| -> Option<NodeId> {
-        let is_file = graph
-            .graph
-            .node_weight(nid)
-            .map(|n| n.kind == NodeKind::File)
-            .unwrap_or(false);
-        if is_file {
+        if compact.contains_key(&nid) {
             Some(nid)
         } else {
             entity_to_file.get(&nid).copied()
         }
     };
 
-    // ===== 目录超节点聚合（v26 方案 D：页面名稳定性）=====
-    // 划分单位从 File 提升为"父目录聚合的超节点"：
-    // - 同目录文件**恒在同社区**（目录是原子单位），因此新增/删除文件
-    //   不会改变目录集合 → 社区划分与页面名（= 目录公共前缀）跨次稳定；
-    // - 跨目录依赖边在超节点间聚合后交给 Leiden，跨目录协作仍可合并
-    //   为公共前缀社区（保留模块合并页语义）；
-    // - 目录索引用 BTreeMap 排序构造（确定性：同目录集合 → 同输入图
-    //   → 同划分；社区命名/消歧全部依赖这份确定性）。
-    let mut dir_index: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
-    let mut file_to_dir: HashMap<NodeId, usize> = HashMap::new();
-    let mut dir_files: Vec<Vec<NodeId>> = Vec::new();
-    for &nid in &file_nodes {
-        let dir = file_dir_key(graph, nid);
-        let idx = match dir_index.get(&dir) {
-            Some(&i) => i,
-            None => {
-                let i = dir_index.len();
-                dir_index.insert(dir, i);
-                dir_files.push(Vec::new());
-                i
-            }
-        };
-        file_to_dir.insert(nid, idx);
-        dir_files[idx].push(nid);
-    }
-    let dir_count = dir_index.len();
-    if dir_count == 1 {
-        // 单目录：全部文件恒为一个社区（无需 Leiden）
-        return vec![file_nodes];
-    }
-
-    // 跨目录依赖边聚合：端点归位 File 后再归位目录，同目录边跳过
+    // 聚合跨文件依赖边：同对文件间多条边权重相加
     let mut edge_weights: HashMap<(usize, usize), f64> = HashMap::new();
     for edge in graph.graph.edge_references() {
         // 结构安全证据（R1 审计）：边权重由 build_graph 创建边时同步写入
@@ -133,25 +137,25 @@ pub fn detect_communities_with_resolution(graph: &KnowledgeGraph, resolution: f6
         let (Some(sf), Some(tf)) = (file_of(edge.source()), file_of(edge.target())) else {
             continue; // 端点既不是 File 也不是实体（Module 等中间节点）
         };
-        let (Some(&si), Some(&ti)) = (file_to_dir.get(&sf), file_to_dir.get(&tf)) else {
+        let (Some(&si), Some(&ti)) = (compact.get(&sf), compact.get(&tf)) else {
             continue;
         };
         if si == ti {
-            continue; // 同目录内依赖不构成模块间关系（目录是原子单位）
+            continue; // 同文件内依赖不构成模块间关系
         }
         *edge_weights.entry((si, ti)).or_insert(0.0) += w;
     }
 
     if edge_weights.is_empty() {
-        // 无任何跨目录依赖：每目录自成社区（目录内文件恒同社区）
-        return dir_files;
+        // 无任何跨文件依赖：Leiden 对无边图无划分意义，每文件自成社区
+        return file_nodes.into_iter().map(|nid| vec![nid]).collect();
     }
 
-    // 构建 Leiden 输入图（有向、加权；节点 = 目录超节点）
+    // 构建 Leiden 输入图（有向、加权；add_edge 校验权重有限且 ≥0，不会失败）
     // 结构安全证据（R1 审计）：权重来源仅两处——常量 WEIGHT_IMPORTS/
     // WEIGHT_CALLS（0.7/0.8，有限非负）与下方 edge_weights 的累加和；
     // 不存在 NaN/Inf/负值注入路径，add_edge 的 Err 分支不可达。
-    let mut builder = GraphDataBuilder::new(dir_count).directed();
+    let mut builder = GraphDataBuilder::new(file_nodes.len()).directed();
     for ((s, t), w) in &edge_weights {
         builder
             .add_edge(*s, *t, *w)
@@ -167,17 +171,17 @@ pub fn detect_communities_with_resolution(graph: &KnowledgeGraph, resolution: f6
     };
     // 结构安全证据（R1 审计）：leiden-rs 0.8.1 对用户输入从不 panic——
     // 空图/单节点/无边图均提前安全返回（本函数在 edge_weights 为空时
-    // 已提前返回目录社区，此处输入恒为有效图）；run() 仅返回
+    // 已提前返回单文件社区，此处输入恒为有效图）；run() 仅返回
     // internal-error 类 Result（图内部不变量破坏，不可由调用方触发）。
     let result = Leiden::new(config)
         .run(&data)
         .expect("Leiden 社区检测失败");
-    let membership = result.partition.as_slice(); // membership[i] = 目录 i 的社区 ID
+    let membership = result.partition.as_slice(); // membership[i] = 节点 i 的社区 ID
 
-    // 按社区 ID 分组回目录，再展开为 File 节点（目录内保持 file 收集序）
+    // 按社区 ID 分组回 File 节点
     let mut groups: HashMap<usize, Vec<NodeId>> = HashMap::new();
     for (i, &comm) in membership.iter().enumerate() {
-        groups.entry(comm).or_default().extend(dir_files[i].iter().copied());
+        groups.entry(comm).or_default().push(file_nodes[i]);
     }
 
     // 确定性输出：按社区大小降序（Graphify 稳定重索引：大社区编号优先，
@@ -190,23 +194,6 @@ pub fn detect_communities_with_resolution(graph: &KnowledgeGraph, resolution: f6
             .then_with(|| min_file_path(graph, a).cmp(&min_file_path(graph, b)))
     });
     communities
-}
-
-/// 文件所属目录的超节点键（v26 方案 D）
-///
-/// 归一化：反斜杠统一正斜杠（Windows 路径）、去尾部分隔符；
-/// 根目录散文件（无父目录）归 "<root>" 占位键——与社区命名三档规则
-/// （community_name 档 3 回退 module_{n}）的输入语义对齐。
-fn file_dir_key(graph: &KnowledgeGraph, nid: NodeId) -> String {
-    let Some(fp) = graph.graph.node_weight(nid).and_then(|n| n.file_path.clone()) else {
-        return "<root>".to_string();
-    };
-    let norm = fp.replace('\\', "/");
-    let norm = norm.trim_end_matches('/');
-    match norm.rfind('/') {
-        Some(i) if i > 0 => norm[..i].to_string(),
-        _ => "<root>".to_string(),
-    }
 }
 
 /// 社区内最小 file_path（确定性排序键；无路径节点视为空串排最前）
@@ -355,53 +342,9 @@ mod tests {
         kg
     }
 
-    /// v26 目录超节点核心防回归：同目录新增文件（无任何调用边）不改变
-    /// 既有社区划分——a/b 仍因跨文件调用同社区，net 目录社区扩展为新文件
     #[test]
-    fn test_add_file_does_not_change_partition() {
-        let mut kg = make_graph();
-        // 在 src/net/ 目录新增文件 d.rs（仅 File 节点，无调用边——超节点
-        // 图上属孤立目录，与既有社区互不扰动）
-        let g = &mut kg.graph;
-        let module_path: Vec<String> = dir_segments("src/net/d.rs");
-        g.add_node(CodeNode {
-            id: NodeId::new(g.node_count()),
-            kind: NodeKind::File,
-            name: "src/net/d.rs".into(),
-            file_path: Some("src/net/d.rs".into()),
-            line_range: None,
-            doc_comment: None,
-            signature: None,
-            visibility: None,
-            module_path,
-        });
-        let communities = detect_communities(&kg);
-        assert_eq!(communities.len(), 2, "新增孤立文件不应新增社区数量（并入既有目录社区）");
-        let ab = communities
-            .iter()
-            .find(|c| c.len() == 2)
-            .expect("a/b 社区应保持（跨文件调用边不受新增文件影响）");
-        let ab_paths: Vec<String> = ab
-            .iter()
-            .map(|nid| kg.graph.node_weight(*nid).unwrap().file_path.clone().unwrap())
-            .collect();
-        assert!(ab_paths.contains(&"src/a.rs".to_string()));
-        assert!(ab_paths.contains(&"src/b.rs".to_string()));
-        let net = communities
-            .iter()
-            .find(|c| c.len() == 2 && c.iter().any(|n| {
-                kg.graph.node_weight(*n).unwrap().file_path.as_deref() == Some("src/net/tcp.rs")
-            }))
-            .expect("net 目录社区应存在");
-        let net_paths: Vec<String> = net
-            .iter()
-            .map(|nid| kg.graph.node_weight(*nid).unwrap().file_path.clone().unwrap())
-            .collect();
-        assert!(net_paths.contains(&"src/net/d.rs".to_string()), "新增文件应并入同目录社区");
-    }
-
-    #[test]
-    fn test_detect_communities_basic() {        let kg = make_graph();
+    fn test_detect_communities_basic() {
+        let kg = make_graph();
         let communities = detect_communities(&kg);
         // a/b 有跨文件调用 → 同社区；tcp.rs 无边 → 自成社区
         assert_eq!(communities.len(), 2, "应产出 2 个社区");
