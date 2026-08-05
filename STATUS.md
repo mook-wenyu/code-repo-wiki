@@ -379,3 +379,13 @@
 - t01/t08 research 子代理完成：NodeKind 14 变体无 Field/Property（C# 字段→variable 无可见性过滤 csharp.rs:52-85）；api.md 确定性渲染已含 variable（markdown.rs:72）——「覆盖更细」缺口在 lint 假漂移与 prompt 名额而非渲染端；prompt 注入 take(30) 无排序（wiki.rs:341），30/60 实为描述字数（澄清 v19 fog）；字段级 ×1.29 挤占名额；api-ref 模板无防编造条款
 - t02 三拍板（question 第三轮）：渲染端增强标注（api.md 实体行加 kind/可见性，数据源已备）+ stale 根因先实机核证再修（I 轮 Unity 抽样 20 条）+ prompt 30 排序+排除字段级
 - 建图落地：.scratch/wayfinder-v21/{map.md, issues/t01-t10.md, IMPLEMENTATION-PLAN.md}；t01/t02/t08 resolved，t03-t10 open；计划 A-I 组（A stdout 契约+AGENTS.md+api-ref 契约 / B P3 文案 / C 'static' / D rubrics-only / E 清单跑分 / F 150 文件 fixture / G 渲染标注 / H prompt 名额 / I 验证轮）+ G1-G12 批判性审查 + 防回归矩阵
+
+## 四十七、v21 验证轮（I 组，2026-08-05）
+
+- **Unity stale 核证闭环（t02 拍板「先实机核证再修」）**：并行子代理等距抽样 20 条 20/20 真实存在（0 幻觉）；全量 1780 实体行 fileMissing=0/lineOOB=0
+- **根因一（提取）**：lint.rs entity_name_from_signature 三类误提取（继承段/泛型参数/属性宏）——已重构修复
+- **根因二（跨 cwd，真凶）**：source_roots_from_include 返回相对路径，--root 指向其他仓库时 lint 扫描 cwd 而非目标仓库。修复：新增 source_roots_from_include_rooted（相对 root 绝对化），lint/status/update 尾部复核/MCP status 四处统一（commit 8c165e1）
+- **Unity 仓库重验**：stale-entity 1000 → 13 条（剩余全部为 api.md 的 LLM 幻觉实体，如 null/private/Dictionary 泛型引用，与子代理预估 9-13 吻合）；broken 53 为 v19 旧产物 LLM 链接质量问题（重生成即修复）
+- **rubrics 自评首跑（mock）**：bench --rubrics-only 跑通（coverage 97.4%=1080/1109、doc_info 8 页、update_recall 正确跳过回放、tqs/rubric=null 属 mock 预期——Rubric 生成需真实 LLM 结构化输出，mock 下 3 轮全部「Rubric 节点字段缺失」）
+- 本仓库 lint 回归：退出码 0/1/2 三态不变
+- 遗留：Unity 真实 LLM 重新 generate 后 broken 自然清零（未做——产物更新需 2 小时真实调用）；rubrics 真实自评未跑（需真实 LLM+成本权衡，与 recall 耦合已拆）
