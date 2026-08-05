@@ -55,6 +55,21 @@ pub trait LlmProvider: Send + Sync {
         let _ = messages;
         Err(anyhow::anyhow!("streaming not supported"))
     }
+    /// 带输出预算上限的完整（非流式）调用。
+    ///
+    /// 评测裁判（rubrics / TQS 叶子判定）等长结构化输出场景必须显式
+    /// 传预算：推理型模型（如 deepseek-v4-flash）的 reasoning 会消耗
+    /// 输出预算，预算不足时响应可能只有 reasoning 块没有 message
+    /// （实测 v22 rubrics 首跑 3+3 轮全败，max=4000 复现只有
+    /// reasoning、max=8192 才出现 message）。默认实现不带预算
+    /// （等价 complete），需要预算的 Provider 自行覆盖。
+    async fn complete_with_budget(
+        &self,
+        messages: &[Message],
+        _max_output_tokens: Option<u32>,
+    ) -> Result<String> {
+        self.complete(messages).await
+    }
     /// 返回已完成的 LLM 调用次数
     fn call_count(&self) -> usize {
         0
@@ -84,6 +99,18 @@ impl LlmProvider for Provider {
             Provider::OpenAi(p) => p.complete_stream(messages).await,
             Provider::Anthropic(p) => p.complete_stream(messages).await,
             Provider::Mock(p) => p.complete_stream(messages).await,
+        }
+    }
+
+    async fn complete_with_budget(
+        &self,
+        messages: &[Message],
+        max_output_tokens: Option<u32>,
+    ) -> Result<String> {
+        match self {
+            Provider::OpenAi(p) => p.complete_with_budget(messages, max_output_tokens).await,
+            Provider::Anthropic(p) => p.complete_with_budget(messages, max_output_tokens).await,
+            Provider::Mock(p) => p.complete_with_budget(messages, max_output_tokens).await,
         }
     }
 
@@ -358,7 +385,15 @@ impl OpenAiProvider {
 
 impl OpenAiProvider {
     /// 构建 chat/completions 请求体；stream 决定是否追加流式标记
-    fn build_chat_body(&self, messages: &[Message], stream: bool) -> serde_json::Value {
+    ///
+    /// max_tokens_override 为显式预算覆盖（v22 起构造时为 None，交模型
+    /// 默认）；评测裁判的长结构化输出经 complete_with_budget 传入。
+    fn build_chat_body(
+        &self,
+        messages: &[Message],
+        stream: bool,
+        max_tokens_override: Option<u32>,
+    ) -> serde_json::Value {
         let mut body = serde_json::json!({
             "model": self.model,
             "messages": messages.iter().map(|m| {
@@ -368,8 +403,8 @@ impl OpenAiProvider {
         if stream {
             body["stream"] = serde_json::json!(true);
         }
-        // 可选参数（仅当配置中指定时传入）
-        if let Some(maxt) = self.max_tokens {
+        // 可选参数：显式覆盖优先，回退构造时的 max_tokens（均为 None 时省略）
+        if let Some(maxt) = max_tokens_override.or(self.max_tokens) {
             body["max_tokens"] = serde_json::json!(maxt);
         }
         if let Some(temp) = self.temperature {
@@ -385,7 +420,12 @@ impl OpenAiProvider {
     /// `instructions` 字段；token 上限参数名从 max_tokens 改为
     /// `max_output_tokens`（DeepSeek 对不支持的参数静默忽略——参数名
     /// 写错会静默失效，必须按协议用正确名称）。
-    fn build_responses_body(&self, messages: &[Message], stream: bool) -> serde_json::Value {
+    fn build_responses_body(
+        &self,
+        messages: &[Message],
+        stream: bool,
+        max_output_tokens_override: Option<u32>,
+    ) -> serde_json::Value {
         // system 消息 → 顶层 instructions；user/assistant → input items
         let system = messages.iter().find(|m| m.role == "system").map(|m| &m.content);
         let input: Vec<serde_json::Value> = messages
@@ -408,7 +448,8 @@ impl OpenAiProvider {
         if stream {
             body["stream"] = serde_json::json!(true);
         }
-        if let Some(maxt) = self.max_tokens {
+        // 可选参数：显式覆盖优先，回退构造时的 max_tokens（均为 None 时省略）
+        if let Some(maxt) = max_output_tokens_override.or(self.max_tokens) {
             body["max_output_tokens"] = serde_json::json!(maxt);
         }
         if let Some(temp) = self.temperature {
@@ -423,9 +464,27 @@ impl LlmProvider for OpenAiProvider {
         self.call_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         match self.protocol {
-            OpenAiProtocol::Chat => self.chat_complete_stream(messages).await,
-            OpenAiProtocol::Responses => self.responses_complete_stream(messages).await,
+            OpenAiProtocol::Chat => self.chat_complete_stream(messages, None).await,
+            OpenAiProtocol::Responses => self.responses_complete_stream(messages, None).await,
         }
+    }
+
+    /// 带输出预算的完整调用（评测裁判用）：流式路径 + 显式预算
+    /// （推理型模型 reasoning 吞预算，见 trait 文档）
+    async fn complete_with_budget(
+        &self,
+        messages: &[Message],
+        max_output_tokens: Option<u32>,
+    ) -> Result<String> {
+        self.call_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let chunks = match self.protocol {
+            OpenAiProtocol::Chat => self.chat_complete_stream(messages, max_output_tokens).await?,
+            OpenAiProtocol::Responses => {
+                self.responses_complete_stream(messages, max_output_tokens).await?
+            }
+        };
+        Ok(chunks.concat())
     }
 
     // complete 走 trait 默认实现（complete_stream 收集拼接）——
@@ -438,9 +497,16 @@ impl LlmProvider for OpenAiProvider {
 impl OpenAiProvider {
     /// chat/completions 协议路径（OpenAI 兼容端点；v17 起为
     /// openai-compatible provider 的协议）
-    async fn chat_complete_stream(&self, messages: &[Message]) -> Result<Vec<String>> {
+    ///
+    /// max_tokens_override：流式请求体中的显式预算（complete_with_budget
+    /// 传入；常规路径 None）
+    async fn chat_complete_stream(
+        &self,
+        messages: &[Message],
+        max_tokens_override: Option<u32>,
+    ) -> Result<Vec<String>> {
         let url = format!("{}/chat/completions", self.base_url);
-        let body = self.build_chat_body(messages, true);
+        let body = self.build_chat_body(messages, true, max_tokens_override);
 
         let resp = retry_with_backoff(self.max_retries, || {
             self.client
@@ -471,9 +537,13 @@ impl OpenAiProvider {
     /// 端点不支持信号（404/400，如服务未提供 /responses）→ 自动回退
     /// chat/completions 重发一次（t02 拍板；429/5xx 由 retry_with_backoff
     /// 处理，不触发回退——回退只针对"端点不支持"，不掩盖限流/服务端错误）。
-    async fn responses_complete_stream(&self, messages: &[Message]) -> Result<Vec<String>> {
+    async fn responses_complete_stream(
+        &self,
+        messages: &[Message],
+        max_output_tokens_override: Option<u32>,
+    ) -> Result<Vec<String>> {
         let url = format!("{}/responses", self.base_url);
-        let body = self.build_responses_body(messages, true);
+        let body = self.build_responses_body(messages, true, max_output_tokens_override);
 
         let resp = retry_with_backoff(self.max_retries, || {
             self.client
@@ -496,7 +566,7 @@ impl OpenAiProvider {
                 status,
                 text.chars().take(500).collect::<String>()
             );
-            return self.chat_complete_stream(messages).await;
+            return self.chat_complete_stream(messages, max_output_tokens_override).await;
         }
         if !resp.status().is_success() {
             let status = resp.status();
@@ -568,8 +638,13 @@ impl AnthropicProvider {
     /// 构建 messages API 请求体：system 消息分离到顶层字段、
     /// 非 system 消息进 messages、max_tokens 未配置时默认 4096；
     /// stream 决定是否追加流式标记
-    fn build_messages_body(&self, messages: &[Message], stream: bool) -> serde_json::Value {
-        // 分离 system 消息和用户/助手消息
+    fn build_messages_body(
+        &self,
+        messages: &[Message],
+        stream: bool,
+        max_tokens_override: Option<u32>,
+    ) -> serde_json::Value {
+        // 分离 system 消息与用户/助手消息
         let system = messages.iter().find(|m| m.role == "system").map(|m| &m.content);
         let non_system: Vec<&Message> = messages.iter().filter(|m| m.role != "system").collect();
 
@@ -586,7 +661,8 @@ impl AnthropicProvider {
 
         let mut body = serde_json::json!({
             "model": self.model,
-            "max_tokens": self.max_tokens.unwrap_or(4096),
+            // 显式覆盖优先，回退构造时的 max_tokens（默认 4096）
+            "max_tokens": max_tokens_override.or(self.max_tokens).unwrap_or(4096),
             "messages": anthropic_messages,
         });
         if let Some(s) = system {
@@ -608,7 +684,7 @@ impl LlmProvider for AnthropicProvider {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let url = format!("{}/messages", self.base_url);
-        let body = self.build_messages_body(messages, true);
+        let body = self.build_messages_body(messages, true, None);
 
         let resp = retry_with_backoff(self.max_retries, || {
             self.client
@@ -639,6 +715,45 @@ impl LlmProvider for AnthropicProvider {
 
     // complete 走 trait 默认实现（complete_stream 收集拼接）——
     // 生产路径统一流式，无整读分支
+    async fn complete_with_budget(
+        &self,
+        messages: &[Message],
+        max_output_tokens: Option<u32>,
+    ) -> Result<String> {
+        self.call_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        let url = format!("{}/messages", self.base_url);
+        let body = self.build_messages_body(messages, true, max_output_tokens);
+
+        let resp = retry_with_backoff(self.max_retries, || {
+            self.client
+                .post(&url)
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", "2023-06-01")
+                .json(&body)
+                .send()
+        })
+        .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Anthropic API 返回错误 ({}): {}", status, text);
+        }
+
+        // Anthropic SSE：data: 行内 type=content_block_delta 事件的 delta.text
+        let chunks = collect_sse(resp, "data: ", |v| {
+            if v["type"] == "content_block_delta" {
+                v["delta"]["text"].as_str().map(|s| s.to_string())
+            } else {
+                None
+            }
+        })
+        .await?;
+        Ok(chunks.concat())
+    }
+
     fn call_count(&self) -> usize {
         self.call_count.load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -1281,5 +1396,42 @@ data: [DONE]
         assert_eq!(paths.len(), 2, "应请求 responses + chat 两次");
         assert!(paths[0].ends_with("/responses"), "第一次应请求 responses: {:?}", paths);
         assert!(paths[1].ends_with("/chat/completions"), "回退应请求 chat/completions: {:?}", paths);
+    }
+
+    /// v22 修复：评测裁判完整调用带显式输出预算——请求体必须写入
+    /// max_output_tokens=16384（reasoning 型模型预算不足时只有
+    /// reasoning 块没有 message，见 BENCH_MAX_OUTPUT_TOKENS 文档）
+    #[tokio::test]
+    async fn test_complete_with_budget_sets_max_output_tokens() {
+        let captured = Arc::new(Mutex::new(None::<MockRequest>));
+        let captured_server = captured.clone();
+        let base_url = spawn_mock_server(move |req| {
+            *captured_server.lock().unwrap() = Some(req);
+            MockResponse {
+                status: 200,
+                body: "data: {\"type\":\"response.output_text.delta\",\"delta\":\"{\\\"rubrics\\\":[]}\"}\n\n"
+                    .into(),
+            }
+        });
+
+        let config = LlmSection {
+            provider: LlmProviderType::OpenAI,
+            model: "deepseek-v4-flash".into(),
+            base_url: Some(format!("{}/v1", base_url)),
+            api_key: Some("test-key".into()),
+            api_key_env: "DEEPSEEK_API_KEY".into(),
+        };
+        let provider = OpenAiProvider::new(&config, OpenAiProtocol::Responses).unwrap();
+        let out = provider
+            .complete_with_budget(&[Message::user("你好")], Some(16384))
+            .await
+            .unwrap();
+        assert_eq!(out, "{\"rubrics\":[]}", "带预算调用应返回完整文本");
+
+        let req = captured.lock().unwrap().take().expect("应收到一次请求");
+        assert_eq!(req.path, "/v1/responses");
+        let body: serde_json::Value = serde_json::from_str(&req.body).unwrap();
+        assert_eq!(body["max_output_tokens"].as_u64(), Some(16384), "预算应写入 max_output_tokens");
+        assert_eq!(body["stream"].as_bool(), Some(true), "带预算路径仍走流式");
     }
 }

@@ -36,6 +36,14 @@ use crate::project::ProjectRoot;
 /// 增量回放的最大 commit 数（对齐 RepoDoc 每仓库 20 commit 协议）
 const MAX_RECALL_COMMITS: usize = 20;
 
+/// 评测裁判 LLM 调用的输出预算上限。
+///
+/// 推理型模型（deepseek-v4-flash）的 reasoning 会消耗输出预算，预算
+/// 不足时响应可能只有 reasoning 块没有 message（实测 4000 复现、
+/// 8192 起才出现完整 message），rubric 树/叶子判定等长结构化输出
+/// 必须显式给足预算（v22 rubrics 首跑 3+3 轮全败的根因）。
+const BENCH_MAX_OUTPUT_TOKENS: u32 = 16384;
+
 /// v14 C 组（MVVP 缺口）：模块级复测标准差超过该阈值（0-10 分尺度）即
 /// 判为低置信——分数波动过大，该模块的 TQS 结论不可信需人工复核
 const LOW_CONFIDENCE_STD_THRESHOLD: f64 = 2.0;
@@ -719,7 +727,7 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
         for _ in 0..TQS_REPEATS {
             for a_first in [true, false] {
                 let messages = tqs_prompt(&config.wiki.language, old, new, a_first);
-                match rt.block_on(provider.complete(&messages)) {
+                match rt.block_on(provider.complete_with_budget(&messages, Some(BENCH_MAX_OUTPUT_TOKENS))) {
                     Ok(content) => match parse_tqs_score(&content) {
                         Ok(s) => round_scores.push((a_first, s)),
                         Err(e) => {
@@ -918,7 +926,10 @@ fn measure_rubrics(config: &WikiConfig, root: &ProjectRoot) -> Result<Option<Rub
     }
     // 3. 第 4 次调用语义合并（>70% 相似度节点合并由 LLM 执行；合并失败
     //    降级为第一份生成结果——合并是质量增强而非契约）
-    let merged = match rt.block_on(provider.complete(&rubric_merge_prompt(&trees))) {
+    let merged = match rt.block_on(provider.complete_with_budget(
+        &rubric_merge_prompt(&trees),
+        Some(BENCH_MAX_OUTPUT_TOKENS),
+    )) {
         Ok(content) => match parse_rubric_tree(&content) {
             Ok(tree) => tree,
             Err(e) => {
@@ -1044,8 +1055,54 @@ fn parse_rubric_tree(content: &str) -> Result<Vec<RubricNode>> {
     };
     nodes
         .into_iter()
-        .map(|n| serde_json::from_value::<RubricNode>(n).with_context(|| "Rubric 节点字段缺失"))
+        .map(|n| parse_rubric_node(&n).with_context(|| "Rubric 节点字段缺失"))
         .collect()
+}
+
+/// 手工解析单个 rubric 节点（LLM 输出非确定性，需容错）：
+///
+/// - `requirement` 必填字符串，缺失即失败（错误带上下文可诊断）
+/// - `weight` 接受数字或数字字符串（LLM 偶发输出 `"weight": "3"`）
+/// - `sub_tasks` 数组元素为字符串时视为叶子节点（LLM 偶发输出字符串
+///   数组而非对象数组，实测 8192 预算档复现；字符串语义=需求文本）
+fn parse_rubric_node(v: &serde_json::Value) -> Result<RubricNode> {
+    let map = v
+        .as_object()
+        .with_context(|| "Rubric 节点必须是对象")?;
+    let requirement = map
+        .get("requirement")
+        .and_then(|r| r.as_str())
+        .with_context(|| "Rubric 节点缺少 requirement 字段")?
+        .to_string();
+    let weight = map
+        .get("weight")
+        .and_then(|w| w.as_f64().or_else(|| w.as_str().and_then(|s| s.parse().ok())))
+        .unwrap_or(1.0);
+    let sub_tasks = match map.get("sub_tasks") {
+        Some(serde_json::Value::Array(arr)) => {
+            let mut out = Vec::with_capacity(arr.len());
+            for item in arr {
+                match item {
+                    serde_json::Value::String(s) => {
+                        // 字符串子任务 → 叶子节点（weight 取父权重 1.0）
+                        out.push(RubricNode {
+                            requirement: s.clone(),
+                            weight: 1.0,
+                            sub_tasks: Vec::new(),
+                        });
+                    }
+                    _ => out.push(parse_rubric_node(item)?),
+                }
+            }
+            out
+        }
+        _ => Vec::new(),
+    };
+    Ok(RubricNode {
+        requirement,
+        weight,
+        sub_tasks,
+    })
 }
 
 /// 解析叶子判定输出：{"satisfied": true/false}
@@ -1505,6 +1562,28 @@ mod tests {
         let scores = parse_tqs_score(content).unwrap();
         assert_eq!(scores[0], 8.5, "clarity");
         assert_eq!(scores[2], 10.0, "conciseness 越界应 clamp 到 10");
+    }
+
+    /// v22 修复：Rubric 解析容错——字符串 sub_tasks 转叶子、字符串权重
+    /// 可解析（实测 8192 预算档 deepseek-v4-flash 输出字符串数组）
+    #[test]
+    fn test_parse_rubric_tree_tolerates_string_subtasks() {
+        let content = r#"```json
+{"rubrics": [
+  {"requirement": "架构文档应描述流水线", "weight": 2, "sub_tasks": ["介绍解析阶段", "说明图构建", {"requirement": "增量语义", "weight": "3", "sub_tasks": []}]},
+  {"requirement": "索引应可搜索", "weight": 1}
+]}
+```"#;
+        let nodes = parse_rubric_tree(content).unwrap();
+        assert_eq!(nodes.len(), 2, "两个顶层需求");
+        let first = &nodes[0];
+        assert_eq!(first.requirement, "架构文档应描述流水线");
+        assert_eq!(first.sub_tasks.len(), 3, "字符串子任务应转叶子节点");
+        assert_eq!(first.sub_tasks[0].requirement, "介绍解析阶段");
+        assert!(first.sub_tasks[0].sub_tasks.is_empty(), "字符串子任务是叶子");
+        assert_eq!(first.sub_tasks[1].weight, 1.0, "字符串叶子权重取 1.0");
+        assert_eq!(first.sub_tasks[2].weight, 3.0, "字符串权重应可解析为数字");
+        assert_eq!(nodes[1].weight, 1.0, "缺省 weight 回落 1.0");
     }
 
     /// U11：缺维度/非 JSON → 报错（整条作废，不静默裁剪）
