@@ -271,10 +271,11 @@ fn check_citations(
                 });
                 continue;
             }
-            // 区间重叠判定：实体表键 = norm_sep 绝对路径（与 collect_source_entities
-            // 的键形态一致——引用相对项目根解析出的绝对路径，Windows 反斜杠
-            // 统一为正斜杠后比较）。实体表无该文件键（非代码文件）→ 放行。
-            let key = crate::incremental::norm_sep(&absolutize(&abs).to_string_lossy());
+            // 区间重叠判定：实体表键 = citation_key（绝对路径、过滤 `./` 段、
+            // norm_sep 统一分隔符——与 collect_source_entities 的键同形态；
+            // 引用相对项目根解析出的绝对路径）。实体表无该文件键（非代码
+            // 文件）→ 放行。
+            let key = citation_key(&abs);
             if let Some(ranges) = entity_ranges.get(&key)
                 && !citation::citation_overlaps_entity(&citation, ranges)
             {
@@ -300,6 +301,24 @@ fn absolutize(p: &Path) -> PathBuf {
     } else {
         std::env::current_dir().unwrap_or_default().join(p)
     }
+}
+
+/// 实体表键的统一定型（v23 B 组）：绝对化 + 过滤 `./` 段 + norm_sep。
+///
+/// include 通配符（`**/*.rs`）派生的源码根可能带 `./` 前缀（walk_files
+/// 逐级 join 保留该段），而引用侧从项目根解析的绝对路径无此段——两侧
+/// 键若不统一，实体表查询恒不命中，区间重叠检查静默失效（SA2 审计）。
+/// `..` 段保留：引用侧已在上游拒绝越界段（check_citations），本函数
+/// 只统一形态、不重复拦截。
+fn citation_key(p: &Path) -> String {
+    let mut cleaned = PathBuf::new();
+    for comp in absolutize(p).components() {
+        if matches!(comp, std::path::Component::CurDir) {
+            continue;
+        }
+        cleaned.push(comp);
+    }
+    crate::incremental::norm_sep(&cleaned.to_string_lossy())
 }
 
 /// 从 api.md 权威清单提取实体名集合（- ` 行 + entity_name_from_signature）
@@ -384,7 +403,7 @@ fn collect_source_entities(
             let Some(processor) = registry.get_for_file(&entry) else { continue };
             let Ok(source) = std::fs::read_to_string(&entry) else { continue };
             if let Ok(insight) = processor.parse(&source, &entry) {
-                let key = crate::incremental::norm_sep(&absolutize(&entry).to_string_lossy());
+                let key = citation_key(&entry);
                 ranges.insert(
                     key,
                     insight
@@ -776,6 +795,76 @@ mod tests {
             "源文件更新后应报过时, 实际: {:?}",
             issues
         );
+    }
+
+    /// v23 B 组防回归：include 通配（`**/*.rs`）派生的源码根带 `./` 段时，
+    /// 区间重叠检查必须仍命中实体区间——修复前两侧键形态不一致（实体表
+    /// 键含 `/./` 段、引用侧无），实体表查询恒空，检查静默失效。
+    /// 同一 fixture 分别用 `./` 形态与常规形态的源码根，断言结果一致：
+    /// 合法引用（落在实体区间）不误报，行号指向实体间隙的引用必报。
+    #[test]
+    fn test_lint_citation_overlap_survives_dot_slash_source_roots() {
+        let dir = std::env::temp_dir().join(format!(
+            "repo_wiki_lint_dotslash_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        let src_root = dir.join("src");
+        std::fs::create_dir_all(&src_root).unwrap();
+        // 两个实体各占一行：f 在 1 行、g 在 2 行，第 3 行空白
+        // （引用 3-3 落在文件内但不覆盖任何实体=间隙；若文件只有 2 行
+        // 则 3-3 属越界，会在 overlap 判定前被 bad-citation 拦截）
+        std::fs::write(src_root.join("lib.rs"), "pub fn f() {}\npub fn g() {}\n\n").unwrap();
+        // 引用写相对项目根（= output_dir.parent()）的路径。注意必须含父
+        // 目录前缀（如 repo_wiki_lint_dotslash_<pid>/src/lib.rs）——若只写
+        // src/lib.rs，resolve_source_path 的 cwd 相对兜底会命中本仓库自己
+        // 的 src/lib.rs（cwd 恰好有同名文件），实体表键恒不命中
+        let rel = format!(
+            "{}/src/lib.rs",
+            dir.file_name().unwrap().to_string_lossy()
+        );
+        // a.md 引用 1-1 行（f 的实体区间内）→ 合法，不应报 overlap
+        std::fs::write(wiki.join("a.md"), format!("# A\n\n- 源: {rel}:1-1\n")).unwrap();
+        // b.md 引用 3-3 行（无实体覆盖）→ 应报 overlap
+        std::fs::write(wiki.join("b.md"), format!("# B\n\n- 源: {rel}:3-3\n")).unwrap();
+        // 页面必须引用到源码（过时检查触发实体表构建），源码晚于页面
+        let now = std::time::SystemTime::now();
+        let _ = std::fs::File::options()
+            .write(true)
+            .open(src_root.join("lib.rs"))
+            .unwrap();
+        let _ = filetime_set(&src_root.join("lib.rs"), now);
+        let _ = filetime_set(
+            &wiki.join("a.md"),
+            now - std::time::Duration::from_secs(3600),
+        );
+        let _ = filetime_set(
+            &wiki.join("b.md"),
+            now - std::time::Duration::from_secs(3600),
+        );
+        // `./` 段形态：join(".") 在 Windows 与 Unix 均保留 CurDir 段
+        let dot_roots = vec![src_root.join(".").join("lib.rs").parent().unwrap().to_path_buf()];
+        let plain_roots = vec![src_root.clone()];
+        for (tag, roots) in [("dot", dot_roots), ("plain", plain_roots)] {
+            let issues = lint(&dir, &roots);
+            assert!(
+                !issues
+                    .iter()
+                    .any(|i| i.kind == "bad-citation-overlap" && i.path.ends_with("a.md")),
+                "[{tag}] 引用实体区间内不应报 overlap, 实际: {:?}",
+                issues
+            );
+            assert!(
+                issues
+                    .iter()
+                    .any(|i| i.kind == "bad-citation-overlap" && i.path.ends_with("b.md")),
+                "[{tag}] 引用实体间隙应报 overlap, 实际: {:?}",
+                issues
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

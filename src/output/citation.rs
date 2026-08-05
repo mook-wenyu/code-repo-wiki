@@ -224,8 +224,9 @@ pub type EntityRanges = std::collections::HashMap<String, Vec<(usize, usize)>>;
 ///
 /// 引用 `path:start-end` 覆盖该文件的任一实体区间即有效：
 /// `start <= entity.end && end >= entity.start`（闭区间相交判定，
-/// 相邻边界触碰（start == entity.end 或 end == entity.start）不算覆盖——
-/// 引用行号必须真正落在实体定义范围内）。
+/// 边界触碰（start == entity.end 或 end == entity.start）算覆盖——
+/// 引用区间只需触碰实体边界，不要求完整落在定义范围内；行号完全
+/// 落在实体间隙（不触任一实体边界）才算未覆盖）。
 ///
 /// 纯函数（无 I/O），测试直接构造区间。
 pub fn citation_overlaps_entity(c: &Citation, ranges: &[(usize, usize)]) -> bool {
