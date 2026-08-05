@@ -397,3 +397,12 @@
 - **Unity 真实增量实测（SimpleToolkits，全部通过）**：改 KitManifestTests.cs 插注释 + commit（92d4e71）；dry-run 1 文件/2 模块；真实 update 成功——状态推进、产物 MOD 9/NEW 11/DEL 0、overview/architecture/35+ 未受影响模块页零改写、无页面误删；生成 5 模块 vs dry-run 2 模块归因=affected 模块文件覆盖的 graph 模块（chunk 遍历取非空，保守放大非回退）；第二次 update 正确 no-op
 - **lint 提取修复补提交（commit 7408719）**：v21 I 轮 entity_name_from_signature 重构（属性宏/继承段/泛型剥离）当时未提交，本轮补交
 - 测试基线：396 lib + 全部集成绿；clippy 0；Unity broken 清零验证（真实 regenerate）后台进行中
+
+## 四十九、v22 配置硬编码简化 + Unity 真实 regenerate 完成（2026-08-05，本次会话）
+
+- **背景**：v20/v21 分析确认 10 项配置几乎无调参价值（max_concurrent/max_tokens/temperature/batch_size/index_dir/default_engine/default_top_k/rrf_k/max_depth/plan.path）
+- **决策**：10 项全部硬编码为 src/config/schema.rs 顶部常量（单一真源，含中文注释）；保留 20 项真实差异配置（provider 族/scope/输出目录/增量开关等）
+- **实现**（commit ec259bc，20 files +121/-217）：schema 删 10 键与 3 个默认函数；llm.rs/embed.rs/mod.rs/lib.rs/main.rs/mcp.rs/plan.rs 8 处改用常量；run_git_diff/run_file_watch_incremental 参数瘦身；default-config.toml 模板与 README 配置节同步删键（注释指向常量）；受影响测试断言更新（请求体不再写 max_tokens/temperature、search 条数回退硬编码 10）
+- **验证**：523 passed（394 lib + 129 集成）、clippy -D warnings 0、machete 干净；旧配置残留键被 serde 忽略（向后安全）
+- **Unity 真实 regenerate 完成**（7808 进程，max_concurrent 实测并发 8 生效）：54 页产物（42→54 补全），全量 LLM 生成无回退 warn；broken 链路待 lint 复核（生成 131 分钟）
+- 未验证：Linux CI 实跑（需 remote）、rubrics --judge 真实自评（需真实 LLM 且与 recall 耦合）
