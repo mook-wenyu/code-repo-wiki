@@ -180,19 +180,45 @@ pub fn run_incremental_update_at(
     // 失败隔离（record_failure）只跳过失败模块不中断整体，但失败模块若
     // 源码不再变更将永远无法补生成（增量以 git diff 触发，失败模块不在
     // diff 中）。重试语义：模块的存活文件视同本次变更，走正常生成路径；
-    // 依赖方由传播机制（module_files 已含受影响文件）自然覆盖。
-    // 清空时机：重试成功（生成路径不再产出失败）或全量生成。
+    // 依赖方由传播机制自然覆盖。清空时机：重试成功或全量生成。
+    //
+    // 模块→文件映射从导出快照取（cards.related_files）：failed_modules
+    // 记录的是 chunk 模块名（社区名，与卡片 module_name 同体系），而
+    // graph 节点的 module_path 是文件路径体系——用 module_files 匹配
+    // 社区名会永远落空（Unity 实测补偿未触发）。快照是唯一同时携带
+    // 两套信息的持久化载体。
     let mut changed_files = changed_files;
     if let Ok(state) = GenerationState::load(&state_dir)
         && !state.failed_modules.is_empty()
     {
-        let failed_files = crate::incremental::impact::module_files(
-            &state.failed_modules,
-            graph,
-        );
+        let snapshot_path =
+            crate::output::export_snapshot_path(Path::new(&config.output.dir));
+        let mut failed_files: Vec<std::path::PathBuf> = Vec::new();
+        if let Ok(content) = std::fs::read_to_string(&snapshot_path)
+            && let Ok(snapshot) =
+                serde_json::from_str::<crate::output::ExportSnapshot>(&content)
+        {
+            for card in &snapshot.cards {
+                if state.failed_modules.contains(&card.module_name) {
+                    for rf in &card.related_files {
+                        let p = std::path::PathBuf::from(rf);
+                        if !failed_files.contains(&p) {
+                            failed_files.push(p);
+                        }
+                    }
+                }
+            }
+        } else {
+            // 快照缺失/损坏：补偿无法定位模块文件，保守不并入（本次
+            // update 走正常路径；失败模块等下次生成自然覆盖）
+            tracing::warn!(
+                "失败补偿重试：导出快照不可读（{}），跳过补偿并入",
+                snapshot_path.display()
+            );
+        }
         let mut merged = changed_files.clone();
-        // 存活判定相对仓库根（graph 的 file_path 是相对路径，直接
-        // exists() 会相对进程 cwd 误判——与 status_in_scope 的 root 语义一致）
+        // 存活判定相对仓库根（快照 related_files 是相对项目根的路径，
+        // 直接 exists() 会相对进程 cwd 误判）
         for f in failed_files {
             if root.path().join(&f).exists() && !merged.contains(&f) {
                 merged.push(f);
@@ -1022,8 +1048,8 @@ mod tests {
     }
 
     /// v22 失败补偿重试：状态含 failed_modules 且 git 无变更时，
-    /// 失败模块的存活文件并入 changed_files（下次 update 补生成），
-    /// no-op 快速判定同时放行（failed_modules 非空不跳过）。
+    /// 失败模块的存活文件（从导出快照 cards.related_files 解析）并入
+    /// changed_files（下次 update 补生成），no-op 快速判定同时放行。
     #[test]
     fn test_incremental_merges_failed_modules_from_state() {
         let dir = std::env::temp_dir()
@@ -1048,53 +1074,46 @@ mod tests {
         repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
         let head = repo.head().unwrap().peel_to_commit().unwrap().id().to_string();
 
-        // 状态：基线 = 当前 HEAD，failed_modules = ["src::m20"]
+        // 状态：基线 = 当前 HEAD，failed_modules = ["src::m20"]（社区名体系）
         let state_dir = dir.join(".state");
         let mut state = GenerationState::from_insights(&root, &[], &head).unwrap();
         state.failed_modules = vec!["src::m20".into()];
         state.save(&state_dir).unwrap();
 
-        // insights/graph：src/m20 模块（File 节点 module_path=["src","m20"]）
-        let insights = vec![make_insight("src/m20/a.rs"), make_insight("src/m20/b.rs")];
-        let mut g = petgraph::stable_graph::StableGraph::new();
-        let f1 = g.add_node(crate::model::CodeNode {
-            id: petgraph::stable_graph::NodeIndex::new(0),
-            kind: crate::model::NodeKind::File,
-            name: "a.rs".into(),
-            file_path: Some("src/m20/a.rs".into()),
-            line_range: None,
-            doc_comment: None,
-            signature: None,
-            visibility: None,
-            module_path: vec!["src".into(), "m20".into()],
-        });
-        let f2 = g.add_node(crate::model::CodeNode {
-            id: petgraph::stable_graph::NodeIndex::new(1),
-            kind: crate::model::NodeKind::File,
-            name: "b.rs".into(),
-            file_path: Some("src/m20/b.rs".into()),
-            line_range: None,
-            doc_comment: None,
-            signature: None,
-            visibility: None,
-            module_path: vec!["src".into(), "m20".into()],
-        });
-        let graph = KnowledgeGraph {
-            graph: g,
-            modules: vec![crate::model::ModuleCluster {
-                name: "src::m20".into(),
-                node_ids: vec![f1, f2],
-                cohesion: 1.0,
-                coupling: 0.0,
-                description: None,
+        // 导出快照：src::m20 卡片携带 related_files（与卡片 module_name 同体系）
+        let snapshot = crate::output::ExportSnapshot {
+            version: 1,
+            documents: vec![],
+            cards: vec![crate::model::KnowledgeCard {
+                module_name: "src::m20".into(),
+                module_type: "module".into(),
+                summary: String::new(),
+                key_entities: vec![],
+                dependencies: vec![],
+                dependents: vec![],
+                design_patterns: vec![],
+                todo_notes: vec![],
+                related_files: vec!["src/m20/a.rs".into(), "src/m20/b.rs".into()],
+                coding_spec: None,
+                tech_stack: vec![],
+                architecture: None,
+                pending_manual_edits: vec![],
+                features: vec![],
             }],
-            features: Vec::new(),
+            modules: vec![],
         };
+        std::fs::write(
+            dir.join(".state").join("export_snapshot.json"),
+            serde_json::to_string(&snapshot).unwrap(),
+        )
+        .unwrap();
 
         // git 无变更：changed_files 应为空 → 补偿并入失败模块存活文件
         // （output.dir 指向 dir，与 save 状态目录一致）
         let mut config = make_config();
         config.output.dir = dir.to_string_lossy().into_owned();
+        let insights = vec![make_insight("src/m20/a.rs"), make_insight("src/m20/b.rs")];
+        let graph = KnowledgeGraph::default();
         let result = run_incremental_update_at(&root, &insights, &graph, &config, &[]).unwrap();
         assert!(
             result.changed_files.contains(&PathBuf::from("src/m20/a.rs")),
