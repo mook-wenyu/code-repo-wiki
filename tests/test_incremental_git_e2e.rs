@@ -12,20 +12,25 @@
 //! - 场景 D（T2 传播闭环）：签名变更 → 调用方模块文档重生成（依赖传播接线验证）
 //!
 //! fixture 依赖关系：http 社区的 http_serve 调用 net 社区的 tcp_process
-//! （跨社区 Calls 边）。
+//! （跨目录 Calls 边）。
+//!
+//! v26 方案 D（目录超节点聚类）语义：net/http 两个目录超节点间单条
+//! 跨目录边（0.7）在 γ=0.5 下满足合并增益 → 合并为公共前缀社区 `src`。
+//! 因此模块粒度断言从「net/http 独立」调整为「社区 src 覆盖两个目录」，
+//! 影响传播断言从「跨社区传播」调整为「社区内跨目录传播」（社区=生成单位，
+//! 社区内任何目录的文件变更都会触发社区整体重生成，覆盖调用方文件）。
 
 use std::path::Path;
 
 use repo_wiki::config::schema::{LlmProviderType, LlmSection, WikiConfig};
 use repo_wiki::config::schema::{OutputSection, WikiSection};
 
-/// 构造带跨社区调用的临时 git 仓库：
+/// 构造带跨目录调用的临时 git 仓库：
 ///
-/// - src/net/{tcp.rs, udp.rs}：社区 net（tcp↔udp 互调）
-/// - src/http/{server.rs, client.rs}：社区 http（server↔client 互调，
-///   server 同时调用 net 的 tcp_process —— 单条跨社区边）
-/// - 社区检测（CPM γ=0.5）：跨边 0.7 与内边 0.7 平衡，两社区保持独立，
-///   使"签名变更 → 依赖方社区重生成"可在 e2e 层验证。
+/// - src/net/{tcp.rs, udp.rs}：目录 net（tcp↔udp 互调）
+/// - src/http/{server.rs, client.rs}：目录 http（server↔client 互调，
+///   server 同时调用 net 的 tcp_process —— 单条跨目录边）
+/// - v26 方案 D：目录超节点聚类，net+http 合并为社区 `src`（见文件头注释）
 fn build_git_repo(repo: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(repo.join("src").join("net"))?;
     std::fs::create_dir_all(repo.join("src").join("http"))?;
@@ -121,11 +126,33 @@ fn test_incremental_git_diff_scenarios() {
     let base = repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &repo_wiki::GenerationMode::Full).expect("全量生成失败");
     let base_api = read_api(&repo);
     assert!(base_api.contains("tcp_process"), "基线 api.md 应含 tcp_process 签名");
-    // 社区划分护栏：net 与 http 应检出为独立模块（依赖传播断言的前提）
+    // 社区划分护栏：src/net 与 src/http 合并为社区 src（v26 目录超节点：
+    // 跨目录单边 0.7 > γ0.5 满足合并增益），node_ids 必须覆盖两个目录
+    //（依赖传播断言的前提：社区=生成单位）
     let module_names: Vec<&str> = base.graph.modules.iter().map(|m| m.name.as_str()).collect();
     assert!(
-        module_names.iter().any(|n| n.contains("net")) && module_names.iter().any(|n| n.contains("http")),
-        "net/http 应聚为两个独立社区，实际: {module_names:?}"
+        module_names.contains(&"src"),
+        "net/http 应合并为 src 社区，实际: {module_names:?}"
+    );
+    let src_mod = base
+        .graph
+        .modules
+        .iter()
+        .find(|m| m.name == "src")
+        .expect("应存在 src 社区");
+    let src_paths: Vec<String> = src_mod
+        .node_ids
+        .iter()
+        .filter_map(|nid| {
+            base.graph
+                .graph
+                .node_weight(*nid)
+                .and_then(|n| n.file_path.clone())
+        })
+        .collect();
+    assert!(
+        src_paths.iter().any(|p| p.contains("net")) && src_paths.iter().any(|p| p.contains("http")),
+        "src 社区应覆盖 net/http 两目录文件: {src_paths:?}"
     );
 
     // ---- 场景 A：实现级变化（函数体修改，签名不变） ----
@@ -138,12 +165,8 @@ fn test_incremental_git_diff_scenarios() {
         .expect("增量生成失败");
     let titles_a = doc_titles(&inc_a);
     assert!(
-        titles_a.iter().any(|t| t.contains("net")),
-        "实现级变化应重生成 net 社区文档，实际: {titles_a:?}"
-    );
-    assert!(
-        !titles_a.iter().any(|t| t.contains("http")),
-        "实现级变化不应重生成依赖方 http 社区文档，实际: {titles_a:?}"
+        titles_a.iter().any(|t| t.contains("src")),
+        "实现级变化应重生成 src 社区文档，实际: {titles_a:?}"
     );
     assert_eq!(
         read_api(&repo),
@@ -164,8 +187,8 @@ fn test_incremental_git_diff_scenarios() {
     );
     let titles_b = doc_titles(&inc_b);
     assert!(
-        titles_b.iter().any(|t| t.contains("http")),
-        "签名变更应传播到调用方 http 社区并重生成其文档（T2 闭环），实际: {titles_b:?}"
+        titles_b.iter().any(|t| t.contains("src")),
+        "签名变更应触发社区 src 重生成（覆盖跨目录调用方 http 文件，T2 闭环），实际: {titles_b:?}"
     );
 
     // ---- 场景 C：无变更 → 增量跳过 ----
@@ -207,12 +230,12 @@ fn test_incremental_git_whitespace_only_change_keeps_pages() {
     let inc = repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
         .expect("纯空白增量失败");
 
-    // 回填语义：文档集合 = 快照全集（含未变化的 http 模块——与场景 A 的
-    // 「仅重生成 net」形成对照信号），api.md 行号引用不变（零 LLM）
+    // 回填语义：文档集合 = 快照全集（含未变化的 http 目录——与场景 A 的
+    // 「仅重生成 src 社区」形成对照信号），api.md 行号引用不变（零 LLM）
     let titles = doc_titles(&inc);
     assert!(
-        titles.iter().any(|t| t.contains("src::http")) && titles.iter().any(|t| t.contains("src::net")),
-        "纯空白变化应走快照回填（全集含 http），而非重生成（仅含 net），实际: {titles:?}"
+        titles.iter().any(|t| t.contains("src")),
+        "纯空白变化应走快照回填（全集含 src 社区），而非重生成，实际: {titles:?}"
     );
     assert_eq!(
         read_api(&repo),
@@ -255,8 +278,8 @@ fn test_incremental_git_delete_isolated_file_keeps_others() {
         })
         .unwrap_or_default();
     assert!(
-        pages_before.iter().any(|p| p.contains("net") || p.contains("http")),
-        "基线应含 net/http 社区页: {pages_before:?}"
+        pages_before.iter().any(|p| p == "src.md"),
+        "基线应含 src 社区页（net/http 合并），实际: {pages_before:?}"
     );
 
     // ---- 删除孤立文件 → 增量 ----
@@ -281,8 +304,8 @@ fn test_incremental_git_delete_isolated_file_keeps_others() {
         })
         .unwrap_or_default();
     assert!(
-        pages_after.iter().any(|p| p.contains("net") || p.contains("http")),
-        "删除孤立文件后 net/http 社区产物不得被清空，实际: {pages_after:?}"
+        pages_after.iter().any(|p| p == "src.md"),
+        "删除孤立文件后 src 社区产物不得被清空，实际: {pages_after:?}"
     );
 
     let _ = std::fs::remove_dir_all(&repo);
@@ -318,11 +341,11 @@ fn test_force_incremental_regenerates_all() {
     )
     .expect("force 增量失败");
 
-    // force 退化全量：net 与 http 两个社区文档都应重生成
+    // force 退化全量：src 社区（net+http 两目录）文档应重生成
     let titles = doc_titles(&inc);
     assert!(
-        titles.iter().any(|t| t.contains("net")) && titles.iter().any(|t| t.contains("http")),
-        "force 增量应全量重生成（含未变更的 http 社区），实际: {titles:?}"
+        titles.iter().any(|t| t.contains("src")),
+        "force 增量应全量重生成（含未变更的 http 目录），实际: {titles:?}"
     );
 
     let _ = std::fs::remove_dir_all(&repo);

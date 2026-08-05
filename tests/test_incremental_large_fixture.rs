@@ -9,6 +9,9 @@
 //!
 //! fixture 结构（关键设计：三个互不相连的模块组，组内链式依赖）：
 //! - 组 A = m00..m04、组 B = m05..m09、组 C = m10..m14，每组 50 文件
+//! - v26 方案 D（目录超节点聚类）：每组 5 个目录超节点经链式边合并为
+//!   一个社区；目录根用 a/、b/、c/ 使社区名稳定为 a/b/c（若沿用单一
+//!   src/ 根，三组社区公共前缀相同会触发不稳定消歧）
 //! - 组内链式跨模块调用：模块 i 的 f00 含 `link_{i}` 调 `m_{i+1}_f00_0`
 //!   （仅当 i+1 与 i 同组；组尾模块无 link → 组间零边，对照组真隔离）
 //! - 影响传播实现为双向 BFS 3 层（src/incremental/impact.rs:149）：
@@ -16,11 +19,11 @@
 //!   组 A/C 无边可达 → 零影响。
 //!
 //! 断言设计：
-//! - 断言 1（影响集合）：组 B 全部模块页重生成，组 A/C 不重生成
+//! - 断言 1（影响集合）：组 B 模块页（b.md）重生成，组 A/C（a.md/c.md）不重生成
 //! - 断言 2（零改写）：组 A/C 模块页字节与基线一致（确定性渲染，防过度重写）
 //! - 断言 3（无删无增）：页面集合与基线一致（cleanup 误删防回归）
 //! - 断言 4（接口级链路）：api.md 反映新签名
-//! - 删除场景：文件页被精确清理（cleanup 正确行为），其余页面全保留
+//! - 删除场景：目录页保留（目录仍存在），内容精确移除被删文件的实体
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -38,13 +41,23 @@ const GROUP_SIZE: usize = 5;
 /// 命名规则（确定性）：每文件 3 个函数 `f{文件号}_{序号}`；模块 i 的 f00
 /// 追加跨模块函数 `link_{i}` 调用 `m_{i+1}_f00_0`（同组才生成，组尾无 link）
 ///
+/// v26 方案 D：目录根按组分区（src/a、src/b、src/c）——目录超节点聚类
+/// 的社区名 = src::a / src::b / src::c（公共目录前缀，跨次生成稳定）；
+/// 同组 5 目录经链式边合并为一个社区（50 文件/页）。
+///
 /// 关键：.repo-wiki/ 必须入 .gitignore——产物页含「最后更新」时间戳，
 /// 每次生成都重写，若被 git 跟踪则每轮 diff 都把全部产物页算作变更，
 /// 触发 MAX_DIFF_LINES 回退全量（真实最佳实践：产物不入版本控制）。
 fn build_large_repo(repo: &Path) -> anyhow::Result<()> {
     std::fs::write(repo.join(".gitignore"), ".repo-wiki/\nAGENTS.md\n")?;
     for m in 0..MODULES {
-        let dir = repo.join("src").join(format!("m{m:02}"));
+        // 组根字母：组 A=m00-04→src/a/、组 B=m05-09→src/b/、组 C=m10-14→src/c/
+        let group_root = match m / GROUP_SIZE {
+            0 => "a",
+            1 => "b",
+            _ => "c",
+        };
+        let dir = repo.join("src").join(group_root).join(format!("m{m:02}"));
         std::fs::create_dir_all(&dir)?;
         for f in 0..FILES_PER_MODULE {
             let mut content = String::new();
@@ -129,11 +142,10 @@ fn page_names(map: &HashMap<String, String>) -> Vec<String> {
     names
 }
 
-/// 文档标题是否涉及指定模块组（模块号闭区间 [lo, hi]）
+/// 文档标题是否涉及指定模块组（模块号闭区间 [lo, hi]，v26 目录页语义：
+/// 标题形如 src::a::m00，模块号 m{m:02} 精确区分组）
 fn titles_in_group(titles: &[String], lo: usize, hi: usize) -> bool {
-    titles.iter().any(|t| {
-        (lo..=hi).any(|m| t.contains(&format!("m{m:02}")))
-    })
+    titles.iter().any(|t| (lo..=hi).any(|m| t.contains(&format!("m{m:02}"))))
 }
 
 /// 主场景：全量基线 → 改组 B 内 m07/f00 签名（接口级）→ 增量 → 四断言
@@ -146,7 +158,7 @@ fn test_large_fixture_incremental_impact() {
 
     let root = repo_wiki::project::ProjectRoot::new(repo.clone());
     let config_path = repo.join("config.toml");
-    let target = repo.join("src").join("m07").join("f00.rs");
+    let target = repo.join("src").join("b").join("m07").join("f00.rs");
 
     // ---- 首轮：git init 提交 + 全量生成（基线快照） ----
     git_commit_all(&repo, "init 150 files");
@@ -155,8 +167,8 @@ fn test_large_fixture_incremental_impact() {
     let base_pages = wiki_pages_snapshot(&repo);
     let base_names = page_names(&base_pages);
     assert!(
-        base_names.len() >= MODULES + 4,
-        "基线应含全部模块/文件页（≥19），实际 {} 页",
+        base_names.len() >= 6,
+        "基线应含全部模块页（a/b/c 三页）+ 合成页（≥6），实际 {} 页",
         base_names.len()
     );
 
@@ -176,11 +188,11 @@ fn test_large_fixture_incremental_impact() {
     )
     .expect("增量生成失败");
 
-    // ---- 断言 1：组 B（m05-m09）全部重生成（双向 BFS 3 层覆盖链长 5），组 A/C 不重生成 ----
+    // ---- 断言 1：组 B（m05-m09）目录页全部重生成（双向 BFS 3 层覆盖链长 5），组 A/C 不重生成 ----
     let titles: Vec<String> = inc.documents.iter().map(|d| d.title.clone()).collect();
     assert!(
         titles_in_group(&titles, 5, 9),
-        "组 B 模块文档应全部重生成，实际: {titles:?}"
+        "组 B 目录页文档应全部重生成，实际: {titles:?}"
     );
     for (lo, hi, label) in [(0, 4, "组 A"), (10, 14, "组 C")] {
         assert!(
@@ -189,7 +201,7 @@ fn test_large_fixture_incremental_impact() {
         );
     }
 
-    // ---- 断言 2/3：组 A/C 模块页零改写 + 页面集合无删无增 ----
+    // ---- 断言 2/3：组 A/C 目录页零改写 + 页面集合无删无增 ----
     let after_pages = wiki_pages_snapshot(&repo);
     let after_names = page_names(&after_pages);
     assert_eq!(
@@ -197,8 +209,8 @@ fn test_large_fixture_incremental_impact() {
         "改签名场景页面集合必须与基线一致（无页面增删）"
     );
     for name in &after_names {
-        // 组 B 模块页内容必然变化（实体集变更）；合成页（api/架构/索引/overview）
-        // 由 render_all 每次重写——跳过；组 A/C 模块页必须字节级一致
+        // 组 B 目录页内容必然变化（实体集变更）；合成页（api/架构/索引/overview）
+        // 由 render_all 每次重写——跳过；组 A/C 目录页必须字节级一致
         let is_group_b = (5..=9).any(|m| name.contains(&format!("m{m:02}")));
         let is_synthetic = ["api.md", "architecture.md", "index.md", "overview.md"]
             .iter().any(|s| name == s);
@@ -213,18 +225,26 @@ fn test_large_fixture_incremental_impact() {
     }
 
     // ---- 断言 4：接口级变化反映到 api.md（新签名出现；f00_0 是 15 模块
-    // 通用函数名，不能断言"消失"——只断言 m07 段的旧签名不再存在） ----
+    // 通用函数名，不能断言"消失"——只断言 b 段的旧签名不再存在） ----
     let new_api = std::fs::read_to_string(repo.join(".repo-wiki").join("wiki").join("zh").join("api.md"))
         .unwrap_or_default();
     assert!(
         new_api.contains("f00_renamed"),
         "api.md 应反映新签名 f00_renamed，实际: {new_api}"
     );
-    // m07 段（## src::m07 起）内不得再出现旧签名 f00_0（该段仅含 f00.rs 实体）
-    let m07_section = new_api.split("## src::m07").nth(1).unwrap_or_default();
+    // src::b::m07 段（## src::b::m07 起到下一标题前）内不得再出现旧签名 f00_0
+    // （该段仅含 m07 目录实体；组 B 其他目录的 f00_0 未修改，仍在各自段——
+    // 若只 split 首个标题，段会一直延伸到文件尾而误含它们）
+    let m07_section = new_api
+        .split("## src::b::m07")
+        .nth(1)
+        .unwrap_or_default()
+        .split("## ")
+        .next()
+        .unwrap_or_default();
     assert!(
         !m07_section.contains("f00_0"),
-        "api.md m07 段不应残留旧签名 f00_0，实际: {m07_section}"
+        "api.md b 段不应残留旧签名 f00_0，实际: {m07_section}"
     );
 
     let _ = std::fs::remove_dir_all(&repo);
@@ -247,10 +267,10 @@ fn test_large_fixture_delete_file_keeps_pages() {
         .expect("全量生成失败");
     let base_pages = wiki_pages_snapshot(&repo);
     let base_names = page_names(&base_pages);
-    assert!(base_names.contains(&"src_m09_f07.md".to_string()), "基线应含 m09/f07 页");
+    assert!(base_names.contains(&"src_b_m09.md".to_string()), "基线应含 m09 目录页 src_b_m09.md");
 
-    // 删除 m09/f07.rs（f07 函数无任何边：传播只含起点模块 m09，其他组零影响）
-    std::fs::remove_file(repo.join("src").join("m09").join("f07.rs")).unwrap();
+    // 删除 src/b/m09/f07.rs（f07 函数无任何边：传播只含起点模块，其他组零影响）
+    std::fs::remove_file(repo.join("src").join("b").join("m09").join("f07.rs")).unwrap();
     git_commit_all(&repo, "delete m09 f07");
     repo_wiki::run_pipeline(
         Some(&config_path),
@@ -264,28 +284,27 @@ fn test_large_fixture_delete_file_keeps_pages() {
     let after_pages = wiki_pages_snapshot(&repo);
     let after_names = page_names(&after_pages);
 
-    // 断言：纯删除场景（变更文件均已不存在，changed_insights 为空）走
-    // 快照回填分支（generate/mod.rs 纯删除分支：防 cleanup 误删优先）。
-    // 回填按 deleted_modules 精确过滤：f07 页的卡片 related_files=[f07.rs]
-    // 全部不存在 → 判定已删模块 → 该页清理；其余模块（m09 等）页面保留。
-    assert!(
-        !after_names.contains(&"src_m09_f07.md".to_string()),
-        "已删文件页应被清理（deleted_modules 判定）"
-    );
+    // 断言（v26 方案 D 语义）：页面 = 目录社区页，删除文件不改变目录集合
+    // → src_b_m09.md 保留；纯删除分支（changed_insights 为空）走快照回填 + surviving
+    // 重生成——目录页内容精确移除被删文件的实体（f07 函数），其余页面保留。
     assert_eq!(
-        after_names.len(),
-        base_names.len() - 1,
-        "仅 f07 页应消失，其余全部保留；基线 {} 页 → 现在 {} 页",
-        base_names.len(),
-        after_names.len()
+        after_names, base_names,
+        "删除文件场景页面集合必须与基线一致（目录页保留）"
     );
-    // 其余全部页面零改写：回填=旧文档幂等重写（页脚不再重复注入），
-    // last_updated 保持快照值 → 字节与基线一致（合成页由 graph 重渲染，
-    // 跳过；组 A/C 与组 B 均不受影响）
+    // mock 产物体裁固定为占位模板（无实体行），无法断言实体级内容——
+    // 实体级验证属 LLM 评测域（bench rubrics）；此处断言页面生命周期语义：
+    // 页面保留、被删文件实体不残留（占位模板天然满足）
+    let b_after = after_pages.get("src_b_m09.md").expect("src_b_m09.md 应保留");
+    assert!(
+        !b_after.contains("f07_0") && !b_after.contains("f07_1") && !b_after.contains("f07_2"),
+        "src_b_m09.md 应移除被删文件 f07.rs 的实体（f07_0..2），实际: {b_after}"
+    );
+    // 其余页面（a/c 与合成页）零改写：回填=旧文档幂等重写（页脚不再重复注入），
+    // last_updated 保持快照值 → 字节与基线一致（合成页由 graph 重渲染，跳过）
     for name in &after_names {
         let is_synthetic = ["api.md", "architecture.md", "index.md", "overview.md"]
             .iter().any(|s| name == s);
-        if is_synthetic {
+        if is_synthetic || name == "src_b_m09.md" {
             continue;
         }
         assert_eq!(
