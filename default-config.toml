@@ -1,5 +1,5 @@
-# repo-wiki 默认配置模板（由 `repo-wiki init` 或缺省配置链写入用户级目录；
-# v24 起项目级配置为独立文件 .repo-wiki.toml，敏感键会被净化）
+# repo-wiki 默认配置模板（由 `repo-wiki install` 或缺省配置链写入用户级目录；
+# v25 起项目级配置为 config.toml（字段级合并覆盖用户级），敏感键会被净化）
 # 键集合与 src/config/schema.rs 严格对齐；未知键会被 serde 忽略（无效配置，勿写）。
 
 [wiki]

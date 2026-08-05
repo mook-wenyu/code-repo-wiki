@@ -514,12 +514,12 @@ fn remove_wiki_block_from_file(path: &Path) -> Result<bool> {
 /// 文件不存在则创建；已存在完整标记对则整块替换（只动标记之间内容）；
 /// 半标记报错（不修，理由见 `wiki_block_state`）。
 ///
-/// 注入块按目标仓库配置渲染（U02）：读 `root/.repo-wiki.toml` 取
-/// output.dir 与 wiki.language；配置缺失（首次运行/未 init）时回退默认值
+/// 注入块按目标仓库配置渲染（U02）：读 `root/config.toml` 取
+/// output.dir 与 wiki.language；配置缺失（首次运行/未 install）时回退默认值
 /// (".repo-wiki", "zh") 不报错——wiki 块缺失比注入失败更隐蔽。
 pub fn install_wiki(root: &crate::project::ProjectRoot, also_claude: bool) -> Result<()> {
-    // 目标仓库配置路径（v24：独立文件 .repo-wiki.toml，与产物目录分离）；
-    // 缺失时回退默认——注意该路径含敏感键时 load_config 会净化（.repo-wiki.toml
+    // 目标仓库配置路径（v25：项目级 config.toml，与产物目录分离）；
+    // 缺失时回退默认——注意该路径含敏感键时 load_config 会净化（config.toml
     // 形态自动生效），此处取的是 output.dir/language（项目契约，不受净化影响）
     let config_path = root.join(Path::new(crate::config::PROJECT_CONFIG_FILE));
     let (output_dir, lang) = match crate::config::load_config(&config_path) {

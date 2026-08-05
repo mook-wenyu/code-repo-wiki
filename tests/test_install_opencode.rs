@@ -99,7 +99,7 @@ fn test_install_does_not_create_project_config() {
         String::from_utf8_lossy(&out.stderr)
     );
     // 项目级配置与产物目录都不得被 install 创建
-    let config_path = work_dir.join(".repo-wiki.toml");
+    let config_path = work_dir.join("config.toml");
     assert!(
         !config_path.exists(),
         "install 不得创建项目级配置: {}",

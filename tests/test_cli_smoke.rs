@@ -198,12 +198,13 @@ fn test_install_ensures_user_default_config() {
     assert!(!content.contains("[project]"), "默认配置不应含 [project]，实际:\n{content}");
     assert!(!content.contains("[generate]"), "默认配置不应含 [generate]，实际:\n{content}");
 
-    // 项目级配置不被自动创建（v24 用户要求的边界）
+    // 项目级配置不被自动创建（v24 用户要求的边界；v25 项目级文件名=config.toml，
+    // 旧名 .repo-wiki.toml 已停用）
     assert!(
         !work_dir.join("config.toml").exists(),
         "install 不得在项目级自动创建 config.toml"
     );
-    assert!(!work_dir.join(".repo-wiki.toml").exists());
+    assert!(!work_dir.join(".repo-wiki.toml").exists(), "旧文件名已停用");
 
     let _ = std::fs::remove_dir_all(&work_dir);
     let _ = std::fs::remove_dir_all(&home);
@@ -645,8 +646,8 @@ fn test_root_missing_dir_errors() {
 
 // ==================== E 组：默认配置链（v13） ====================
 
-/// E 组：无 --config 时默认配置链取项目级 .repo-wiki.toml（项目级优先；
-/// v24 起为独立文件，不再混入产物目录 .repo-wiki/）。
+/// E 组：无 --config 时默认配置链取项目级 config.toml（项目级优先；
+/// v25 起为独立文件，不再混入产物目录 .repo-wiki/）。
 /// 项目级存在时不触达全局目录（resolve 先查项目级），测试无需隔离 APPDATA。
 #[test]
 fn test_default_config_chain_prefers_project_config() {

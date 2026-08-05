@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use crate::project::ProjectRoot;
 
 /// 项目级配置文件（v25 拍板：项目根 `config.toml`，字段级合并覆盖
-/// 用户级配置；v24 的 `.repo-wiki.toml` 已废弃不再读取）
+/// 用户级配置；v24 的 `.repo-wiki.toml` 与 v25 用户级默认文件更名，旧名不再读取）
 pub const PROJECT_CONFIG_FILE: &str = "config.toml";
 
 /// 用户级全局配置文件（v25 拍板：`default-config.toml`，与内置模板
@@ -38,7 +38,7 @@ const SANITIZE_DEFAULT_INJECT: &[(&str, &str, &str)] = &[
     ("llm", "model", "deepseek-v4-flash"),
     ("llm", "api_key_env", "DEEPSEEK_API_KEY"),
     // embed.model/api_key_env 同为必填（无 serde 默认）：默认模板自身含
-    // 这些键，净化后需回填，否则 init 写出的 .repo-wiki.toml 无法再加载
+    // 这些键，净化后需回填，否则项目级 config.toml 无法再加载
     ("embed", "model", "text-embedding-3-small"),
     ("embed", "api_key_env", "OPENAI_API_KEY"),
 ];
@@ -361,7 +361,7 @@ mod tests {
     }
 
     /// E 组搜索链：项目级配置存在 → 返回项目级（项目级优先；v24 起为
-    /// 独立文件 `.repo-wiki.toml`，不再混入产物目录）
+    /// 独立文件 `config.toml`，不再混入产物目录）
     #[test]
     fn test_resolve_prefers_project_config() {
         let dir = std::env::temp_dir().join(format!("repo_wiki_e_project_{}", std::process::id()));

@@ -6,6 +6,13 @@
 ## [Unreleased]
 
 ### Changed
+- 配置链三合一（v25）：init/install-to-opencode 合并为 install（确保用户级默认配置 + 插件/MCP/hooks 注册）；项目级配置统一为 `config.toml`，字段级合并覆盖用户级 `default-config.toml`（数组整体覆盖）；旧文件名 `.repo-wiki.toml` 与旧全局 `config.toml` 停用
+- 净化边界收窄（v25）：provider/model 允许项目级覆盖（协议/模型无凭据泄露面，mock 是 CI 常态），base_url/api_key_env 仍净化（端点劫持/凭据泄露防护）
+- 默认配置模板协议统一（v25）：provider openai-compatible → openai（Responses 协议，DeepSeek 官方推荐）
+
+
+
+### Changed
 - 配置分层重构（v24）：项目级配置迁移为独立文件 `.repo-wiki.toml`（与产物目录 `.repo-wiki/` 物理分离）；install 命令不再在项目级自动创建配置文件（自动创建只发生在用户级目录）；项目级配置执行敏感键净化（Codex DENYLIST 模式：`llm.provider/model/base_url/api_key_env`、`embed.model/base_url/api_key_env` 被忽略并告警，凭据/提供商/模型归属用户级配置或 `--config` 显式指定）
 
 ### Added

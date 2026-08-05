@@ -14,7 +14,7 @@ struct Cli {
 enum Commands {
     /// 全量生成 Wiki 文档
     Generate {
-        /// 配置文件路径（默认缺省链：项目级 .repo-wiki.toml → 用户级全局 → 创建全局）
+        /// 配置文件路径（默认缺省链：项目级 config.toml → 用户级 default-config.toml → 创建用户级）
         #[arg(short, long)]
         config: Option<PathBuf>,
         /// 输出目录（覆盖配置文件中的 output.dir）
@@ -225,7 +225,7 @@ enum Commands {
         /// 仓库名（报告标识，缺省取 root 目录名）
         #[arg(long)]
         repo_name: Option<String>,
-        /// 配置文件路径（缺省 root/.repo-wiki.toml）
+        /// 配置文件路径（缺省 root/config.toml，见 load_default_config）
         #[arg(long)]
         config: Option<PathBuf>,
         /// 以 JSON 格式输出报告

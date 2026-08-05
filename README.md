@@ -58,7 +58,7 @@ AI 驱动的代码仓库 Wiki 自动生成工具。分析源码结构，通过 L
 | `lint` | 产物健康检查（孤儿页/断链/过时/引用错位/坏 mermaid），供 CI 使用；退出码三态：`0` 通过、`1` 发现问题、`2` 配置加载失败 |
 | `export` | 导出为 HTML（支持 `-o` 输出目录、`--skip-generate` 从快照直接导出不重新生成）|
 | `doctor` | 环境诊断（配置/产物目录/输出目录/LLM Key/网络/版本自检六查），失败退出码 1 |
-| `init` | 初始化配置（缺省在全局配置目录创建；项目根已有 `.repo-wiki.toml` 时跳过不覆盖，`--force` 强制；显式 `--config <path>` 始终覆盖）|
+| `install` | 确保用户级默认配置就绪（缺失自动创建）并注册 OpenCode 插件（含 MCP/hooks） |
 | `watch` | 监听文件变更并自动更新 |
 | `search` | 搜索代码实体 |
 | `ast-search` | AST 精确符号查找（文件+行号+签名，不依赖搜索索引）|
@@ -72,7 +72,7 @@ AI 驱动的代码仓库 Wiki 自动生成工具。分析源码结构，通过 L
 | `bench` | 自动评测仓库 Wiki 质量（Coverage/Doc Info/lint/Update Recall/Time 五维 + `--judge` TQS 裁判打分 + `--rubrics-only` 跳过 git 回放）|
 | `bench-manifest` | 清单批量跑分：每行一个仓库（本地路径或 git URL），输出仓库×维度矩阵（mock 可跑，不触网）|
 
-`generate`/`update`/`sync`/`status`/`lint`/`export`/`doctor`/`init`/`watch`/`search`/`ast-search`/`card`/`note`/`install-to-opencode`/`uninstall-from-opencode`/`install-wiki`/`uninstall-wiki`/`mcp` 支持 `--root` 指定项目根（扫描根/git 定位基准，默认当前目录）；`bench` 的 `--root` 为必填项（目标评测仓库根，语义与其他子命令不同）。
+`generate`/`update`/`sync`/`status`/`lint`/`export`/`doctor`/`install`/`watch`/`search`/`ast-search`/`card`/`note`/`uninstall-from-opencode`/`install-wiki`/`uninstall-wiki`/`mcp` 支持 `--root` 指定项目根（扫描根/git 定位基准，默认当前目录）；`bench` 的 `--root` 为必填项（目标评测仓库根，语义与其他子命令不同）。
 
 ### 评测（bench / bench-manifest）
 
@@ -112,8 +112,9 @@ Linux/macOS 上构建与运行需要 OpenSSL 与 zlib 开发库（`reqwest` 的
 # 1. 安装到 ~/.cargo/bin（自动加入 PATH；或仅构建：cargo build --release）
 cargo install --path . --locked
 
-# 2. 配置 LLM Key（默认 deepseek-v4-flash，配置链：项目 .repo-wiki.toml
-#    → 全局配置目录 → 自动创建全局配置；敏感键只放用户级）
+# 2. 配置 LLM Key（默认 deepseek-v4-flash，配置链：项目 config.toml
+#    → 用户级 default-config.toml → 自动创建用户级配置；凭据/端点键
+#    只放用户级，项目级写入会被净化忽略）
 export DEEPSEEK_API_KEY="sk-..."
 
 # 3. 生成 Wiki（首次零参数全自动：无配置自动创建，产物在 .repo-wiki/）
@@ -124,7 +125,7 @@ repo-wiki generate
 
 | 命令 | 作用 |
 |---|---|
-| `repo-wiki init` | 创建默认配置（缺省全局目录；已存在跳过，`--force` 重写） |
+| `repo-wiki install` | 确保用户级默认配置就绪（缺失自动创建）并注册 OpenCode 插件（MCP/hooks） |
 | `repo-wiki generate` | 全量生成 Wiki（模块页/API 参考/知识卡片/llms.txt/AGENTS.md） |
 | `repo-wiki update` | 增量更新（无变更时秒级 no-op 跳过；`--dry-run` 预览） |
 | `repo-wiki search -q "关键词"` | 搜索代码实体（text/semantic/hybrid 三引擎） |
@@ -178,19 +179,20 @@ documents:                         # 页面白名单（提供时严格只输出�
 
 ### 配置加载链（全局/项目级）
 
-不带 `--config` 时按以下链解析配置文件（v13 E 组，v24 调整）：
+不带 `--config` 时按以下链解析配置（v25 三合一）：
 
-1. **项目级**：`{root}/.repo-wiki.toml`（root 为当前目录或 `--root` 指定；项目契约如 scope/语言/输出随 Git 提交共享，与产物目录 `.repo-wiki/` 物理分离）
-2. **全局（用户级）**：Windows `%APPDATA%\repo-wiki\config.toml`，其他平台 `~/repo-wiki/config.toml`
-3. **创建**：两者都不存在时自动创建**全局**目录与默认配置（引导式，无需先手动 init）——自动创建只发生在用户级目录，项目级永不自动创建（v24 用户要求）
+1. **项目级**：`{root}/config.toml`（root 为当前目录或 `--root` 指定；项目契约如 scope/语言/输出/模型随 Git 提交共享，与产物目录 `.repo-wiki/` 物理分离）。存在时**字段级合并覆盖**用户级配置（数组整体覆盖），未写出的键继承用户级
+2. **用户级**：Windows `%APPDATA%\repo-wiki\default-config.toml`，其他平台 `~/repo-wiki/default-config.toml`
+3. **创建**：两者都不存在时自动创建**用户级**目录与默认配置（引导式，无需先手动 install）——自动创建只发生在用户级目录，项目级永不自动创建（v24 用户要求）
 
 显式 `--config <path>` 指定时原样使用（缺失则报错，不走创建链）。
 
-> **敏感键净化（v24）**：项目级配置 `.repo-wiki.toml` 中的机器属性键——
-> `llm.provider/model/base_url/api_key_env`、`embed.model/base_url/api_key_env`——
-> 会被**忽略并告警**（Codex DENYLIST 模式）：凭据、提供商、模型归属用户级配置
-> 或 `--config` 显式指定，防止随仓库传播造成凭据重定向/模型锁死。
-> 项目级配置只应放项目契约：`scope`、`wiki.language`、`output.dir` 等。
+> **敏感键净化（v24/v25）**：项目级配置 `config.toml` 中的凭据与端点键——
+> `llm.base_url/api_key_env`、`embed.base_url/api_key_env`——会被**忽略并告警**
+> （Codex DENYLIST 模式）：端点重定向与凭据泄露随仓库传播的防护，须放用户级配置
+> 或 `--config` 显式指定。v25 起 `provider/model` 允许项目级覆盖（协议/模型无凭据
+> 泄露面，项目级写 `provider = "mock"` 是 CI/本地模拟的常态用法）。
+> 项目级配置典型内容：`scope`、`wiki.language`、`output.dir`、`provider`。
 
 ```toml
 [wiki]
