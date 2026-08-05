@@ -60,11 +60,17 @@ pub fn get_global_runtime() -> &'static Arc<Runtime> {
 /// 同时消费 wiki_plan.yaml 的 scope_override：生效计划存在且提供 scope 时
 /// 覆盖 config.scope（plan.enabled=false 或文件缺失时不影响）。
 fn load_config_with_output(
-    config_path: &Path,
+    config_path: Option<&Path>,
     output: Option<&Path>,
     root: &project::ProjectRoot,
 ) -> anyhow::Result<config::schema::WikiConfig> {
-    let config = config::load_config(config_path)?;
+    // v25：None 走默认配置链（项目级 config.toml 字段级合并覆盖用户级
+    // default-config.toml，见 config::load_default_config）；Some 为显式
+    // --config 单文件原样加载
+    let config = match config_path {
+        Some(p) => config::load_config(p)?,
+        None => config::load_default_config(root)?.1,
+    };
     let mut config = if let Some(out) = output {
         let mut c = config;
         c.output.dir = out.to_string_lossy().into_owned();
@@ -94,7 +100,7 @@ fn load_config_with_output(
 /// 与 run_pipeline 内部的 load_config_with_output 同源，保证 CLI 层与
 /// pipeline 层对产物目录的解析一致）
 pub fn load_config_rooted(
-    config_path: &Path,
+    config_path: Option<&Path>,
     root: &project::ProjectRoot,
 ) -> anyhow::Result<config::schema::WikiConfig> {
     load_config_with_output(config_path, None, root)
@@ -224,7 +230,7 @@ pub enum GenerationMode {
 /// `mode` 区分全量生成与增量更新（两者共享本函数的主干，差异点在
 /// 扫描缓存、变更分析、生成过滤、索引更新四处）。
 pub fn run_pipeline(
-    config_path: &Path,
+    config_path: Option<&Path>,
     output: Option<&Path>,
     force: bool,
     root: &project::ProjectRoot,
@@ -238,7 +244,7 @@ pub fn run_pipeline(
 /// 事件点：scanning 10 / analyzing 25 / chunking 30 / cards 60 / wiki 90 /
 /// output 95 / index 98 / done 100，对应扫描、分析、生成、渲染、索引、保存阶段。
 pub fn run_pipeline_with_progress(
-    config_path: &Path,
+    config_path: Option<&Path>,
     output: Option<&Path>,
     force: bool,
     root: &project::ProjectRoot,
@@ -246,7 +252,7 @@ pub fn run_pipeline_with_progress(
     on_progress: &dyn Fn(ProgressEvent),
 ) -> anyhow::Result<AnalysisResult> {
     let config = load_config_with_output(config_path, output, root)?;
-    let _span = tracing::info_span!("pipeline", config = %config_path.display());
+    let _span = tracing::info_span!("pipeline", config = %config_path.map(|p| p.display().to_string()).unwrap_or_else(|| "默认链".into()));
     let _enter = _span.enter();
     let start = std::time::Instant::now();
     let mut is_incremental = matches!(mode, GenerationMode::Incremental { .. });
@@ -520,7 +526,7 @@ pub fn run_pipeline_with_progress(
 
 /// 知识卡片操作（CLI card 子命令与 Qoder /knowledge 对等）
 pub fn run_card_command(
-    config_path: &Path,
+    config_path: Option<&Path>,
     root: &project::ProjectRoot,
     action: &generate::card::CardAction,
 ) -> anyhow::Result<()> {
@@ -720,13 +726,16 @@ pub fn sync_manual_edits_to_cards(
 ///
 /// `root` 为注入的项目根：首次全量生成与监听根均以它为基准
 /// （扫描根一致，watch 常驻进程的 cwd 漂移不影响监听范围）。
-pub fn run_watch(config_path: &Path, root: &project::ProjectRoot) -> anyhow::Result<()> {
-    let config = config::load_config(config_path)?;
+pub fn run_watch(config_path: Option<&Path>, root: &project::ProjectRoot) -> anyhow::Result<()> {
+    let config = match config_path {
+        Some(p) => config::load_config(p)?,
+        None => config::load_default_config(root)?.1,
+    };
     tracing::info!("首次全量生成...");
     run_pipeline(config_path, None, false, root, &GenerationMode::Full)?;
-    tracing::info!("全量生成完成，开始监听文件变更...");
+    tracing::info!("全量生成完成，开始监听文件变化...");
 
-    let config_path = config_path.to_path_buf();
+    let config_path = config_path.map(|p| p.to_path_buf());
     // 监听根 = 注入的项目根（与 scan_and_parse_at 的扫描根一致）
     let watch_root = root.path().to_path_buf();
     let watch_root_for_loop = watch_root.clone();
@@ -765,7 +774,7 @@ pub fn run_watch(config_path: &Path, root: &project::ProjectRoot) -> anyhow::Res
                     watch_paths: event.paths.clone(),
                     change_kind,
                 };
-                if let Err(e) = run_pipeline(&config_path, None, false, &root, &mode) {
+                if let Err(e) = run_pipeline(config_path.as_deref(), None, false, &root, &mode) {
                     tracing::error!("增量更新失败: {}", e);
                 } else {
                     tracing::info!("增量更新完成");
@@ -1055,7 +1064,7 @@ fn extract_entity_source(
 /// - Semantic: 仅向量语义搜索（需 embed.enabled）
 /// - Hybrid: 两者结果经 RRF 合并
 pub fn execute_search(
-    config_path: &Path,
+    config_path: Option<&Path>,
     root: &project::ProjectRoot,
     query: &str,
     top_k: usize,
@@ -1064,7 +1073,11 @@ pub fn execute_search(
     if query.trim().is_empty() {
         return Ok(Vec::new());
     }
-    let config = config::load_config(config_path)?;
+    // v25：None 走默认配置链（项目级字段级合并覆盖用户级）
+    let config = match config_path {
+        Some(p) => config::load_config(p)?,
+        None => config::load_default_config(root)?.1,
+    };
     let index_dir = search_index_dir(&config);
     let text_path = index_dir.join("text_index.db");
     let semantic_path = index_dir.join("semantic_index.db");
@@ -1149,7 +1162,7 @@ pub fn execute_search(
 ///
 /// `language` 为源语言（rust/python/go/...），传入 None 时由文件扩展名自动推断。
 pub fn execute_ast_search(
-    config_path: &Path,
+    config_path: Option<&Path>,
     root: &project::ProjectRoot,
     symbol: &str,
     language: Option<&str>,
@@ -1157,7 +1170,10 @@ pub fn execute_ast_search(
     if symbol.trim().is_empty() {
         return Ok(Vec::new());
     }
-    let config = config::load_config(config_path)?;
+    let config = match config_path {
+        Some(p) => config::load_config(p)?,
+        None => config::load_default_config(root)?.1,
+    };
     let insights = ingest::scan_and_parse_at(root, &config)?.insights;
 
     let mut hits = Vec::new();

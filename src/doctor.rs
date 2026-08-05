@@ -10,7 +10,7 @@ use anyhow::Result;
 use std::path::Path;
 
 use crate::config::schema::LlmProviderType;
-use crate::config::{load_config, resolve_config_path};
+use crate::config::load_config;
 use crate::incremental::state::GenerationState;
 use crate::project::ProjectRoot;
 
@@ -31,15 +31,19 @@ pub struct CheckResult {
 ///
 /// 注意：配置加载失败时无法获得输出目录/Key/网络信息，只返回第一项
 /// 失败结果（避免在无效配置上继续猜测）。
-pub fn run(config_path: &Path, root: &ProjectRoot) -> Result<Vec<CheckResult>> {
+pub fn run(config_path: Option<&Path>, root: &ProjectRoot) -> Result<Vec<CheckResult>> {
     let mut checks = Vec::new();
 
-    // 1. 配置存在且可解析（走 resolve_config_path 与主流程一致；
-    // 失败即终止——后续检查都依赖配置）
-    let config = match resolve_config_path(Some(config_path), root).and_then(|p| load_config(&p)) {
-        Ok(mut c) => {
-            // output.dir 相对路径统一解析到 root（与 load_config_rooted 同语义，
-            // doctor 独立于 CLI 层无法复用该入口，此处保持一致性）
+    // 1. 配置存在且可解析（None 走默认配置链——项目级字段级合并覆盖
+    // 用户级，与主流程 load_config_rooted 同源；失败即终止——后续检查
+    // 都依赖配置）
+    let resolved = match config_path {
+        Some(p) => load_config(p).map(|c| (p.to_path_buf(), c)),
+        None => crate::config::load_default_config(root),
+    };
+    let config = match resolved {
+        Ok((path, mut c)) => {
+            // output.dir 相对路径统一解析到 root（与 load_config_rooted 同语义）
             let output_dir = Path::new(&c.output.dir);
             if output_dir.is_relative() {
                 c.output.dir = root.path().join(output_dir).to_string_lossy().into_owned();
@@ -47,7 +51,7 @@ pub fn run(config_path: &Path, root: &ProjectRoot) -> Result<Vec<CheckResult>> {
             checks.push(CheckResult {
                 name: "配置",
                 ok: true,
-                detail: Some(format!("加载成功: {}", config_path.display())),
+                detail: Some(format!("加载成功: {}", path.display())),
             });
             c
         }
@@ -225,7 +229,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("repo_wiki_doctor_{}_{}", tag, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let config = dir.join("config.toml");
+        let config = dir.join("doctor-test.toml");
         std::fs::write(
             &config,
             format!(
@@ -253,7 +257,7 @@ max_concurrent = 1
     fn test_doctor_all_pass_with_mock() {
         let (dir, config) = temp_config("pass", "");
         let root = ProjectRoot::new(dir.clone());
-        let checks = run(&config, &root).unwrap();
+        let checks = run(Some(&config), &root).unwrap();
         assert_eq!(checks.len(), 6, "应恰好六项检查: {:?}", checks);
         for c in &checks {
             assert!(c.ok, "{} 应通过: {:?}", c.name, c.detail);
@@ -267,7 +271,7 @@ max_concurrent = 1
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let root = ProjectRoot::new(dir.clone());
-        let checks = run(&dir.join("nope.toml"), &root).unwrap();
+        let checks = run(Some(&dir.join("nope.toml")), &root).unwrap();
         assert_eq!(checks.len(), 1, "配置失败应只返回配置检查: {:?}", checks);
         assert!(!checks[0].ok);
         let _ = std::fs::remove_dir_all(&dir);
@@ -285,7 +289,7 @@ max_concurrent = 1
                 .replace("api_key = \"mock\"", "api_key = \"\""),
         )
         .unwrap();
-        let checks = run(&config, &root).unwrap();
+        let checks = run(Some(&config), &root).unwrap();
         let key = checks.iter().find(|c| c.name == "LLM Key").expect("应有 Key 检查");
         assert!(!key.ok);
         let detail = key.detail.clone().unwrap();
@@ -307,7 +311,7 @@ max_concurrent = 1
         )
         .unwrap();
         let root = ProjectRoot::new(dir.clone());
-        let checks = run(&config, &root).unwrap();
+        let checks = run(Some(&config), &root).unwrap();
         let net = checks.iter().find(|c| c.name == "网络").expect("应有网络检查");
         assert!(!net.ok, "未监听端口应报不可达: {:?}", net.detail);
         let _ = std::fs::remove_dir_all(&dir);
@@ -319,7 +323,7 @@ max_concurrent = 1
     fn test_doctor_version_reports_drift() {
         let (dir, config) = temp_config("ver", "");
         let root = ProjectRoot::new(dir.clone());
-        let checks = run(&config, &root).unwrap();
+        let checks = run(Some(&config), &root).unwrap();
         let ver = checks.iter().find(|c| c.name == "版本").expect("应有版本检查");
         assert!(ver.ok, "无状态文件时应通过: {:?}", ver.detail);
         assert!(
@@ -335,7 +339,7 @@ max_concurrent = 1
             r#"{"last_commit_hash":null,"file_fingerprints":{},"generated_at":"2025-01-01T00:00:00Z","tool_version":"0.0.0"}"#,
         )
         .unwrap();
-        let checks = run(&config, &root).unwrap();
+        let checks = run(Some(&config), &root).unwrap();
         let ver = checks.iter().find(|c| c.name == "版本").expect("应有版本检查");
         assert!(ver.ok);
         let detail = ver.detail.clone().unwrap();
@@ -351,7 +355,7 @@ max_concurrent = 1
             ),
         )
         .unwrap();
-        let checks = run(&config, &root).unwrap();
+        let checks = run(Some(&config), &root).unwrap();
         let ver = checks.iter().find(|c| c.name == "版本").expect("应有版本检查");
         assert!(ver.ok);
         assert!(

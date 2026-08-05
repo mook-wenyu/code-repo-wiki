@@ -188,7 +188,7 @@ pub fn run_manifest(
         let out_dir = work_dir.join(format!("{}-out", entry.name));
         let root = ProjectRoot::new(repo_path);
         let res = crate::run_pipeline(
-            &template_path,
+            Some(&template_path),
             Some(&out_dir),
             true, // force：清单跑分语义=全量重建后测量
             &root,

@@ -225,11 +225,11 @@ pub fn install(agent: &str, root: &crate::project::ProjectRoot) -> Result<()> {
 
     // 3. 配置引导（v24：不再在项目级自动创建配置文件——配置属非项目
     //    内容，自动创建只发生在用户级目录；这里只提示入口，由用户决定
-    //    是 `repo-wiki init`（创建用户级默认）还是 `--config` 显式指定）
+    //    是 `repo-wiki install`（确保用户级默认配置）还是 `--config` 显式指定）
     let project_cfg = project_root.join(crate::config::PROJECT_CONFIG_FILE);
     if !project_cfg.exists() {
         println!(
-            "? 未检测到项目级配置 {}：可运行 `repo-wiki init` 创建用户级默认配置，或使用 --config 显式指定",
+            "? 未检测到项目级配置 {}：可运行 `repo-wiki install` 确保用户级默认配置，或使用 --config 显式指定",
             crate::config::PROJECT_CONFIG_FILE
         );
     }

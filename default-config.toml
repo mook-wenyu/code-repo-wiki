@@ -18,7 +18,7 @@ exclude = ["**/test/**", "**/vendor/**", "target/**", "**/node_modules/**"]
 dir = ".repo-wiki"
 
 [llm]
-provider = "openai-compatible"
+provider = "openai"
 model = "deepseek-v4-flash"
 # base_url 缺省时按 provider 取官方端点（见 schema.rs 默认值）；注释掉的
 # 个人端点（opencode.ai/zen）为历史残留，v23 清理

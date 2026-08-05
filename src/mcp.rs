@@ -26,14 +26,14 @@ pub struct RepoWikiMcp {
     #[expect(dead_code, reason = "tool_handler 宏访问此路由字段")]
     tool_router: ToolRouter<Self>,
     /// 配置文件路径（.repo-wiki.toml 项目级、全局或 --config 指定）
-    config_path: PathBuf,
+    config_path: Option<PathBuf>,
     /// 项目根（代码扫描/git 定位基准）
     root: ProjectRoot,
 }
 
 impl RepoWikiMcp {
     /// 创建 server
-    pub fn new(config_path: PathBuf, root: ProjectRoot) -> Self {
+    pub fn new(config_path: Option<PathBuf>, root: ProjectRoot) -> Self {
         Self {
             tool_router: Self::tool_router(),
             config_path,
@@ -89,7 +89,7 @@ impl RepoWikiMcp {
     async fn search(&self, Parameters(SearchRequest { query, top_k, engine }): Parameters<SearchRequest>) -> String {
         // 配置完整性检查：搜索前确认配置可加载（错误早暴露）；v22 起
         // 引擎/条数默认值硬编码，配置内容不再被本函数使用
-        let _config = match crate::config::load_config(&self.config_path) {
+        let _config = match crate::config::resolve_mcp_config(self.config_path.as_deref(), &self.root) {
             Ok(c) => c,
             Err(e) => return format!("配置加载失败: {e}"),
         };
@@ -101,7 +101,7 @@ impl RepoWikiMcp {
             None => crate::config::schema::SEARCH_DEFAULT_ENGINE,
         };
         let top_k = clamp_top_k(top_k.unwrap_or(crate::config::schema::SEARCH_DEFAULT_TOP_K));
-        match crate::execute_search(&self.config_path, &self.root, &query, top_k, &engine_type) {
+        match crate::execute_search(self.config_path.as_deref(), &self.root, &query, top_k, &engine_type) {
             Ok(hits) if hits.is_empty() => "未找到匹配结果".to_string(),
             Ok(hits) => {
                 let mut out = format!("找到 {} 个结果:\n", hits.len());
@@ -123,7 +123,7 @@ impl RepoWikiMcp {
     /// AST 精确符号查找：扫描源文件定位 函数/结构体/类 定义的 文件+行号+签名（不依赖搜索索引）
     #[tool(description = "AST 精确符号查找：扫描源文件定位函数/结构体/类定义的 文件+行号+签名（与 CLI repo-wiki ast-search 等价）")]
     async fn ast_search(&self, Parameters(AstSearchRequest { symbol, language }): Parameters<AstSearchRequest>) -> String {
-        match crate::execute_ast_search(&self.config_path, &self.root, &symbol, language.as_deref()) {
+        match crate::execute_ast_search(self.config_path.as_deref(), &self.root, &symbol, language.as_deref()) {
             Ok(hits) if hits.is_empty() => format!("未找到符号 \"{symbol}\" 的定义"),
             Ok(hits) => {
                 let mut out = format!("找到 {} 个定义:\n", hits.len());
@@ -145,7 +145,7 @@ impl RepoWikiMcp {
     /// 读取已生成的 Wiki 页面内容（模块页/架构概览/项目概览/api）
     #[tool(description = "读取已生成的 Wiki 页面内容（wiki/{lang}/{page}.md，如 src_config、architecture、overview、api）")]
     async fn read_wiki_page(&self, Parameters(ReadPageRequest { page, lang }): Parameters<ReadPageRequest>) -> String {
-        let config = match crate::config::load_config(&self.config_path) {
+        let config = match crate::config::resolve_mcp_config(self.config_path.as_deref(), &self.root) {
             Ok(c) => c,
             Err(e) => return format!("配置加载失败: {e}"),
         };
@@ -179,7 +179,7 @@ impl RepoWikiMcp {
     /// 读取已生成的 Knowledge Card（AI 代理的结构化模块摘要）
     #[tool(description = "读取已生成的 Knowledge Card 内容（cards/{lang}/{card}.md）")]
     async fn read_card(&self, Parameters(ReadCardRequest { card, lang }): Parameters<ReadCardRequest>) -> String {
-        let config = match crate::config::load_config(&self.config_path) {
+        let config = match crate::config::resolve_mcp_config(self.config_path.as_deref(), &self.root) {
             Ok(c) => c,
             Err(e) => return format!("配置加载失败: {e}"),
         };
@@ -209,7 +209,7 @@ impl RepoWikiMcp {
     /// 查看 Wiki 生成状态：页面/卡片数量与 lint 健康检查结果
     #[tool(description = "查看 Wiki 生成状态：页面/卡片数量与产物健康检查（孤儿页/断链/过时/引用）")]
     async fn status(&self) -> String {
-        let config = match crate::config::load_config(&self.config_path) {
+        let config = match crate::config::resolve_mcp_config(self.config_path.as_deref(), &self.root) {
             Ok(c) => c,
             Err(e) => return format!("配置加载失败: {e}"),
         };
@@ -250,8 +250,8 @@ impl ServerHandler for RepoWikiMcp {
 /// ```json
 /// { "command": "repo-wiki", "args": ["mcp", "--root", "."] }
 /// ```
-pub async fn serve_stdio(config_path: PathBuf, root: ProjectRoot) -> Result<QuitReason> {
-    let server = RepoWikiMcp::new(config_path, root);
+pub async fn serve_stdio(config_path: Option<&Path>, root: ProjectRoot) -> Result<QuitReason> {
+    let server = RepoWikiMcp::new(config_path.map(|p| p.to_path_buf()), root);
     let service = server.serve(rmcp::transport::stdio()).await?;
     Ok(service.waiting().await?)
 }

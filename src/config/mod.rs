@@ -8,19 +8,24 @@ use anyhow::{Context, Result};
 
 use crate::project::ProjectRoot;
 
-/// 项目级独立配置文件名（v24 拍板：与产物目录 `.repo-wiki/` 物理分离，
-/// 配置属非产物内容；自动创建只发生在用户级目录）
-pub const PROJECT_CONFIG_FILE: &str = ".repo-wiki.toml";
+/// 项目级配置文件（v25 拍板：项目根 `config.toml`，字段级合并覆盖
+/// 用户级配置；v24 的 `.repo-wiki.toml` 已废弃不再读取）
+pub const PROJECT_CONFIG_FILE: &str = "config.toml";
+
+/// 用户级全局配置文件（v25 拍板：`default-config.toml`，与内置模板
+/// 同名同构；v24 及以前的全局 `config.toml` 已废弃不再读取）
+pub const USER_CONFIG_FILE: &str = "default-config.toml";
 
 /// 项目级配置中禁止携带的敏感/机器属性键（Codex DENYLIST 模式，
 /// v24 用户拍板）：凭据、提供商、模型归属用户级配置或 `--config`
 /// 显式指定——防止随仓库传播造成凭据重定向、模型锁死
 pub const PROJECT_CONFIG_DENY_KEYS: &[(&str, &str)] = &[
-    ("llm", "provider"),
-    ("llm", "model"),
+    // 净化名单只保留真正敏感的键：端点（base_url，劫持风险）与凭据引用
+    // （api_key_env，泄露/越权风险）。provider/model 允许项目级覆盖——
+    // 协议选择与模型名无凭据泄露面（v25 用户需求：项目级 config.toml
+    // 覆盖用户级；项目级写 provider=mock 是 CI/本地模拟的常态用法）
     ("llm", "base_url"),
     ("llm", "api_key_env"),
-    ("embed", "model"),
     ("embed", "base_url"),
     ("embed", "api_key_env"),
 ];
@@ -38,15 +43,17 @@ const SANITIZE_DEFAULT_INJECT: &[(&str, &str, &str)] = &[
     ("embed", "api_key_env", "OPENAI_API_KEY"),
 ];
 
-/// 项目级配置净化：移除敏感键并告警（返回净化后的 TOML 文本）
+/// 项目级配置净化：移除敏感键并告警，返回（净化后的 TOML 文本,
+/// 注入默认键清单 section→key）
 ///
 /// 用 `toml::Value` 中间层移除命中键后重新序列化——净化结果只用于本次
 /// 解析，丢失注释无碍。TOML 本身非法或序列化失败时原样返回（由后续
-/// 解析报出真实错误，不吞错）。
-fn sanitize_project_config(text: &str) -> String {
+/// 解析报出真实错误，不吞错）。注入键清单供字段级合并时剔除——净化
+/// 兜底默认值不得覆盖用户级配置中的真实值（见 [`merge_config`]）。
+fn sanitize_project_config(text: &str) -> (String, Vec<(String, String)>) {
     let mut value: toml::Value = match toml::from_str(text) {
         Ok(v) => v,
-        Err(_) => return text.to_string(),
+        Err(_) => return (text.to_string(), Vec::new()),
     };
     for (section, key) in PROJECT_CONFIG_DENY_KEYS {
         if let Some(tbl) = value.get_mut(*section).and_then(|v| v.as_table_mut())
@@ -58,14 +65,19 @@ fn sanitize_project_config(text: &str) -> String {
         }
     }
     // 必填字段净化后注入 schema 默认，防止解析失败（见常量注释）
+    let mut injected = Vec::new();
     for (section, key, default) in SANITIZE_DEFAULT_INJECT {
         if let Some(tbl) = value.get_mut(*section).and_then(|v| v.as_table_mut())
             && !tbl.contains_key(*key)
         {
             tbl.insert(key.to_string(), toml::Value::String((*default).to_string()));
+            injected.push(((*section).to_string(), (*key).to_string()));
         }
     }
-    toml::to_string(&value).unwrap_or_else(|_| text.to_string())
+    (
+        toml::to_string(&value).unwrap_or_else(|_| text.to_string()),
+        injected,
+    )
 }
 
 /// 从文件加载配置，缺失字段用默认值填充
@@ -74,17 +86,17 @@ pub fn load_config(path: &Path) -> Result<schema::WikiConfig> {
         // t05（v21）：显式 --config 缺失时给出一键引导——裸报"文件不存在"
         // 会让外部 Agent 无从下手；init 命令是创建默认配置的官方入口。
         anyhow::bail!(
-            "配置文件不存在: {}（可运行 `repo-wiki init` 创建默认配置）",
+            "配置文件不存在: {}（可运行 `repo-wiki install` 确保用户级默认配置，或使用 --config 显式指定）",
             path.display()
         );
     }
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("读取配置文件失败: {}", path.display()))?;
-    // v24：项目级独立配置文件（文件名 .repo-wiki.toml）执行敏感键净化——
+    // v25：项目级配置文件（文件名 config.toml）执行敏感键净化——
     // 显式 --config 指向该文件同样生效（该文件语义即"项目级配置"，逃生门
-    // 不豁免安全护栏；其余文件名/全局配置不净化）
+    // 不豁免安全护栏；用户级 default-config.toml 与其他文件名不净化）
     let text = if path.file_name().is_some_and(|n| n == PROJECT_CONFIG_FILE) {
-        sanitize_project_config(&content)
+        sanitize_project_config(&content).0
     } else {
         content
     };
@@ -137,13 +149,112 @@ pub fn global_config_dir() -> Result<PathBuf> {
     global_config_dir_from(appdata.as_deref(), home.as_deref())
 }
 
+/// 字段级 TOML 合并（v25 拍板，主流工具语义，参考 uv/Claude Code/cargo
+/// 官方 merge 文档）：表递归合并——overlay 命中的键整体取 overlay
+/// （标量/数组走 VS Code"完整清单"语义：数组整体覆盖而非追加），
+/// 未命中的键取 base；非表节点 overlay 整体覆盖。
+fn merge_config(base: &toml::Value, overlay: &toml::Value) -> toml::Value {
+    match (base, overlay) {
+        (toml::Value::Table(base_tbl), toml::Value::Table(overlay_tbl)) => {
+            let mut merged = base_tbl.clone();
+            for (key, overlay_val) in overlay_tbl {
+                // 两侧同构子表递归合并（如 [llm] 内只覆盖 model）
+                let recursive = merged
+                    .get(key)
+                    .is_some_and(|bv| bv.is_table() && overlay_val.is_table());
+                if recursive {
+                    let base_child = merged.get(key).unwrap().clone();
+                    merged.insert(key.clone(), merge_config(&base_child, overlay_val));
+                } else {
+                    // 其余（标量/数组/异构形态）整体覆盖
+                    merged.insert(key.clone(), overlay_val.clone());
+                }
+            }
+            toml::Value::Table(merged)
+        }
+        _ => overlay.clone(),
+    }
+}
+
+/// 从 overlay 中剔除净化注入的兜底默认键——merge 时注入值不得覆盖
+/// 用户级配置中的真实 provider/model（用户级写了 anthropic，项目级
+/// 净化注入的 openai 不能把它顶掉）
+fn strip_injected(mut value: toml::Value, injected: &[(String, String)]) -> toml::Value {
+    for (section, key) in injected {
+        if let Some(tbl) = value.get_mut(section).and_then(|v| v.as_table_mut()) {
+            tbl.remove(key);
+        }
+    }
+    value
+}
+
+/// 默认配置链加载（v25 拍板，核心入口）：项目级 `config.toml` 字段级
+/// 合并覆盖用户级 `default-config.toml`，返回（实际来源路径, 配置）。
+///
+/// 链：
+/// 1. 项目级存在 → base = 用户级（存在时）或内置模板；项目级净化并
+///    剔除注入兜底键后字段级合并覆盖 base（项目级只写要覆盖的键，
+///    其余继承用户级；数组整体覆盖）
+/// 2. 项目级不存在 → 用户级存在 → 用之（原样加载不合并）
+/// 3. 都缺 → 创建用户级默认配置（模板）→ 用之（自动创建只发生在
+///    用户级目录，项目级永不自动创建——v24 用户要求延续）
+///
+/// 与 [`resolve_default_config_path`] 的区别：本函数返回合并后的完整
+/// 配置（合成内容不落盘），路径解析函数只做文件定位。
+pub fn load_default_config_with(
+    root: &ProjectRoot,
+    global_dir: &Path,
+) -> Result<(PathBuf, schema::WikiConfig)> {
+    let project_config = root.path().join(PROJECT_CONFIG_FILE);
+    let user_config = global_dir.join(USER_CONFIG_FILE);
+    if project_config.exists() {
+        let base_text = if user_config.exists() {
+            std::fs::read_to_string(&user_config)
+                .with_context(|| format!("读取用户级配置失败: {}", user_config.display()))?
+        } else {
+            include_str!("../../default-config.toml").to_string()
+        };
+        let base: toml::Value = toml::from_str(&base_text)
+            .with_context(|| "解析用户级配置（或模板）失败".to_string())?;
+        let project_text = std::fs::read_to_string(&project_config)
+            .with_context(|| format!("读取项目级配置失败: {}", project_config.display()))?;
+        let (sanitized, injected) = sanitize_project_config(&project_text);
+        let overlay = strip_injected(
+            toml::from_str(&sanitized)
+                .with_context(|| format!("解析项目级配置失败: {}", project_config.display()))?,
+            &injected,
+        );
+        let merged = merge_config(&base, &overlay);
+        let text = toml::to_string(&merged).context("合并配置序列化失败")?;
+        let config: schema::WikiConfig = toml::from_str(&text)
+            .with_context(|| format!("解析合并后配置失败: {}", project_config.display()))?;
+        validate_config(&config)?;
+        Ok((project_config, config))
+    } else if user_config.exists() {
+        let config = load_config(&user_config)?;
+        Ok((user_config, config))
+    } else {
+        std::fs::create_dir_all(global_dir)
+            .with_context(|| format!("创建全局配置目录失败: {}", global_dir.display()))?;
+        create_default_config(&user_config)?;
+        let config = load_config(&user_config)?;
+        Ok((user_config, config))
+    }
+}
+
+/// 默认配置链加载（生产入口，全局目录按环境变量解析）
+pub fn load_default_config(root: &ProjectRoot) -> Result<(PathBuf, schema::WikiConfig)> {
+    load_default_config_with(root, &global_config_dir()?)
+}
+
 /// 默认配置文件解析：项目级 → 全局 → 创建全局（用户拍板，v13 E 组；
-/// v24 调整：项目级配置为独立文件 `.repo-wiki.toml`，与产物目录分离）
+/// v25 调整：项目级 `config.toml` 字段级合并覆盖用户级
+/// `default-config.toml`——完整合并语义见 [`load_default_config_with`]）
 ///
 /// 搜索链（无 `--config` 显式指定时）：
-/// 1. `{项目根}/.repo-wiki.toml` 存在 → 用它（项目级配置优先，
+/// 1. `{项目根}/config.toml` 存在 → 用它（项目级配置优先，
 ///    随 Git 提交共享，多项目隔离；敏感键净化见 [`sanitize_project_config`]）；
-/// 2. 全局 `{用户级目录}/config.toml` 存在 → 用它（用户默认偏好）；
+/// 2. 全局 `{用户级目录}/default-config.toml` 存在 → 用它（用户默认偏好）；
 /// 3. 都不存在 → 创建全局目录 + 写入默认配置模板，返回全局路径
 ///    （引导式就绪：自动创建只发生在用户级目录，项目级永不自动创建——
 ///    v24 用户要求，install 命令的项目级配置创建点已移除）。
@@ -155,7 +266,7 @@ pub fn resolve_default_config_path_with(root: &ProjectRoot, global_dir: &Path) -
     if project_config.exists() {
         return Ok(project_config);
     }
-    let global_config = global_dir.join("config.toml");
+    let global_config = global_dir.join(USER_CONFIG_FILE);
     if global_config.exists() {
         return Ok(global_config);
     }
@@ -176,6 +287,16 @@ pub fn resolve_config_path(config: Option<&Path>, root: &ProjectRoot) -> Result<
     match config {
         Some(p) => Ok(p.to_path_buf()),
         None => resolve_default_config_path(root),
+    }
+}
+
+/// 配置加载统一入口：显式路径单文件加载；None 走默认配置链
+/// （项目级 config.toml 字段级合并覆盖用户级 default-config.toml）。
+/// MCP server 与 CLI 各命令共用，保证 None 语义一致。
+pub fn resolve_mcp_config(config: Option<&Path>, root: &ProjectRoot) -> Result<schema::WikiConfig> {
+    match config {
+        Some(p) => load_config(p),
+        None => load_default_config(root).map(|(_path, cfg)| cfg),
     }
 }
 
@@ -249,13 +370,85 @@ mod tests {
         std::fs::write(dir.join(PROJECT_CONFIG_FILE), "dummy").unwrap();
         let global_dir = dir.join("global");
         std::fs::create_dir_all(&global_dir).unwrap();
-        std::fs::write(global_dir.join("config.toml"), "dummy-global").unwrap();
+        std::fs::write(global_dir.join(USER_CONFIG_FILE), "dummy-global").unwrap();
 
         let resolved = resolve_default_config_path_with(&ProjectRoot::new(dir.clone()), &global_dir).unwrap();
         assert_eq!(resolved, dir.join(PROJECT_CONFIG_FILE));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// v25：三链加载——项目级 config.toml 存在时，以用户级
+    /// default-config.toml（缺则模板）为基，字段级合并覆盖；
+    /// 项目级敏感键（llm/embed 四键）净化剔除后不覆盖用户级真实值。
+    #[test]
+    fn test_load_default_config_project_overrides_user() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_merge_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 用户级：模板 + 自定义 model + scope（模板缺 scope 时 include 为空校验失败）
+        let global_dir = dir.join("global");
+        std::fs::create_dir_all(&global_dir).unwrap();
+        let user_text = include_str!("../../default-config.toml")
+            .replace("model = \"deepseek-v4-flash\"", "model = \"user-model\"");
+        std::fs::write(global_dir.join(USER_CONFIG_FILE), &user_text).unwrap();
+
+        // 项目级：只写 model 覆盖 + 敏感键（应被净化剔除）
+        std::fs::write(
+            dir.join(PROJECT_CONFIG_FILE),
+            r#"
+[llm]
+provider = "anthropic"
+api_key_env = "ANTHROPIC_API_KEY"
+model = "claude-test"
+"#,
+        )
+        .unwrap();
+
+        let (path, config) = load_default_config_with(&ProjectRoot::new(dir.clone()), &global_dir).unwrap();
+        // 项目级路径胜出（返回项目级文件位置）
+        assert_eq!(path, dir.join(PROJECT_CONFIG_FILE));
+        // model 字段级覆盖生效
+        assert_eq!(config.llm.model, "claude-test");
+        // provider 非敏感允许覆盖（v25 调整）；api_key_env 净化保持用户级值
+        assert_eq!(config.llm.provider, schema::LlmProviderType::Anthropic);
+        assert_eq!(config.llm.api_key_env, "DEEPSEEK_API_KEY");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v25：无项目级配置时，用户级存在则直接用（无合并无净化）；
+    /// 用户级缺失时创建（模板），绝不自动创建项目级文件。
+    #[test]
+    fn test_load_default_config_user_only_or_creates() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_useronly_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 用户级存在：直接使用
+        let global_dir = dir.join("global");
+        std::fs::create_dir_all(&global_dir).unwrap();
+        let user_text = include_str!("../../default-config.toml")
+            .replace("model = \"deepseek-v4-flash\"", "model = \"user-only-model\"");
+        std::fs::write(global_dir.join(USER_CONFIG_FILE), &user_text).unwrap();
+        let (path, config) = load_default_config_with(&ProjectRoot::new(dir.clone()), &global_dir).unwrap();
+        assert_eq!(path, global_dir.join(USER_CONFIG_FILE));
+        assert_eq!(config.llm.model, "user-only-model");
+        // 项目级文件未被创建
+        assert!(!dir.join(PROJECT_CONFIG_FILE).exists());
+
+        // 用户级缺失：创建模板；项目级仍不创建
+        let global2 = dir.join("global2");
+        let (path2, config2) = load_default_config_with(&ProjectRoot::new(dir.clone()), &global2).unwrap();
+        assert!(path2.ends_with(USER_CONFIG_FILE));
+        assert!(global2.join(USER_CONFIG_FILE).exists());
+        assert_eq!(config2.llm.model, "deepseek-v4-flash");
+        assert!(!dir.join(PROJECT_CONFIG_FILE).exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
 
     /// v24：项目级独立配置文件加载时，敏感键（provider/base_url/api_key_env/
     /// model）被移除并回退默认值——不随仓库传播
@@ -288,9 +481,10 @@ api_key_env = "HACKED_KEY"
         .unwrap();
 
         let config = load_config(&path).unwrap();
-        // 净化后敏感键回退 schema 默认（模板阵营 deepseek）
-        assert_eq!(config.llm.provider, crate::config::schema::LlmProviderType::OpenAI);
-        assert_eq!(config.llm.model, "deepseek-v4-flash");
+        // v25：provider/model 移出净化名单，项目级覆盖值保留
+        assert_eq!(config.llm.provider, crate::config::schema::LlmProviderType::Anthropic);
+        assert_eq!(config.llm.model, "claude-opus");
+        // api_key_env 仍净化：回退注入模板值
         assert_eq!(config.llm.api_key_env, "DEEPSEEK_API_KEY");
         // 项目契约保留
         assert_eq!(config.wiki.language, "en");
@@ -335,10 +529,10 @@ api_key_env = "ANTHROPIC_API_KEY"
         std::fs::create_dir_all(&dir).unwrap();
         let global_dir = dir.join("global");
         std::fs::create_dir_all(&global_dir).unwrap();
-        std::fs::write(global_dir.join("config.toml"), "dummy-global").unwrap();
+        std::fs::write(global_dir.join(USER_CONFIG_FILE), "dummy-global").unwrap();
 
         let resolved = resolve_default_config_path_with(&ProjectRoot::new(dir.clone()), &global_dir).unwrap();
-        assert_eq!(resolved, global_dir.join("config.toml"));
+        assert_eq!(resolved, global_dir.join(USER_CONFIG_FILE));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -352,8 +546,8 @@ api_key_env = "ANTHROPIC_API_KEY"
         let global_dir = dir.join("global");
 
         let resolved = resolve_default_config_path_with(&ProjectRoot::new(dir.clone()), &global_dir).unwrap();
-        assert_eq!(resolved, global_dir.join("config.toml"));
-        assert!(global_dir.join("config.toml").exists(), "缺失时应创建全局默认配置");
+        assert_eq!(resolved, global_dir.join(USER_CONFIG_FILE));
+        assert!(global_dir.join(USER_CONFIG_FILE).exists(), "缺失时应创建全局默认配置");
         // 创建的配置必须可加载（模板完整）
         assert!(load_config(&resolved).is_ok());
 

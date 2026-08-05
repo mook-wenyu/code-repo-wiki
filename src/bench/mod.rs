@@ -329,7 +329,7 @@ fn measure_lint(output_dir: &Path, root: &ProjectRoot, config: &WikiConfig) -> L
 /// 边界：非 git 仓库返回空集（recall = 1.0 空集约定）；commit 不足 20 个
 /// 按实际数量回放；checkout 失败（脏工作区/文件冲突）跳过该 commit 并告警。
 fn measure_update_recall(
-    config_path: &Path,
+    config_path: Option<&Path>,
     root: &ProjectRoot,
 ) -> Result<UpdateRecallReport> {
     let repo = match git2::Repository::open(root.path()) {
@@ -549,7 +549,7 @@ impl Drop for HeadRestoreGuard<'_> {
 /// `judge` 为 true 时追加 TQS 裁判打分维度（需 LLM API key；快照缺失
 /// 或 LLM 不可用时该维度返回 None，不中断其他维度）。
 pub fn run_bench(
-    config_path: &Path,
+    config_path: Option<&Path>,
     root: &ProjectRoot,
     config: &WikiConfig,
     repo_name: &str,
@@ -1461,7 +1461,7 @@ mod tests {
     fn test_coverage_after_generate() {
         let (root, config_path, config) = bench_repo("cov");
         commit_all(root.path(), "init");
-        crate::run_pipeline(&config_path, None, false, &root, &crate::GenerationMode::Full).unwrap();
+        crate::run_pipeline(Some(&config_path), None, false, &root, &crate::GenerationMode::Full).unwrap();
 
         let pages = collect_wiki_pages(Path::new(&config.output.dir));
         assert!(!pages.is_empty(), "全量生成后应有产物页");
@@ -1507,13 +1507,13 @@ mod tests {
     fn test_update_recall_with_changes() {
         let (root, config_path, _config) = bench_repo("recall");
         commit_all(root.path(), "init");
-        crate::run_pipeline(&config_path, None, false, &root, &crate::GenerationMode::Full).unwrap();
+        crate::run_pipeline(Some(&config_path), None, false, &root, &crate::GenerationMode::Full).unwrap();
 
         // 第二个 commit：修改 b.rs
         std::fs::write(root.path().join("src").join("b.rs"), "pub fn beta(x: u32) -> u32 { x + 100 }\n").unwrap();
         commit_all(root.path(), "change beta");
 
-        let report = measure_update_recall(&config_path, &root).unwrap();
+        let report = measure_update_recall(Some(&config_path), &root).unwrap();
         assert_eq!(report.commits_scanned, 2, "应回放 2 个 commit");
         assert_eq!(report.commits_with_changes, 1, "第 2 个 commit 有变更");
         assert_eq!(report.correctly_updated, 1, "变更 commit 应正确触发重生成");
@@ -1528,7 +1528,7 @@ mod tests {
     fn test_run_rubrics_only_skips_replay() {
         let (root, config_path, config) = bench_repo("rubonly");
         commit_all(root.path(), "init");
-        crate::run_pipeline(&config_path, None, false, &root, &crate::GenerationMode::Full).unwrap();
+        crate::run_pipeline(Some(&config_path), None, false, &root, &crate::GenerationMode::Full).unwrap();
         std::fs::write(root.path().join("src").join("b.rs"), "pub fn beta(x: u32) -> u32 { x + 100 }\n").unwrap();
         commit_all(root.path(), "change beta");
 
