@@ -212,7 +212,7 @@ strategy = "git-diff"
 ```
 
 > v22 起以下键已硬编码（代码常量，见 `src/config/schema.rs` 顶部），不再需要也
-> 不应写在配置里：`llm.max_concurrent`（=4）、`llm.max_tokens`、`llm.temperature`、
+> 不应写在配置里：`llm.max_concurrent`（=16，DeepSeek 官方并发上限 2500 内实测无 429；更大值 TPM 打满时触发重试）、`llm.max_tokens`、`llm.temperature`、
 > `embed.batch_size`（=20）、`search.index_dir`（=.search）、`search.default_engine`
 > （=text）、`search.default_top_k`（=10）、`search.rrf_k`（=60.0）、
 > `incremental.max_depth`（=3）、`plan.path`（=wiki_plan.yaml）。

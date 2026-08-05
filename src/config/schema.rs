@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 /// v22 硬编码常量：以下配置项属「算法内部细节 / 无调优需求 / 必填负担」，
 /// 从配置文件移除、以代码常量固定，减少用户配置心智负担（用户拍板：
 /// 推荐 10 项全部硬编码）。如需调整须改代码重新编译。
-pub const LLM_MAX_CONCURRENT: usize = 4;
+pub const LLM_MAX_CONCURRENT: usize = 16;
 /// None=模型默认，不随请求发送
 pub const EMBED_BATCH_SIZE: usize = 20;
 /// 索引目录，相对 output.dir
