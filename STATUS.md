@@ -1,5 +1,13 @@
 # 项目状态简报 （AI自动维护，禁止贴代码）
 
+## 五十二、v25 配置链三合一（2026-08-06，本会话）
+- 修改的功能：init 与 install 合并为 install（install 无参=确保用户级 default-config.toml 存在+原插件/MCP/hooks 步骤）；配置链重构——项目级 config.toml 字段级合并覆盖用户级 default-config.toml（uv/Claude Code/cargo 语义），创建只发生在用户级；v24 敏感键净化保留但收窄为 base_url+api_key_env 两键（provider/model 移出，项目级 mock 配置是 CI 常态）；default-config.toml 模板协议统一 openai（Responses，DeepSeek 官方推荐）；v24 .repo-wiki.toml 与旧全局 config.toml 不再读取
+- 摸到的文件：src/config/mod.rs（load_default_config 三链+merge_config+strip_injected+sanitize 收窄）、src/main.rs（删 Init/InstallToOpencode、新增 Install、12 处 Option 化）、src/lib.rs（8 函数签名 Option<&Path>）、src/mcp.rs（config_path Option+resolve_mcp_config）、src/doctor.rs、src/bench/{mod.rs,manifest.rs}、src/commands.rs、default-config.toml、README.md、CHANGELOG.md、tests 13 文件
+- 是否改变了接口/契约：是（未上线无存量用户）——CLI 命令 init/install-to-opencode 移除（合并为 install）；配置加载链（config.toml 字段级合并）；lib 公共函数签名 Option<&Path>（None=默认链）；MCP 配置解析
+- 验证：cargo test 405 lib + 28 测试套件全绿；clippy -D warnings 0；machete 干净；实机三验（fake-APPDATA 隔离：install 创建用户级不创建项目级/项目级 config.toml 字段级覆盖生效/doctor -c config.toml 净化+Key 检查正常）；修复链：output_override_test 464s 触网根因=测试配置名 config.toml 触发净化剥 base_url 致真实调用（4 测试文件改名 mock-server.toml 隔离）
+- 提交：config 链三合一+测试适配+文档同步（3 commits，含 883c052）
+- 遗留：无（fog：二进制分发/第二档评测跑分/key 管理向导/实体级 diff 分类——均在历史清单）
+
 ## 四十四、v19 wayfinder 实施完成（2026-08-05，本会话）
 - 修改的功能：wayfinder-v19 十票 A-I 组落地——t01 版本自检（doctor 版本查+llms.txt/llms-full.txt 头注，commit 0db14f2）；t02 文档统一+CI（init 模板 embed 段统一 text-embedding-3-small+OPENAI_API_KEY、README 5 处失实修复、.github/workflows/ci.yml，commit 9ec7d40）；t03 lint 噪声（单字符/纯数字实体过滤+graph mod 类型，commit 46bedf4）；t04 测试泄漏（helper mock_config/openai_compatible_config 强制绝对路径，commit c8c12c2）；t05 llms-full.txt（32K 预算四档裁剪确定性渲染，commit d94f1b1）；t06 update no-op（git-head+工作树状态+产物存在三重判据，commit 77c9b6f）；t07 社区稳定重排序（大小降序+最小路径全序，commit 7fad509）；t08 CHANGELOG 归档 [0.2.0]（v13-v17）+v17 tickets 9/10 resolved
 - 摸到的文件：src/{doctor.rs(新), state.rs, llms_txt.rs, incremental/mod.rs, analysis/{community.rs,module.rs}, output/{lint.rs,mod.rs}, analysis/graph.rs, config/mod.rs, main.rs, lib.rs}+tests 9 文件+CHANGELOG.md+README.md+.github/workflows/ci.yml(新)
