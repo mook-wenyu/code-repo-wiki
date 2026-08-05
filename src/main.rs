@@ -248,6 +248,27 @@ enum Commands {
         #[arg(long, conflicts_with = "judge")]
         rubrics_only: bool,
     },
+    /// 清单批量跑分（v21 E 组）：对清单中每个仓库执行 Coverage/
+    /// Doc Info/lint/Time 四快维度，输出仓库×维度矩阵。
+    ///
+    /// 清单格式：每行一个仓库（`#` 注释/空行跳过）；本地路径直接使用，
+    /// `https://` / `git@` 开头视为远程 URL（clone 到 --work-dir）。
+    /// 每仓库产物输出到 `--work-dir/<仓库名>-out/`（不污染原仓库）。
+    /// Update Recall 回放与 LLM 裁判在本模式跳过（深评请用单仓库 bench）。
+    BenchManifest {
+        /// 清单文件路径
+        #[arg(long)]
+        manifest: PathBuf,
+        /// 模板配置文件路径（scope/llm/provider 等；缺省走默认配置链）
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// 以 JSON 格式输出矩阵
+        #[arg(long)]
+        json: bool,
+        /// 远程仓库 clone 落地与产物目录的父目录（缺省系统临时目录）
+        #[arg(long)]
+        work_dir: Option<PathBuf>,
+    },
 }
 
 /// 知识卡片操作子命令（业务动作定义在 lib 的 generate::card::CardAction）
@@ -825,6 +846,30 @@ fn main() -> anyhow::Result<()> {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
                 println!("{}", repo_wiki::bench::render_markdown(&report));
+            }
+        }
+        Commands::BenchManifest { manifest, config, json, work_dir } => {
+            // 清单批量跑分（v21 E 组）：模板配置只取 scope/llm/provider 等
+            // 语义字段，产物目录按仓库覆盖为 work_dir/<name>-out/。
+            // work_dir 缺省系统临时目录（远程 clone 落地）。
+            let work_dir = work_dir.unwrap_or_else(|| {
+                std::env::temp_dir().join("repo-wiki-bench-manifest")
+            });
+            let cfg = match config {
+                Some(path) => repo_wiki::load_config_rooted(&path, &repo_wiki::project::ProjectRoot::new(std::env::current_dir()?))?,
+                None => {
+                    // 缺省走默认配置链（项目级 → 全局 → 创建全局）
+                    let root = repo_wiki::project::ProjectRoot::new(std::env::current_dir()?);
+                    let config_path = resolve_config_path(None, &root)?;
+                    repo_wiki::load_config_rooted(&config_path, &root)?
+                }
+            };
+            let entries = repo_wiki::bench::manifest::parse_manifest(&manifest)?;
+            let report = repo_wiki::bench::manifest::run_manifest(&entries, &cfg, &work_dir)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("{}", repo_wiki::bench::manifest::render_manifest_markdown(&report));
             }
         }
     }

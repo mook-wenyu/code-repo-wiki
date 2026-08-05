@@ -69,9 +69,15 @@ AI 驱动的代码仓库 Wiki 自动生成工具。分析源码结构，通过 L
 | `install-wiki` | 在项目根 AGENTS.md 注入 Wiki 使用引导块（`<!-- REPO-WIKI:START/END -->`，`--also-claude` 双写 CLAUDE.md）|
 | `uninstall-wiki` | 移除 AGENTS.md 中的 Wiki 引导块（未安装时提示并退出 0）|
 | `mcp` | 启动 MCP (Model Context Protocol) stdio server（Claude Code/Cline 等客户端接入）|
-| `bench` | 自动评测仓库 Wiki 质量（Coverage/Doc Info/lint/Update Recall/Time 五维 + `--judge` TQS 裁判打分）|
+| `bench` | 自动评测仓库 Wiki 质量（Coverage/Doc Info/lint/Update Recall/Time 五维 + `--judge` TQS 裁判打分 + `--rubrics-only` 跳过 git 回放）|
+| `bench-manifest` | 清单批量跑分：每行一个仓库（本地路径或 git URL），输出仓库×维度矩阵（mock 可跑，不触网）|
 
 `generate`/`update`/`sync`/`status`/`lint`/`export`/`doctor`/`init`/`watch`/`search`/`ast-search`/`card`/`note`/`install-to-opencode`/`uninstall-from-opencode`/`install-wiki`/`uninstall-wiki`/`mcp` 支持 `--root` 指定项目根（扫描根/git 定位基准，默认当前目录）；`bench` 的 `--root` 为必填项（目标评测仓库根，语义与其他子命令不同）。
+
+### 评测（bench / bench-manifest）
+
+- `bench --root <仓库> [--judge] [--rubrics-only]`：五维自动评测。Update Recall 会回放 git commit（reset --hard 工作区，有未提交改动会被安全闸拒绝）；`--rubrics-only` 跳过回放只做裁判层（大仓库评测成本控制，与 `--judge` 互斥）。
+- `bench-manifest --manifest <清单> [--config <模板>] [--json] [--work-dir <目录>]`：清单批量跑分。清单每行一个仓库（`#` 注释/空行跳过；本地路径直接使用，`https://`/`git@` 开头克隆到 `--work-dir`）。每个仓库按模板配置 mock/真实生成后测 Coverage/Doc Info/lint/Time，产物输出到 `--work-dir/<仓库名>-out/`（不污染原仓库）；单仓库失败在该行标注，不中断整批。Update Recall 回放与 LLM 裁判在本模式跳过（深评用单仓库 `bench`）。
 
 ## 技术栈
 

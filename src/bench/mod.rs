@@ -17,6 +17,11 @@
 //!    耗时反映流水线确定性开销，与模型无关）。
 //!
 //! LLM 裁判层（TQS 打分）在 U11，需真实 API key，独立子命令。
+//!
+//! 第二档评测（v21 E 组）：`bench-manifest` 多仓库清单批量跑分见
+//! [`manifest`] 子模块（仓库×维度矩阵，mock 可跑）。
+
+pub mod manifest;
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;

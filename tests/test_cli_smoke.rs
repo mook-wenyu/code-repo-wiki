@@ -905,3 +905,59 @@ fn test_doctor_reports_and_exits() {
 
     let _ = std::fs::remove_dir_all(&work_dir);
 }
+
+/// v21 E 组（t10）：bench-manifest 清单批量跑分端到端冒烟——
+/// 两个本地仓库 mock 生成，输出仓库×维度矩阵（含失败行标注）
+#[test]
+fn test_bench_manifest_smoke() {
+    let base = unique_dir("benchman");
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+
+    // 两个小仓库 + 一个不存在路径（验证失败标注）
+    for name in ["repo-a", "repo-b"] {
+        let r = base.join(name);
+        std::fs::create_dir_all(r.join("src")).unwrap();
+        std::fs::write(r.join("src").join("main.rs"), "pub fn alpha() {}\n").unwrap();
+    }
+    let manifest_path = base.join("manifest.txt");
+    std::fs::write(
+        &manifest_path,
+        format!(
+            "{}\n{}\n{}\n",
+            base.join("repo-a").display(),
+            base.join("repo-b").display(),
+            base.join("missing-repo").display()
+        ),
+    )
+    .unwrap();
+    // 模板配置：mock provider（与 sample-repo 相同的生成语义，全程不触网）
+    let config_path = base.join("config.toml");
+    std::fs::write(
+        &config_path,
+        mock_config(&base.join("work").join("tpl-out").to_string_lossy()),
+    )
+    .unwrap();
+
+    let out = run_bin(
+        &base,
+        &[
+            "bench-manifest",
+            "--manifest",
+            manifest_path.to_str().unwrap(),
+            "--config",
+            config_path.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "bench-manifest 应成功，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("清单跑分报告"), "应输出报告标题: {stdout}");
+    assert!(stdout.contains("| repo-a |"), "矩阵应含 repo-a 行: {stdout}");
+    assert!(stdout.contains("**失败**"), "缺失路径应标注失败: {stdout}");
+
+    let _ = std::fs::remove_dir_all(&base);
+}
