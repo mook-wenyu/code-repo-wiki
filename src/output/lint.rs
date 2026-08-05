@@ -520,29 +520,44 @@ pub fn entity_name_from_signature(sig: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    let candidate = if let Some(open) = trimmed.find('(') {
-        // 第一个 '(' 前最后标识符 = 函数/方法名
-        trimmed[..open]
-            .split(|c: char| !c.is_alphanumeric() && c != '_')
-            .filter(|s| !s.is_empty())
-            .rfind(|_| true)
-    } else {
-        // 无括号：裸名（struct/enum）或纯类型 → 最后标识符
-        trimmed
-            .split(|c: char| !c.is_alphanumeric() && c != '_')
-            .filter(|s| !s.is_empty())
-            .rfind(|_| true)
+    // 实体名前缀段 = 第一个 '(' 之前（函数/方法）或整段（类型声明）。
+    // v21 I 轮 Unity 抽样核证（20/20 真实存在）：948 条 stale 中真实
+    // 只有 ~13 条，误报根因是最后标识符被三类后缀污染——逐类剥离：
+    // 0) 属性宏段（C# [ContextMenu("x")] / Rust #[test]）必须在找 '('
+    //    之前切掉——属性自身的括号会先于函数括号被 find('(') 命中
+    let after_attr = match trimmed.rfind(']') {
+        Some(rb) => &trimmed[rb + 1..],
+        None => trimmed,
     };
-    // v19 t03：过滤噪声 token——单字符（LLM 文本常编造 `a`/`_`/`P`）与纯数字
-    // （`42`）会污染 entity-coverage 声称侧造成误报；真实实体名几乎不低于
-    // 2 字符。api.md 权威侧与页面声称侧共用本函数，两侧口径保持一致：
-    // 权威侧同样不收录噪声 token，声称侧匹配不到也不会误报。
+    let mut head = match after_attr.find('(') {
+        Some(open) => &after_attr[..open],
+        None => after_attr,
+    };
+    // 1) 泛型约束子句（C# class Foo where T : class / Rust impl<T> Foo<T> where T: Clone）：
+    //    其中的 ':' 会误导继承剥离，必须先切掉
+    if let Some(w) = head.find("where") {
+        head = &head[..w];
+    }
+    // 2) 继承/实现段（C# class Foo : Base, IBar / Java class Foo extends Bar 的 ':'）：
+    //    基类名/接口名会污染最后标识符（实测 ScriptableObject/IDisposable 误报）
+    if let Some(colon) = head.find(':') {
+        head = &head[..colon];
+    }
+    // 3) 泛型参数列表（RegisterInstance<TService> / fn foo<T>）：'<' 后是类型参数名
+    if let Some(lt) = head.find('<') {
+        head = &head[..lt];
+    }
+    let candidate = head
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|s| !s.is_empty())
+        .rfind(|_| true);
+    // v19 t03 过滤：单字符 token（LLM 文本噪声 a/_/P）与纯数字（42）
+    // 会污染 entity-coverage 统计并误报——api 权威侧与页面声称侧共用
+    // 本函数，两侧同口径不会误报。
     candidate
         .filter(|s| s.len() > 1 && !s.chars().all(|c| c.is_ascii_digit()))
         .map(|s| s.to_string())
-}
-
-/// 从模块页内容提取声称的实体名：`- `Name`` 核心实体行（反引号内实体真名）
+}/// 从模块页内容提取声称的实体名：`- `Name`` 核心实体行（反引号内实体真名）
 fn extract_entity_names(content: &str) -> Vec<String> {
     let mut out = Vec::new();
     for line in content.lines() {
@@ -958,6 +973,45 @@ mod tests {
         assert!(names.contains(&"src".to_string()), "多字符实体应保留: {:?}", names);
         assert!(!names.contains(&"P".to_string()), "单字符噪声不应声称: {:?}", names);
         assert!(!names.contains(&"2".to_string()), "纯数字噪声不应声称: {:?}", names);
+    }
+
+    /// v21 I 轮 Unity 抽样核证回归：三类后缀污染最后标识符，导致 stale
+    /// 误报（948 条中真实仅 ~13 条）——基类/接口名、泛型参数名、属性宏名
+    #[test]
+    fn test_entity_name_strips_inheritance_generics_and_attributes() {
+        // 继承/实现段：取类名而非基类/接口名
+        assert_eq!(
+            entity_name_from_signature("internal class PrimeTweenInstaller : ScriptableObject"),
+            Some("PrimeTweenInstaller".into())
+        );
+        assert_eq!(
+            entity_name_from_signature("public class Foo : Bar, IBaz"),
+            Some("Foo".into())
+        );
+        // 泛型方法：取方法名而非类型参数名
+        assert_eq!(
+            entity_name_from_signature("public void RegisterInstance<TService>(TService instance)"),
+            Some("RegisterInstance".into())
+        );
+        assert_eq!(
+            entity_name_from_signature("pub fn load<T>(path: &str) -> T"),
+            Some("load".into())
+        );
+        // 泛型约束子句中的 ':' 不误导继承剥离（C# where 子句）
+        assert_eq!(
+            entity_name_from_signature("class Foo<T> where T : class"),
+            Some("Foo".into())
+        );
+        // 属性宏段：取 ']' 之后的实体名
+        assert_eq!(
+            entity_name_from_signature("[ContextMenu(\"x\")] public void DoThing()"),
+            Some("DoThing".into())
+        );
+        // 普通签名不受影响
+        assert_eq!(
+            entity_name_from_signature("pub fn load(path: &str) -> Result<Config>"),
+            Some("load".into())
+        );
     }
 
     /// G2：产物中的 mermaid fence 语法错误 → bad-mermaid；合法图不报
