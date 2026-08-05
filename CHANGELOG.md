@@ -18,6 +18,11 @@
 
 ### Fixed
 - 测试产物泄漏隐患根治（v19 t04）：测试配置统一绝对路径（helper 强制临时目录）
+- 删除文件场景修复（v22）：多文件模块删除部分文件时，幸存文件并入正常 LLM 路径重生成（此前回填旧文档残留被删实体）；IncrementalResult 新增 has_deleted_files 信号，索引/全局文档在删除场景正确重建
+- lint 实体提取修复（v22）：剥离继承段/泛型参数/属性宏段后再取签名（此前 `internal class Foo : ScriptableObject` 误提取 ScriptableObject 等，C# 仓库 stale-entity 虚高）；lint 扫描根目录 root 化（--root 指向其他仓库时不再扫当前目录，Unity 实测 stale-entity 1000→13）
+
+### Changed
+- 配置项硬编码简化（v22）：10 项低频配置移入代码常量（src/config/schema.rs 顶部单一真源）——llm.max_concurrent=4 / llm.max_tokens / llm.temperature（模型默认）/ embed.batch_size=20 / search.index_dir=.search / search.default_engine=text / search.default_top_k=10 / search.rrf_k=60.0 / incremental.max_depth=3 / plan.path=wiki_plan.yaml；schema 与 install 模板同步删键，旧配置残留键被 serde 忽略可安全删除
 
 ## [0.2.0] - 2026-08-04
 

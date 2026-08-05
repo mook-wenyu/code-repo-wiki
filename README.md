@@ -205,12 +205,18 @@ model = "text-embedding-3-small"
 
 [search]
 enabled = true
-default_engine = "text"   # 与 schema 默认一致（v19 t02 统一示例）
 
 [incremental]
 enabled = true
 strategy = "git-diff"
 ```
+
+> v22 起以下键已硬编码（代码常量，见 `src/config/schema.rs` 顶部），不再需要也
+> 不应写在配置里：`llm.max_concurrent`（=4）、`llm.max_tokens`、`llm.temperature`、
+> `embed.batch_size`（=20）、`search.index_dir`（=.search）、`search.default_engine`
+> （=text）、`search.default_top_k`（=10）、`search.rrf_k`（=60.0）、
+> `incremental.max_depth`（=3）、`plan.path`（=wiki_plan.yaml）。
+> 旧配置中残留这些键会被 serde 忽略，可安全删除。
 
 ### LLM Provider 协议说明（v17 t02 拆分）
 

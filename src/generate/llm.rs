@@ -349,8 +349,8 @@ impl OpenAiProvider {
             base_url,
             protocol,
             max_retries: MAX_RETRIES,
-            max_tokens: config.max_tokens,
-            temperature: config.temperature,
+            max_tokens: None,
+            temperature: None,
             call_count: std::sync::atomic::AtomicUsize::new(0),
         })
     }
@@ -557,8 +557,8 @@ impl AnthropicProvider {
             model: config.model.clone(),
             base_url,
             max_retries: MAX_RETRIES,
-            max_tokens: config.max_tokens,
-            temperature: config.temperature,
+            max_tokens: None,
+            temperature: None,
             call_count: std::sync::atomic::AtomicUsize::new(0),
         })
     }
@@ -790,9 +790,6 @@ mod tests {
             base_url: Some(format!("{}/v1", base_url)),
             api_key: Some("test-key".into()),
             api_key_env: "OPENAI_API_KEY".into(),
-            max_concurrent: 4,
-            max_tokens: Some(128),
-            temperature: Some(0.5),
         }
     }
 
@@ -865,8 +862,9 @@ data: [DONE]
         assert_eq!(body["messages"][0]["role"], "system");
         assert_eq!(body["messages"][0]["content"], "你是测试助手");
         assert_eq!(body["messages"][1]["role"], "user");
-        assert_eq!(body["max_tokens"].as_u64(), Some(128));
-        assert_eq!(body["temperature"].as_f64(), Some(0.5));
+        // v22 起 max_tokens/temperature 硬编码为 None（模型默认），断言不写入
+        assert!(body.get("max_tokens").is_none(), "硬编码后不应写 max_tokens");
+        assert!(body.get("temperature").is_none(), "硬编码后不应写 temperature");
         assert_eq!(
             body["stream"].as_bool(),
             Some(true),
@@ -1094,9 +1092,6 @@ data: [DONE]
             base_url: Some(base_url),
             api_key: Some("sk-ant-test".into()),
             api_key_env: "ANTHROPIC_API_KEY".into(),
-            max_concurrent: 4,
-            max_tokens: None,
-            temperature: None,
         };
         let provider = AnthropicProvider::new(&config).unwrap();
         let messages = vec![Message::user("你好")];
@@ -1113,9 +1108,6 @@ data: [DONE]
             base_url: None,
             api_key: Some("sk-ant-test".into()),
             api_key_env: "ANTHROPIC_API_KEY".into(),
-            max_concurrent: 4,
-            max_tokens: None,
-            temperature: None,
         };
         let provider = AnthropicProvider::new(&config).unwrap();
         assert_eq!(provider.call_count(), 0);
@@ -1147,9 +1139,6 @@ data: [DONE]
             base_url: Some(base_url),
             api_key: Some("sk-ant-test".into()),
             api_key_env: "ANTHROPIC_API_KEY".into(),
-            max_concurrent: 4,
-            max_tokens: None,
-            temperature: None,
         };
         let provider = AnthropicProvider::new(&config).unwrap();
         let messages = vec![
@@ -1211,9 +1200,6 @@ data: [DONE]
             base_url: Some(format!("{}/v1", base_url)),
             api_key: Some("test-key".into()),
             api_key_env: "DEEPSEEK_API_KEY".into(),
-            max_concurrent: 4,
-            max_tokens: Some(256),
-            temperature: None,
         };
         let provider = OpenAiProvider::new(&config, OpenAiProtocol::Responses).unwrap();
         let chunks = provider.complete_stream(&[Message::user("你好")]).await.unwrap();
@@ -1240,9 +1226,6 @@ data: [DONE]
             base_url: Some(format!("{}/v1", base_url)),
             api_key: Some("test-key".into()),
             api_key_env: "DEEPSEEK_API_KEY".into(),
-            max_concurrent: 4,
-            max_tokens: Some(256),
-            temperature: Some(0.5),
         };
         let provider = OpenAiProvider::new(&config, OpenAiProtocol::Responses).unwrap();
         let messages = vec![Message::system("你是助手"), Message::user("你好")];
@@ -1259,10 +1242,11 @@ data: [DONE]
         assert_eq!(input[0]["role"], "user");
         assert_eq!(input[0]["content"][0]["type"], "input_text");
         assert_eq!(input[0]["content"][0]["text"], "你好");
-        // token 上限参数名：Responses 用 max_output_tokens（chat 用 max_tokens）
-        assert_eq!(body["max_output_tokens"].as_u64(), Some(256));
+        // token 上限与温度参数：v22 起硬编码为 None（交给模型默认），
+        // 测试断言"既不写 max_output_tokens 也不写 max_tokens/temperature"
+        assert!(body.get("max_output_tokens").is_none(), "硬编码后不应写 max_output_tokens");
         assert!(body.get("max_tokens").is_none(), "Responses 不得用 max_tokens 参数名");
-        assert_eq!(body["temperature"].as_f64(), Some(0.5));
+        assert!(body.get("temperature").is_none(), "硬编码后不应写 temperature");
         assert_eq!(body["stream"].as_bool(), Some(true));
     }
 
@@ -1289,9 +1273,6 @@ data: [DONE]
             base_url: Some(format!("{}/v1", base_url)),
             api_key: Some("test-key".into()),
             api_key_env: "DEEPSEEK_API_KEY".into(),
-            max_concurrent: 4,
-            max_tokens: None,
-            temperature: None,
         };
         let provider = OpenAiProvider::new(&config, OpenAiProtocol::Responses).unwrap();
         let chunks = provider.complete_stream(&[Message::user("你好")]).await.unwrap();

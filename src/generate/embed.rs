@@ -63,7 +63,7 @@ impl EmbeddingEngine {
 
         let mut all_embeddings = Vec::with_capacity(texts.len());
 
-        for chunk in texts.chunks(self.config.batch_size) {
+        for chunk in texts.chunks(crate::config::schema::EMBED_BATCH_SIZE) {
             let body = serde_json::json!({
                 "model": self.config.model,
                 "input": chunk,

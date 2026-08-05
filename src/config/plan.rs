@@ -134,7 +134,7 @@ pub fn resolve_plan_at(
     if !config.plan.enabled {
         return Ok(None);
     }
-    let Some(plan) = load_plan_at(root, &config.plan.path)? else {
+    let Some(plan) = load_plan_at(root, crate::config::schema::PLAN_PATH)? else {
         return Ok(None);
     };
     Ok(Some(ResolvedPlan {

@@ -46,7 +46,6 @@ fn watch_config(repo: &Path) -> WikiConfig {
         incremental: IncrementalSection {
             enabled: true,
             strategy: IncrementalStrategy::FileWatch,
-            ..Default::default()
         },
         ..Default::default()
     }

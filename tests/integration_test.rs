@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use repo_wiki::config::schema::{ScopeSection, WikiConfig, SearchSection, SearchEngineType};
+use repo_wiki::config::schema::{ScopeSection, WikiConfig, SearchSection};
 use repo_wiki::ingest::parser::ParserRegistry;
 use repo_wiki::ingest::scanner::Scanner;
 use repo_wiki::search::text::TextEngine;
@@ -28,10 +28,6 @@ fn fixture_config() -> WikiConfig {
         },
         search: SearchSection {
             enabled: true,
-            index_dir: ".search".to_string(),
-            default_engine: SearchEngineType::Text,
-            default_top_k: 10,
-            rrf_k: 60,
         },
         ..Default::default()
     }
@@ -227,7 +223,6 @@ fn test_config_roundtrip() {
     assert_eq!(parsed.llm.api_key_env, "DEEPSEEK_API_KEY");
     assert_eq!(parsed.wiki.language, "zh");
     assert_eq!(parsed.output.dir, ".repo-wiki");
-    assert_eq!(parsed.search.default_engine, SearchEngineType::Text);
     assert!(parsed.search.enabled);
     assert!(!parsed.embed.enabled);
 }

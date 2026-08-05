@@ -17,8 +17,6 @@ fn test_plan_default_disabled() {
     let config = WikiConfig::default();
     // 默认 plan.enabled == false
     assert!(!config.plan.enabled);
-    // 默认 plan.path == "wiki_plan.yaml"
-    assert_eq!(config.plan.path, "wiki_plan.yaml");
 }
 
 /// 验证 WikiPlan 结构体默认值

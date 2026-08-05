@@ -352,18 +352,11 @@ fn test_search_text_engine_json() {
     let _ = std::fs::remove_dir_all(&work_dir);
 }
 
-/// T0.8 search.default_top_k 接线：配置 default_top_k=3 且 CLI 不传 -k 时，
-/// search 结果数回退到配置值（≤3）；对照 -k 5 显式传参不受配置影响（>3）
+/// T0.8 search 条数接线：v22 起 default_top_k 硬编码为 10（schema.rs 常量），
+/// 配置键已移除；未传 -k 时恒用硬编码默认（≤10），显式 -k 5 覆盖默认
 #[test]
 fn test_search_top_k_falls_back_to_config() {
     let work_dir = prepare_repo("search_topk");
-    // 覆写配置：search.default_top_k 从 10 改为 3（T0.8 接线验证）
-    let cfg = std::fs::read_to_string(work_dir.join("config.toml")).unwrap();
-    std::fs::write(
-        work_dir.join("config.toml"),
-        cfg.replace("default_top_k = 10", "default_top_k = 3"),
-    )
-    .unwrap();
 
     let out = run_bin(&work_dir, &["generate", "-c", "config.toml"]);
     assert!(
@@ -372,7 +365,7 @@ fn test_search_top_k_falls_back_to_config() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    // 不传 -k：结果数受配置 default_top_k=3 约束
+    // 不传 -k：结果数受硬编码默认 10 约束
     let out = run_bin(
         &work_dir,
         &["search", "-q", "pub", "-e", "text", "--json", "-c", "config.toml"],
@@ -385,7 +378,7 @@ fn test_search_top_k_falls_back_to_config() {
     let hits: Vec<serde_json::Value> = serde_json::from_str(&String::from_utf8_lossy(&out.stdout))
         .unwrap_or_else(|e| panic!("应输出合法 JSON: {e}\n实际: {}", String::from_utf8_lossy(&out.stdout)));
     assert!(!hits.is_empty(), "应至少一个命中，实际: {:?}", hits);
-    assert!(hits.len() <= 3, "未传 -k 应回退配置 default_top_k=3，实际 {} 条", hits.len());
+    assert!(hits.len() <= 10, "未传 -k 应回退硬编码默认 10，实际 {} 条", hits.len());
 
     // 对照：显式 -k 5 应超过配置值（证明候选多于 3，回退确实生效）
     let out = run_bin(

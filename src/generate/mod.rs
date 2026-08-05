@@ -105,7 +105,7 @@ pub async fn run_generation(
         &mut chunks,
         &config.wiki.language,
         plan.as_ref(),
-        config.llm.max_concurrent,
+        crate::config::schema::LLM_MAX_CONCURRENT,
         |_, _| true,
     )
     .await;
@@ -114,7 +114,7 @@ pub async fn run_generation(
     let card_gen = CardGenerator::new(
         &provider,
         config.clone(),
-        config.llm.max_concurrent,
+        crate::config::schema::LLM_MAX_CONCURRENT,
         config.wiki.language.clone(),
         plan.clone(),
     );
@@ -127,9 +127,9 @@ pub async fn run_generation(
 
     // 4. 按语言独立生成 Wiki 页面（并行，演进计划 T3.1；卡片仅主语言生成一次，
     // 各语言页面复用主语言卡片摘要；语言列表在 generate_wiki_pages 内部计算）
-    let wiki_gen = WikiGenerator::new(&provider, plan.clone(), config.llm.max_concurrent);
+    let wiki_gen = WikiGenerator::new(&provider, plan.clone(), crate::config::schema::LLM_MAX_CONCURRENT);
     let mut documents =
-        generate_wiki_pages(&wiki_gen, &chunks, &cards, config, config.llm.max_concurrent, root, &build_entity_ranges(insights)).await;
+        generate_wiki_pages(&wiki_gen, &chunks, &cards, config, crate::config::schema::LLM_MAX_CONCURRENT, root, &build_entity_ranges(insights)).await;
     tracing::info!("生成进度: 90% - Wiki 页面生成完成，共 {} 个页面", documents.len());
 
     // 5. 生成全局文档（架构概览 + 数据库 Schema，全量/增量共用同一辅助函数）
@@ -327,7 +327,7 @@ pub async fn run_generation_filtered(
             &mut chunks,
             &config.wiki.language,
             plan.as_ref(),
-            config.llm.max_concurrent,
+            crate::config::schema::LLM_MAX_CONCURRENT,
             |chunk, ei| {
                 chunk
                     .entity_sources
@@ -343,7 +343,7 @@ pub async fn run_generation_filtered(
     let card_gen = CardGenerator::new(
         &provider,
         config.clone(),
-        config.llm.max_concurrent,
+        crate::config::schema::LLM_MAX_CONCURRENT,
         config.wiki.language.clone(),
         plan.clone(),
     );
@@ -355,9 +355,9 @@ pub async fn run_generation_filtered(
 
     // 4. 按语言独立生成 Wiki 页面（并行，演进计划 T3.1；仅变更块；卡片仅主语言生成一次，
     // 各语言页面复用主语言卡片摘要）
-    let wiki_gen = WikiGenerator::new(&provider, plan.clone(), config.llm.max_concurrent);
+    let wiki_gen = WikiGenerator::new(&provider, plan.clone(), crate::config::schema::LLM_MAX_CONCURRENT);
     let mut documents =
-        generate_wiki_pages(&wiki_gen, &chunks, &cards, config, config.llm.max_concurrent, root, &build_entity_ranges(insights)).await;
+        generate_wiki_pages(&wiki_gen, &chunks, &cards, config, crate::config::schema::LLM_MAX_CONCURRENT, root, &build_entity_ranges(insights)).await;
 
     // 5. 生成全局文档（架构概览 + 数据库 Schema）
     // P1-2 全局文档增量（受影响判断）：架构/概览只在接口级实体变化

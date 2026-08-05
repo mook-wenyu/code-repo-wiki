@@ -725,20 +725,19 @@ fn main() -> anyhow::Result<()> {
             repo_wiki::run_watch(&config, &root)?;
         }
         Commands::Search { query, top_k, config, json, engine, root } => {
-            // 解析引擎类型：优先用 CLI 参数，否则取配置文件中的 default_engine
+            // 解析引擎类型：优先用 CLI 参数，否则取硬编码默认（SEARCH_DEFAULT_ENGINE）
             let root = resolve_root(root.as_deref())?;
             let config = resolve_config_path(config.as_deref(), &root)?;
-            let cfg = repo_wiki::load_config_rooted(&config, &root)?;
             let engine_type = match engine.as_deref() {
                 Some("text") => repo_wiki::config::schema::SearchEngineType::Text,
                 Some("semantic") => repo_wiki::config::schema::SearchEngineType::Semantic,
                 Some("hybrid") => repo_wiki::config::schema::SearchEngineType::Hybrid,
                 Some(other) => anyhow::bail!("不支持的搜索引擎: {other}（可选: text/semantic/hybrid）"),
-                None => cfg.search.default_engine.clone(),
+                None => repo_wiki::config::schema::SEARCH_DEFAULT_ENGINE,
             };
-            // CLI 显式 -k 优先，未传时回退配置 search.default_top_k
+            // CLI 显式 -k 优先，未传时回退硬编码默认 SEARCH_DEFAULT_TOP_K
             // N17：top_k 下限收敛到 1（top_k=0 的搜索调用无意义，返回空结果）
-            let top_k = top_k.unwrap_or(cfg.search.default_top_k).max(1);
+            let top_k = top_k.unwrap_or(repo_wiki::config::schema::SEARCH_DEFAULT_TOP_K).max(1);
             let results = repo_wiki::execute_search(&config, &root, &query, top_k, &engine_type)?;
             if json {
                 // JSON 格式输出（供 OpenCode 插件解析）

@@ -164,10 +164,10 @@ pub fn run_incremental_update_at(
     // 按策略分发：GitDiff 或 FileWatch
     let (changed_files, affected_modules, entity_changes, has_deleted_files) = match config.incremental.strategy {
         IncrementalStrategy::GitDiff => {
-            run_git_diff_incremental(root, insights, graph, config, &state_dir)?
+            run_git_diff_incremental(root, insights, graph, &state_dir)?
         }
         IncrementalStrategy::FileWatch => {
-            run_file_watch_incremental(root, insights, graph, config, &state_dir, watch_paths)?
+            run_file_watch_incremental(root, insights, graph, &state_dir, watch_paths)?
         }
     };
     Ok(IncrementalResult { changed_files, affected_modules, entity_changes, has_deleted_files })
@@ -188,7 +188,6 @@ fn run_git_diff_incremental(
     root: &ProjectRoot,
     insights: &[FileInsight],
     graph: &KnowledgeGraph,
-    config: &WikiConfig,
     state_dir: &Path,
 ) -> Result<(Vec<std::path::PathBuf>, Vec<String>, EntityChangeSet, bool)> {
     // 1. 分析 Git diff
@@ -289,9 +288,9 @@ fn run_git_diff_incremental(
         }
     };
     let affected_modules = if entity_changes.changes.is_empty() {
-        propagate_impact(&all_changed, graph, config.incremental.max_depth)
+        propagate_impact(&all_changed, graph, crate::config::schema::IMPACT_MAX_DEPTH)
     } else {
-        propagate_impact_semantic(&all_changed, &entity_changes, graph, config.incremental.max_depth)
+        propagate_impact_semantic(&all_changed, &entity_changes, graph, crate::config::schema::IMPACT_MAX_DEPTH)
     };
 
     // 4. 保存新的状态（U03/D3 两段式：第一段只合并保护字段，不推进代码侧状态）
@@ -332,7 +331,6 @@ fn run_file_watch_incremental(
     root: &ProjectRoot,
     insights: &[FileInsight],
     graph: &KnowledgeGraph,
-    config: &WikiConfig,
     state_dir: &Path,
     watch_paths: &[PathBuf],
 ) -> Result<(Vec<PathBuf>, Vec<String>, EntityChangeSet, bool)> {
@@ -401,9 +399,9 @@ fn run_file_watch_incremental(
         EntityChangeSet::default()
     };
     let affected_modules = if entity_changes.changes.is_empty() {
-        propagate_impact(&changed_files, graph, config.incremental.max_depth)
+        propagate_impact(&changed_files, graph, crate::config::schema::IMPACT_MAX_DEPTH)
     } else {
-        propagate_impact_semantic(&changed_files, &entity_changes, graph, config.incremental.max_depth)
+        propagate_impact_semantic(&changed_files, &entity_changes, graph, crate::config::schema::IMPACT_MAX_DEPTH)
     };
 
     // 保存新状态
@@ -446,7 +444,6 @@ mod tests {
             incremental: IncrementalSection {
                 enabled: true,
                 strategy: IncrementalStrategy::GitDiff,
-                ..Default::default()
             },
             ..Default::default()
         }
@@ -461,11 +458,10 @@ mod tests {
 
         let insights = vec![make_insight("src/a.rs"), make_insight("src/b.rs")];
         let graph = KnowledgeGraph::default();
-        let config = make_config();
         let state_dir = dir.join(".state");
 
         let (changed, affected, _entity_changes, _has_deleted) =
-            run_git_diff_incremental(&ProjectRoot::new(dir.clone()), &insights, &graph, &config, &state_dir).unwrap();
+            run_git_diff_incremental(&ProjectRoot::new(dir.clone()), &insights, &graph, &state_dir).unwrap();
         assert_eq!(changed.len(), 2);
         assert!(changed.iter().all(|p| insights.iter().any(|i| &i.path == p)));
         assert!(affected.is_empty());
@@ -506,7 +502,6 @@ mod tests {
 
         let insights = vec![make_insight("a.txt")];
         let graph = KnowledgeGraph::default();
-        let config = make_config();
         let state_dir = dir.join(".state");
 
         // 基线 = 第一 commit：无基线时首次 update 会走"回退全量"（A1），
@@ -520,7 +515,7 @@ mod tests {
         baseline.save(&state_dir).unwrap();
 
         let (changed, affected, _entity_changes, _has_deleted) =
-            run_git_diff_incremental(&ProjectRoot::new(dir.clone()), &insights, &graph, &config, &state_dir).unwrap();
+            run_git_diff_incremental(&ProjectRoot::new(dir.clone()), &insights, &graph, &state_dir).unwrap();
         assert_eq!(changed.len(), 1);
         assert!(affected.is_empty());
 
@@ -564,7 +559,6 @@ mod tests {
         // insights 只含现存文件（被删文件不在其中）
         let insights: Vec<FileInsight> = Vec::new();
         let graph = KnowledgeGraph::default();
-        let config = make_config();
         let state_dir = dir.join(".state");
 
         // 基线 = 第一 commit：删除检测是"有基线增量"的语义，
@@ -578,7 +572,7 @@ mod tests {
         baseline.save(&state_dir).unwrap();
 
         let (changed, _affected, _entity_changes, _has_deleted) =
-            run_git_diff_incremental(&ProjectRoot::new(dir.clone()), &insights, &graph, &config, &state_dir).unwrap();
+            run_git_diff_incremental(&ProjectRoot::new(dir.clone()), &insights, &graph, &state_dir).unwrap();
         assert!(
             changed.iter().any(|p| p == Path::new("src/foo.rs")),
             "被删文件路径应计入 changed_files（否则删除清理与索引清理永不触发）: {:?}",
@@ -609,10 +603,9 @@ mod tests {
         // watch 事件传入已删除路径（磁盘上不存在）
         let deleted = src.join("b.rs");
         let graph = KnowledgeGraph::default();
-        let config = make_config();
 
         let (changed, _affected, _entity_changes, _has_deleted) =
-            run_file_watch_incremental(&root, std::slice::from_ref(&insight), &graph, &config, &state_dir, std::slice::from_ref(&deleted)).unwrap();
+            run_file_watch_incremental(&root, std::slice::from_ref(&insight), &graph, &state_dir, std::slice::from_ref(&deleted)).unwrap();
         assert_eq!(
             changed,
             vec![deleted],
@@ -643,10 +636,9 @@ mod tests {
         // watch 事件传入另一路径（磁盘上不存在，模拟删除）
         let deleted = src.join("b.rs");
         let graph = KnowledgeGraph::default();
-        let config = make_config();
 
         let (changed, _affected, _entity_changes, _has_deleted) =
-            run_file_watch_incremental(&root, std::slice::from_ref(&insight), &graph, &config, &state_dir, std::slice::from_ref(&deleted)).unwrap();
+            run_file_watch_incremental(&root, std::slice::from_ref(&insight), &graph, &state_dir, std::slice::from_ref(&deleted)).unwrap();
         assert!(
             changed.contains(&insight.path),
             "指纹命中的文件应计入: {:?}",
@@ -688,8 +680,7 @@ mod tests {
         std::fs::write(src.join("a.rs"), "v2").unwrap();
         let changed = src.join("b.rs");
         let graph = KnowledgeGraph::default();
-        let config = make_config();
-        run_file_watch_incremental(&root, std::slice::from_ref(&insight), &graph, &config, &state_dir, std::slice::from_ref(&changed)).unwrap();
+        run_file_watch_incremental(&root, std::slice::from_ref(&insight), &graph, &state_dir, std::slice::from_ref(&changed)).unwrap();
 
         // 磁盘状态必须保留保护字段（中途失败后人工修改保护不失效）
         let saved = GenerationState::load(&state_dir).unwrap();
@@ -722,11 +713,10 @@ mod tests {
 
         let insights = vec![make_insight("a.rs")];
         let graph = KnowledgeGraph::default();
-        let config = make_config();
         let state_dir = dir.join(".state");
 
         let (changed, _affected, _entity_changes, _has_deleted) =
-            run_git_diff_incremental(&ProjectRoot::new(dir.clone()), &insights, &graph, &config, &state_dir).unwrap();
+            run_git_diff_incremental(&ProjectRoot::new(dir.clone()), &insights, &graph, &state_dir).unwrap();
         assert_eq!(
             changed,
             vec![PathBuf::from("a.rs")],
@@ -759,7 +749,6 @@ mod tests {
 
         let insights = vec![make_insight("a.rs")];
         let graph = KnowledgeGraph::default();
-        let config = make_config();
         let state_dir = dir.join(".state");
 
         // 基线 = 当前 HEAD：diff 为空 → 应跳过（changed_files 为空）
@@ -772,7 +761,7 @@ mod tests {
         baseline.save(&state_dir).unwrap();
 
         let (changed, _affected, _entity_changes, _has_deleted) =
-            run_git_diff_incremental(&ProjectRoot::new(dir.clone()), &insights, &graph, &config, &state_dir).unwrap();
+            run_git_diff_incremental(&ProjectRoot::new(dir.clone()), &insights, &graph, &state_dir).unwrap();
         assert!(changed.is_empty(), "有基线且无变更时应跳过，不得回退全量: {:?}", changed);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -836,10 +825,9 @@ mod tests {
 
         let insights = vec![make_insight("a.rs")];
         let graph = KnowledgeGraph::default();
-        let config = make_config();
 
         let (changed, _affected, _entity_changes, _has_deleted) =
-            run_git_diff_incremental(&ProjectRoot::new(dir.clone()), &insights, &graph, &config, &state_dir).unwrap();
+            run_git_diff_incremental(&ProjectRoot::new(dir.clone()), &insights, &graph, &state_dir).unwrap();
         assert_eq!(
             changed,
             vec![PathBuf::from("a.rs")],

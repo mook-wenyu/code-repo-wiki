@@ -22,10 +22,7 @@ model = "deepseek-v4-flash"
 base_url = "https://api.deepseek.com/v1"
 #api_key = ""
 api_key_env = "DEEPSEEK_API_KEY"
-# 并发 LLM 调用数（卡片/页面/实体摘要共用同一信号量）
-max_concurrent = 4
-#max_tokens = 128000
-#temperature = 0.5
+# 并发 LLM 调用数与温度等已硬编码（v22 简化：见 schema.rs 顶部常量）
 
 [embed]
 # 语义搜索与实体级特征聚类的向量来源；false 时特征聚类降级为纯调用边结构聚类
@@ -36,21 +33,17 @@ model = "text-embedding-3-small"
 #base_url = ""
 #api_key = ""
 api_key_env = "OPENAI_API_KEY"
-batch_size = 20
+# batch_size 已硬编码（v22 简化：见 schema.rs 顶部常量）
 
 [search]
 enabled = true
-index_dir = ".search"
-default_engine = "text"
-default_top_k = 10
-rrf_k = 60
+# index_dir/默认引擎/条数/rrf_k 已硬编码（v22 简化：见 schema.rs 顶部常量）
 
 [incremental]
 enabled = true
 strategy = "git-diff"
-# BFS 传播变更影响的最大深度
-max_depth = 3
+# BFS 传播深度已硬编码 IMPACT_MAX_DEPTH=3（v22 简化：见 schema.rs 顶部常量）
 
 [plan]
 enabled = false
-path = "wiki_plan.yaml"
+# 计划文件名已硬编码 PLAN_PATH=wiki_plan.yaml（v22 简化：见 schema.rs 顶部常量）

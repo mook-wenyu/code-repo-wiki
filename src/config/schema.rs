@@ -1,5 +1,21 @@
 use serde::{Deserialize, Serialize};
 
+/// v22 硬编码常量：以下配置项属「算法内部细节 / 无调优需求 / 必填负担」，
+/// 从配置文件移除、以代码常量固定，减少用户配置心智负担（用户拍板：
+/// 推荐 10 项全部硬编码）。如需调整须改代码重新编译。
+pub const LLM_MAX_CONCURRENT: usize = 4;
+/// None=模型默认，不随请求发送
+pub const EMBED_BATCH_SIZE: usize = 20;
+/// 索引目录，相对 output.dir
+pub const SEARCH_INDEX_DIR: &str = ".search";
+pub const SEARCH_DEFAULT_ENGINE: SearchEngineType = SearchEngineType::Text;
+pub const SEARCH_DEFAULT_TOP_K: usize = 10;
+/// RRF 融合常数 k（控制排序权重衰减）
+pub const SEARCH_RRF_K: f64 = 60.0;
+/// BFS 传播变更影响的最大深度
+pub const IMPACT_MAX_DEPTH: usize = 3;
+pub const PLAN_PATH: &str = "wiki_plan.yaml";
+
 /// 全局配置
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WikiConfig {
@@ -69,11 +85,6 @@ pub struct LlmSection {
     pub api_key: Option<String>,
     /// 从环境变量读取 API Key（当 api_key 为 None 时使用）
     pub api_key_env: String,
-    pub max_concurrent: usize,
-    /// 输出最大 token 数（由模型上下文窗口决定）
-    pub max_tokens: Option<u32>,
-    /// 生成温度（0.0~2.0，默认由模型决定）
-    pub temperature: Option<f32>,
 }
 
 impl Default for LlmSection {
@@ -86,9 +97,6 @@ impl Default for LlmSection {
             base_url: Some("https://api.deepseek.com/v1".to_string()),
             api_key: None,
             api_key_env: "DEEPSEEK_API_KEY".to_string(),
-            max_concurrent: 4,
-            max_tokens: None,
-            temperature: None,
         }
     }
 }
@@ -142,8 +150,6 @@ pub struct EmbedSection {
     pub base_url: Option<String>,
     pub api_key: Option<String>,
     pub api_key_env: String,
-    /// 批处理大小（一次 API 调用中最多 embedding 的文本数）
-    pub batch_size: usize,
 }
 
 impl Default for EmbedSection {
@@ -154,38 +160,20 @@ impl Default for EmbedSection {
             base_url: None,
             api_key: None,
             api_key_env: "OPENAI_API_KEY".to_string(),
-            batch_size: 20,
         }
     }
 }
-
-fn default_rrf_k() -> usize { 60 }
 
 /// 搜索引擎配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchSection {
     /// 是否在 generate 后自动构建搜索索引
     pub enabled: bool,
-    /// 索引存储目录（相对于 output.dir）
-    pub index_dir: String,
-    /// 默认搜索引擎
-    pub default_engine: SearchEngineType,
-    /// 默认返回结果数
-    pub default_top_k: usize,
-    /// RRF 合并参数 k（控制排序权重衰减）
-    #[serde(default = "default_rrf_k")]
-    pub rrf_k: usize,
 }
 
 impl Default for SearchSection {
     fn default() -> Self {
-        Self {
-            enabled: true,
-            index_dir: ".search".to_string(),
-            default_engine: SearchEngineType::Text,
-            default_top_k: 10,
-            rrf_k: default_rrf_k(),
-        }
+        Self { enabled: true }
     }
 }
 
@@ -203,16 +191,11 @@ pub enum SearchEngineType {
     Hybrid,
 }
 
-fn default_max_depth() -> usize { 3 }
-
 /// 增量更新配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IncrementalSection {
     pub enabled: bool,
     pub strategy: IncrementalStrategy,
-    /// BFS 传播变更影响的最大深度
-    #[serde(default = "default_max_depth")]
-    pub max_depth: usize,
 }
 
 impl Default for IncrementalSection {
@@ -220,7 +203,6 @@ impl Default for IncrementalSection {
         Self {
             enabled: true,
             strategy: IncrementalStrategy::GitDiff,
-            max_depth: default_max_depth(),
         }
     }
 }
@@ -234,17 +216,7 @@ pub enum IncrementalStrategy {
 }
 
 /// wiki_plan.yaml 前置干预配置
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PlanConfig {
     pub enabled: bool,
-    #[serde(default = "default_plan_path")]
-    pub path: String,
 }
-
-impl Default for PlanConfig {
-    fn default() -> Self {
-        Self { enabled: false, path: "wiki_plan.yaml".to_string() }
-    }
-}
-
-fn default_plan_path() -> String { "wiki_plan.yaml".to_string() }

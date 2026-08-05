@@ -764,7 +764,7 @@ pub fn run_watch(config_path: &Path, root: &project::ProjectRoot) -> anyhow::Res
 
 /// 获取搜索索引目录的绝对路径
 fn search_index_dir(config: &config::schema::WikiConfig) -> std::path::PathBuf {
-    Path::new(&config.output.dir).join(&config.search.index_dir)
+    Path::new(&config.output.dir).join(config::schema::SEARCH_INDEX_DIR)
 }
 
 /// 实体级特征聚类接线（演进计划 T1.2b）
@@ -1110,7 +1110,7 @@ pub fn execute_search(
                         }
                     }
                 } else { None };
-            let mut agent = search::agent::SearchAgent::new(text_engine, semantic_engine, config.search.rrf_k as f64);
+            let mut agent = search::agent::SearchAgent::new(text_engine, semantic_engine, config::schema::SEARCH_RRF_K);
             // 调用链补全：重建知识图谱以获得 Calls 边，构建调用索引注入 agent。
             // CLI 场景单次搜索的重建开销可接受（实测本项目约 1.2s）；
             // 失败时静默降级为无补全（索引缺失等，搜索主功能不受影响）。

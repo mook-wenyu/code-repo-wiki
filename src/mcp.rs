@@ -87,7 +87,9 @@ impl RepoWikiMcp {
     /// 搜索代码实体：按关键词返回匹配的函数/结构体/类及文件位置（text/semantic/hybrid 引擎）
     #[tool(description = "搜索代码实体：按关键词返回匹配的函数/结构体/类及文件位置（text/semantic/hybrid 引擎，与 CLI repo-wiki search 等价）")]
     async fn search(&self, Parameters(SearchRequest { query, top_k, engine }): Parameters<SearchRequest>) -> String {
-        let config = match crate::config::load_config(&self.config_path) {
+        // 配置完整性检查：搜索前确认配置可加载（错误早暴露）；v22 起
+        // 引擎/条数默认值硬编码，配置内容不再被本函数使用
+        let _config = match crate::config::load_config(&self.config_path) {
             Ok(c) => c,
             Err(e) => return format!("配置加载失败: {e}"),
         };
@@ -96,9 +98,9 @@ impl RepoWikiMcp {
             Some("semantic") => crate::config::schema::SearchEngineType::Semantic,
             Some("hybrid") => crate::config::schema::SearchEngineType::Hybrid,
             Some(other) => return format!("不支持的搜索引擎: {other}（可选: text/semantic/hybrid）"),
-            None => config.search.default_engine.clone(),
+            None => crate::config::schema::SEARCH_DEFAULT_ENGINE,
         };
-        let top_k = clamp_top_k(top_k.unwrap_or(config.search.default_top_k));
+        let top_k = clamp_top_k(top_k.unwrap_or(crate::config::schema::SEARCH_DEFAULT_TOP_K));
         match crate::execute_search(&self.config_path, &self.root, &query, top_k, &engine_type) {
             Ok(hits) if hits.is_empty() => "未找到匹配结果".to_string(),
             Ok(hits) => {
