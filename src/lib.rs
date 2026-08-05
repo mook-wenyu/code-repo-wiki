@@ -379,10 +379,13 @@ pub fn run_pipeline_with_progress(
     // U04/D8 增量门控：受影响模块为空（纯实现级变更）时 index 内容（模块列表
     // + 描述）不会变化，从导出快照回填旧 index（零 LLM 调用），与架构/概览的
     // backfill 语义一致；快照不可用（首次增量/损坏）时回退正常生成。
+    // v21 验证轮：含已删除文件时**不放行**回填——纯删除场景 index 必须
+    // 重生成，否则模块列表继续列出已删模块（与架构/概览的 has_deleted_files
+    // 例外同一语义）。
     let gated = if is_incremental
         && inc_result
             .as_ref()
-            .is_some_and(|i| i.affected_modules.is_empty())
+            .is_some_and(|i| i.affected_modules.is_empty() && !i.has_deleted_files)
     {
         generate::backfill_global_docs(
             &config,

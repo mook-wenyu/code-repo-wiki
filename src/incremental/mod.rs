@@ -129,6 +129,15 @@ pub struct IncrementalResult {
     /// 实体级变化分类（GitDiff 策略产出；FileWatch 策略为空——
     /// 下游据此跳过实体级摘要过滤，见 generate::run_generation_filtered）
     pub entity_changes: EntityChangeSet,
+    /// 本次变更是否含已删除文件（GitDiff 策略 = diff 删除集非空；
+    /// FileWatch 策略 = 变更集中存在磁盘上已不存在的路径）。
+    ///
+    /// 纯删除时被删文件无 Insight、传播起点为空，changed_insights 为空
+    /// 会走快照回填分支——该分支只按"整模块文件全删"过滤，多文件模块
+    /// 删一文件时页面回填旧内容残留被删实体；同时全局文档（架构/概览/
+    /// index）回填旧版继续列出已删模块。此信号让下游（generate 回填分支
+    /// 与 lib.rs 的 index 门控）识别删除场景并走重生成路径（v21 验证轮修复）。
+    pub has_deleted_files: bool,
 }
 
 /// 在指定项目根下运行增量更新分析
@@ -147,13 +156,13 @@ pub fn run_incremental_update_at(
     if !config.incremental.enabled {
         tracing::info!("增量更新已禁用，将执行全量生成");
         let (files, modules) = fallback_to_full(insights);
-        return Ok(IncrementalResult { changed_files: files, affected_modules: modules, entity_changes: EntityChangeSet::default() });
+        return Ok(IncrementalResult { changed_files: files, affected_modules: modules, entity_changes: EntityChangeSet::default(), has_deleted_files: false });
     }
 
     let state_dir = Path::new(&config.output.dir).join(".state");
 
     // 按策略分发：GitDiff 或 FileWatch
-    let (changed_files, affected_modules, entity_changes) = match config.incremental.strategy {
+    let (changed_files, affected_modules, entity_changes, has_deleted_files) = match config.incremental.strategy {
         IncrementalStrategy::GitDiff => {
             run_git_diff_incremental(root, insights, graph, config, &state_dir)?
         }
@@ -161,7 +170,7 @@ pub fn run_incremental_update_at(
             run_file_watch_incremental(root, insights, graph, config, &state_dir, watch_paths)?
         }
     };
-    Ok(IncrementalResult { changed_files, affected_modules, entity_changes })
+    Ok(IncrementalResult { changed_files, affected_modules, entity_changes, has_deleted_files })
 }
 
 /// 回退全量生成：changed_files 为所有源文件，affected_modules 为空
@@ -181,7 +190,7 @@ fn run_git_diff_incremental(
     graph: &KnowledgeGraph,
     config: &WikiConfig,
     state_dir: &Path,
-) -> Result<(Vec<std::path::PathBuf>, Vec<String>, EntityChangeSet)> {
+) -> Result<(Vec<std::path::PathBuf>, Vec<String>, EntityChangeSet, bool)> {
     // 1. 分析 Git diff
     // 基线 = 上次成功生成时落盘的 last_commit_hash。三种"无基线"场景：
     // ①全新仓库首次 update（状态文件不存在）；②状态文件损坏/不可读；
@@ -203,7 +212,7 @@ fn run_git_diff_incremental(
     if !has_baseline {
         tracing::info!("无增量基线（首次更新或状态缺失），回退全量生成");
         let (files, modules) = fallback_to_full(insights);
-        return Ok((files, modules, EntityChangeSet::default()));
+        return Ok((files, modules, EntityChangeSet::default(), false));
     }
     let last_commit_hash = loaded_state
         .as_ref()
@@ -214,13 +223,13 @@ fn run_git_diff_incremental(
             // 非 Git 仓库：无法做增量，回退全量生成
             tracing::warn!("Git diff 分析失败，回退全量生成: {}", e);
             let (files, modules) = fallback_to_full(insights);
-            return Ok((files, modules, EntityChangeSet::default()));
+            return Ok((files, modules, EntityChangeSet::default(), false));
         }
     };
 
     if diff_result.added.is_empty() && diff_result.modified.is_empty() && diff_result.deleted.is_empty() {
         tracing::info!("无文件变更，跳过更新");
-        return Ok((Vec::new(), Vec::new(), EntityChangeSet::default()));
+        return Ok((Vec::new(), Vec::new(), EntityChangeSet::default(), false));
     }
 
     if diff_result.added_lines + diff_result.deleted_lines > MAX_DIFF_LINES {
@@ -231,7 +240,7 @@ fn run_git_diff_incremental(
             diff_result.deleted_lines
         );
         let (files, modules) = fallback_to_full(insights);
-        return Ok((files, modules, EntityChangeSet::default()));
+        return Ok((files, modules, EntityChangeSet::default(), false));
     }
 
     tracing::info!(
@@ -313,7 +322,9 @@ fn run_git_diff_incremental(
     }
 
     tracing::info!("增量更新分析完成: {} 个模块受影响", affected_modules.len());
-    Ok((all_changed, affected_modules, entity_changes))
+    // 删除集非空即含已删除文件（被删文件不在 insights，changed_insights
+    // 过滤后可能为空 → 下游快照回填分支需要此信号改走重生成路径）
+    Ok((all_changed, affected_modules, entity_changes, !diff_result.deleted.is_empty()))
 }
 
 /// FileWatch 策略的增量更新（变更文件来自外部事件 + 指纹比对）
@@ -324,7 +335,7 @@ fn run_file_watch_incremental(
     config: &WikiConfig,
     state_dir: &Path,
     watch_paths: &[PathBuf],
-) -> Result<(Vec<PathBuf>, Vec<String>, EntityChangeSet)> {
+) -> Result<(Vec<PathBuf>, Vec<String>, EntityChangeSet, bool)> {
     // 重新加载状态，比较文件指纹；状态损坏/缺失时全部文件视为变更
     // （回退全量），不能静默吞错——与 GitDiff 路径的 warn 处理一致
     let state = match GenerationState::load(state_dir) {
@@ -354,7 +365,7 @@ fn run_file_watch_incremental(
 
     if changed_files.is_empty() {
         tracing::info!("无文件变更");
-        return Ok((Vec::new(), Vec::new(), EntityChangeSet::default()));
+        return Ok((Vec::new(), Vec::new(), EntityChangeSet::default(), false));
     }
 
     // 实体级变化分类（修复：FileWatch 路径原为空集，接口级变化无法驱动
@@ -408,7 +419,9 @@ fn run_file_watch_incremental(
     }
 
     tracing::info!("FileWatch 增量分析完成: {} 个模块受影响", affected_modules.len());
-    Ok((changed_files, affected_modules, entity_changes))
+    // FileWatch 的删除判定 = 变更集中存在磁盘上已不存在的路径（删除事件）
+    let has_deleted = changed_files.iter().any(|p| !p.exists());
+    Ok((changed_files, affected_modules, entity_changes, has_deleted))
 }
 
 #[cfg(test)]
@@ -451,7 +464,7 @@ mod tests {
         let config = make_config();
         let state_dir = dir.join(".state");
 
-        let (changed, affected, _entity_changes) =
+        let (changed, affected, _entity_changes, _has_deleted) =
             run_git_diff_incremental(&ProjectRoot::new(dir.clone()), &insights, &graph, &config, &state_dir).unwrap();
         assert_eq!(changed.len(), 2);
         assert!(changed.iter().all(|p| insights.iter().any(|i| &i.path == p)));
@@ -506,7 +519,7 @@ mod tests {
         .unwrap();
         baseline.save(&state_dir).unwrap();
 
-        let (changed, affected, _entity_changes) =
+        let (changed, affected, _entity_changes, _has_deleted) =
             run_git_diff_incremental(&ProjectRoot::new(dir.clone()), &insights, &graph, &config, &state_dir).unwrap();
         assert_eq!(changed.len(), 1);
         assert!(affected.is_empty());
@@ -564,7 +577,7 @@ mod tests {
         .unwrap();
         baseline.save(&state_dir).unwrap();
 
-        let (changed, _affected, _entity_changes) =
+        let (changed, _affected, _entity_changes, _has_deleted) =
             run_git_diff_incremental(&ProjectRoot::new(dir.clone()), &insights, &graph, &config, &state_dir).unwrap();
         assert!(
             changed.iter().any(|p| p == Path::new("src/foo.rs")),
@@ -598,7 +611,7 @@ mod tests {
         let graph = KnowledgeGraph::default();
         let config = make_config();
 
-        let (changed, _affected, _entity_changes) =
+        let (changed, _affected, _entity_changes, _has_deleted) =
             run_file_watch_incremental(&root, std::slice::from_ref(&insight), &graph, &config, &state_dir, std::slice::from_ref(&deleted)).unwrap();
         assert_eq!(
             changed,
@@ -632,7 +645,7 @@ mod tests {
         let graph = KnowledgeGraph::default();
         let config = make_config();
 
-        let (changed, _affected, _entity_changes) =
+        let (changed, _affected, _entity_changes, _has_deleted) =
             run_file_watch_incremental(&root, std::slice::from_ref(&insight), &graph, &config, &state_dir, std::slice::from_ref(&deleted)).unwrap();
         assert!(
             changed.contains(&insight.path),
@@ -712,7 +725,7 @@ mod tests {
         let config = make_config();
         let state_dir = dir.join(".state");
 
-        let (changed, _affected, _entity_changes) =
+        let (changed, _affected, _entity_changes, _has_deleted) =
             run_git_diff_incremental(&ProjectRoot::new(dir.clone()), &insights, &graph, &config, &state_dir).unwrap();
         assert_eq!(
             changed,
@@ -758,7 +771,7 @@ mod tests {
         .unwrap();
         baseline.save(&state_dir).unwrap();
 
-        let (changed, _affected, _entity_changes) =
+        let (changed, _affected, _entity_changes, _has_deleted) =
             run_git_diff_incremental(&ProjectRoot::new(dir.clone()), &insights, &graph, &config, &state_dir).unwrap();
         assert!(changed.is_empty(), "有基线且无变更时应跳过，不得回退全量: {:?}", changed);
 
@@ -825,7 +838,7 @@ mod tests {
         let graph = KnowledgeGraph::default();
         let config = make_config();
 
-        let (changed, _affected, _entity_changes) =
+        let (changed, _affected, _entity_changes, _has_deleted) =
             run_git_diff_incremental(&ProjectRoot::new(dir.clone()), &insights, &graph, &config, &state_dir).unwrap();
         assert_eq!(
             changed,

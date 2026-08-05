@@ -297,3 +297,132 @@ fn test_large_fixture_delete_file_keeps_pages() {
 
     let _ = std::fs::remove_dir_all(&repo);
 }
+
+/// 构造"双文件同模块 + 孤立文件"最小仓库（v21 验证轮删除场景缺陷修复专用）
+///
+/// 结构：src/m20/{a,b}.rs 互调（Calls 边 → Leiden 社区合并为同一模块），
+/// src/solo.rs 无任何边（独立模块）。
+/// 用途：删除 a.rs 后 m20 模块**未全删**（b.rs 存活）——旧实现走快照回填
+/// 时模块页残留 a 的实体描述；修复后改为把存活文件并入变更集走 LLM 重生成。
+fn build_pair_module_repo(repo: &Path) -> anyhow::Result<()> {
+    std::fs::write(repo.join(".gitignore"), ".repo-wiki/\nAGENTS.md\n")?;
+    std::fs::create_dir_all(repo.join("src").join("m20"))?;
+    // a.rs / b.rs 互调：保证同一社区（模块 = 社区）
+    std::fs::write(
+        repo.join("src").join("m20").join("a.rs"),
+        "pub fn a_alpha() -> u32 { 1 }\npub fn a_uses_b() -> u32 { b_beta() }\n",
+    )?;
+    std::fs::write(
+        repo.join("src").join("m20").join("b.rs"),
+        "pub fn b_beta() -> u32 { 2 }\npub fn b_uses_a() -> u32 { a_alpha() }\n",
+    )?;
+    std::fs::write(repo.join("src").join("solo.rs"), "pub fn solo_fn() -> u32 { 3 }\n")?;
+
+    let config = WikiConfig {
+        output: OutputSection {
+            dir: repo.join(".repo-wiki").to_string_lossy().into_owned(),
+        },
+        wiki: WikiSection {
+            language: "zh".into(),
+            ..Default::default()
+        },
+        llm: LlmSection {
+            provider: LlmProviderType::Mock,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    std::fs::write(repo.join("config.toml"), toml::to_string_pretty(&config)?)?;
+
+    let git = git2::Repository::init(repo)?;
+    let mut cfg = git.config()?;
+    cfg.set_str("user.name", "test")?;
+    cfg.set_str("user.email", "test@test.com")?;
+    Ok(())
+}
+
+/// v21 验证轮（删除场景缺陷修复）：多文件模块删一文件 → 存活文件并入
+/// 变更集走 LLM 重生成（页面残留被删实体 = 缺陷；修复后不残留）。
+///
+/// 判别信号（不依赖社区划分细节，回填路径与修复路径可区分）：
+/// - 修复路径：documents 只含 m20 模块 + 3 个全局文档（架构/概览/index，
+///   删除属接口级变化且 has_deleted_files 放行重生成）→ 数量 ≤ 5；
+/// - 回填路径（缺陷行为）：documents = 快照全部文档（数量级差异），
+///   solo 模块页也会被原样回填。
+#[test]
+fn test_delete_one_file_in_pair_module_regenerates_module() {
+    let repo = std::env::temp_dir().join(format!("repo_wiki_pair_del_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&repo);
+    std::fs::create_dir_all(&repo).expect("构造临时仓库失败");
+    build_pair_module_repo(&repo).expect("构造双文件模块 fixture 失败");
+
+    let root = repo_wiki::project::ProjectRoot::new(repo.clone());
+    let config_path = repo.join("config.toml");
+
+    git_commit_all(&repo, "init pair module");
+    repo_wiki::run_pipeline(&config_path, None, false, &root, &repo_wiki::GenerationMode::Full)
+        .expect("全量生成失败");
+    // 基线：m20 模块页存在（社区合并后为目录级模块页，或 a/b 各自文件页）
+    let base_pages = wiki_pages_snapshot(&repo);
+    assert!(
+        base_pages.keys().any(|k| k.starts_with("src_m20")),
+        "基线应含 m20 相关页，实际: {base_pages:?}"
+    );
+
+    // 删除 a.rs（b.rs 存活 → m20 模块部分删除）
+    std::fs::remove_file(repo.join("src").join("m20").join("a.rs")).unwrap();
+    git_commit_all(&repo, "delete m20/a.rs");
+    let inc = repo_wiki::run_pipeline(
+        &config_path,
+        None,
+        false,
+        &root,
+        &repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None },
+    )
+    .expect("删除增量失败");
+
+    let titles: Vec<String> = inc.documents.iter().map(|d| d.title.clone()).collect();
+    // 1. 受影响模块（m20）被重生成：至少一个文档 title 以 src::m20 开头
+    assert!(
+        titles.iter().any(|t| t.starts_with("src::m20")),
+        "部分删除模块必须重生成（清除被删实体残留），实际: {titles:?}"
+    );
+    // 2. 未受影响模块（solo）不在本次文档集——修复后只生成受影响模块；
+    //    缺陷行为（快照回填）会把 solo 模块页原样回填进 documents
+    assert!(
+        !titles.iter().any(|t| t.contains("solo")),
+        "未受影响模块不得被重生成或回填，实际: {titles:?}"
+    );
+    // 3. 数量级约束：修复后 = m20 模块页 + 架构概览 + 项目概览 + index（≤5）；
+    //    回填路径 = 快照全量文档（数量级差异）
+    assert!(
+        titles.len() <= 5,
+        "documents 数量应 ≤5（模块 + 3 全局），实际 {}: {titles:?}",
+        titles.len()
+    );
+    // 4. 全局文档（架构/概览/index）因删除（接口级变化）而重生成：
+    //    缺陷行为回填旧版会继续列出已删模块
+    for key in ["架构概览", "项目概览", "index"] {
+        assert!(
+            titles.iter().any(|t| t.contains(key)),
+            "全局文档 {key} 应重生成（删除场景不放行全局文档回填），实际: {titles:?}"
+        );
+    }
+
+    // 5. 磁盘页面：m20 模块页保留（重生成覆盖），solo 页零改写。
+    //    solo.rs 位于 src/ 根目录，其社区/模块路径为 src → 页名 src.md
+    let after_pages = wiki_pages_snapshot(&repo);
+    assert!(
+        after_pages.keys().any(|k| k.starts_with("src_m20")),
+        "m20 模块页必须保留，实际: {after_pages:?}"
+    );
+    let solo_page = "src.md".to_string();
+    assert!(after_pages.contains_key(&solo_page), "solo 页必须保留，实际页面: {after_pages:?}");
+    assert_eq!(
+        after_pages.get(&solo_page),
+        base_pages.get(&solo_page),
+        "solo 未受影响页必须零改写"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo);
+}

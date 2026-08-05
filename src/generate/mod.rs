@@ -133,7 +133,7 @@ pub async fn run_generation(
     tracing::info!("生成进度: 90% - Wiki 页面生成完成，共 {} 个页面", documents.len());
 
     // 5. 生成全局文档（架构概览 + 数据库 Schema，全量/增量共用同一辅助函数）
-    generate_global_documents(&wiki_gen, &provider, graph, config, root, plan.as_ref(), &cards, &mut documents, &GlobalDocAffected::all()).await?;
+    generate_global_documents(&wiki_gen, &provider, graph, config, root, plan.as_ref(), &cards, &mut documents, &GlobalDocAffected::all(), false).await?;
 
     // 6. 按计划文档白名单过滤（严格只输出列出的页面）
     documents = filter_by_whitelist(documents, plan.as_ref());
@@ -203,46 +203,88 @@ pub async fn run_generation_filtered(
         if let Ok(content) = std::fs::read_to_string(crate::output::export_snapshot_path(Path::new(&config.output.dir)))
             && let Ok(snapshot) = serde_json::from_str::<crate::output::ExportSnapshot>(&content)
         {
-            // 已删除模块 = 快照卡片中相关源文件全部不存在的模块。
-            // related_files 为空（旧版本快照缺字段 serde 默认值）时
-            // all() 恒真 → 误判全删，故要求非空才参与判定。
-            let deleted_modules: std::collections::HashSet<String> = snapshot
-                .cards
-                .iter()
-                .filter(|c| {
-                    !c.related_files.is_empty()
-                        && c.related_files.iter().all(|f| !root.path().join(f).exists())
-                })
-                .map(|c| c.module_name.clone())
-                .collect();
-            let cards: Vec<KnowledgeCard> = snapshot
-                .cards
-                .into_iter()
-                .filter(|c| !deleted_modules.contains(&c.module_name))
-                .collect();
-            let documents: Vec<WikiDocument> = snapshot
-                .documents
-                .into_iter()
-                .filter(|d| !deleted_modules.contains(&d.title))
-                .collect();
-            tracing::info!(
-                "增量生成: 纯删除场景（{} 个变更文件），从快照回填 {} 文档 {} 卡片（跳过已删模块 {} 个）",
-                changed_files.len(),
-                documents.len(),
-                cards.len(),
-                deleted_modules.len()
-            );
-            // 与正常路径一致：回填产物同样过白名单过滤（严格只输出列出的页面）
-            let documents = filter_by_whitelist(documents, plan.as_ref());
-            return Ok(GenerationOutput {
-                cards,
-                documents,
-                generation_stats: GenerationStats::default(),
-            });
+            // v21 验证轮（删除场景缺陷修复）：纯删除时快照不只是回填来源，
+            // 还是"被删文件 → 模块归属"的唯一完整映射（解析缓存会主动裁剪
+            // 被删条目、当前 graph 无被删文件节点，传播起点为空）。
+            // 新增/修改文件全部消失于磁盘（deleted_files）时，逐卡片判定：
+            // - 全删模块（related_files 全部不存在）：原逻辑，回填时剔除；
+            // - 部分删除模块（related_files 含被删文件但仍有存活文件）：
+            //   **页面回填旧内容会残留被删实体的描述**（原实现缺陷），
+            //   改为把模块的存活文件并入变更集，落入正常生成路径由 LLM
+            //   重生成（卡片 + 页面 + 全局文档联动刷新）。
+            let deleted_files: std::collections::HashSet<&std::path::Path> =
+                changed_files.iter().filter(|f| !root.path().join(f).exists()).map(|f| f.as_path()).collect();
+            let surviving: Vec<&KnowledgeCard> = if deleted_files.is_empty() {
+                Vec::new()
+            } else {
+                snapshot
+                    .cards
+                    .iter()
+                    .filter(|c| {
+                        !c.related_files.is_empty()
+                            && c.related_files.iter().any(|f| deleted_files.contains(Path::new(f)))
+                            && c.related_files.iter().any(|f| root.path().join(f).exists())
+                    })
+                    .collect()
+            };
+            if !surviving.is_empty() {
+                // 部分删除模块的存活文件 → 变更集 → 正常增量路径重生成
+                let surviving_files: std::collections::HashSet<&std::path::Path> = surviving
+                    .iter()
+                    .flat_map(|c| c.related_files.iter().map(|f| Path::new(f.as_str())))
+                    .collect();
+                changed_insights = insights
+                    .iter()
+                    .filter(|i| surviving_files.contains(i.path.as_path()))
+                    .cloned()
+                    .collect();
+                tracing::info!(
+                    "增量生成: 纯删除场景（{} 个变更文件），{} 个部分删除模块的存活文件并入变更集重生成（清除被删实体残留）",
+                    changed_files.len(),
+                    surviving.len()
+                );
+            } else {
+                // 无部分删除模块（全部是孤立文件全删或变更不含删除）：
+                // 沿用零 LLM 回填——剔除全删模块后原样回填旧产物。
+                let deleted_modules: std::collections::HashSet<String> = snapshot
+                    .cards
+                    .iter()
+                    .filter(|c| {
+                        !c.related_files.is_empty()
+                            && c.related_files.iter().all(|f| !root.path().join(f).exists())
+                    })
+                    .map(|c| c.module_name.clone())
+                    .collect();
+                let cards: Vec<KnowledgeCard> = snapshot
+                    .cards
+                    .into_iter()
+                    .filter(|c| !deleted_modules.contains(&c.module_name))
+                    .collect();
+                let documents: Vec<WikiDocument> = snapshot
+                    .documents
+                    .into_iter()
+                    .filter(|d| !deleted_modules.contains(&d.title))
+                    .collect();
+                tracing::info!(
+                    "增量生成: 纯删除场景（{} 个变更文件），从快照回填 {} 文档 {} 卡片（跳过已删模块 {} 个）",
+                    changed_files.len(),
+                    documents.len(),
+                    cards.len(),
+                    deleted_modules.len()
+                );
+                // 与正常路径一致：回填产物同样过白名单过滤（严格只输出列出的页面）
+                let documents = filter_by_whitelist(documents, plan.as_ref());
+                return Ok(GenerationOutput {
+                    cards,
+                    documents,
+                    generation_stats: GenerationStats::default(),
+                });
+            }
+        } else {
+            tracing::warn!("增量生成: 纯删除场景但导出快照缺失，回退全量生成防止产物误清");
+            // 回退全量：所有现存文件视为变更，走下方正常生成路径
+            changed_insights = insights.to_vec();
         }
-        tracing::warn!("增量生成: 纯删除场景但导出快照缺失，回退全量生成防止产物误清");
-        // 回退全量：所有现存文件视为变更，走下方正常生成路径
-        changed_insights = insights.to_vec();
     } else {
         tracing::info!("增量生成: {} 个文件变更", changed_insights.len());
     }
@@ -329,7 +371,7 @@ pub async fn run_generation_filtered(
             .iter()
             .any(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("sql"))),
     };
-    generate_global_documents(&wiki_gen, &provider, graph, config, root, plan.as_ref(), &cards, &mut documents, &global_affected).await?;
+    generate_global_documents(&wiki_gen, &provider, graph, config, root, plan.as_ref(), &cards, &mut documents, &global_affected, inc.has_deleted_files).await?;
 
     // 6. 按计划文档白名单过滤（严格只输出列出的页面）
     documents = filter_by_whitelist(documents, plan.as_ref());
@@ -595,6 +637,7 @@ async fn generate_global_documents(
     cards: &[KnowledgeCard],
     documents: &mut Vec<WikiDocument>,
     affected: &GlobalDocAffected,
+    has_deleted_files: bool,
 ) -> Result<()> {
     // 文档类型决策：DocumentKind 是纯枚举（无 architecture 等可复用字段），
     // 且 output::wiki_page_path 按 kind 特判文件名（架构概览→architecture.md，
@@ -602,7 +645,10 @@ async fn generate_global_documents(
     // ArchitectureOverview——复用会把概览写进 architecture.md，路径语义错位。
     if affected.architecture {
         // 架构概览与项目概览：没有卡片（本次没有模块被生成）时跳过，避免对空仓库发无意义的 LLM 调用
-        if !cards.is_empty() {
+        // ——但纯删除场景例外（has_deleted_files）：删除属接口级变化，即使本次没有
+        // 模块被重生成（孤立文件全删），架构/概览也必须重生成，否则回填旧版继续
+        // 列出已删模块（v21 验证轮修复）。
+        if !cards.is_empty() || has_deleted_files {
             // generate_architecture / generate_overview 需要 GenerationOutput 快照（内部只用 cards 构建引用列表）
             let output_snapshot = GenerationOutput {
                 cards: cards.to_vec(),
