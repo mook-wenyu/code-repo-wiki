@@ -324,22 +324,8 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
     ) -> Result<String> {
         self.call_count.fetch_add(1, Ordering::Relaxed);
 
-        // 收集模块内实体名（跳过容器节点），作为 LLM 判断职责的输入
-        let entity_names: Vec<String> = module
-            .node_ids
-            .iter()
-            .filter_map(|nid| graph.graph.node_weight(*nid))
-            .filter(|n| {
-                !matches!(
-                    n.kind,
-                    crate::model::NodeKind::Project
-                        | crate::model::NodeKind::Module
-                        | crate::model::NodeKind::File
-                )
-            })
-            .map(|n| n.name.clone())
-            .take(30)
-            .collect();
+        // 模块职责描述输入：实体名收集（t02 拍板：行为型优先排序 + 排除字段级）
+        let entity_names = collect_module_entity_names(module, graph);
 
         let messages = prompt::module_description_prompt(
             &module.name,
@@ -393,6 +379,67 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
             fingerprint: None,
         })
     }
+}
+
+/// 模块职责描述输入：收集模块内实体名（t02 拍板：行为型优先排序 + 排除字段级）
+///
+/// 实体名额有限（DESCRIBE_ENTITY_CAP = 30），图节点顺序（解析顺序）不代表
+/// 职责信号强弱：函数/方法（Calls 边承载者）是模块职责的主要信号，结构体/
+/// 枚举/常量次之，字段（variable）对职责判断价值最低且数量大（t01 调研：
+/// 字段级实体占比约 1.29 倍）——不排序时字段会挤占函数名额，且字段是
+/// lint stale 假漂移的噪声来源（v20 审计：C# 私有字段曾被误报为页面声称
+/// 但源码不存在的实体）。排序规则：kind 优先级（函数族 > 数据族 > 常量）
+/// + 名称字典序（确定性输出，跨次生成一致），容器节点与 Variable 不进名额。
+pub(crate) const DESCRIBE_ENTITY_CAP: usize = 30;
+
+/// kind → 职责信号优先级（0 最高，仅排序用，不改变实体本身语义）
+fn entity_priority(kind: &crate::model::NodeKind) -> u8 {
+    match kind {
+        // 行为型：函数/方法/宏/接口/抽象——模块"做什么"的直接信号
+        crate::model::NodeKind::Function
+        | crate::model::NodeKind::Trait
+        | crate::model::NodeKind::Impl
+        | crate::model::NodeKind::Interface
+        | crate::model::NodeKind::Class
+        | crate::model::NodeKind::Macro => 0,
+        // 数据型：结构体/枚举/类型别名
+        crate::model::NodeKind::Struct
+        | crate::model::NodeKind::Enum
+        | crate::model::NodeKind::Type => 1,
+        // 常量
+        crate::model::NodeKind::Constant => 2,
+        // 容器与字段在上层过滤，不应到达此处
+        _ => 3,
+    }
+}
+
+/// 收集模块内实体名（排序 + 截断名额）
+pub(crate) fn collect_module_entity_names(
+    module: &crate::model::ModuleCluster,
+    graph: &KnowledgeGraph,
+) -> Vec<String> {
+    let mut names: Vec<(u8, String)> = module
+        .node_ids
+        .iter()
+        .filter_map(|nid| graph.graph.node_weight(*nid))
+        .filter(|n| {
+            !matches!(
+                n.kind,
+                crate::model::NodeKind::Project
+                    | crate::model::NodeKind::Module
+                    | crate::model::NodeKind::File
+                    | crate::model::NodeKind::Variable
+            )
+        })
+        .map(|n| (entity_priority(&n.kind), n.name.clone()))
+        .collect();
+    // 稳定排序：优先级升序 + 名称字典序（确定性输出）
+    names.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    names
+        .into_iter()
+        .map(|(_, name)| name)
+        .take(DESCRIBE_ENTITY_CAP)
+        .collect()
 }
 
 /// 带 Mermaid 校验的 LLM 调用（自由函数版，U03/D1 提取）
@@ -1111,6 +1158,151 @@ mod tests {
         assert!(enriched[0].description.is_some(), "带实体的模块应获得描述");
         assert_eq!(enriched[1].name, "src");
         assert!(enriched[1].description.is_none(), "src 兜底模块不描述");
+    }
+
+    /// 实体名额策略（t02 拍板）：行为型优先排序 + 排除字段级（variable）
+    #[test]
+    fn test_collect_module_entity_names_prioritizes_behavior_over_fields() {
+        use crate::model::{CodeEdge, CodeNode, ModuleCluster, NodeId, NodeKind};
+        use petgraph::stable_graph::StableDiGraph;
+
+        let mut g = StableDiGraph::<CodeNode, CodeEdge>::new();
+        let mut ids = Vec::new();
+        // 打乱插入顺序：变量与常量在前、函数在后——验证排序把行为型提到名额前排
+        for i in 0..8 {
+            ids.push(g.add_node(CodeNode {
+                id: NodeId::new(i as usize),
+                kind: NodeKind::Variable,
+                name: format!("field_{i}"),
+                file_path: None,
+                line_range: None,
+                doc_comment: None,
+                signature: None,
+                visibility: None,
+                module_path: vec!["src".into(), "net".into()],
+            }));
+        }
+        for i in 0..5 {
+            ids.push(g.add_node(CodeNode {
+                id: NodeId::new(100 + i as usize),
+                kind: NodeKind::Constant,
+                name: format!("const_{i}"),
+                file_path: None,
+                line_range: None,
+                doc_comment: None,
+                signature: None,
+                visibility: None,
+                module_path: vec!["src".into(), "net".into()],
+            }));
+        }
+        // 10 个函数 + 5 个结构体 + 1 个文件容器
+        for i in 0..10 {
+            ids.push(g.add_node(CodeNode {
+                id: NodeId::new(200 + i as usize),
+                kind: NodeKind::Function,
+                name: format!("fn_{i:02}"),
+                file_path: None,
+                line_range: None,
+                doc_comment: None,
+                signature: None,
+                visibility: None,
+                module_path: vec!["src".into(), "net".into()],
+            }));
+        }
+        for i in 0..5 {
+            ids.push(g.add_node(CodeNode {
+                id: NodeId::new(300 + i as usize),
+                kind: NodeKind::Struct,
+                name: format!("struct_{i}"),
+                file_path: None,
+                line_range: None,
+                doc_comment: None,
+                signature: None,
+                visibility: None,
+                module_path: vec!["src".into(), "net".into()],
+            }));
+        }
+        ids.push(g.add_node(CodeNode {
+            id: NodeId::new(999),
+            kind: NodeKind::File,
+            name: "net.rs".into(),
+            file_path: None,
+            line_range: None,
+            doc_comment: None,
+            signature: None,
+            visibility: None,
+            module_path: vec!["src".into(), "net".into()],
+        }));
+        let module = ModuleCluster {
+            name: "src::net".into(),
+            node_ids: ids,
+            cohesion: 0.5,
+            coupling: 0.5,
+            description: None,
+        };
+        let graph = KnowledgeGraph {
+            graph: g,
+            modules: vec![module.clone()],
+            features: Vec::new(),
+        };
+
+        let names = collect_module_entity_names(&module, &graph);
+        // 总数 29（8 变量 + 5 常量 + 10 函数 + 5 结构体 + 1 容器，容器与字段排除）
+        assert_eq!(names.len(), 20, "变量与容器不进入名额");
+        assert!(
+            !names.iter().any(|n| n.starts_with("field_")),
+            "字段级实体（variable）应被排除"
+        );
+        assert!(
+            !names.iter().any(|n| n == "net.rs"),
+            "容器节点（File）应被排除"
+        );
+        // 行为型在前：函数全部先于结构体，结构体先于常量
+        let fn_pos = names.iter().position(|n| n == "fn_00").unwrap();
+        let struct_pos = names.iter().position(|n| n == "struct_0").unwrap();
+        let const_pos = names.iter().position(|n| n == "const_0").unwrap();
+        assert!(fn_pos < struct_pos && struct_pos < const_pos, "优先级序: 函数 < 结构体 < 常量");
+        // 同级字典序（确定性）：fn_00 在 fn_01 前
+        assert!(names.iter().position(|n| n == "fn_00").unwrap() < names.iter().position(|n| n == "fn_01").unwrap());
+    }
+
+    /// 名额截断：实体数超过 DESCRIBE_ENTITY_CAP 时只保留前 30 个（行为型优先）
+    #[test]
+    fn test_collect_module_entity_names_caps_at_30() {
+        use crate::model::{CodeEdge, CodeNode, ModuleCluster, NodeId, NodeKind};
+        use petgraph::stable_graph::StableDiGraph;
+
+        let mut g = StableDiGraph::<CodeNode, CodeEdge>::new();
+        let mut ids = Vec::new();
+        for i in 0..40 {
+            ids.push(g.add_node(CodeNode {
+                id: NodeId::new(i as usize),
+                kind: NodeKind::Function,
+                name: format!("fn_{i:02}"),
+                file_path: None,
+                line_range: None,
+                doc_comment: None,
+                signature: None,
+                visibility: None,
+                module_path: vec!["src".into()],
+            }));
+        }
+        let module = ModuleCluster {
+            name: "src".into(),
+            node_ids: ids,
+            cohesion: 1.0,
+            coupling: 0.0,
+            description: None,
+        };
+        let graph = KnowledgeGraph {
+            graph: g,
+            modules: vec![module.clone()],
+            features: Vec::new(),
+        };
+        let names = collect_module_entity_names(&module, &graph);
+        assert_eq!(names.len(), DESCRIBE_ENTITY_CAP);
+        assert_eq!(names[0], "fn_00", "字典序稳定");
+        assert_eq!(names[29], "fn_29", "截断取前 30");
     }
 
     /// 概览自底向上合成:overview_prompt 注入卡片摘要段(模块名+摘要+关键实体)
