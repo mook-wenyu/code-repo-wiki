@@ -129,7 +129,10 @@ fn test_incremental_git_diff_scenarios() {
     );
 
     // ---- 场景 A：实现级变化（函数体修改，签名不变） ----
-    std::fs::write(&tcp_mod, "pub fn tcp_process(x: u32) -> u32 { udp_process(x) + 42 }\n").unwrap();
+    // 多行 body 使实体的 line_end 变化 → 三元组不等 → BodyChanged → 重生成。
+    // 单行同长的 body 修改（行号区间不变）会被三元组判定为「无实体变更」
+    // 跳过重生成——A1 的已知边界（仅行号+签名参与判定，见 change.rs 注释）。
+    std::fs::write(&tcp_mod, "pub fn tcp_process(x: u32) -> u32 {\n    udp_process(x) + 42\n}\n").unwrap();
     git_commit_all(&repo, "change body");
     let inc_a = repo_wiki::run_pipeline(&config_path, None, false, &root, &repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
         .expect("增量生成失败");
@@ -174,6 +177,48 @@ fn test_incremental_git_diff_scenarios() {
         doc_titles(&inc_c)
     );
 
+
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+/// v23 A1 防回归：纯空白变化（行尾空格，实体三元组全等）不触发模块重生成——
+/// 实体级分类不记录任何变更 → 文件从生成范围排除 → 快照回填保留全部旧产物。
+/// 与场景 A（函数体修改=BodyChanged 仍重生成）构成对比锚点。
+#[test]
+fn test_incremental_git_whitespace_only_change_keeps_pages() {
+    let repo = std::env::temp_dir().join(format!("repo_wiki_git_wsonly_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&repo);
+    std::fs::create_dir_all(&repo).expect("构造临时仓库失败");
+    build_git_repo(&repo).expect("构造 fixture 失败");
+
+    let root = repo_wiki::project::ProjectRoot::new(repo.clone());
+    let config_path = repo.join("config.toml");
+    let tcp_mod = repo.join("src").join("net").join("tcp.rs");
+
+    // ---- 首次提交 + 全量生成（基线） ----
+    git_commit_all(&repo, "init");
+    repo_wiki::run_pipeline(&config_path, None, false, &root, &repo_wiki::GenerationMode::Full)
+        .expect("全量生成失败");
+    let base_api = read_api(&repo);
+
+    // ---- 纯空白变化（行尾空格）：签名与行号均不变，实体级分类无记录 ----
+    std::fs::write(&tcp_mod, "pub fn tcp_process(x: u32) -> u32 { udp_process(x) + 42 } \n").unwrap();
+    git_commit_all(&repo, "whitespace only");
+    let inc = repo_wiki::run_pipeline(&config_path, None, false, &root, &repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
+        .expect("纯空白增量失败");
+
+    // 回填语义：文档集合 = 快照全集（含未变化的 http 模块——与场景 A 的
+    // 「仅重生成 net」形成对照信号），api.md 行号引用不变（零 LLM）
+    let titles = doc_titles(&inc);
+    assert!(
+        titles.iter().any(|t| t.contains("src::http")) && titles.iter().any(|t| t.contains("src::net")),
+        "纯空白变化应走快照回填（全集含 http），而非重生成（仅含 net），实际: {titles:?}"
+    );
+    assert_eq!(
+        read_api(&repo),
+        base_api,
+        "纯空白变化不影响 api.md（签名与行号均未变）"
+    );
 
     let _ = std::fs::remove_dir_all(&repo);
 }

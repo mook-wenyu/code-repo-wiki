@@ -13,7 +13,7 @@ use crate::ingest::parser::FileInsight;
 use crate::model::KnowledgeGraph;
 use crate::project::ProjectRoot;
 
-use self::change::{classify_entity_changes_at, EntityChangeSet};
+use self::change::{classify_entity_changes_at, no_entity_change_files, EntityChangeSet};
 use self::diff::analyze_git_diff;
 use self::impact::{propagate_impact, propagate_impact_semantic};
 use self::state::GenerationState;
@@ -343,17 +343,34 @@ fn run_git_diff_incremental(
     // 语义传播只让接口级变化（新增/删除/签名变更）影响依赖方，
     // 实现级变化（仅函数体修改）只重生成本模块——避免一次小改动
     // 触发全仓库级联重生成。分类失败时回退保守的双向传播。
-    let entity_changes = match classify_entity_changes_at(root, &diff_result, insights) {
-        Ok(set) => set,
-        Err(e) => {
-            tracing::warn!("实体级变化分类失败，回退双向传播: {}", e);
-            EntityChangeSet::default()
-        }
+    let (entity_changes, classification_failed) =
+        match classify_entity_changes_at(root, &diff_result, insights) {
+            Ok(set) => (set, false),
+            Err(e) => {
+                tracing::warn!("实体级变化分类失败，回退双向传播: {}", e);
+                (EntityChangeSet::default(), true)
+            }
+        };
+    // v23 A1：从传播起点剔除「无实体变更」文件（纯空白/注释/换行符变化，
+    // compare_entities 三元组全等判定后无记录）。这类文件即使作为起点也只会
+    // 把本模块捞入 affected，导致模块页被无意义重生成——剔除后传播起点为空
+    // 时 affected 为空，模块不进生成范围（与 generate 层过滤同源同口径）。
+    // 分类失败（classification_failed）时 changes 为空集不代表"真无变化"
+    // （保守回退语义），必须保留全部起点走保守双向传播。
+    let changed_for_impact = if classification_failed {
+        all_changed.clone()
+    } else {
+        let no_entity_change = no_entity_change_files(&all_changed, &entity_changes, root);
+        all_changed
+            .iter()
+            .filter(|f| !no_entity_change.contains(*f))
+            .cloned()
+            .collect()
     };
     let affected_modules = if entity_changes.changes.is_empty() {
-        propagate_impact(&all_changed, graph, crate::config::schema::IMPACT_MAX_DEPTH)
+        propagate_impact(&changed_for_impact, graph, crate::config::schema::IMPACT_MAX_DEPTH)
     } else {
-        propagate_impact_semantic(&all_changed, &entity_changes, graph, crate::config::schema::IMPACT_MAX_DEPTH)
+        propagate_impact_semantic(&changed_for_impact, &entity_changes, graph, crate::config::schema::IMPACT_MAX_DEPTH)
     };
 
     // 4. 保存新的状态（U03/D3 两段式：第一段只合并保护字段，不推进代码侧状态）
@@ -436,7 +453,7 @@ fn run_file_watch_incremental(
     // 仍存在的文件视为 modified（新增文件对比旧树为空 → 全部 Added），
     // 磁盘上已不存在的视为 deleted。非 Git 仓库或无上次 commit 时分类
     // 内部返回空集，回退保守的双向传播（与 GitDiff 路径失败回退一致）。
-    let entity_changes = if let Some(state) = &state {
+    let (entity_changes, classification_failed) = if let Some(state) = &state {
         let diff = crate::incremental::diff::GitDiffResult {
             modified: changed_files
                 .iter()
@@ -452,19 +469,31 @@ fn run_file_watch_incremental(
             ..Default::default()
         };
         match classify_entity_changes_at(root, &diff, insights) {
-            Ok(set) => set,
+            Ok(set) => (set, false),
             Err(e) => {
                 tracing::warn!("FileWatch 实体级变化分类失败，回退双向传播: {}", e);
-                EntityChangeSet::default()
+                (EntityChangeSet::default(), true)
             }
         }
     } else {
-        EntityChangeSet::default()
+        (EntityChangeSet::default(), true)
+    };
+    // v23 A1：与 GitDiff 路径同口径——分类成功时才剔除无实体变更文件
+    // （纯空白/注释变化），分类失败/无状态（保守回退）保留全部起点。
+    let changed_for_impact = if classification_failed {
+        changed_files.clone()
+    } else {
+        let no_entity_change = no_entity_change_files(&changed_files, &entity_changes, root);
+        changed_files
+            .iter()
+            .filter(|f| !no_entity_change.contains(*f))
+            .cloned()
+            .collect()
     };
     let affected_modules = if entity_changes.changes.is_empty() {
-        propagate_impact(&changed_files, graph, crate::config::schema::IMPACT_MAX_DEPTH)
+        propagate_impact(&changed_for_impact, graph, crate::config::schema::IMPACT_MAX_DEPTH)
     } else {
-        propagate_impact_semantic(&changed_files, &entity_changes, graph, crate::config::schema::IMPACT_MAX_DEPTH)
+        propagate_impact_semantic(&changed_for_impact, &entity_changes, graph, crate::config::schema::IMPACT_MAX_DEPTH)
     };
 
     // 保存新状态

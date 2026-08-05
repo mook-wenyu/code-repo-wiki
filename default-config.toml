@@ -17,18 +17,21 @@ exclude = ["**/test/**", "**/vendor/**", "target/**", "**/node_modules/**"]
 dir = ".repo-wiki"
 
 [llm]
-provider = "openai"
+provider = "openai-compatible"
 model = "deepseek-v4-flash"
-base_url = "https://api.deepseek.com/v1"
+# base_url 缺省时按 provider 取官方端点（见 schema.rs 默认值）；注释掉的
+# 个人端点（opencode.ai/zen）为历史残留，v23 清理
+#base_url = ""
 #api_key = ""
 api_key_env = "DEEPSEEK_API_KEY"
 # 并发 LLM 调用数与温度等已硬编码（v22 简化：见 schema.rs 顶部常量）
 
 [embed]
 # 语义搜索与实体级特征聚类的向量来源；false 时特征聚类降级为纯调用边结构聚类
-enabled = false
-# 与 schema 默认值保持一致（v19 t02 统一：此前模板残留个人环境的
-# qwen3.7-text-embedding + 百炼 base_url，新用户 init 后与代码默认分裂）
+enabled = true
+# 与 schema 默认值保持一致（v19 t02 统一 + v23 复核：模型与端点/key 名
+# 全部对齐 schema 默认，此前模板残留个人环境的 key 名/端点，新用户 init
+# 后与代码默认分裂）
 model = "text-embedding-3-small"
 #base_url = ""
 #api_key = ""

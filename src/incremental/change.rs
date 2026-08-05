@@ -64,6 +64,37 @@ impl EntityChangeSet {
     }
 }
 
+/// 计算「无实体变更」文件集合（v23 A1）
+///
+/// 判据：文件在 changed_files（git diff 报告有变化）且仍存在于磁盘，但
+/// `entity_changes` 中没有任何该文件的记录（compare_entities 的三元组全等
+/// 判定跳过）——变化只可能发生在注释/空白/换行符等不产出实体的文本上。
+/// 这类文件不触发模块重生成：模块页内容与 api.md 行号引用均不受影响。
+///
+/// 调用方必须用它**同时**剔除两类输入，否则语义不一致：
+/// - 影响传播的起点集合（mod.rs）：无实体变更文件作为起点会走「仅本模块」
+///   分支，把本模块捞入 affected_modules → 模块页仍被重生成；
+/// - 生成过滤（generate/mod.rs）：changed_insights 过滤条件。
+///
+/// 删除文件不在此集合（磁盘不存在，判据第一项排除），快照回填逻辑不受影响。
+pub fn no_entity_change_files(
+    changed_files: &[PathBuf],
+    entity_changes: &EntityChangeSet,
+    root: &crate::project::ProjectRoot,
+) -> std::collections::HashSet<PathBuf> {
+    changed_files
+        .iter()
+        .filter(|f| {
+            root.path().join(f).exists()
+                && !entity_changes
+                    .changes
+                    .iter()
+                    .any(|c| c.file.as_path() == f.as_path())
+        })
+        .cloned()
+        .collect()
+}
+
 /// 在指定项目根下对 Git diff 做实体级变化分类
 ///
 /// git 仓库定位基准显式注入（与 analyze_git_diff 同源，root 由
@@ -190,6 +221,19 @@ fn compare_entities(
             };
             // 按位置顺序配对输出（同名多实体取并集逐条记录）
             for (old_e, new_e) in old_entries.iter().zip(new_entries.iter()) {
+                // v23 A1 实体级分类精化：签名集合相等时进一步比较配对实体三元组
+                // （起止行号 + 签名）。三元组全等 = 该实体的声明与位置均未变化
+                // （变化只可能发生在注释/空白等不产实体的文本上），不记录任何
+                // 变更——生成层据此把整文件判为「无实体变更」跳过重生成。
+                // 任一元素不等（含 zip 顺序错位）→ 保守记录 BodyChanged。
+                let unchanged = kind == EntityChangeKind::BodyChanged
+                    && old_e.line_start == new_e.line_start
+                    && old_e.line_end == new_e.line_end
+                    && normalize_sig(old_e.signature.as_deref())
+                        == normalize_sig(new_e.signature.as_deref());
+                if unchanged {
+                    continue;
+                }
                 set.changes.push(EntityChange {
                     file: path.to_path_buf(),
                     entity_name: (*name).to_string(),
@@ -231,8 +275,13 @@ fn read_old_entities(
     let blob = obj
         .into_blob()
         .map_err(|_| anyhow::anyhow!("{} 在 from_commit 中不是 blob", path.display()))?;
-    let content = std::str::from_utf8(blob.content())
-        .with_context(|| format!("{} 旧内容非 UTF-8", path.display()))?;
+    let content = match std::str::from_utf8(blob.content()) {
+        Ok(c) => c,
+        // 二进制文件（图片/数据库/序列化产物等）无实体概念：降级为空集，
+        // 不中断分类——否则仓库内任一被提交的二进制文件会让整个 classify
+        // 失败回退保守传播（模块级误重生成）。与头部注释的降级语义一致。
+        Err(_) => return Ok(Vec::new()),
+    };
     Ok(match registry.get_for_file(path) {
         Some(parser) => parser.parse(content, path)?.entities,
         None => Vec::new(),

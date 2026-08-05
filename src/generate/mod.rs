@@ -187,16 +187,31 @@ pub async fn run_generation_filtered(
     // 并入生成范围——签名/删除等接口级变化会重生成依赖方模块的文档，
     // 实现级变化（body-only）传播结果只含本模块，行为不变。
     let affected_files = crate::incremental::impact::module_files(affected_modules, graph);
+    // v23 A1 实体级分类：从生成范围排除「无实体变更」文件——git diff 报告了
+    // 变化（文件在 changed_files），但实体级分类（change.rs 三元组全等判定）
+    // 未产出任何该文件的变更记录（纯注释/空白/换行符变化）。
+    // added/deleted 文件必有 Added/Removed 记录、接口级变化必有记录，故
+    // 无记录 = 仅非实体文本变化，模块页无需重生成（旧产物内容与行号引用
+    // 均仍准确）。排除后落入下方空集分支走快照回填（零 LLM 保留旧产物）。
+    // 与 incremental/mod.rs 的传播起点剔除共用同一函数，保证两处同口径。
+    let no_entity_change_files = crate::incremental::change::no_entity_change_files(
+        changed_files,
+        entity_changes,
+        root,
+    );
     let mut changed_insights: Vec<FileInsight> = insights
         .iter()
-        .filter(|f| changed_files.contains(&f.path) || affected_files.contains(&f.path))
+        .filter(|f| {
+            (changed_files.contains(&f.path) || affected_files.contains(&f.path))
+                && !no_entity_change_files.contains(&f.path)
+        })
         .cloned()
         .collect();
 
     if changed_insights.is_empty() {
-        // 纯删除场景（P1 数据丢失修复）：changed_files 非空（删除事件）
-        // 但无现存文件命中影响集（孤立模块唯一文件被删）时，旧实现直接
-        // 返回空输出 → render_all 不写任何产物 → cleanup_stale_outputs
+        // 空集场景（v23 A1 起含「无实体变更」文件：纯空白/注释/换行符变化
+        // 被实体级分类排除）：changed_files 非空但无文件命中影响集时，旧实现
+        // 直接返回空输出 → render_all 不写任何产物 → cleanup_stale_outputs
         // 差集语义把**全部**旧产物清空（无关模块页也被删）。
         // 修复：从导出快照回填未删除模块的旧产物（零 LLM 成本）；
         // 快照缺失（异常）时回退全量生成，宁可多生成也不丢数据。
@@ -266,7 +281,7 @@ pub async fn run_generation_filtered(
                     .filter(|d| !deleted_modules.contains(&d.title))
                     .collect();
                 tracing::info!(
-                    "增量生成: 纯删除场景（{} 个变更文件），从快照回填 {} 文档 {} 卡片（跳过已删模块 {} 个）",
+                    "增量生成: 空集场景（{} 个变更文件），从快照回填 {} 文档 {} 卡片（跳过已删模块 {} 个）",
                     changed_files.len(),
                     documents.len(),
                     cards.len(),
