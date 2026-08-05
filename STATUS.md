@@ -461,3 +461,18 @@
 - 版本：0.3.0（破坏性：模块页名=目录路径）；CHANGELOG [0.3.0] 归档 v13-v26
 - 提交：1251a74 + 修正 + 归档（3 commits）
 - 测试基线：全量绿 + clippy 0 + machete 干净
+## v27（2026-08-06）：剩余项闭环与 Unity 增量实测
+
+- 盘点剩余项结论：rubrics 判定证据形态改进（d9a30d9 方案甲：requirement 关键词
+  extract_keywords CJK 2-gram + search_pages top-2 页正文 3000 字符拼入，总证据
+  cap 20K，无命中退化维持现状）、key 管理向导（c4feb93 交互式 key 子命令：
+  stdin 明文写用户级 default-config.toml，绝不写项目级，mock 跳过/env 早退/
+  --env 指引/写后验证，6 单测）、实体级 diff 分类（v23 A1 三元组判定）、
+  版本号决策（v26 0.3.0）——均已实现并提交
+- Unity 增量实测（v26 目录页语义，SimpleToolkits mock）：全量 38 页（34 目录页
+  +4 合成页）→ 改文件 commit → update 页名集合 38=38 稳定（removed/added 空）
+  → 删文件 commit → update 目录页保留（目录仍在）+ 页数稳定；测试后仓库
+  完全还原（Test.cs/ExampleManager.cs 恢复、.repo-wiki/AGENTS.md 清理、
+  .gitignore 保留）
+- 全量验证：cargo test 414 lib + 各套件全绿、clippy 0、machete 干净、工作树干净
+- 提交：d9a30d9/c4feb93（早前）+ 本轮无代码变更（验证轮）
