@@ -196,7 +196,7 @@ mod tests {
             line_start: 1,
             line_end: 10,
             doc_comment: None,
-            signature: None,
+            signature: None, visibility: None,
             summary: None,
         }
     }
@@ -262,7 +262,7 @@ mod tests {
             file_path: Some("src/lib.rs".into()),
             line_range: None,
             doc_comment: None,
-            signature: None,
+            signature: None, visibility: None,
             module_path: vec!["src".into()],
         });
         let fn_id = g.add_node(crate::model::CodeNode {
@@ -272,7 +272,7 @@ mod tests {
             file_path: Some("src/lib.rs".into()),
             line_range: None,
             doc_comment: None,
-            signature: None,
+            signature: None, visibility: None,
             module_path: vec!["src".into(), "lib".into()],
         });
         let kg = KnowledgeGraph {
@@ -300,7 +300,7 @@ mod tests {
             file_path: Some("src/a/file_a.rs".into()),
             line_range: None,
             doc_comment: None,
-            signature: None,
+            signature: None, visibility: None,
             module_path: vec!["src".into(), "a".into()],
         });
         let e1 = graph.graph.add_node(crate::model::CodeNode {
@@ -310,7 +310,7 @@ mod tests {
             file_path: Some("src/a/file_a.rs".into()),
             line_range: Some((1, 5)),
             doc_comment: None,
-            signature: Some("fn e1()".into()),
+            signature: Some("fn e1()".into()), visibility: None,
             module_path: vec!["src".into(), "a".into()],
         });
         let file_b = graph.graph.add_node(crate::model::CodeNode {
@@ -320,7 +320,7 @@ mod tests {
             file_path: Some("src/b/file_b.rs".into()),
             line_range: None,
             doc_comment: None,
-            signature: None,
+            signature: None, visibility: None,
             module_path: vec!["src".into(), "b".into()],
         });
         let e2 = graph.graph.add_node(crate::model::CodeNode {
@@ -330,7 +330,7 @@ mod tests {
             file_path: Some("src/b/file_b.rs".into()),
             line_range: Some((1, 5)),
             doc_comment: None,
-            signature: Some("fn e2()".into()),
+            signature: Some("fn e2()".into()), visibility: None,
             module_path: vec!["src".into(), "b".into()],
         });
 

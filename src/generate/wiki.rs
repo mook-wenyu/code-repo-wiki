@@ -677,7 +677,7 @@ mod tests {
             line_start: 1,
             line_end: 50,
             doc_comment: Some("HTTP 服务".into()),
-            signature: None,
+            signature: None, visibility: None,
             summary: None,
         };
         let insight = FileInsight {
@@ -1071,7 +1071,7 @@ mod tests {
             file_path: Some("src/net.rs".into()),
             line_range: None,
             doc_comment: None,
-            signature: None,
+            signature: None, visibility: None,
             module_path: vec!["src".into(), "net".into()],
         });
         let e = g.add_node(CodeNode {
@@ -1081,7 +1081,7 @@ mod tests {
             file_path: Some("src/net.rs".into()),
             line_range: None,
             doc_comment: None,
-            signature: None,
+            signature: None, visibility: None,
             module_path: vec!["src".into(), "net".into()],
         });
         let kg = KnowledgeGraph {

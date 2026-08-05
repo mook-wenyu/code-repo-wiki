@@ -106,13 +106,13 @@ mod tests {
         let _ = t.index(&CodeNode {
             id: NodeId::new(0), kind: NodeKind::Function,
             name: "add_user".into(), file_path: None, line_range: None,
-            doc_comment: None, signature: Some("fn add_user(name: &str)".into()),
+            doc_comment: None, signature: Some("fn add_user(name: &str)".into()), visibility: None,
             module_path: vec![],
         }, "fn add_user(name: &str)");
         let _ = t.index(&CodeNode {
             id: NodeId::new(1), kind: NodeKind::Function,
             name: "delete_user".into(), file_path: None, line_range: None,
-            doc_comment: None, signature: None, module_path: vec![],
+            doc_comment: None, signature: None, visibility: None, module_path: vec![],
         }, "");
         t
     }
@@ -154,7 +154,7 @@ mod tests {
         CodeNode {
             id: NodeId::new(0), kind: NodeKind::Function, name: name.into(),
             file_path: Some(format!("src/{name}.rs")), line_range: None,
-            doc_comment: None, signature: None, module_path: vec![],
+            doc_comment: None, signature: None, visibility: None, module_path: vec![],
         }
     }
 
@@ -240,7 +240,7 @@ mod tests {
         let make_node = |id: u64, name: &str| CodeNode {
             id: NodeId::new(id as usize), kind: NodeKind::Function, name: name.into(),
             file_path: None, line_range: None, doc_comment: None,
-            signature: None, module_path: vec!["test".into()],
+            signature: None, module_path: vec!["test".into()], visibility: None,
         };
         let make_edge = |source: _, target: _| CodeEdge {
             id: petgraph::stable_graph::EdgeIndex::new(0),

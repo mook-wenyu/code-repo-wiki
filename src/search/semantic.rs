@@ -265,7 +265,7 @@ mod tests {
             file_path: Some(file.into()),
             line_range: Some((1, 10)),
             doc_comment: None,
-            signature: Some(format!("fn {}()", name)),
+            signature: Some(format!("fn {}()", name)), visibility: None,
             module_path: vec![],
         }
     }

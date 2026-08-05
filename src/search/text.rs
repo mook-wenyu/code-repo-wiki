@@ -71,7 +71,7 @@ mod tests {
             file_path: Some("src/test.rs".into()),
             line_range: Some((1, 5)),
             doc_comment: None,
-            signature: Some(format!("fn {}()", name)),
+            signature: Some(format!("fn {}()", name)), visibility: None,
             module_path: vec![],
         }
     }
@@ -135,14 +135,14 @@ mod tests {
             name: "alpha_unique".into(),
             file_path: Some("src/alpha.rs".into()),
             line_range: Some((1, 3)), doc_comment: None,
-            signature: None, module_path: vec![],
+            signature: None, module_path: vec![], visibility: None,
         };
         let node_b = CodeNode {
             id: NodeId::new(1), kind: NodeKind::Function,
             name: "beta_unique".into(),
             file_path: Some("src/beta.rs".into()),
             line_range: Some((1, 3)), doc_comment: None,
-            signature: None, module_path: vec![],
+            signature: None, module_path: vec![], visibility: None,
         };
         engine.index_batch(&[(node_a, "alpha".into()), (node_b, "beta".into())])?;
         assert_eq!(engine.doc_count(), 2);

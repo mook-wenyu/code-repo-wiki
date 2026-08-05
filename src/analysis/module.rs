@@ -173,32 +173,32 @@ mod tests {
         let p = g.add_node(CodeNode {
             id: NodeId::new(0), kind: NodeKind::Project, name: "p".into(),
             file_path: None, line_range: None, doc_comment: None,
-            signature: None, module_path: vec![],
+            signature: None, module_path: vec![], visibility: None,
         });
         let m = g.add_node(CodeNode {
             id: NodeId::new(1), kind: NodeKind::Module, name: "m".into(),
             file_path: None, line_range: None, doc_comment: None,
-            signature: None, module_path: vec!["src".into()],
+            signature: None, module_path: vec!["src".into()], visibility: None,
         });
         let f1 = g.add_node(CodeNode {
             id: NodeId::new(2), kind: NodeKind::File, name: "a.rs".into(),
             file_path: Some("src/a.rs".into()), line_range: None, doc_comment: None,
-            signature: None, module_path: vec!["src".into()],
+            signature: None, module_path: vec!["src".into()], visibility: None,
         });
         let f2 = g.add_node(CodeNode {
             id: NodeId::new(3), kind: NodeKind::File, name: "b.rs".into(),
             file_path: Some("src/b.rs".into()), line_range: None, doc_comment: None,
-            signature: None, module_path: vec!["src".into()],
+            signature: None, module_path: vec!["src".into()], visibility: None,
         });
         let e1 = g.add_node(CodeNode {
             id: NodeId::new(4), kind: NodeKind::Function, name: "foo".into(),
             file_path: Some("src/a.rs".into()), line_range: None, doc_comment: None,
-            signature: None, module_path: vec!["src".into(), "a".into()],
+            signature: None, module_path: vec!["src".into(), "a".into()], visibility: None,
         });
         let e2 = g.add_node(CodeNode {
             id: NodeId::new(5), kind: NodeKind::Function, name: "bar".into(),
             file_path: Some("src/b.rs".into()), line_range: None, doc_comment: None,
-            signature: None, module_path: vec!["src".into(), "b".into()],
+            signature: None, module_path: vec!["src".into(), "b".into()], visibility: None,
         });
         // 添加内部 Contains 边
         for (src, tgt) in &[(p, m), (m, f1), (m, f2), (f1, e1), (f2, e2)] {
@@ -291,13 +291,13 @@ mod tests {
             let nid = g.add_node(CodeNode {
                 id: NodeId::new(id), kind: NodeKind::File, name: path.into(),
                 file_path: Some(path.into()), line_range: None, doc_comment: None,
-                signature: None, module_path: segs.iter().map(|s| s.to_string()).collect(),
+                signature: None, module_path: segs.iter().map(|s| s.to_string()).collect(), visibility: None,
             });
             // File → Entity 的 Contains 边（实体计入模块集合的前提）
             let eid = g.add_node(CodeNode {
                 id: NodeId::new(id + 100), kind: NodeKind::Function, name: format!("f{id}"),
                 file_path: Some(path.into()), line_range: None, doc_comment: None,
-                signature: None, module_path: segs.iter().map(|s| s.to_string()).collect(),
+                signature: None, module_path: segs.iter().map(|s| s.to_string()).collect(), visibility: None,
             });
             g.add_edge(nid, eid, CodeEdge {
                 id: EdgeId::new(g.edge_count()), kind: EdgeKind::Contains,

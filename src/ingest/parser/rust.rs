@@ -19,7 +19,7 @@ impl RustProcessor {
                 name: name.to_string(), kind: kind.to_string(),
                 line_start: node.start_position().row + 1,
                 line_end: node.end_position().row + 1,
-                doc_comment: None, signature, summary: None,
+                doc_comment: None, signature, summary: None, visibility: None,
             });
         }
     }
@@ -88,7 +88,7 @@ impl SharedProcessor for RustProcessor {
                         name: name.to_string(), kind: "impl".to_string(),
                         line_start: node.start_position().row + 1,
                         line_end: node.end_position().row + 1,
-                        doc_comment: None, signature: sig, summary: None,
+                        doc_comment: None, signature: sig, summary: None, visibility: None,
                     });
                 }
             }
@@ -124,11 +124,11 @@ impl SharedProcessor for RustProcessor {
             }
             let core = t.strip_prefix("pub ").or_else(|| t.strip_prefix("pub(crate) ")).or_else(|| t.strip_prefix("pub(super) ")).unwrap_or(t);
             let n = |s: &str, delim: &[char]| s.split(delim).next().map(|s| s.trim().to_string());
-            if let Some(name) = core.strip_prefix("struct ").and_then(|s| n(s, &['{', ' ', '<', ';'])) { entities.push(Entity { name, kind: "struct".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: None, summary: None }); }
-            else if let Some(name) = core.strip_prefix("fn ").and_then(|s| n(s, &['(', ' ', '<'])) { entities.push(Entity { name, kind: "function".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: Some(t.to_string()), summary: None }); }
-            else if let Some(name) = core.strip_prefix("trait ").and_then(|s| n(s, &['{', ' ', '<'])) { entities.push(Entity { name, kind: "trait".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: None, summary: None }); }
-            else if let Some(name) = core.strip_prefix("enum ").and_then(|s| n(s, &['{', ' ', '<'])) { entities.push(Entity { name, kind: "enum".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: None, summary: None }); }
-            else if let Some(name) = core.strip_prefix("mod ").and_then(|s| s.strip_suffix(';')).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) { entities.push(Entity { name, kind: "mod".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: None, summary: None }); }
+            if let Some(name) = core.strip_prefix("struct ").and_then(|s| n(s, &['{', ' ', '<', ';'])) { entities.push(Entity { name, kind: "struct".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: None, summary: None, visibility: None }); }
+            else if let Some(name) = core.strip_prefix("fn ").and_then(|s| n(s, &['(', ' ', '<'])) { entities.push(Entity { name, kind: "function".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: Some(t.to_string()), summary: None, visibility: None }); }
+            else if let Some(name) = core.strip_prefix("trait ").and_then(|s| n(s, &['{', ' ', '<'])) { entities.push(Entity { name, kind: "trait".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: None, summary: None, visibility: None }); }
+            else if let Some(name) = core.strip_prefix("enum ").and_then(|s| n(s, &['{', ' ', '<'])) { entities.push(Entity { name, kind: "enum".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: None, summary: None, visibility: None }); }
+            else if let Some(name) = core.strip_prefix("mod ").and_then(|s| s.strip_suffix(';')).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) { entities.push(Entity { name, kind: "mod".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: None, summary: None, visibility: None }); }
         }
         (entities, imports)
     }

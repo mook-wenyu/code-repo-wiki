@@ -217,7 +217,7 @@ mod tests {
             file_path: Some("src/core.rs".into()),
             line_range: None,
             doc_comment: None,
-            signature: None,
+            signature: None, visibility: None,
             module_path: vec!["core".into()],
         });
 
@@ -228,7 +228,7 @@ mod tests {
             file_path: Some("src/net.rs".into()),
             line_range: None,
             doc_comment: None,
-            signature: None,
+            signature: None, visibility: None,
             module_path: vec!["net".into()],
         });
 
@@ -239,7 +239,7 @@ mod tests {
             file_path: Some("src/db.rs".into()),
             line_range: None,
             doc_comment: None,
-            signature: None,
+            signature: None, visibility: None,
             module_path: vec!["db".into()],
         });
 
@@ -413,7 +413,7 @@ mod tests {
                 file_path: Some(path.into()),
                 line_range: None,
                 doc_comment: None,
-                signature: None,
+                signature: None, visibility: None,
                 module_path: segs.into_iter().map(|s| s.to_string()).collect(),
             });
         }

@@ -21,6 +21,11 @@ pub struct CodeNode {
     pub doc_comment: Option<String>,
     /// 函数/类型签名
     pub signature: Option<String>,
+    /// 可见性修饰符（"pub"/"pub(crate)"/"private"/"internal"/"export" 等），
+    /// 由解析器按行级文本提取；缺失（默认可见性）为 None。
+    /// serde(default) 兼容旧版 insights_cache 反序列化。
+    #[serde(default)]
+    pub visibility: Option<String>,
     /// 模块路径（用 :: 分隔）
     pub module_path: Vec<String>,
 }

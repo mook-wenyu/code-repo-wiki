@@ -74,7 +74,7 @@ mod tests {
         CodeNode {
             id: NodeId::new(0), kind: NodeKind::Function, name: name.into(),
             file_path: None, line_range: None, doc_comment: None,
-            signature: None, module_path: vec![],
+            signature: None, module_path: vec![], visibility: None,
         }
     }
 

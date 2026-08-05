@@ -20,7 +20,7 @@ pub fn build(insights: &[FileInsight]) -> Result<KnowledgeGraph> {
         file_path: None,
         line_range: None,
         doc_comment: None,
-        signature: None,
+        signature: None, visibility: None,
         module_path: Vec::new(),
     });
 
@@ -57,7 +57,7 @@ pub fn build(insights: &[FileInsight]) -> Result<KnowledgeGraph> {
             file_path: Some(insight.path.to_string_lossy().into_owned()),
             line_range: None,
             doc_comment: None,
-            signature: None,
+            signature: None, visibility: None,
             module_path: dir_segments.clone(),
         });
 
@@ -91,6 +91,7 @@ pub fn build(insights: &[FileInsight]) -> Result<KnowledgeGraph> {
                     line_range: Some((e.line_start, e.line_end)),
                     doc_comment: e.doc_comment.clone(),
                     signature: e.signature.clone(),
+                    visibility: e.visibility.clone(),
                     module_path,
                 });
                 (e.clone(), id)
@@ -169,7 +170,7 @@ fn ensure_module_chain(
             file_path: None,
             line_range: None,
             doc_comment: None,
-            signature: None,
+            signature: None, visibility: None,
             module_path: prefix.clone(),
         });
         g.add_edge(
@@ -456,7 +457,7 @@ mod tests {
                     line_end: 5,
                     doc_comment: None,
                     signature: Some("fn add(a: i32, b: i32) -> i32".into()),
-                    summary: None,
+                    summary: None, visibility: None,
                 },
                 Entity {
                     name: "Sub".into(),
@@ -465,7 +466,7 @@ mod tests {
                     line_end: 10,
                     doc_comment: None,
                     signature: Some("struct Sub".into()),
-                    summary: None,
+                    summary: None, visibility: None,
                 },
             ],
             imports: vec![],
@@ -490,7 +491,7 @@ mod tests {
                     line_end: 3,
                     doc_comment: None,
                     signature: Some("fn helper()".into()),
-                    summary: None,
+                    summary: None, visibility: None,
                 }],
                 imports: vec![],
                 doc_comments: vec![],
@@ -506,7 +507,7 @@ mod tests {
                     line_end: 10,
                     doc_comment: None,
                     signature: Some("fn run()".into()),
-                    summary: None,
+                    summary: None, visibility: None,
                 }],
                 imports: vec![ImportStmt {
                     source: "crate::utils::helper".into(),
@@ -541,7 +542,7 @@ mod tests {
             file_path: None,
             line_range: None,
             doc_comment: None,
-            signature: None,
+            signature: None, visibility: None,
             module_path: vec![],
         });
         let b = kg.graph.add_node(CodeNode {
@@ -551,7 +552,7 @@ mod tests {
             file_path: None,
             line_range: None,
             doc_comment: None,
-            signature: None,
+            signature: None, visibility: None,
             module_path: vec![],
         });
         kg.graph.add_edge(a, b, CodeEdge {
@@ -589,7 +590,7 @@ mod tests {
             file_path: Some("src/a.rs".into()),
             line_range: Some((1, 3)),
             doc_comment: None,
-            signature: None,
+            signature: None, visibility: None,
             module_path: vec![],
         });
         let caller = g.add_node(CodeNode {
@@ -599,7 +600,7 @@ mod tests {
             file_path: Some("src/b.rs".into()),
             line_range: Some((1, 3)),
             doc_comment: None,
-            signature: None,
+            signature: None, visibility: None,
             module_path: vec![],
         });
         // call_candidates：(实体, 节点, 函数体源码)
@@ -611,7 +612,7 @@ mod tests {
                 line_end: 3,
                 doc_comment: None,
                 signature: None,
-                summary: None,
+                summary: None, visibility: None,
             },
             caller,
             "pub fn caller() { callee(42) }".to_string(),
@@ -637,7 +638,7 @@ mod tests {
             file_path: Some("src/a.rs".into()),
             line_range: Some((1, 3)),
             doc_comment: None,
-            signature: None,
+            signature: None, visibility: None,
             module_path: vec![],
         });
         let caller = g.add_node(CodeNode {
@@ -647,7 +648,7 @@ mod tests {
             file_path: Some("src/b.rs".into()),
             line_range: Some((1, 3)),
             doc_comment: None,
-            signature: None,
+            signature: None, visibility: None,
             module_path: vec![],
         });
         let candidates = vec![(
@@ -658,7 +659,7 @@ mod tests {
                 line_end: 3,
                 doc_comment: None,
                 signature: None,
-                summary: None,
+                summary: None, visibility: None,
             },
             caller,
             "pub fn caller() { mycallee(1) }".to_string(),
@@ -682,7 +683,7 @@ mod tests {
             file_path: Some("src/a.rs".into()),
             line_range: Some((1, 3)),
             doc_comment: None,
-            signature: None,
+            signature: None, visibility: None,
             module_path: vec![],
         });
         // 两个候选都调用 callee（同名实体跳过自身；同一模式重复出现去重）
@@ -695,7 +696,7 @@ mod tests {
                     line_end: 3,
                     doc_comment: None,
                     signature: None,
-                    summary: None,
+                    summary: None, visibility: None,
                 },
                 callee,
                 "pub fn callee() { callee(1); callee(2) }".to_string(),
@@ -708,7 +709,7 @@ mod tests {
                     line_end: 3,
                     doc_comment: None,
                     signature: None,
-                    summary: None,
+                    summary: None, visibility: None,
                 },
                 g.add_node(CodeNode {
                     id: NodeId::new(1),
@@ -717,7 +718,7 @@ mod tests {
                     file_path: Some("src/c.rs".into()),
                     line_range: Some((1, 3)),
                     doc_comment: None,
-                    signature: None,
+                    signature: None, visibility: None,
                     module_path: vec![],
                 }),
                 "pub fn other() { callee(3) }".to_string(),
@@ -750,7 +751,7 @@ mod tests {
             file_path: Some("src/a.rs".into()),
             line_range: Some((1, 3)),
             doc_comment: None,
-            signature: None,
+            signature: None, visibility: None,
             module_path: vec![],
         });
         let caller = g.add_node(CodeNode {
@@ -760,7 +761,7 @@ mod tests {
             file_path: Some("src/b.rs".into()),
             line_range: Some((1, 3)),
             doc_comment: None,
-            signature: None,
+            signature: None, visibility: None,
             module_path: vec![],
         });
         let candidates = vec![(
@@ -771,7 +772,7 @@ mod tests {
                 line_end: 3,
                 doc_comment: None,
                 signature: None,
-                summary: None,
+                summary: None, visibility: None,
             },
             caller,
             "pub fn caller() { let x = 1; }".to_string(),

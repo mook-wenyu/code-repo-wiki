@@ -80,7 +80,7 @@ fn bench_text_search() {
             file_path: Some("src/lib.rs".into()),
             line_range: Some((i * 5, i * 5 + 10)),
             doc_comment: None,
-            signature: Some(format!("fn test_fn_{}(arg: u32) -> bool", i)),
+            signature: Some(format!("fn test_fn_{}(arg: u32) -> bool", i)), visibility: None,
             module_path: vec!["crate".into(), "module".into()],
         };
         engine.index(&node, &format!("fn test_fn_{}(arg: u32) -> bool {{ arg > 0 }}", i)).unwrap();
@@ -186,7 +186,7 @@ fn bench_index_batch() {
                 file_path: Some("src/lib.rs".into()),
                 line_range: Some((i * 5, i * 5 + 10)),
                 doc_comment: None,
-                signature: Some(format!("fn bench_fn_{}(arg: u32) -> bool", i)),
+                signature: Some(format!("fn bench_fn_{}(arg: u32) -> bool", i)), visibility: None,
                 module_path: vec!["crate".into(), "module".into()],
             };
             (node, format!("fn bench_fn_{}(arg: u32) -> bool {{ arg > 0 }}", i))

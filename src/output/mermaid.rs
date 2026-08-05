@@ -182,7 +182,7 @@ mod tests {
             file_path: None,
             line_range: None,
             doc_comment: None,
-            signature: None,
+            signature: None, visibility: None,
             module_path: vec!["core".into()],
         });
 
@@ -193,7 +193,7 @@ mod tests {
             file_path: None,
             line_range: None,
             doc_comment: None,
-            signature: None,
+            signature: None, visibility: None,
             module_path: vec!["net".into()],
         });
 
@@ -246,7 +246,7 @@ mod tests {
                 file_path: None,
                 line_range: None,
                 doc_comment: None,
-                signature: None,
+                signature: None, visibility: None,
                 module_path: vec![module.into()],
             })
         };

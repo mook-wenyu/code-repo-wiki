@@ -69,7 +69,7 @@ fn make_graph() -> KnowledgeGraph {
                     file_path: None,
                     line_range: None,
                     doc_comment: None,
-                    signature: None,
+                    signature: None, visibility: None,
                     module_path: vec![m.to_string()],
                 }),
             )

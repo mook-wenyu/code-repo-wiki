@@ -1040,7 +1040,7 @@ mod tests {
             file_path: Some("src/a.rs".into()),
             line_range: None,
             doc_comment: None,
-            signature: None,
+            signature: None, visibility: None,
             module_path: vec!["net".into()],
         });
         let b = g.add_node(CodeNode {
@@ -1050,7 +1050,7 @@ mod tests {
             file_path: Some("src/b.rs".into()),
             line_range: None,
             doc_comment: None,
-            signature: None,
+            signature: None, visibility: None,
             module_path: vec!["http".into()],
         });
         g.add_edge(a, b, crate::model::CodeEdge {

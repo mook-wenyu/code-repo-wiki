@@ -78,13 +78,13 @@ mod tests {
         let caller = g.add_node(CodeNode {
             id: NodeId::new(0), kind: NodeKind::Function,
             name: "caller".into(), file_path: None,
-            line_range: None, doc_comment: None, signature: None,
+            line_range: None, doc_comment: None, signature: None, visibility: None,
             module_path: vec!["test".into()],
         });
         let callee = g.add_node(CodeNode {
             id: NodeId::new(1), kind: NodeKind::Function,
             name: "callee".into(), file_path: None,
-            line_range: None, doc_comment: None, signature: None,
+            line_range: None, doc_comment: None, signature: None, visibility: None,
             module_path: vec!["test".into()],
         });
         g.add_edge(caller, callee, CodeEdge {

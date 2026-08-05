@@ -78,7 +78,7 @@ impl SharedProcessor for CSharpProcessor {
                                 name: name.to_string(), kind: "variable".to_string(),
                                 line_start: child.start_position().row + 1,
                                 line_end: child.end_position().row + 1,
-                                doc_comment: None, signature: None, summary: None,
+                                doc_comment: None, signature: None, summary: None, visibility: None,
                             });
                         }
                     }
@@ -135,7 +135,7 @@ impl SharedProcessor for CSharpProcessor {
                     entities.push(Entity {
                         name: name.to_string(), kind: "mod".into(),
                         line_start: line_no, line_end: line_no,
-                        doc_comment: None, signature: None, summary: None,
+                        doc_comment: None, signature: None, summary: None, visibility: None,
                     });
                 }
                 continue;
@@ -160,7 +160,7 @@ impl SharedProcessor for CSharpProcessor {
                         entities.push(Entity {
                             name: name.to_string(), kind: kind.to_string(),
                             line_start: line_no, line_end: line_no,
-                            doc_comment: None, signature: Some(t.to_string()), summary: None,
+                            doc_comment: None, signature: Some(t.to_string()), summary: None, visibility: None,
                         });
                         break;
                     }
@@ -184,7 +184,7 @@ impl SharedProcessor for CSharpProcessor {
                         entities.push(Entity {
                             name: name.to_string(), kind: "function".into(),
                             line_start: line_no, line_end: line_no,
-                            doc_comment: None, signature: Some(t.to_string()), summary: None,
+                            doc_comment: None, signature: Some(t.to_string()), summary: None, visibility: None,
                         });
                         }
                     }
@@ -204,7 +204,7 @@ impl SharedProcessor for CSharpProcessor {
                         entities.push(Entity {
                             name: name.to_string(), kind: "property".into(),
                             line_start: line_no, line_end: line_no,
-                            doc_comment: None, signature: Some(t.to_string()), summary: None,
+                            doc_comment: None, signature: Some(t.to_string()), summary: None, visibility: None,
                         });
                     }
                 }

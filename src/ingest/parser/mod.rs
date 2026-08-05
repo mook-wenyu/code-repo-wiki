@@ -39,6 +39,11 @@ pub struct Entity {
     pub doc_comment: Option<String>,
     pub signature: Option<String>,
     pub summary: Option<String>,
+    /// 可见性修饰符（"pub"/"pub(crate)"/"private"/"internal"/"export" 等）；
+    /// 由解析出口的 fill_visibilities 按行级文本统一提取，缺失（默认可见性）
+    /// 为 None。serde(default) 兼容旧版 insights_cache 反序列化。
+    #[serde(default)]
+    pub visibility: Option<String>,
 }
 
 /// 导入语句
@@ -136,7 +141,9 @@ pub trait SharedProcessor: Sized {
 
         let mut parser = Parser::new();
         if parser.set_language(&Self::grammar()).is_err() {
-            return Self::fallback(source);
+            let (mut e, i) = Self::fallback(source);
+            fill_visibilities(source, &mut e);
+            return (e, i);
         }
         let tree = match parser.parse(source, None) {
             Some(t) => t,
@@ -160,6 +167,7 @@ pub trait SharedProcessor: Sized {
         }
 
         Self::post_process(source, &mut entities);
+        fill_visibilities(source, &mut entities);
         (entities, imports)
     }
 
@@ -172,21 +180,58 @@ pub trait SharedProcessor: Sized {
             } else { None };
             entities.push(Entity {
                 name: name.to_string(), kind: rule.entity_kind.to_string(),
-                line_start: node.start_position().row + 1,
-                line_end: node.end_position().row + 1,
-                doc_comment: None, signature: sig, summary: None,
+                line_start: node.start_position().row + 1,                line_end: node.end_position().row + 1,
+                doc_comment: None, signature: sig, summary: None, visibility: None,
             });
         }
     }
 
     /// 统一 FileInsight 组装（empty 早退 + extract），语言侧 parse 一行调用
-    fn parse_file(source: &str, path: &Path) -> Result<FileInsight> {
-        let language = Self::language();
+    fn parse_file(source: &str, path: &Path) -> Result<FileInsight> {        let language = Self::language();
         if source.is_empty() {
             return Ok(FileInsight { path: path.to_path_buf(), language: language.into(), entities: vec![], imports: vec![], doc_comments: vec![], source: source.to_string() });
         }
         let (entities, imports) = Self::extract(source);
         Ok(FileInsight { path: path.to_path_buf(), language: language.into(), entities, imports, doc_comments: vec![], source: source.to_string() })
+    }
+}
+
+/// 从源码文本统一提取实体可见性（解析出口调用，覆盖 record_by_rule /
+/// handle_special / fallback 三条产出路径）
+///
+/// 可见性不在 tree-sitter 节点字段中（各语言语法差异），统一按行级文本
+/// 提取：从实体起始行向上回溯，跳过属性宏行（Rust `#[...]`、C# `[...]`）
+/// 与空行，取首个「修饰符 token」——命中显式可见性声明（Rust pub 系 /
+/// C# Java private·protected·internal / TS JS export）即返回原文；
+/// 未命中（默认可见性，如 Python 无修饰符、Go 大写导出语义）返回 None，
+/// api.md 标注省略。实体起始行即声明行（多行签名首行含可见性），
+/// 回溯只在属性宏场景发生（如 `#[derive]` 前置的 pub struct），
+/// 遇到任何非属性行即停止，不会扫到文件头。
+fn fill_visibilities(source: &str, entities: &mut Vec<Entity>) {
+    let lines: Vec<&str> = source.lines().collect();
+    for e in entities {
+        if e.visibility.is_some() {
+            continue;
+        }
+        let mut i = e.line_start.saturating_sub(1);
+        while let Some(line) = lines.get(i) {
+            let t = line.trim();
+            if t.is_empty() || t.starts_with('#') || t.starts_with('[') {
+                if i == 0 {
+                    break;
+                }
+                i -= 1;
+                continue;
+            }
+            let token = t.split_whitespace().next().unwrap_or("");
+            e.visibility = match token {
+                "pub" | "pub(crate)" | "pub(super)" | "private" | "protected" | "internal" | "export" => {
+                    Some(token.to_string())
+                }
+                _ => None,
+            };
+            break;
+        }
     }
 }
 
@@ -225,5 +270,65 @@ impl ParserRegistry {
 impl Default for ParserRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entity(name: &str, start: usize) -> Entity {
+        Entity {
+            name: name.into(),
+            kind: "function".into(),
+            line_start: start,
+            line_end: start,
+            doc_comment: None,
+            signature: None,
+            summary: None,
+            visibility: None,
+        }
+    }
+
+    #[test]
+    fn test_fill_visibilities_extracts_modifiers() {
+        // 显式修饰符：Rust pub / C# private 按行首 token 提取
+        let src = "pub fn a() {}\n\nprivate int x;\n";
+        let mut es = vec![entity("a", 1), entity("x", 3)];
+        fill_visibilities(src, &mut es);
+        assert_eq!(es[0].visibility.as_deref(), Some("pub"));
+        assert_eq!(es[1].visibility.as_deref(), Some("private"));
+    }
+
+    #[test]
+    fn test_fill_visibilities_skips_attribute_lines() {
+        // 属性宏行（Rust #[derive] / C# [SerializeField]）不携带可见性，
+        // 回溯到其上方的 pub / private 声明行
+        let src = "#[derive(Debug)]\npub struct Foo;\n\n[SerializeField]\nprivate float speed;\n";
+        let mut es = vec![entity("Foo", 2), entity("speed", 5)];
+        fill_visibilities(src, &mut es);
+        assert_eq!(es[0].visibility.as_deref(), Some("pub"));
+        assert_eq!(es[1].visibility.as_deref(), Some("private"));
+    }
+
+    #[test]
+    fn test_fill_visibilities_none_without_modifier() {
+        // 无修饰符语言（Python 默认可见性 / Go 大写导出语义）→ None，
+        // api.md 渲染省略可见性标注
+        let src = "def run():\n    pass\n\nfunc Run() {}\n";
+        let mut es = vec![entity("run", 1), entity("Run", 4)];
+        fill_visibilities(src, &mut es);
+        assert!(es[0].visibility.is_none());
+        assert!(es[1].visibility.is_none());
+    }
+
+    #[test]
+    fn test_fill_visibilities_keeps_pub_crate_variant() {
+        // pub(crate)/pub(super) 为完整 token，原样保留
+        let src = "pub(crate) fn internal() {}\npub(super) fn child() {}\n";
+        let mut es = vec![entity("internal", 1), entity("child", 2)];
+        fill_visibilities(src, &mut es);
+        assert_eq!(es[0].visibility.as_deref(), Some("pub(crate)"));
+        assert_eq!(es[1].visibility.as_deref(), Some("pub(super)"));
     }
 }

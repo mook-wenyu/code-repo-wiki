@@ -69,7 +69,17 @@ pub fn render_api_reference(graph: &KnowledgeGraph) -> WikiDocument {
                 .as_deref()
                 .map(|d| d.lines().next().unwrap_or(""))
                 .unwrap_or("");
-            let mut line = format!("- `{}` — {}", signature, doc);
+            // v21 G 组：实体行增强标注——追加类型中文名与可见性修饰符
+            // （如 `- \`pub fn load(...)\` (函数, pub) — ...`），使文档读者
+            // 一眼可知实体形态与可访问性。可见性由解析器按行级文本提取
+            // （Entity.visibility → CodeNode.visibility），缺失时省略标注。
+            let kind_zh = kind_label(&node.kind);
+            let vis_part = node
+                .visibility
+                .as_deref()
+                .map(|v| format!(", {v}"))
+                .unwrap_or_default();
+            let mut line = format!("- `{}` ({kind_zh}{vis_part}) — {}", signature, doc);
             // 文件:行定位（无行号信息时省略）
             if let Some(file) = node.file_path.as_deref() {
                 if let Some((start, _)) = node.line_range {
@@ -92,6 +102,26 @@ pub fn render_api_reference(graph: &KnowledgeGraph) -> WikiDocument {
         references: vec![],
         last_updated: chrono::Utc::now().to_rfc3339(),
         fingerprint: None,
+    }
+}
+
+/// 实体类型的中文标签（api.md 实体行增强标注用）
+fn kind_label(kind: &crate::model::NodeKind) -> &'static str {
+    match kind {
+        crate::model::NodeKind::Project => "项目",
+        crate::model::NodeKind::Module => "模块",
+        crate::model::NodeKind::File => "文件",
+        crate::model::NodeKind::Struct => "结构体",
+        crate::model::NodeKind::Enum => "枚举",
+        crate::model::NodeKind::Function => "函数",
+        crate::model::NodeKind::Trait => "Trait",
+        crate::model::NodeKind::Impl => "实现",
+        crate::model::NodeKind::Type => "类型别名",
+        crate::model::NodeKind::Constant => "常量",
+        crate::model::NodeKind::Variable => "变量",
+        crate::model::NodeKind::Interface => "接口",
+        crate::model::NodeKind::Class => "类",
+        crate::model::NodeKind::Macro => "宏",
     }
 }
 
@@ -491,7 +521,7 @@ mod tests {
             file_path: Some("src/config.rs".into()),
             line_range: None,
             doc_comment: None,
-            signature: None,
+            signature: None, visibility: None,
             module_path: vec!["crate".into(), "config".into()],
         });
         let fn_id = g.add_node(crate::model::CodeNode {
@@ -501,7 +531,7 @@ mod tests {
             file_path: Some("src/config.rs".into()),
             line_range: Some((12, 20)),
             doc_comment: Some("加载配置\n\n多行注释".into()),
-            signature: Some("pub fn load(path: &str) -> Result<Config>".into()),
+            signature: Some("pub fn load(path: &str) -> Result<Config>".into()), visibility: Some("pub".into()),
             module_path: vec!["crate".into(), "config".into()],
         });
         let graph = KnowledgeGraph {
@@ -520,8 +550,42 @@ mod tests {
         assert_eq!(doc.kind, DocumentKind::ApiReference);
         // 容器节点被跳过，只输出函数实体
         assert!(doc.content.contains("## crate::config"));
-        assert!(doc.content.contains("- `pub fn load(path: &str) -> Result<Config>` — 加载配置 — src/config.rs:12"));
+        // v21 G 组：实体行带类型中文标注 + 可见性修饰符
+        assert!(doc.content.contains("- `pub fn load(path: &str) -> Result<Config>` (函数, pub) — 加载配置 — src/config.rs:12"));
         assert!(!doc.content.contains("config.rs` —"));
+    }
+
+    #[test]
+    fn test_render_api_reference_omits_visibility_when_absent() {
+        // 无可见性信息（如 Python/Go 无修饰符语法）时标注省略可见性段
+        let mut g = petgraph::stable_graph::StableDiGraph::<
+            crate::model::CodeNode,
+            crate::model::CodeEdge,
+        >::new();
+        let fn_id = g.add_node(crate::model::CodeNode {
+            id: petgraph::stable_graph::NodeIndex::new(0),
+            kind: crate::model::NodeKind::Function,
+            name: "run".into(),
+            file_path: Some("src/main.py".into()),
+            line_range: Some((1, 3)),
+            doc_comment: None,
+            signature: Some("def run()".into()), visibility: None,
+            module_path: vec!["main".into()],
+        });
+        let graph = KnowledgeGraph {
+            graph: g,
+            modules: vec![crate::model::ModuleCluster {
+                name: "main".into(),
+                node_ids: vec![fn_id],
+                cohesion: 1.0,
+                coupling: 0.0,
+                description: None,
+            }],
+            features: Vec::new(),
+        };
+        let doc = render_api_reference(&graph);
+        assert!(doc.content.contains("- `def run()` (函数) —  — src/main.py:1"));
+        assert!(!doc.content.contains(", pub)"));
     }
 
     #[test]

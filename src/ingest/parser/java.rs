@@ -48,7 +48,7 @@ impl SharedProcessor for JavaProcessor {
                                 name: name.to_string(), kind: "variable".to_string(),
                                 line_start: node.start_position().row + 1,
                                 line_end: node.end_position().row + 1,
-                                doc_comment: None, signature: None, summary: None,
+                                doc_comment: None, signature: None, summary: None, visibility: None,
                             });
                         }
                         if !cur.goto_next_sibling() { break; }
@@ -103,7 +103,7 @@ impl SharedProcessor for JavaProcessor {
                         entities.push(Entity {
                             name: name.to_string(), kind: kind.to_string(),
                             line_start: line_no, line_end: line_no,
-                            doc_comment: None, signature: Some(t.to_string()), summary: None,
+                            doc_comment: None, signature: Some(t.to_string()), summary: None, visibility: None,
                         });
                         break;
                     }

@@ -487,7 +487,7 @@ mod tests {
             line_start: 1,
             line_end: 30,
             doc_comment: Some("配置管理".into()),
-            signature: None,
+            signature: None, visibility: None,
             summary: None,
         };
         let insight = FileInsight {

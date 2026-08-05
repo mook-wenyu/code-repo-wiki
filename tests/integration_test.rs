@@ -180,7 +180,7 @@ fn test_incremental_remove_by_file() {
         file_path: Some("src/alpha.rs".into()),
         line_range: Some((1, 5)),
         doc_comment: None,
-        signature: Some("fn alpha_handler()".into()),
+        signature: Some("fn alpha_handler()".into()), visibility: None,
         module_path: vec![],
     };
     let node_b = repo_wiki::model::CodeNode {
@@ -190,7 +190,7 @@ fn test_incremental_remove_by_file() {
         file_path: Some("src/beta.rs".into()),
         line_range: Some((1, 3)),
         doc_comment: None,
-        signature: Some("fn beta_processor()".into()),
+        signature: Some("fn beta_processor()".into()), visibility: None,
         module_path: vec![],
     };
 

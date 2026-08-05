@@ -41,7 +41,7 @@ impl SharedProcessor for GoProcessor {
                         name: name.to_string(), kind: kind.to_string(),
                         line_start: node.start_position().row + 1,
                         line_end: node.end_position().row + 1,
-                        doc_comment: None, signature: None, summary: None,
+                        doc_comment: None, signature: None, summary: None, visibility: None,
                     });
                 }
             }
@@ -70,7 +70,7 @@ impl SharedProcessor for GoProcessor {
                                 name: name.to_string(), kind: kind.to_string(),
                                 line_start: node.start_position().row + 1,
                                 line_end: node.end_position().row + 1,
-                                doc_comment: None, signature: None, summary: None,
+                        doc_comment: None, signature: None, summary: None, visibility: None,
                             });
                         }
                         if !cur.goto_next_sibling() { break; }
@@ -94,14 +94,14 @@ impl SharedProcessor for GoProcessor {
                 let name = rest.split_whitespace().next().unwrap_or("").to_string();
                 if name.is_empty() { continue; }
                 let kind = if rest.contains("struct") { "struct" } else if rest.contains("interface") { "interface" } else { "type" };
-                entities.push(Entity { name, kind: kind.to_string(), line_start: line_no, line_end: line_no, doc_comment: None, signature: None, summary: None });
+                entities.push(Entity { name, kind: kind.to_string(), line_start: line_no, line_end: line_no, doc_comment: None, signature: None, summary: None, visibility: None });
             } else if let Some(n) = t.strip_prefix("func ").and_then(|s| {
                 s.split('(').next().and_then(|first| {
                     if first.contains(' ') { first.split_whitespace().last().map(|s| s.to_string()) }
                     else { Some(first.split_whitespace().next().unwrap_or("").to_string()) }
                 })
             }) {
-                entities.push(Entity { name: n, kind: "function".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: Some(t.to_string()), summary: None });
+                entities.push(Entity { name: n, kind: "function".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: Some(t.to_string()), summary: None, visibility: None });
             }
         }
         (entities, imports)

@@ -1190,7 +1190,7 @@ pub fn execute_ast_search(
                 file_path: Some(insight.path.to_string_lossy().to_string()),
                 line_range: Some((m.start_line, m.end_line)),
                 doc_comment: None,
-                signature: Some(signature),
+                signature: Some(signature), visibility: None,
                 module_path,
             },
             score: 100.0,
