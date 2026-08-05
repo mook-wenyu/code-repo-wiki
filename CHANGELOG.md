@@ -3,7 +3,7 @@
 本文件记录 repo-wiki 的显著变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（SemVer）。
 
-## [Unreleased]
+## [0.3.0] - 2026-08-05
 
 ### Changed
 - 配置链三合一（v25）：init/install-to-opencode 合并为 install（确保用户级默认配置 + 插件/MCP/hooks 注册）；项目级配置统一为 `config.toml`，字段级合并覆盖用户级 `default-config.toml`（数组整体覆盖）；旧文件名 `.repo-wiki.toml` 与旧全局 `config.toml` 停用
