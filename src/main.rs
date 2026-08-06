@@ -253,8 +253,10 @@ enum Commands {
         judge: bool,
         /// 只跑裁判层（Coverage/Doc Info/lint + TQS/Rubric），跳过
         /// Update Recall 的 git commit 回放——大仓库评测时回放成本
-        /// 不可接受，用此模式单独完成裁判打分（与 --judge 互斥）
-        #[arg(long, conflicts_with = "judge")]
+        /// 不可接受，用此模式单独完成裁判打分。
+        /// 与 --judge 正交：--rubrics-only --judge = 真实 LLM 裁判的
+        /// 快速评测（v28 t09 验证轮的标准形态）
+        #[arg(long)]
         rubrics_only: bool,
     },
     /// 清单批量跑分（v21 E 组）：对清单中每个仓库执行 Coverage/
