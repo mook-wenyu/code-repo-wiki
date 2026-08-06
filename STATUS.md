@@ -521,3 +521,14 @@
   - 防回归：test_detect_communities_single_dir_repo（10 文件全在 dir00/ → 1 社区含全部文件 + 确定性；根目录 5 散文件 → 整体 1 社区）。
 - **验证**：29 套件全绿（559 测试：434 lib + 125 集成）、clippy --all-targets 0 警告（强制全量重编核验）、cargo machete 干净；本仓库自身 api.md 的 `## src`/`## src::storage` 与修复语义互相自洽。
 - **未提交**：按任务要求不提交；与主线并行会话（mixed 场景修复 generate/mod.rs + test_incremental_large_fixture.rs）共存于工作区，未改其文件。
+
+## 五十六节 v29 验证轮（2026-08-07）
+
+- 3 并行子代理完成：A knowing 剩 10 仓 mock 跑分（django/jekyll/kafka 完成，大仓 20-35 分钟/仓，GitHub 直连不稳 SSH 可靠，10 仓预克隆+钉死 commit 留档）；B 删除场景 mixed 修复（surviving 逻辑提前主路径，防回归）；C 短名+单目录分流（lint 模块名放行+community 单目录目录页）
+- 提交：97e29b7（B）/2f17b5d（C）/docs（STATUS 五十三-五十五+task_plan.md）；全量 434 lib+clippy 0
+- 本仓库真实 regenerate（v29selfgen.log）：99 文件/1821 实体/23221 边/11 模块/419042ms
+- lint 复测三连实证：默认链 200+ stale=配置不一致（lint 默认 scope vs 生成显式配置）；同配置 stale=14 条标准库/泛型噪声（已知）；entity-coverage 残留=LLM 幻觉捕获（test_clean_load 等源码不存在，正确行为）；v29 产物 bad-citation=0/broken=0（v28 的 27 bad-citation 系旧产物 LLM 编造，regenerate 后消失）
+- rubrics 三连测：第一轮 TQS 成功（kappa_cohen -0.50/flip_rate 0.5/parse 97.6%/low_confidence=tests），rubric 生成阶段起 402 Insufficient Balance（DeepSeek 余额耗尽）；第二三轮全 402；错误处理路径验证通过（生成失败 3 轮→跳过 warn→rubric null 不中断；TQS 失败→null 不 recode）
+- 归因修正：v23 satisfied 22/52 vs v29 0/51 系资金中断非多数投票保守化
+- 阻塞：真实 LLM 验证（rubrics 复测/大仓库跑分）需充值或换 key
+- 遗留：knowing 9/16 仓 mock 数据点；CodeWikiBench 22 仓清单留档（HF 不可达 commit 缺省 HEAD）；bad-vctx 4 条（v29 产物中人工 vctx 校验捕获）
