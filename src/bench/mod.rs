@@ -815,6 +815,8 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
     let mut flip_sum = 0.0f64;
     let mut pos_flip_sum = 0.0f64;
     let mut kappa_table = [[0usize; 2]; 2];
+    // 各模块实际复测轮数（升级补轮后 > TQS_REPEATS；t09 实测报告字段曾失真）
+    let mut actual_repeats: Vec<usize> = Vec::new();
     // 解析成功率（全部调用，含失败模块；2606.00093 item 7）
     let mut parse_ok = 0usize;
     let mut parse_total = 0usize;
@@ -866,6 +868,10 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
             low_confidence.push(title.clone());
             continue;
         }
+        // 实际复测轮数（基础 5 轮 + 低置信升级补轮），供报告如实
+        // 反映升级是否发生（v28 t09 实测发现 repeats 字段曾硬编码
+        // 恒为 5——升级已执行但报告失真）
+        actual_repeats.push(rounds / 2);
         // 每维均值（全部轮次平均，同时消位置偏差与复测波动）；
         // scores 为去掉 a_first 标记的分数数组（一致性/标准差/均值共用，
         // 与 v14 语义一致：a_first=true 取 A 分数，false 取 B 分数）
@@ -964,6 +970,13 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
     low_confidence.sort();
     low_confidence.dedup();
     let avg_std = std_sum / (judged * 5) as f64;
+    // v28 t09：实际复测轮数（平均，升级补轮后 >5）；无成功模块时
+    // 保持基础轮数语义（报告字段不虚报）
+    let repeats_actual = if actual_repeats.is_empty() {
+        TQS_REPEATS
+    } else {
+        actual_repeats.iter().sum::<usize>() / actual_repeats.len()
+    };
     Ok(Some(TqsReport {
         judged_modules: judged,
         avg_clarity: avg(0),
@@ -972,7 +985,7 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
         avg_richness: avg(3),
         avg_structure: avg(4),
         avg_total: (avg(0) + avg(1) + avg(2) + avg(3) + avg(4)) / 5.0,
-        repeats: TQS_REPEATS,
+        repeats: repeats_actual,
         kappa_like,
         kappa,
         position_bias,
