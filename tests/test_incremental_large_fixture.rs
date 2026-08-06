@@ -426,3 +426,106 @@ fn test_delete_one_file_in_pair_module_regenerates_module() {
 
     let _ = std::fs::remove_dir_all(&repo);
 }
+
+/// v21 F 组遗留（mixed 场景）：删除与修改并存时，被删文件所属模块
+/// 必须重生成清除被删实体残留。
+///
+/// 结构复用 build_pair_module_repo：src/m20/{a,b}.rs 互调（同社区模块），
+/// 另有 src/solo.rs 独立模块。场景：删除 a.rs（m20 部分删除）**同时**修改
+/// solo.rs（签名变化）——changed_insights 非空，旧实现不进快照回填
+/// 分支，而删除补偿（surviving 并入）只存在于回填分支内 → 补偿失效；
+/// 且被删文件在当前图中无节点，语义传播起点跳过（impact.rs 对无节点
+/// 文件 continue），m20 进不了 affected_modules → src_m20.md 磁盘残留
+/// a_alpha 实体描述。修复后删除补偿独立于回填分支执行 → m20 存活
+/// 文件并入变更集走正常重生成。
+///
+/// 判别信号（mock 占位页脚幂等，字节级断言不可靠，改用 title 与
+/// 真实内容的 api.md/磁盘页）：
+/// - documents 含 src::m20 模块页（重生成发生）；
+/// - 磁盘 src_m20 页不含 a_alpha（被删实体不残留——缺陷时是旧文件）；
+/// - api.md（由 graph 合成，含真实实体名）不含 a_alpha、含 solo 新签名；
+/// - solo 模块页同样在本次生成集（modified 文件正常生效）。
+#[test]
+fn test_delete_file_mixed_with_modification_regenerates_module() {
+    let repo = std::env::temp_dir().join(format!("repo_wiki_pair_mixed_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&repo);
+    std::fs::create_dir_all(&repo).expect("构造临时仓库失败");
+    build_pair_module_repo(&repo).expect("构造双文件模块 fixture 失败");
+
+    let root = repo_wiki::project::ProjectRoot::new(repo.clone());
+    let config_path = repo.join("config.toml");
+
+    git_commit_all(&repo, "init pair module");
+    repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &repo_wiki::GenerationMode::Full)
+        .expect("全量生成失败");
+    let base_pages = wiki_pages_snapshot(&repo);
+    assert!(
+        base_pages.keys().any(|k| k.starts_with("src_m20")),
+        "基线应含 m20 模块页，实际: {base_pages:?}"
+    );
+    // api.md 由 graph 合成（不经 LLM），含真实实体名——断言载体
+    let base_api =
+        std::fs::read_to_string(repo.join(".repo-wiki").join("wiki").join("zh").join("api.md"))
+            .unwrap_or_default();
+    assert!(
+        base_api.contains("solo_fn"),
+        "基线 api.md 应含 solo_fn 实体，实际: {base_api}"
+    );
+
+    // 删除 a.rs（m20 部分删除）+ 修改 solo.rs（签名变化 → changed_insights 非空）
+    std::fs::remove_file(repo.join("src").join("m20").join("a.rs")).unwrap();
+    std::fs::write(
+        repo.join("src").join("solo.rs"),
+        "pub fn solo_renamed(x: u32, y: u32) -> u32 { x + y }\n",
+    )
+    .unwrap();
+    git_commit_all(&repo, "delete m20/a.rs + modify solo.rs");
+    let inc = repo_wiki::run_pipeline(
+        Some(&config_path),
+        None,
+        false,
+        &root,
+        &repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None },
+    )
+    .expect("删除+修改增量失败");
+
+    let titles: Vec<String> = inc.documents.iter().map(|d| d.title.clone()).collect();
+    // 1. 部分删除模块（m20）必须重生成：documents 含 src::m20 模块页
+    assert!(
+        titles.iter().any(|t| t.starts_with("src::m20")),
+        "mixed 场景部分删除模块必须重生成（清除被删实体残留），实际: {titles:?}"
+    );
+    // 2. 修改文件所属模块正常重生成（modified 生效）：solo.rs 位于
+    //    src/ 根目录，其社区/模块名为 src → 文档 title 恰为 "src"
+    assert!(
+        titles.iter().any(|t| t == "src"),
+        "modified 文件所属模块（src）应重生成，实际: {titles:?}"
+    );
+
+    // 3. 磁盘 m20 模块页不残留被删实体（缺陷时磁盘是含 a_alpha 的旧文件）
+    let after_pages = wiki_pages_snapshot(&repo);
+    let m20_page = after_pages
+        .iter()
+        .find(|(k, _)| k.starts_with("src_m20"))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .expect("m20 模块页必须保留");
+    assert!(
+        !m20_page.1.contains("a_alpha"),
+        "m20 模块页不得残留被删实体 a_alpha（缺陷: 旧页未重生成），内容: {}",
+        m20_page.1
+    );
+
+    // 4. api.md（真实实体名来源）不含被删实体、含 modified 新签名
+    let new_api = std::fs::read_to_string(repo.join(".repo-wiki").join("wiki").join("zh").join("api.md"))
+        .unwrap_or_default();
+    assert!(
+        !new_api.contains("a_alpha"),
+        "api.md 不应残留被删实体 a_alpha，实际: {new_api}"
+    );
+    assert!(
+        new_api.contains("solo_renamed"),
+        "api.md 应反映 solo.rs 新签名 solo_renamed，实际: {new_api}"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo);
+}
