@@ -1,5 +1,14 @@
 # 项目状态简报 （AI自动维护，禁止贴代码）
 
+## 五十五、删除补偿提前到主路径——mixed 场景（删除+修改并存）模块残留修复（2026-08-06，本会话）
+- 修改的功能：纯删除场景的模块级删除补偿（v21 验证轮 16085af 已修纯删除：存活文件并入变更集重生成）从「快照回填分支」内部提前到 run_generation_filtered 主路径——删除与修改并存（mixed）时 changed_insights 非空不进回填分支，而语义传播对被删文件（图中无节点，find_start_nodes 跳过）够不到其模块，src_m20.md 等模块页磁盘残留被删实体描述（v21 F 组遗留）。修复后无论 changed_insights 是否为空，deleted_files 对应的部分删除模块存活文件一律并入变更集走正常重生成；回填分支退化为仅处理「整模块全删 / 无实体变更」，保留 deleted_modules 剔除语义
+- 摸到的文件：src/generate/mod.rs（删除补偿逻辑前移+回填分支简化，~+40 行）、tests/test_incremental_large_fixture.rs（新增 test_delete_file_mixed_with_modification_regenerates_module：删 a.rs+改 solo.rs 断言 m20 模块重生成、磁盘页与 api.md 不残留 a_alpha、solo 新签名生效）
+- 是否改变了接口/契约：否（纯内部逻辑重排；IncrementalResult/快照契约不变；纯删除与全删模块行为与既有一致——既有 4 个删除/回填测试全绿）
+- 验证：红→绿闭环（mixed 缺陷复现 documents 缺 src::m20 → 修复后含）；cargo test 全量 564 passed（lib 434 + 集成 130）0 failed；cargo clippy --all-targets 0 警告；cargo machete 干净
+- 提交：未提交（主线统一提交，禁止 git commit）
+- 遗留/风险点：①FileWatch 策略下 watch_paths 在 lib.rs:307 已相对化，删除补偿路径形态一致，理论上同样受益但无专测（GitDiff e2e 覆盖）；②快照缺失时删除补偿跳过、回退分支兜底全量（行为不变）；③主线并行改动 src/output/lint.rs（P3 误报修复）与 src/analysis/community.rs（单目录退化保护）为未提交中间态，与我方改动互不重叠，全量验证时已合流通过
+- 下次最该做的事：主线 v29 两缺陷（lint P3 模块名误报 + 单目录仓库退化保护）验收后统一提交本会话全部改动；FileWatch 纯删除 e2e 专测可选补
+
 ## 五十四、key 交互命令（2026-08-06，本会话）
 - 修改的功能：新增 `repo-wiki key` 交互式配置 LLM API key——明文只写用户级 default-config.toml（安全底线：绝不写项目级 config.toml，随 Git 共享会泄露）；流程 ①目标文件缺失时 create_default_config ②provider=mock 打印无需 key ③api_key_env 对应环境变量已设打印已配置 ④--env 模式写建议 env 名引用（openai→DEEPSEEK_API_KEY、anthropic→ANTHROPIC_API_KEY）⑤非 TTY 打印引导退出 0 ⑥stdin 交互读入（空输入取消）⑦行替换写入（非注释行→注释占位→段末追加，无 [llm] 段回退 toml 往返）+写后 load_config 验证
 - 摸到的文件：src/key.rs（新建，+360 行：run/run_with_io/suggested_env_name/guidance_text/write_field/set_llm_field/escape_toml_string+6 测试）、src/lib.rs（pub mod key）、src/main.rs（Commands::Key + dispatch）、README.md（子命令表+--root 列表）
@@ -502,3 +511,13 @@
 - repeats 字段失真修复（升级已执行但报告恒 5，t09 实证）
 - 验证：29 套件全绿 432 lib、clippy 0、machete 干净
 - 提交：f30a9fe/5ae6793/9753011/146461d/5e7b547/7f1cb66/repeats 修复（共 7）
+
+## 五十三、v29 双缺陷修复（lint 模块名误报 + 单目录退化保护）（2026-08-06）
+- **缺陷 1（P3 噪声）**：lint entity-coverage 把 api.md 的 `## ` 节标题（模块名，容器名）当未知实体误报——合成页（architecture.md 等）按模块名引用（如 `src`、`src::storage`）不在叶子实体清单中。
+  - 修复：新增 api_module_names（`## ` 节标题集合）纳入已知名；声称行原文精确命中模块名即放行（多段名 `src::storage` 经实体提取会被 `::` 截断为 `src`，必须原文匹配）；实体声称仍须命中叶子清单（防幻觉语义不变）。
+  - 防回归：test_lint_entity_coverage_accepts_module_names（`## src`/`## src::storage` 的 api.md + 引用两模块名 + 编造名 GhostEntity → 仅报 GhostEntity）。
+- **缺陷 2（fog）**：目录数 == 1（全部源文件平铺同一目录）走实体级 Leiden，整库聚成 1-2 个社区或每文件一社区，模块划分失去意义。
+  - 修复：detect_communities_with_resolution 分流条件改为 `dirs.len() <= 1 || dirs.len() >= MIN_DIRS_FOR_SUPERNODE`——单目录直接走目录页路径（单一社区 = 全部文件，模块名 = 目录名，<root> 根目录散文件同此）。
+  - 防回归：test_detect_communities_single_dir_repo（10 文件全在 dir00/ → 1 社区含全部文件 + 确定性；根目录 5 散文件 → 整体 1 社区）。
+- **验证**：29 套件全绿（559 测试：434 lib + 125 集成）、clippy --all-targets 0 警告（强制全量重编核验）、cargo machete 干净；本仓库自身 api.md 的 `## src`/`## src::storage` 与修复语义互相自洽。
+- **未提交**：按任务要求不提交；与主线并行会话（mixed 场景修复 generate/mod.rs + test_incremental_large_fixture.rs）共存于工作区，未改其文件。
