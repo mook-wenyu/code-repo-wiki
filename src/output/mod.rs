@@ -453,6 +453,17 @@ pub fn render_all(
 /// （尊重人工维护的 AGENTS.md，不覆盖）；内容指向 wiki 产物目录并说明
 /// AI 代理如何消费（搜索命令、卡片格式、更新流程、lint 门禁）。
 /// 返回是否生成了文件（false = 已存在跳过）。
+///
+/// v28 t08 模板对齐（t12 生态核证）：
+/// - 结构用 agents.md 官网推荐节（产物布局/常用命令/开发规范），纯
+///   Markdown 不发明 schema、无必填字段（官网 FAQ 明示 "Are there
+///   required fields? No. AGENTS.md is just standard Markdown"）；
+/// - 指令可证伪：每节写明「做什么/何时做/何时不做」（KyenAI 2026-07
+///   实测 53% 样本缺验证/完成标准）；
+/// - 保持精简（<200 行；TomeVault 实测 AGENTS.md 中位数 29 行，>200 行
+///   进入指令过载区，占 2.2%）；
+/// - 单一基线不双发：只生成 AGENTS.md，不生成 CLAUDE.md（TomeVault 实测
+///   双发仓 88.9% 两文件互不连接，"第二份文件几乎从未被读"）。
 pub fn generate_agents_md(output_dir: &Path) -> Result<bool> {
     // AGENTS.md 写到产物目录的上级（项目根）：output_dir 通常是 .repo-wiki/ 或 wiki/，
     // 其上级即仓库根。不用 cwd——测试的 cwd 是项目根而 output_dir 是临时目录，
@@ -474,44 +485,33 @@ pub fn generate_agents_md(output_dir: &Path) -> Result<bool> {
     let content = format!(
         r#"# AGENTS.md — AI 代理导航（由 repo-wiki 生成，可人工编辑）
 
-本仓库使用 repo-wiki 维护可持续进化的项目 Wiki，产物位于 `{}/`。
+本仓库使用 repo-wiki 维护可持续进化的项目 Wiki，产物位于 `{output_dir}/`。
 
 ## 产物布局
 
-- `{}/llms.txt` — Agent 站点地图（llmstxt.org 规范，目录+摘要，首选入口）
-- `{}/llms-full.txt` — 完整内容索引（32K token 预算内联实体清单，超预算模块页内注明省略）
-- `{}/wiki/{{lang}}/` — 模块页（每模块一份，含职责/实体/依赖/使用示例）
-- `{}/wiki/{{lang}}/api.md` — API 参考（按模块分组）
-- `{}/wiki/{{lang}}/architecture.md` — 架构概览
-- `{}/wiki/{{lang}}/overview.md` — 项目概览（自底向上合成）
-- `{}/cards/{{lang}}/` — Knowledge Card（AI 代理的结构化摘要，JSON 元数据+Markdown）
-- `{}/assets/diagrams/` — Mermaid 调用图/依赖图
+- `{output_dir}/llms.txt` — Agent 站点地图（llmstxt.org 规范，首选入口；头部含生成时间戳与 git 源码基线，可据此核对新鲜度）
+- `{output_dir}/llms-full.txt` — 完整内容索引（32K token 预算内联实体清单，超预算模块页内注明省略）
+- `{output_dir}/wiki/{{lang}}/` — 模块页（每模块一份，含职责/实体/依赖/使用示例）
+- `{output_dir}/wiki/{{lang}}/api.md` — API 参考（按模块分组）
+- `{output_dir}/wiki/{{lang}}/architecture.md` — 架构概览
+- `{output_dir}/wiki/{{lang}}/overview.md` — 项目概览（自底向上合成）
+- `{output_dir}/cards/{{lang}}/` — Knowledge Card（AI 代理的结构化摘要，JSON 元数据+Markdown）
+- `{output_dir}/assets/diagrams/` — Mermaid 调用图/依赖图
 
-## AI 代理使用指引
+## 常用命令
 
-1. 先读 `{}/llms.txt` 定位目标页面，再读 `{}/wiki/{{lang}}/overview.md` 与
-   `architecture.md` 建立全局认知，按需深入模块页；上下文预算充足时用
-   `llms-full.txt` 一次获得完整实体骨架。
-2. 查找实体（函数/结构体/类）用 `repo-wiki search -q "<关键词>"`（支持
-   text/semantic/hybrid 三引擎，hybrid 含调用链补全）。
-3. 修改代码后运行 `repo-wiki update` 增量更新；`repo-wiki sync` 以 Git 内容
-   合入；`repo-wiki lint` 检查产物健康（孤儿页/断链/过时）。
-4. 人工修改产物页面后不会被自动覆盖（保护机制），修改会反向同步到卡片
-   （pending_manual_edits 节）。
-5. 知识沉淀：`repo-wiki note "<记录>"` 追加到 `{}/wiki/{{lang}}/_log.md`。
+- 查找实体（函数/结构体/类）：`repo-wiki search -q "<关键词>"`（text/semantic/hybrid 三引擎，hybrid 含调用链补全）。何时做：需要某实体的签名/定位/说明时；何时不做：不知道关键词时先读 llms.txt 定位页面，不要盲目搜索。
+- 更新产物：代码修改后运行 `repo-wiki update` 增量更新；`repo-wiki sync` 以 Git 内容合入；`repo-wiki lint` 检查产物健康（孤儿页/断链/过时）。何时做：每次代码变更后、以及发现产物与代码不一致时；何时不做：未改代码时不运行（no-op 无收益）。
+- 知识沉淀：`repo-wiki note "<记录>"` 追加到 `{output_dir}/wiki/{{lang}}/_log.md`。何时做：需要给后续会话留下可检索的决策或教训时。
+
+## 开发规范
+
+- 开始任务时：先读 `{output_dir}/wiki/{{lang}}/overview.md` 与 `{output_dir}/wiki/{{lang}}/architecture.md` 建立全局认知，再按需深入模块页；上下文预算充足时用 `llms-full.txt` 一次获得完整实体骨架。
+- 判断新鲜度：核对 `{output_dir}/llms.txt` 头部的生成时间戳与 git 基线——基线落后当前 HEAD 或时间戳距今超过 7 天时，先运行 `repo-wiki update` 再消费（过期产物会降低检索质量）。
+- 人工修改保护：产物页面被人工编辑后不会被自动覆盖（保护机制），修改会反向同步到卡片（pending_manual_edits 节）。
+- 何时不做：不直接编辑 `llms.txt` / `llms-full.txt`（确定性重生成会覆盖）；不在产物目录手工放置页面（`repo-wiki lint` 会判为孤儿页）。
 "#,
-        output_dir.display(),
-        output_dir.display(),
-        output_dir.display(),
-        output_dir.display(),
-        output_dir.display(),
-        output_dir.display(),
-        output_dir.display(),
-        output_dir.display(),
-        output_dir.display(),
-        output_dir.display(),
-        output_dir.display(),
-        output_dir.display()
+        output_dir = output_dir.display(),
     );
     crate::fs::write_file_atomic(&agents_path, &content)?;
     tracing::info!("AGENTS.md 已生成: {}", agents_path.display());
@@ -673,6 +673,51 @@ mod tests {
             !dir.join("wiki").join("zh").join("src_testmodule.md").exists(),
             "无文档时不应产出页面"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v28 t08：AGENTS.md 模板对齐——精简（<200 行）、可证伪（每节含
+    /// 「何时」= 做什么/何时做/何时不做）、保留 llms.txt/llms-full.txt
+    /// 指引与搜索建议；只生成 AGENTS.md 不生成 CLAUDE.md（单一基线不双发）
+    #[test]
+    fn test_generate_agents_md_template_aligned() {
+        let dir = std::env::temp_dir()
+            .join(format!("repo_wiki_test_agents_md_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let output_dir = dir.join("out");
+        std::fs::create_dir_all(&output_dir).unwrap();
+
+        let generated = generate_agents_md(&output_dir).unwrap();
+        assert!(generated, "首次生成应返回 true");
+
+        let content = std::fs::read_to_string(dir.join("AGENTS.md")).unwrap();
+        assert!(
+            content.lines().count() < 200,
+            "模板须精简（<200 行）: {} 行",
+            content.lines().count()
+        );
+        // 官网推荐节（项目概述/常用命令/开发规范）
+        assert!(content.contains("## 产物布局"), "应含产物布局节: {content}");
+        assert!(content.contains("## 常用命令"), "应含常用命令节: {content}");
+        assert!(content.contains("## 开发规范"), "应含开发规范节: {content}");
+        // 保留既有功能：llms.txt / llms-full.txt 指引 + 搜索建议
+        assert!(content.contains("llms.txt"), "应保留 llms.txt 指引: {content}");
+        assert!(content.contains("llms-full.txt"), "应保留 llms-full.txt 指引: {content}");
+        assert!(content.contains("repo-wiki search"), "应保留搜索建议: {content}");
+        // 可证伪措辞：每节明确「何时做/何时不做」
+        assert!(content.contains("何时"), "指令须可证伪（含何时）: {content}");
+        // 单一基线不双发：不生成 CLAUDE.md
+        assert!(
+            !dir.join("CLAUDE.md").exists(),
+            "只生成 AGENTS.md 不生成 CLAUDE.md"
+        );
+
+        // 幂等：已存在时跳过（返回 false，人工内容不被覆盖）
+        let second = generate_agents_md(&output_dir).unwrap();
+        assert!(!second, "已存在时应跳过注入");
+        let kept = std::fs::read_to_string(dir.join("AGENTS.md")).unwrap();
+        assert_eq!(kept, content, "已存在时内容不得被改动");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
