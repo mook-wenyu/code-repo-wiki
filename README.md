@@ -136,6 +136,14 @@ repo-wiki generate
 | `repo-wiki note "记录"` | 追加知识记录（_log.md） |
 | `repo-wiki card modify <模块> --instruction "..."` | 修改知识卡片 |
 
+## 傻瓜式全自动（个人生产）
+
+日常无需记忆命令：`install` 会注册 git `post-commit`/`post-merge` hook，
+**每次 `git commit` 后 wiki 自动增量更新**（首次自动全量生成，之后自动增量；
+无变更秒回、失败模块自动补偿、尾部自动 lint 复核）。手动只需一条命令
+`repo-wiki update`；`repo-wiki watch` 可常驻实时模式（代码保存即更新）。
+前提：`repo-wiki` 在 PATH 中（`cargo install repo-wiki` 安装时默认满足）。
+
 ## 生成干预（wiki_plan.yaml）
 
 仓库根放置 `wiki_plan.yaml`（随 Git 提交共享），可干预 LLM 生成方向：

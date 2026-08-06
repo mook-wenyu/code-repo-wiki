@@ -258,6 +258,13 @@ pub fn install(agent: &str, root: &crate::project::ProjectRoot) -> Result<()> {
     }
 
     println!("✓ repo-wiki 安装完成");
+    println!();
+    println!("日常使用（傻瓜式全自动，无需记忆命令）：");
+    println!("  1. git commit 后 wiki 自动增量更新（post-commit/post-merge hook 已装）");
+    println!("  2. 手动一条命令：repo-wiki update（首次自动全量生成，之后自动增量；");
+    println!("     无变更秒回，失败模块自动补偿重试，尾部自动 lint 复核）");
+    println!("  3. 常驻实时模式：repo-wiki watch（代码保存即自动更新，Ctrl-C 退出）");
+    println!("  4. 健康检查：repo-wiki doctor / repo-wiki lint");
     Ok(())
 }
 
