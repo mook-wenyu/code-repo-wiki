@@ -476,3 +476,29 @@
   .gitignore 保留）
 - 全量验证：cargo test 414 lib + 各套件全绿、clippy 0、machete 干净、工作树干净
 - 提交：d9a30d9/c4feb93（早前）+ 本轮无代码变更（验证轮）
+## 五十二、v28 评测科学化+生态对齐（2026-08-06）
+- 建图：wayfinder-v28（.scratch/wayfinder-v28/，12 tickets，4 research resolved）
+- t02 评测清单：manifest RepoEntry commit 字段钉死（checkout 验证）+ 双清单
+  knowing.manifest 16 仓（原样 commit）+ codewikibench.manifest 22 仓（HF 不可达
+  commit 缺省 HEAD）；mock 全量基线 knowing-small 6 仓全绿（caddy 2781 实体/
+  cargo 3801/flask 408/ripgrep 1678 等；glob 花括号形态实测不支持已避免）
+- t04 judge 升级：TQS +9 字段（kappa_cohen/flip_rate/position_flip_rate/
+  delta_kappa/eligible/parse_rate/尺度声明/tie 声明）+ repeats 3→5 低置信升级 11
+  + rubric 叶子 3 次多数投票（1:2 升级 5 次，无多数 abstain 不再 recode false）
+  + option 随机化；t09 实测 flip_rate 0.477 触发升级 ✓
+- t06 vericontext：拍板 lint 只读校验——bad-vctx 检查（5 步哈希 SHA-256 前 8 位，
+  四类失败：解析/越界/哈希/路径）
+- t07 llms.txt 新鲜度：stale_by_age（>7 天 warn，mtime 判定不破坏确定性契约，
+  初版时间戳注入致 test_determinism 哈希差已重写）
+- t08 AGENTS.md 模板对齐：生态结构（<200 行/可证伪/单一基线）
+- t10 目录阈值测试：20/24/30/40 边界 fixture + make_dirs_graph 重构
+- t11 一键安装 e2e：P1 断裂修复（模板 base_url 注释态→serde None→LLM 打到
+  OpenAI 端点模块页全失败；修复=模板显式 DeepSeek base_url）——隔离环境
+  install→generate 86s 全通 5 页 failed 空
+- t09 真实 LLM：flask 钉死 commit 跑分 478s（408/408 覆盖、lint 50 噪声如实）；
+  rubrics 复测 18 分钟（--rubrics-only --judge 互斥已解除，7f1cb66）：TQS
+  kappa_cohen=-0.31/flip_rate 0.477/position_flip_rate 0.955（位置偏置显著）、
+  rubric 0/51（多数投票滤除 v23 的 22 条随机假阳性——设计意图达成）
+- repeats 字段失真修复（升级已执行但报告恒 5，t09 实证）
+- 验证：29 套件全绿 432 lib、clippy 0、machete 干净
+- 提交：f30a9fe/5ae6793/9753011/146461d/5e7b547/7f1cb66/repeats 修复（共 7）
