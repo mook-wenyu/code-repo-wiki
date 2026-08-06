@@ -14,7 +14,7 @@ struct Cli {
 enum Commands {
     /// 全量生成 Wiki 文档
     Generate {
-        /// 配置文件路径（默认缺省链：项目级 config.toml → 用户级 default-config.toml → 创建用户级）
+        /// 配置文件路径（默认缺省链：项目级 config.toml → 用户级 config.toml → 创建用户级）
         #[arg(short, long)]
         config: Option<PathBuf>,
         /// 输出目录（覆盖配置文件中的 output.dir）
@@ -89,7 +89,7 @@ enum Commands {
         #[arg(long)]
         root: Option<PathBuf>,
     },
-    /// 交互式配置 LLM API key（写入用户级 default-config.toml，不随 Git 共享）
+    /// 交互式配置 LLM API key（写入用户级 config.toml，不随 Git 共享）
     ///
     /// 安全底线（用户拍板）：明文 key 只写用户级配置；--env 改写入建议的
     /// 环境变量名引用（openai→DEEPSEEK_API_KEY、anthropic→ANTHROPIC_API_KEY），
@@ -133,7 +133,7 @@ enum Commands {
     },
     /// 注册 OpenCode 插件并确保配置就绪
     ///
-    /// 无参执行：① 确保用户级默认配置（default-config.toml）存在，
+    /// 无参执行：① 确保用户级默认配置（config.toml）存在，
     /// 缺失时自动创建（v25 起 init 并入 install，配置链=项目级
     /// config.toml 覆盖用户级）；② 注册 repo-wiki 为 OpenCode 插件
     /// （含 MCP/ hooks 配置注入，原 install-to-opencode 语义）。
@@ -509,7 +509,7 @@ fn main() -> anyhow::Result<()> {
             let root = resolve_root(root.as_deref())?;
             let cfg = repo_wiki::load_config_rooted(config.as_deref(), &root)?;
             // 实际生效的配置文件路径：显式指定即其本身；缺省走三链
-            // （项目级 config.toml → 用户级 default-config.toml → 创建用户级）
+            // （项目级 config.toml → 用户级 config.toml → 创建用户级）
             let cfg_path = match config.as_deref() {
                 Some(p) => p.to_path_buf(),
                 None => repo_wiki::config::load_default_config(&root)?.0,
@@ -586,7 +586,7 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Key { env, config, root } => {
             // key：交互式配置 LLM API key。写入目标固定为用户级
-            // default-config.toml——安全底线：明文凭据绝不写项目级
+            // config.toml——安全底线：明文凭据绝不写项目级
             // config.toml（随 Git 共享）。--config 仅用于读取 provider
             // 判定（如项目级 provider=mock 时提示无需 key）。
             let root = resolve_root(root.as_deref())?;

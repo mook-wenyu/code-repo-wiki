@@ -58,7 +58,7 @@ AI 驱动的代码仓库 Wiki 自动生成工具。分析源码结构，通过 L
 | `lint` | 产物健康检查（孤儿页/断链/过时/引用错位/坏 mermaid），供 CI 使用；退出码三态：`0` 通过、`1` 发现问题、`2` 配置加载失败 |
 | `export` | 导出为 HTML（支持 `-o` 输出目录、`--skip-generate` 从快照直接导出不重新生成）|
 | `doctor` | 环境诊断（配置/产物目录/输出目录/LLM Key/网络/版本自检六查），失败退出码 1 |
-| `key` | 交互式配置 LLM API key（写入用户级 `default-config.toml`，不随 Git 共享；`--env` 改用环境变量引用）|
+| `key` | 交互式配置 LLM API key（写入用户级 `config.toml`，不随 Git 共享；`--env` 改用环境变量引用）|
 | `install` | 确保用户级默认配置就绪（缺失自动创建）并注册 OpenCode 插件（含 MCP/hooks） |
 | `watch` | 监听文件变更并自动更新 |
 | `search` | 搜索代码实体 |
@@ -114,7 +114,7 @@ Linux/macOS 上构建与运行需要 OpenSSL 与 zlib 开发库（`reqwest` 的
 cargo install --path . --locked
 
 # 2. 配置 LLM Key（默认 deepseek-v4-flash，配置链：项目 config.toml
-#    → 用户级 default-config.toml → 自动创建用户级配置；凭据/端点键
+#    → 用户级 config.toml → 自动创建用户级配置；凭据/端点键
 #    只放用户级，项目级写入会被净化忽略）
 export DEEPSEEK_API_KEY="sk-..."
 
@@ -191,7 +191,7 @@ documents:                         # 页面白名单（提供时严格只输出�
 不带 `--config` 时按以下链解析配置（v25 三合一）：
 
 1. **项目级**：`{root}/config.toml`（root 为当前目录或 `--root` 指定；项目契约如 scope/语言/输出/模型随 Git 提交共享，与产物目录 `.repo-wiki/` 物理分离）。存在时**字段级合并覆盖**用户级配置（数组整体覆盖），未写出的键继承用户级
-2. **用户级**：Windows `%APPDATA%\repo-wiki\default-config.toml`，其他平台 `~/repo-wiki/default-config.toml`
+2. **用户级**：Windows `%APPDATA%\repo-wiki\config.toml`，其他平台 `~/repo-wiki/config.toml`
 3. **创建**：两者都不存在时自动创建**用户级**目录与默认配置（引导式，无需先手动 install）——自动创建只发生在用户级目录，项目级永不自动创建（v24 用户要求）
 
 显式 `--config <path>` 指定时原样使用（缺失则报错，不走创建链）。

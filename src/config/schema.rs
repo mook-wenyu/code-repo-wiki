@@ -89,14 +89,17 @@ pub struct LlmSection {
 
 impl Default for LlmSection {
     fn default() -> Self {
-        // v17 t05：默认值统一到模板阵营（default-config.toml）——schema 缺省
-        // 填充与模板一致，极简配置（缺 [llm] 段）用户落 DeepSeek 而非 OpenAI
+        // v29 用户确认的实际可用配置：opencode 网关（openai-compatible 协议
+        // chat/completions）——schema 缺省填充与模板（config.toml）
+        // 严格同源，保证项目级 config.toml 缺 [llm] 段合并回退时仍可用。
+        // 不得回退为旧阵营（openai 协议 + DeepSeek 官方端点 + DEEPSEEK_API_KEY）：
+        // 那是初始示例，实际不可用（v28 t11 实测端点断裂）。
         Self {
-            provider: LlmProviderType::OpenAI,
+            provider: LlmProviderType::OpenAiCompatible,
             model: "deepseek-v4-flash".to_string(),
-            base_url: Some("https://api.deepseek.com/v1".to_string()),
+            base_url: Some("https://opencode.ai/zen/go/v1".to_string()),
             api_key: None,
-            api_key_env: "DEEPSEEK_API_KEY".to_string(),
+            api_key_env: "OPENCODEGO2_API_KEY".to_string(),
         }
     }
 }
@@ -154,12 +157,19 @@ pub struct EmbedSection {
 
 impl Default for EmbedSection {
     fn default() -> Self {
+        // v29 用户确认的实际可用配置：阿里百炼兼容端点。schema 缺省与模板
+        // 同源（model/base_url/api_key_env 三键），合并回退时嵌入仍可用。
+        // enabled 保持 false：开关非凭据，默认关防无 key 环境触网/测试误调用
+        // （模板显式 enabled=true 由用户自行开启）。
         Self {
             enabled: false,
-            model: "text-embedding-3-small".to_string(),
-            base_url: None,
+            model: "qwen3.7-text-embedding".to_string(),
+            base_url: Some(
+                "https://llm-q0265e4he9m0qs23.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+                    .to_string(),
+            ),
             api_key: None,
-            api_key_env: "OPENAI_API_KEY".to_string(),
+            api_key_env: "BAILIAN_API_KEY".to_string(),
         }
     }
 }

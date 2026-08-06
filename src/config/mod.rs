@@ -12,9 +12,9 @@ use crate::project::ProjectRoot;
 /// 用户级配置；v24 的 `.repo-wiki.toml` 与 v25 用户级默认文件更名，旧名不再读取）
 pub const PROJECT_CONFIG_FILE: &str = "config.toml";
 
-/// 用户级全局配置文件（v25 拍板：`default-config.toml`，与内置模板
+/// 用户级全局配置文件（v25 拍板：`config.toml`，与内置模板
 /// 同名同构；v24 及以前的全局 `config.toml` 已废弃不再读取）
-pub const USER_CONFIG_FILE: &str = "default-config.toml";
+pub const USER_CONFIG_FILE: &str = "config.toml";
 
 /// 项目级配置中禁止携带的敏感/机器属性键（Codex DENYLIST 模式，
 /// v24 用户拍板）：凭据、提供商、模型归属用户级配置或 `--config`
@@ -31,16 +31,25 @@ pub const PROJECT_CONFIG_DENY_KEYS: &[(&str, &str)] = &[
 ];
 
 /// 敏感键净化后的注入默认值（schema LlmSection 三字段必填无 serde 默认，
-/// 与 schema Default 阵营对齐：OpenAI 协议 + DeepSeek 模板）——
-/// 「敏感键不生效」而非「配置缺失报错」
+/// 与 schema Default 阵营对齐——v29 用户确认可用阵营：opencode 网关 +
+/// 阿里百炼；不得回退旧阵营（DeepSeek 官方端点等初始示例，实际不可用，
+/// v28 t11 实测端点断裂））——「敏感键不生效」而非「配置缺失报错」
 const SANITIZE_DEFAULT_INJECT: &[(&str, &str, &str)] = &[
-    ("llm", "provider", "openai"),
+    ("llm", "provider", "openai-compatible"),
     ("llm", "model", "deepseek-v4-flash"),
-    ("llm", "api_key_env", "DEEPSEEK_API_KEY"),
+    // base_url 与模型配套：净化剥除后必须回填可用端点，否则 None 兜底
+    // OpenAI 官方端点把模型打到错误服务（v28 t11 一键安装断裂同款）
+    ("llm", "base_url", "https://opencode.ai/zen/go/v1"),
+    ("llm", "api_key_env", "OPENCODEGO2_API_KEY"),
     // embed.model/api_key_env 同为必填（无 serde 默认）：默认模板自身含
     // 这些键，净化后需回填，否则项目级 config.toml 无法再加载
-    ("embed", "model", "text-embedding-3-small"),
-    ("embed", "api_key_env", "OPENAI_API_KEY"),
+    ("embed", "model", "qwen3.7-text-embedding"),
+    (
+        "embed",
+        "base_url",
+        "https://llm-q0265e4he9m0qs23.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    ),
+    ("embed", "api_key_env", "BAILIAN_API_KEY"),
 ];
 
 /// 项目级配置净化：移除敏感键并告警，返回（净化后的 TOML 文本,
@@ -94,8 +103,16 @@ pub fn load_config(path: &Path) -> Result<schema::WikiConfig> {
         .with_context(|| format!("读取配置文件失败: {}", path.display()))?;
     // v25：项目级配置文件（文件名 config.toml）执行敏感键净化——
     // 显式 --config 指向该文件同样生效（该文件语义即"项目级配置"，逃生门
-    // 不豁免安全护栏；用户级 default-config.toml 与其他文件名不净化）
-    let text = if path.file_name().is_some_and(|n| n == PROJECT_CONFIG_FILE) {
+    // 不豁免安全护栏；其他文件名不净化）
+    // v30：用户级配置文件已统一为 config.toml（用户拍板：用户级文件名
+    // 本来就应该是 config.toml）——净化判定必须排除全局配置目录内的文件：
+    // 用户级配置是信任源（%APPDATA% 不外泄），其 provider/base_url/api_key_env
+    // 是用户真实可用配置（v29 确认阵营），净化会把它剥成不可用默认
+    let is_project_level = path.file_name().is_some_and(|n| n == PROJECT_CONFIG_FILE)
+        && !global_config_dir()
+            .map(|g| path.starts_with(g))
+            .unwrap_or(false);
+    let text = if is_project_level {
         sanitize_project_config(&content).0
     } else {
         content
@@ -106,13 +123,13 @@ pub fn load_config(path: &Path) -> Result<schema::WikiConfig> {
     Ok(config)
 }
 
-/// 创建默认配置文件（写入 install 模板 default-config.toml，非 schema 默认值序列化）。
+/// 创建默认配置文件（写入 install 模板 config.toml，非 schema 默认值序列化）。
 /// 模板含注释与生产默认值（如 DeepSeek base_url），serde 序列化会丢失这些信息。
 pub fn create_default_config(path: &Path) -> Result<schema::WikiConfig> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, include_str!("../../default-config.toml"))?;
+    std::fs::write(path, include_str!("../../config.toml"))?;
     load_config(path)
 }
 
@@ -189,7 +206,7 @@ fn strip_injected(mut value: toml::Value, injected: &[(String, String)]) -> toml
 }
 
 /// 默认配置链加载（v25 拍板，核心入口）：项目级 `config.toml` 字段级
-/// 合并覆盖用户级 `default-config.toml`，返回（实际来源路径, 配置）。
+/// 合并覆盖用户级 `config.toml`，返回（实际来源路径, 配置）。
 ///
 /// 链：
 /// 1. 项目级存在 → base = 用户级（存在时）或内置模板；项目级净化并
@@ -212,7 +229,7 @@ pub fn load_default_config_with(
             std::fs::read_to_string(&user_config)
                 .with_context(|| format!("读取用户级配置失败: {}", user_config.display()))?
         } else {
-            include_str!("../../default-config.toml").to_string()
+            include_str!("../../config.toml").to_string()
         };
         let base: toml::Value = toml::from_str(&base_text)
             .with_context(|| "解析用户级配置（或模板）失败".to_string())?;
@@ -249,12 +266,12 @@ pub fn load_default_config(root: &ProjectRoot) -> Result<(PathBuf, schema::WikiC
 
 /// 默认配置文件解析：项目级 → 全局 → 创建全局（用户拍板，v13 E 组；
 /// v25 调整：项目级 `config.toml` 字段级合并覆盖用户级
-/// `default-config.toml`——完整合并语义见 [`load_default_config_with`]）
+/// `config.toml`——完整合并语义见 [`load_default_config_with`]）
 ///
 /// 搜索链（无 `--config` 显式指定时）：
 /// 1. `{项目根}/config.toml` 存在 → 用它（项目级配置优先，
 ///    随 Git 提交共享，多项目隔离；敏感键净化见 [`sanitize_project_config`]）；
-/// 2. 全局 `{用户级目录}/default-config.toml` 存在 → 用它（用户默认偏好）；
+/// 2. 全局 `{用户级目录}/config.toml` 存在 → 用它（用户默认偏好）；
 /// 3. 都不存在 → 创建全局目录 + 写入默认配置模板，返回全局路径
 ///    （引导式就绪：自动创建只发生在用户级目录，项目级永不自动创建——
 ///    v24 用户要求，install 命令的项目级配置创建点已移除）。
@@ -291,7 +308,7 @@ pub fn resolve_config_path(config: Option<&Path>, root: &ProjectRoot) -> Result<
 }
 
 /// 配置加载统一入口：显式路径单文件加载；None 走默认配置链
-/// （项目级 config.toml 字段级合并覆盖用户级 default-config.toml）。
+/// （项目级 config.toml 字段级合并覆盖用户级 config.toml）。
 /// MCP server 与 CLI 各命令共用，保证 None 语义一致。
 pub fn resolve_mcp_config(config: Option<&Path>, root: &ProjectRoot) -> Result<schema::WikiConfig> {
     match config {
@@ -322,7 +339,7 @@ mod tests {
         let parsed: schema::WikiConfig = toml::from_str(&toml_str).unwrap();
         // v17 t05：schema 默认值统一到模板阵营（DeepSeek）
         assert_eq!(parsed.llm.model, "deepseek-v4-flash");
-        assert_eq!(parsed.llm.api_key_env, "DEEPSEEK_API_KEY");
+        assert_eq!(parsed.llm.api_key_env, "OPENCODEGO2_API_KEY");
         assert_eq!(parsed.wiki.language, "zh");
         assert_eq!(parsed.output.dir, ".repo-wiki");
     }
@@ -379,7 +396,7 @@ mod tests {
     }
 
     /// v25：三链加载——项目级 config.toml 存在时，以用户级
-    /// default-config.toml（缺则模板）为基，字段级合并覆盖；
+    /// config.toml（缺则模板）为基，字段级合并覆盖；
     /// 项目级敏感键（llm/embed 四键）净化剔除后不覆盖用户级真实值。
     #[test]
     fn test_load_default_config_project_overrides_user() {
@@ -390,7 +407,7 @@ mod tests {
         // 用户级：模板 + 自定义 model + scope（模板缺 scope 时 include 为空校验失败）
         let global_dir = dir.join("global");
         std::fs::create_dir_all(&global_dir).unwrap();
-        let user_text = include_str!("../../default-config.toml")
+        let user_text = include_str!("../../config.toml")
             .replace("model = \"deepseek-v4-flash\"", "model = \"user-model\"");
         std::fs::write(global_dir.join(USER_CONFIG_FILE), &user_text).unwrap();
 
@@ -413,7 +430,7 @@ model = "claude-test"
         assert_eq!(config.llm.model, "claude-test");
         // provider 非敏感允许覆盖（v25 调整）；api_key_env 净化保持用户级值
         assert_eq!(config.llm.provider, schema::LlmProviderType::Anthropic);
-        assert_eq!(config.llm.api_key_env, "DEEPSEEK_API_KEY");
+        assert_eq!(config.llm.api_key_env, "OPENCODEGO2_API_KEY");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -429,7 +446,7 @@ model = "claude-test"
         // 用户级存在：直接使用
         let global_dir = dir.join("global");
         std::fs::create_dir_all(&global_dir).unwrap();
-        let user_text = include_str!("../../default-config.toml")
+        let user_text = include_str!("../../config.toml")
             .replace("model = \"deepseek-v4-flash\"", "model = \"user-only-model\"");
         std::fs::write(global_dir.join(USER_CONFIG_FILE), &user_text).unwrap();
         let (path, config) = load_default_config_with(&ProjectRoot::new(dir.clone()), &global_dir).unwrap();
@@ -485,7 +502,7 @@ api_key_env = "HACKED_KEY"
         assert_eq!(config.llm.provider, crate::config::schema::LlmProviderType::Anthropic);
         assert_eq!(config.llm.model, "claude-opus");
         // api_key_env 仍净化：回退注入模板值
-        assert_eq!(config.llm.api_key_env, "DEEPSEEK_API_KEY");
+        assert_eq!(config.llm.api_key_env, "OPENCODEGO2_API_KEY");
         // 项目契约保留
         assert_eq!(config.wiki.language, "en");
         assert_eq!(config.output.dir, "docs");

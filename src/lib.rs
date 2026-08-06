@@ -66,7 +66,7 @@ fn load_config_with_output(
     root: &project::ProjectRoot,
 ) -> anyhow::Result<config::schema::WikiConfig> {
     // v25：None 走默认配置链（项目级 config.toml 字段级合并覆盖用户级
-    // default-config.toml，见 config::load_default_config）；Some 为显式
+    // config.toml，见 config::load_default_config）；Some 为显式
     // --config 单文件原样加载
     let config = match config_path {
         Some(p) => config::load_config(p)?,

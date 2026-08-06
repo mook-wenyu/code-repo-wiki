@@ -18,15 +18,15 @@ exclude = ["**/test/**", "**/vendor/**", "target/**", "**/node_modules/**"]
 dir = ".repo-wiki"
 
 [llm]
-provider = "openai"
+provider = "openai-compatible"
 model = "deepseek-v4-flash"
 # base_url 与模型配套（模板默认阵营=DeepSeek，v19 拍板）：provider=openai
 # 缺省端点=OpenAI 官方（llm.rs OpenAiProvider 兜底），不写 base_url 会把
 # DeepSeek 模型打到 OpenAI 端点（v28 t11 一键 e2e 实测连接失败）——模板
 # 必须显式声明 DeepSeek 端点，换用 OpenAI/其他服务时改此处
-base_url = "https://api.deepseek.com/v1"
+base_url = "https://opencode.ai/zen/go/v1"
 #api_key = ""
-api_key_env = "DEEPSEEK_API_KEY"
+api_key_env = "OPENCODEGO2_API_KEY"
 # 并发 LLM 调用数与温度等已硬编码（v22 简化：见 schema.rs 顶部常量）
 
 [embed]
@@ -35,10 +35,10 @@ enabled = true
 # 与 schema 默认值保持一致（v19 t02 统一 + v23 复核：模型与端点/key 名
 # 全部对齐 schema 默认，此前模板残留个人环境的 key 名/端点，新用户 init
 # 后与代码默认分裂）
-model = "text-embedding-3-small"
-#base_url = ""
+model = "qwen3.7-text-embedding"
+base_url = "https://llm-q0265e4he9m0qs23.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
 #api_key = ""
-api_key_env = "OPENAI_API_KEY"
+api_key_env = "BAILIAN_API_KEY"
 # batch_size 已硬编码（v22 简化：见 schema.rs 顶部常量）
 
 [search]

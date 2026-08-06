@@ -1,4 +1,4 @@
-//! install 模板（default-config.toml）与 config schema 一致性测试
+//! install 模板（config.toml）与 config schema 一致性测试
 //!
 //! 防回归背景：模板曾含 `[project]`、`[generate]` 死键（schema 中不存在，
 //! serde 静默忽略），用户按模板配置 `max_concurrency` 等无效。本测试锁定
@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use repo_wiki::config::{load_config, schema};
 
-const TEMPLATE: &str = include_str!("../default-config.toml");
+const TEMPLATE: &str = include_str!("../config.toml");
 
 /// 解析模板并断言不存在已废弃的配置段
 #[test]
@@ -35,7 +35,7 @@ fn test_template_loads_cleanly() {
     std::fs::write(&path, TEMPLATE).unwrap();
 
     let config: schema::WikiConfig = load_config(&path).expect("模板必须可被 load_config 加载");
-    assert_eq!(config.llm.api_key_env, "DEEPSEEK_API_KEY");
+    assert_eq!(config.llm.api_key_env, "OPENCODEGO2_API_KEY");
     assert!(!config.scope.include.is_empty());
     // embed 段随模板配置（当前模板启用百炼 embedding，仅断言字段可解析）
     assert!(!config.embed.model.is_empty());
