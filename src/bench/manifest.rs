@@ -23,7 +23,7 @@ use crate::project::ProjectRoot;
 
 use super::{collect_wiki_pages, measure_coverage, measure_doc_info, measure_lint, DocInfoReport, LintReport, TimeReport, CoverageReport};
 
-/// 清单中的单个仓库条目（本地路径与远程 URL 二选一）
+/// 清单中的单个仓库条目（本地路径与远程 URL 二选一；commit 可选钉死）
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoEntry {
     /// 仓库名（远程 URL 必须显式指定；本地路径缺省取目录名）
@@ -32,6 +32,9 @@ pub struct RepoEntry {
     pub url: Option<String>,
     /// 本地仓库路径（Some 时 url 必须为 None）
     pub local: Option<PathBuf>,
+    /// 评测基准 commit（Some 时执行前 checkout 钉死——CodeWikiBench/
+    /// knowing 类评测要求 commit 级可复现；None 用 HEAD）
+    pub commit: Option<String>,
 }
 
 /// 单仓库跑分结果（error 非空表示该仓库未完成评测）
@@ -61,6 +64,8 @@ pub struct ManifestReport {
 /// - 本地路径：`D:\path\to\repo` 或 `./relative`（相对清单文件所在目录解析）
 /// - 远程 URL：`https://github.com/owner/repo`（仓库名取 URL 最后一段，去 `.git`）
 /// - 带名形式：`名字 | 路径或URL`（路径/URL 中的 `|` 需谨慎，文档约定名字在前）
+/// - 带 commit 形式：`名字 | 路径或URL | commit`（v28 t02 扩展：评测基准
+///   钉死为指定 commit，保证跨次可复现；缺省 None 用 HEAD）
 pub fn parse_manifest(path: &Path) -> Result<Vec<RepoEntry>> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("读取清单文件失败: {}", path.display()))?;
@@ -71,10 +76,20 @@ pub fn parse_manifest(path: &Path) -> Result<Vec<RepoEntry>> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let (name, target) = match line.split_once('|') {
-            Some((n, t)) => (n.trim().to_string(), t.trim()),
-            None => (String::new(), line),
+        // 行内分隔：无 `|` → 整行即目标；有 → 1-2 个 `|` 分隔 name/target/commit
+        let (name, target, commit) = match line.split_once('|') {
+            None => (String::new(), line.to_string(), None),
+            Some(_) => {
+                let mut parts = line.splitn(3, '|').map(str::trim);
+                let n = parts.next().unwrap_or("").to_string();
+                let t = parts.next().unwrap_or("").to_string();
+                let c = parts.next().map(str::to_string);
+                (n, t, c)
+            }
         };
+        if target.is_empty() {
+            bail!("清单第 {} 行解析失败（缺少仓库路径）: {line}", idx + 1);
+        }
         // 远程 URL 判定：http(s):// 或 git@ 前缀
         let entry = if target.starts_with("http://")
             || target.starts_with("https://")
@@ -90,12 +105,12 @@ pub fn parse_manifest(path: &Path) -> Result<Vec<RepoEntry>> {
                     .trim_end_matches(".git")
                     .to_string()
             } else {
-                name
+                name.to_string()
             };
-            RepoEntry { name, url: Some(target.to_string()), local: None }
+            RepoEntry { name, url: Some(target.to_string()), local: None, commit }
         } else {
             let name = if name.is_empty() {
-                Path::new(target)
+                Path::new(&target)
                     .file_name()
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "unknown".to_string())
@@ -106,7 +121,7 @@ pub fn parse_manifest(path: &Path) -> Result<Vec<RepoEntry>> {
             // 执行期统一失败标注，便于批处理继续）
             let p = PathBuf::from(target);
             let abs = if p.is_absolute() { p } else { manifest_dir.join(p) };
-            RepoEntry { name, url: None, local: Some(abs) }
+            RepoEntry { name, url: None, local: Some(abs), commit }
         };
         if entry.name.is_empty() {
             bail!("清单第 {} 行解析失败（仓库名为空）: {line}", idx + 1);
@@ -183,6 +198,22 @@ pub fn run_manifest(
                 continue;
             }
         };
+
+        // commit 钉死：清单指定评测基准 commit 时 checkout（v28 t02）
+        // 评测可复现性要求 commit 级确定性；本地路径条目同样生效
+        if let Some(commit) = &entry.commit
+            && let Err(e) = checkout_commit(&repo_path, commit)
+        {
+            repos.push(RepoReport {
+                name: entry.name.clone(),
+                coverage: empty_coverage(),
+                doc_info: empty_doc_info(),
+                lint: empty_lint(),
+                time: empty_time(),
+                error: Some(format!("checkout {commit} 失败: {e}")),
+            });
+            continue;
+        }
 
         // 每仓库独立产物目录：work_dir/<name>-out/（覆盖模板 output.dir）
         let out_dir = work_dir.join(format!("{}-out", entry.name));
@@ -284,6 +315,26 @@ pub fn render_manifest_markdown(report: &ManifestReport) -> String {
     out
 }
 
+/// checkout 钉死 commit：解析 `commit` 为仓库内对象并检出到工作树
+///
+/// 设计约束：
+/// - 只接受可解析的 commit 引用（SHA 前缀/分支/标签均可——git2 语义），
+///   失败返回错误由调用方标注该仓库失败（评测基准不可复现必须显式失败，
+///   不得静默用 HEAD 顶替——那会让跨次结果失去可比性）。
+/// - 失败时**不清理已有工作区**（保留 clone 产物便于人工排查）。
+fn checkout_commit(repo_path: &Path, commit: &str) -> Result<()> {
+    let repo = git2::Repository::open(repo_path)
+        .with_context(|| format!("打开仓库失败: {}", repo_path.display()))?;
+    let obj = repo
+        .revparse_single(commit)
+        .with_context(|| format!("commit 无法解析: {commit}"))?;
+    repo.checkout_tree(&obj, None)
+        .with_context(|| format!("checkout 树失败: {commit}"))?;
+    repo.set_head_detached(obj.id())
+        .with_context(|| "设置 HEAD 失败".to_string())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,17 +347,49 @@ mod tests {
         let manifest = dir.join("manifest.txt");
         std::fs::write(
             &manifest,
-            "# 注释行\n\nD:\\tmp\\repo-a\nhttps://github.com/owner/repo-b.git\n命名仓库 | ./local-c\n",
+            "# 注释行\n\nD:\\tmp\\repo-a\nhttps://github.com/owner/repo-b.git\n命名仓库 | ./local-c\n钉死版本 | https://github.com/owner/repo-d.git | abc1234\n",
         )
         .unwrap();
         let entries = parse_manifest(&manifest).unwrap();
-        assert_eq!(entries.len(), 3);
+        assert_eq!(entries.len(), 4);
         assert_eq!(entries[0].name, "repo-a");
         assert_eq!(entries[0].local.as_deref(), Some(Path::new("D:\\tmp\\repo-a")));
+        assert_eq!(entries[0].commit, None);
         assert_eq!(entries[1].name, "repo-b");
         assert_eq!(entries[1].url.as_deref(), Some("https://github.com/owner/repo-b.git"));
         assert_eq!(entries[2].name, "命名仓库");
+        assert_eq!(entries[3].name, "钉死版本");
+        assert_eq!(entries[3].url.as_deref(), Some("https://github.com/owner/repo-d.git"));
+        assert_eq!(entries[3].commit.as_deref(), Some("abc1234"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// checkout 钉死行为：临时 git 仓库两 commit，检出第一 commit 后工作树回退
+    #[test]
+    fn test_checkout_commit_pins_worktree() {
+        use git2::Repository;
+        let base = std::env::temp_dir().join(format!("rw_manifest_checkout_{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let repo = Repository::init(&base).unwrap();
+        let sig = git2::Signature::now("t", "t@t").unwrap();
+        let mut idx = repo.index().unwrap();
+        std::fs::write(base.join("f.txt"), "v1\n").unwrap();
+        idx.add_path(Path::new("f.txt")).unwrap();
+        idx.write().unwrap();
+        let tree1 = idx.write_tree().unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "first", &repo.find_tree(tree1).unwrap(), &[]).unwrap();
+        let c1 = repo.head().unwrap().peel_to_commit().unwrap().id();
+        std::fs::write(base.join("f.txt"), "v2\n").unwrap();
+        let mut idx = repo.index().unwrap();
+        idx.add_path(Path::new("f.txt")).unwrap();
+        idx.write().unwrap();
+        let tree2 = idx.write_tree().unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "second", &repo.find_tree(tree2).unwrap(), &[&repo.find_commit(c1).unwrap()]).unwrap();
+        assert_eq!(std::fs::read_to_string(base.join("f.txt")).unwrap(), "v2\n");
+        checkout_commit(&base, &c1.to_string()).unwrap();
+        assert_eq!(std::fs::read_to_string(base.join("f.txt")).unwrap(), "v1\n", "钉死后工作树应为第一 commit 内容");
+        assert!(checkout_commit(&base, "deadbeef00").is_err(), "不存在的 commit 应报错");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// 清单跑分冒烟：两个本地小仓库（mock 生成确定性），一个本地路径不存在
