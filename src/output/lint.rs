@@ -10,7 +10,7 @@
 //!
 //! 4b. **bad-vctx**：正文 `[[vctx:path#L-a-L-b@hash8]]` 手工标记做 5 步哈希只读校验（vericontext 协议，人工文档护栏：t05 决议不引入生成契约，只识别并校验已有标记）
 //!
-//! 5. **entity-coverage**：页面声称的实体不在 api.md 权威清单（LLM 编造的第二道闸）
+//! 5. **entity-coverage**：页面声称的实体不在 api.md 权威清单（LLM 编造的第二道闸；api.md 的模块名（## 节标题）属已知名——合成页按模块名引用不是实体声称）
 //! 6. **bad-mermaid**：产物中的 mermaid fence 无法被 merman 解析（历史产物/人工编辑/增量遗留）
 //! 7. **stale-entity**：api.md 权威清单的实体在当前源码中不存在（文档引用了已删除/重命名的符号）
 //!
@@ -520,6 +520,20 @@ fn api_known_entities(api_content: &str) -> std::collections::HashSet<String> {
         .collect()
 }
 
+/// 从 api.md 提取模块名集合（`## ` 节标题 = 模块名，容器名而非叶子实体）。
+/// entity-coverage 声称侧命中模块名也属已知名：合成页（architecture.md 等）
+/// 按模块名引用模块（如 `src`、`src::storage`），不是叶子实体声称（P3 误报修复）
+fn api_module_names(api_content: &str) -> std::collections::HashSet<String> {
+    api_content
+        .lines()
+        .filter(|l| l.starts_with("## "))
+        .filter_map(|l| {
+            let name = l[3..].trim();
+            (!name.is_empty()).then(|| name.to_string())
+        })
+        .collect()
+}
+
 /// 5. 实体覆盖率检查（P1-4 零成本评测）：模块页核心实体须存在于 api.md
 ///    （api.md 由 graph 权威渲染，页面声称的实体若不在 = LLM 编造实体名，
 ///    防幻觉第二道闸；api.md 仅主语言一份，只检查主语言目录）
@@ -531,6 +545,10 @@ fn check_entity_coverage(pages: &[PathBuf], api_path: &Path, lang: &str, output_
         return Vec::new();
     };
     let known = api_known_entities(&api_content);
+    // 模块名（api.md 的 ## 节标题）也纳入已知名：LLM 合成页（architecture.md
+    // 等）会按模块名引用（如 `src`）。模块名是容器而非叶子实体，不在叶子
+    // 清单中——修复前一律误报 entity-coverage（P3 已知噪声）
+    let modules = api_module_names(&api_content);
 
     let mut issues = Vec::new();
     for page in pages {
@@ -544,14 +562,16 @@ fn check_entity_coverage(pages: &[PathBuf], api_path: &Path, lang: &str, output_
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default();
-        for entity in extract_entity_names(&content) {
-            if !known.contains(&entity) {
-                issues.push(LintIssue {
-                    kind: "entity-coverage",
-                    path: format!("wiki/{lang}/{file_name}"),
-                    message: format!("实体覆盖率: 页面声称的实体 `{entity}` 不在 api.md 清单中（可能是编造或已删除）"),
-                });
+        for entity in extract_entity_names(&content, &modules) {
+            // 声称命中叶子实体清单或模块名（容器名）即非编造；其余报错
+            if known.contains(&entity) || modules.contains(&entity) {
+                continue;
             }
+            issues.push(LintIssue {
+                kind: "entity-coverage",
+                path: format!("wiki/{lang}/{file_name}"),
+                message: format!("实体覆盖率: 页面声称的实体 `{entity}` 不在 api.md 清单中（可能是编造或已删除）"),
+            });
         }
     }
     issues
@@ -755,16 +775,31 @@ pub fn entity_name_from_signature(sig: &str) -> Option<String> {
     candidate
         .filter(|s| s.len() > 1 && !s.chars().all(|c| c.is_ascii_digit()))
         .map(|s| s.to_string())
-}/// 从模块页内容提取声称的实体名：`- `Name`` 核心实体行（反引号内实体真名）
-fn extract_entity_names(content: &str) -> Vec<String> {
+}
+
+/// 提取 `- \`...\`` 声称行的反引号内文（非声称行返回 None）。
+/// extract_entity_names 借它做模块名原文精确匹配（多段名提取后会被截断），
+/// 不能只依赖 entity_name_from_signature 的提取结果
+fn claimed_backtick_inner(line: &str) -> Option<&str> {
+    line.trim()
+        .strip_prefix("- `")
+        .and_then(|rest| rest.find('`').map(|end| &rest[..end]))
+}
+
+/// 从模块页内容提取声称的实体名：`- `Name`` 核心实体行（反引号内实体真名）。
+/// `modules` 为 api.md 的模块名集合：原文精确命中模块名的声称行是模块引用
+/// （容器名，如 `src`、`src::storage`）而非实体声称，先行剔除——多段名
+/// `src::storage` 经 entity_name_from_signature（`::` 被当作继承段冒号）
+/// 会截断为 `src`，必须按原文剔除（P3 误报修复）
+fn extract_entity_names(content: &str, modules: &std::collections::HashSet<String>) -> Vec<String> {
     let mut out = Vec::new();
     for line in content.lines() {
-        let line = line.trim();
-        if line.starts_with("- `") && let Some(end) = line[3..].find('`') {
-            let inner = &line[3..3 + end];
-            if let Some(name) = entity_name_from_signature(inner) {
-                out.push(name);
-            }
+        let Some(inner) = claimed_backtick_inner(line) else { continue };
+        if modules.contains(inner) {
+            continue;
+        }
+        if let Some(name) = entity_name_from_signature(inner) {
+            out.push(name);
         }
     }
     out
@@ -1212,10 +1247,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// P3 已知噪声防回归：合成页（architecture.md 等）引用模块名（api.md 的
+    /// `## ` 节标题，如 `src`、`src::storage`）不应报 entity-coverage——
+    /// 模块名是容器而非叶子实体，不在 api_known_entities 清单中；
+    /// 编造的实体名仍必须报（防幻觉语义不变）
+    #[test]
+    fn test_lint_entity_coverage_accepts_module_names() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_lint_cov_mod_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        // api.md：单段模块名 src 与多段模块名 src::storage 各一节 + 叶子实体
+        std::fs::write(
+            wiki.join("api.md"),
+            "# API 参考\n\n## src\n\n- `Foo` — m.rs:1\n\n## src::storage\n\n- `SessionStore` — storage.rs:1\n",
+        )
+        .unwrap();
+        // 合成页：按模块名引用（含多段名）+ 一个编造的实体名
+        std::fs::write(
+            wiki.join("architecture.md"),
+            "# 架构\n\n## 模块\n\n- `src` — 核心模块\n- `src::storage` — 存储模块\n- `GhostEntity` — 编造的实体\n",
+        )
+        .unwrap();
+
+        let issues = lint(&dir, &[]);
+        let cov: Vec<_> = issues.iter().filter(|i| i.kind == "entity-coverage").collect();
+        assert_eq!(cov.len(), 1, "只应报编造实体, 实际: {:?}", issues);
+        assert!(cov[0].message.contains("GhostEntity"), "应指向编造实体: {}", cov[0].message);
+        assert!(
+            !cov.iter().any(|i| i.message.contains("src")),
+            "模块名引用不应误报: {:?}",
+            cov
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn test_extract_entity_names() {
         let content = "## 核心实体\n\n- `Server`（struct）— HTTP 服务\n- `fn connect()` — 连接\n- `foo_bar` — 下划线\n";
-        let names = extract_entity_names(content);
+        let names = extract_entity_names(content, &std::collections::HashSet::new());
         assert!(names.contains(&"Server".to_string()));
         assert!(
             names.contains(&"connect".to_string()),
@@ -1236,7 +1306,7 @@ mod tests {
         assert_eq!(entity_name_from_signature("`2`"), None, "纯数字应过滤");
         assert_eq!(entity_name_from_signature("fn x()"), None, "单字符函数名应过滤");
         let content = "## 核心实体\n\n- `Server`（struct）\n- `src` — 目录\n- `P` — 噪声\n- `2` — 数字\n";
-        let names = extract_entity_names(content);
+        let names = extract_entity_names(content, &std::collections::HashSet::new());
         assert!(names.contains(&"Server".to_string()), "正常实体应保留: {:?}", names);
         assert!(names.contains(&"src".to_string()), "多字符实体应保留: {:?}", names);
         assert!(!names.contains(&"P".to_string()), "单字符噪声不应声称: {:?}", names);

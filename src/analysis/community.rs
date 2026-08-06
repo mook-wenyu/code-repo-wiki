@@ -93,7 +93,12 @@ pub fn detect_communities_with_resolution(graph: &KnowledgeGraph, resolution: f6
         let d = file_dir_key(graph, nid);
         dirs.entry(d).or_default().push(nid);
     }
-    if dirs.len() >= MIN_DIRS_FOR_SUPERNODE {
+    // 单目录退化保护（v29）：目录数 ≤ 1（所有源文件平铺在同一目录，如
+    // src/ 平铺仓库；根目录散文件归 <root> 同此）时走实体级 Leiden 会把
+    // 整库聚成 1-2 个社区甚至每文件一社区，模块划分失去意义——直接走
+    // 目录页路径：单一社区 = 全部文件，模块名即目录名（community_name
+    // 公共目录前缀档），下游 api.md 的 `## src` 节与模块页引用均正常。
+    if dirs.len() <= 1 || dirs.len() >= MIN_DIRS_FOR_SUPERNODE {
         return dirs.into_values().collect();
     }
 
@@ -636,5 +641,77 @@ mod tests {
                 assert_eq!(dirs_in.len(), 1, "社区内文件必须同属一个目录: {paths:?}");
             }
         }
+    }
+
+    /// v29：单目录仓库退化保护——目录数 == 1（平铺仓库，全部文件同一目录）
+    /// 时直接走目录页路径：整库产出 1 个社区且包含全部文件（修复前走实体级
+    /// Leiden：无跨文件边时每文件一社区、有边时整库聚成 1-2 个社区，模块
+    /// 划分失去意义）；两次调用一致（确定性）。根目录散文件（<root> 键）
+    /// 同此处理。
+    #[test]
+    fn test_detect_communities_single_dir_repo() {
+        // 10 个文件全在 dir00/，无跨文件边（修复前实体级 Leiden → 10 社区）
+        let kg = make_dirs_graph(1, 10, &[]);
+        let first = detect_communities(&kg);
+        let second = detect_communities(&kg);
+        assert_eq!(first, second, "单目录仓库两次划分必须一致（确定性）");
+        assert_eq!(
+            first.len(),
+            1,
+            "单目录仓库应产出 1 个社区（整库一个模块）, 实际 {} 个",
+            first.len()
+        );
+        assert_eq!(first[0].len(), 10, "社区应包含全部 10 个文件");
+        let all_in_dir00 = first[0].iter().all(|nid| {
+            kg.graph
+                .node_weight(*nid)
+                .and_then(|n| n.file_path.as_deref())
+                .is_some_and(|p| p.starts_with("dir00/"))
+        });
+        assert!(all_in_dir00, "社区内所有文件必须同属唯一目录");
+
+        // 根目录散文件（file_dir_key 归 <root>）同样整体一社区
+        let mut kg2 = KnowledgeGraph::default();
+        let g = &mut kg2.graph;
+        for i in 0..5 {
+            let path = format!("main{i}.rs");
+            let nid = g.add_node(CodeNode {
+                id: NodeId::new(g.node_count()),
+                kind: NodeKind::File,
+                name: path.clone(),
+                file_path: Some(path),
+                line_range: None,
+                doc_comment: None,
+                signature: None,
+                visibility: None,
+                module_path: Vec::new(),
+            });
+            let eid = g.add_node(CodeNode {
+                id: NodeId::new(g.node_count()),
+                kind: NodeKind::Function,
+                name: format!("f{i}"),
+                file_path: None,
+                line_range: None,
+                doc_comment: None,
+                signature: None,
+                visibility: None,
+                module_path: Vec::new(),
+            });
+            g.add_edge(
+                nid,
+                eid,
+                CodeEdge {
+                    id: EdgeId::new(g.edge_count()),
+                    kind: EdgeKind::Contains,
+                    source: nid,
+                    target: eid,
+                    weight: 1.0,
+                    location: None,
+                },
+            );
+        }
+        let comms = detect_communities(&kg2);
+        assert_eq!(comms.len(), 1, "根目录散文件仓库也应整体一社区");
+        assert_eq!(comms[0].len(), 5);
     }
 }
