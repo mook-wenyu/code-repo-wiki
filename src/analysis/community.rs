@@ -81,8 +81,12 @@ pub fn detect_communities_with_resolution(graph: &KnowledgeGraph, resolution: f6
     // 修正：目录数 ≥ MIN_DIRS_FOR_SUPERNODE 的仓库直接以目录为社区
     // （页面名=目录路径，新增/删除文件不改变划分，零随机参数）；
     // 中小仓库仍走实体级 Leiden（γ=0.5 已实测调优，粒度/成本最优）。
-    // 阈值 24 的依据：Unity（52 目录）与 repo-wiki 自身（30 目录）属
-    // 大仓库；150 文件测试 fixture（15 目录）以下走实体级。
+    // 阈值 24 的论证（实机数据，v28 t10 复核）：Unity 仓库 52 目录、
+    // repo-wiki 自身 15 目录（src+tests）属"大仓库"（目录页粒度合适）；
+    // 150 文件测试 fixture（15 模块 × 10 文件 = 15 目录）以下走实体级
+    // Leiden。24 落在两档之间：≥24 时目录页规模可接受且免超节点图失真
+    // （v26 D 实测：密集调用仓库在目录超节点图上全部并入一个社区），
+    // <24 时实体级粒度更细（目录数少，页数可负担）。
     const MIN_DIRS_FOR_SUPERNODE: usize = 24;
     let mut dirs: std::collections::BTreeMap<String, Vec<NodeId>> = std::collections::BTreeMap::new();
     for &nid in &file_nodes {
@@ -491,5 +495,146 @@ mod tests {
         // 大社区（2 文件）必须排在单文件社区之前（大小降序）
         assert_eq!(communities[0].len(), 2, "大社区应排前（稳定重排序）");
         assert_eq!(communities[1].len(), 1);
+    }
+
+    /// v28 t10：目录阈值分流测试的合成图构造器——
+    /// n_dirs 个目录 dirNN/，每目录 files_per_dir 个文件（各带 1 个实体），
+    /// connected_pairs 指定跨目录 Calls 边（dir_a 的实体 0 → dir_b 的实体 0，
+    /// 每目录至少 1 条边可被引用）。
+    fn make_dirs_graph(
+        n_dirs: usize,
+        files_per_dir: usize,
+        connected_pairs: &[(usize, usize)],
+    ) -> KnowledgeGraph {
+        let mut kg = KnowledgeGraph::default();
+        let g = &mut kg.graph;
+        // 目录 → 该目录第一个文件实体的节点（供跨目录边引用）
+        let mut first_entity: HashMap<String, NodeId> = HashMap::new();
+        for d in 0..n_dirs {
+            let dir = format!("dir{d:02}");
+            for f in 0..files_per_dir {
+                let path = format!("{dir}/f{f}.rs");
+                let nid = g.add_node(CodeNode {
+                    id: NodeId::new(g.node_count()),
+                    kind: NodeKind::File,
+                    name: path.clone(),
+                    file_path: Some(path.clone()),
+                    line_range: None,
+                    doc_comment: None,
+                    signature: None,
+                    visibility: None,
+                    module_path: dir_segments(&path),
+                });
+                let eid = g.add_node(CodeNode {
+                    id: NodeId::new(g.node_count()),
+                    kind: NodeKind::Function,
+                    name: format!("f{f}"),
+                    file_path: Some(path),
+                    line_range: None,
+                    doc_comment: None,
+                    signature: None,
+                    visibility: None,
+                    module_path: Vec::new(),
+                });
+                g.add_edge(
+                    nid,
+                    eid,
+                    CodeEdge {
+                        id: EdgeId::new(g.edge_count()),
+                        kind: EdgeKind::Contains,
+                        source: nid,
+                        target: eid,
+                        weight: 1.0,
+                        location: None,
+                    },
+                );
+                first_entity.entry(dir.clone()).or_insert(eid);
+            }
+        }
+        for (a, b) in connected_pairs {
+            let ea = first_entity[&format!("dir{a:02}")];
+            let eb = first_entity[&format!("dir{b:02}")];
+            g.add_edge(
+                ea,
+                eb,
+                CodeEdge {
+                    id: EdgeId::new(g.edge_count()),
+                    kind: EdgeKind::Calls,
+                    source: ea,
+                    target: eb,
+                    weight: 0.7,
+                    location: None,
+                },
+            );
+        }
+        kg
+    }
+
+    /// v28 t10：目录阈值分流——20 目录（< 24）走实体级 Leiden：
+    /// 跨目录调用把连接链上的文件合并成混合目录社区（社区数 > 目录数，
+    /// 因为无边的独立文件每文件一社区），且两次调用结果完全一致
+    /// （输出确定性，固定种子）。
+    #[test]
+    fn test_detect_communities_entity_level_below_threshold() {
+        // 20 目录 × 2 文件；三组跨目录链连接（0-1-2、3-4），其余目录独立
+        let kg = make_dirs_graph(20, 2, &[(0, 1), (1, 2), (3, 4)]);
+
+        let first = detect_communities(&kg);
+        let second = detect_communities(&kg);
+        assert_eq!(first, second, "同图两次划分必须完全一致（确定性）");
+
+        assert!(
+            first.len() > 20,
+            "实体级划分社区数应多于目录数（独立目录每文件一社区）, 实际 {} 个社区",
+            first.len()
+        );
+        // 存在跨目录混合社区：连接链上的文件被 Leiden 合并
+        let mixed = first.iter().any(|c| {
+            let dirs_in: std::collections::HashSet<&str> = c
+                .iter()
+                .filter_map(|nid| kg.graph.node_weight(*nid).and_then(|n| n.file_path.as_deref()))
+                .filter_map(|p| p.rsplit_once('/').map(|(d, _)| d))
+                .collect();
+            dirs_in.len() > 1
+        });
+        assert!(mixed, "跨目录调用链应产生混合目录社区, 实际: {:?}", first);
+    }
+
+    /// v28 t10：目录阈值分流——24/30/40 目录（≥ 24）走目录级：
+    /// 社区数 == 目录数，每社区恰为该目录的完整文件集；即使每对目录间
+    /// 都有跨目录依赖边也不合并（目录级零随机参数，新增/删除文件不改
+    /// 变划分）；两次调用一致（确定性）。
+    #[test]
+    fn test_detect_communities_dir_level_at_and_above_threshold() {
+        // 24 目录 × 3 文件 / 30 目录 × 2 文件 / 40 目录 × 3 文件
+        for (n_dirs, files_per_dir) in [(24usize, 3usize), (30, 2), (40, 3)] {
+            // 全链跨目录边（最强制合并压力：目录级分流下必须仍按目录划分）
+            let pairs: Vec<(usize, usize)> = (0..n_dirs - 1).map(|a| (a, a + 1)).collect();
+            let kg = make_dirs_graph(n_dirs, files_per_dir, &pairs);
+
+            let first = detect_communities(&kg);
+            let second = detect_communities(&kg);
+            assert_eq!(first, second, "{n_dirs} 目录两次划分必须一致（确定性）");
+            assert_eq!(
+                first.len(),
+                n_dirs,
+                "{n_dirs} 目录应产出 {n_dirs} 个社区, 实际 {}",
+                first.len()
+            );
+
+            for comm in &first {
+                let mut paths: Vec<String> = comm
+                    .iter()
+                    .filter_map(|nid| kg.graph.node_weight(*nid).and_then(|n| n.file_path.clone()))
+                    .collect();
+                paths.sort();
+                assert_eq!(paths.len(), files_per_dir, "每社区应为单目录全部文件: {paths:?}");
+                let dirs_in: std::collections::HashSet<&str> = paths
+                    .iter()
+                    .filter_map(|p| p.rsplit_once('/').map(|(d, _)| d))
+                    .collect();
+                assert_eq!(dirs_in.len(), 1, "社区内文件必须同属一个目录: {paths:?}");
+            }
+        }
     }
 }

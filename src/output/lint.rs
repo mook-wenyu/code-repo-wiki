@@ -7,6 +7,9 @@
 //! 2. **断链**：页面内链接指向不存在的产物文件（复制 crossref 语义，但作用于磁盘产物）
 //! 3. **过时**：页面生成时间戳早于其源文件修改时间（源码已变但文档未更新）
 //! 4. **bad-citation**：正文 `path:line` 引用指向不存在的文件或行号越界（引用契约的静态复核）
+//!
+//! 4b. **bad-vctx**：正文 `[[vctx:path#L-a-L-b@hash8]]` 手工标记做 5 步哈希只读校验（vericontext 协议，人工文档护栏：t05 决议不引入生成契约，只识别并校验已有标记）
+//!
 //! 5. **entity-coverage**：页面声称的实体不在 api.md 权威清单（LLM 编造的第二道闸）
 //! 6. **bad-mermaid**：产物中的 mermaid fence 无法被 merman 解析（历史产物/人工编辑/增量遗留）
 //! 7. **stale-entity**：api.md 权威清单的实体在当前源码中不存在（文档引用了已删除/重命名的符号）
@@ -21,7 +24,7 @@ use crate::output::citation;
 /// 单条 lint 问题
 #[derive(Debug, Clone)]
 pub struct LintIssue {
-    /// 问题类别: orphan / broken / stale / bad-citation / entity-coverage / bad-mermaid / stale-entity
+    /// 问题类别: orphan / broken / stale / bad-citation / bad-vctx / entity-coverage / bad-mermaid / stale-entity
     pub kind: &'static str,
     /// 问题文件相对路径（相对 output_dir）
     pub path: String,
@@ -34,9 +37,9 @@ pub struct LintIssue {
 /// `output_dir` 为产物根目录（config.output.dir），
 /// `source_roots` 为源码扫描根列表（用于过时检查的源文件 mtime 对比）。
 ///
-/// 六类检查各一个私有函数（B7：单函数承载单一职责，lint() 只做组合）：
+/// 各类检查各一个私有函数（B7：单函数承载单一职责，lint() 只做组合）：
 /// orphan（孤儿页）、broken（断链）、stale（过时）、bad-citation（引用存在性）、
-/// entity-coverage（实体覆盖率）、bad-mermaid（Mermaid 语法）。
+/// bad-vctx（vctx 标记哈希）、entity-coverage（实体覆盖率）、bad-mermaid（Mermaid 语法）。
 pub fn lint(output_dir: &Path, source_roots: &[PathBuf]) -> Vec<LintIssue> {
     let mut issues = Vec::new();
     let wiki_root = output_dir.join("wiki");
@@ -63,6 +66,7 @@ pub fn lint(output_dir: &Path, source_roots: &[PathBuf]) -> Vec<LintIssue> {
         issues.extend(check_broken_links(&pages, lang));
         issues.extend(check_stale(&pages, &output_dir.join("cards").join(lang), source_roots, lang));
         issues.extend(check_citations(&pages, output_dir, source_roots, lang, &source_entity_ranges));
+        issues.extend(check_vctx_tokens(&pages, output_dir, source_roots, lang));
         issues.extend(check_entity_coverage(&pages, &output_dir.join("wiki").join(lang).join("api.md"), lang, output_dir));
         issues.extend(check_mermaid(&pages, lang));
         issues.extend(check_stale_entities(
@@ -285,6 +289,181 @@ fn check_citations(
                     message: format!(
                         "引用位置可疑: `{}` 的 {}-{} 行未覆盖该文件的任何实体（行号可能指向错误位置）",
                         citation.path, citation.start, citation.end
+                    ),
+                });
+            }
+        }
+    }
+    issues
+}
+
+/// vctx 标记（vericontext 协议，t05 源码级核对）：
+/// `[[vctx:path#L-<start>-L-<end>@<hash8>]]`，path 相对项目根、不含 `#`/`]`，
+/// start/end 为 1-based 包含行区间，hash8 为 SHA-256 前 8 位小写 hex。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VctxToken {
+    path: String,
+    start: usize,
+    end: usize,
+    hash: String,
+}
+
+/// 从文本中扫描全部 `[[vctx:...]]` 标记并解析（手写扫描，与 citation.rs
+/// 同风格，项目无 regex 依赖）。返回逐条解析结果：Err 携带"格式不完整"
+/// 原因——`[[vctx:` 出现却无法完整解析 = 手写标记写坏，必须可观测。
+fn extract_vctx_tokens(content: &str) -> Vec<Result<VctxToken, String>> {
+    let mut out = Vec::new();
+    let mut rest = content;
+    while let Some(pos) = rest.find("[[vctx:") {
+        // token 尾部 = 第一个 "]]"（语法内 `]` 只出现在收尾，路径不含 `]`）
+        let after = &rest[pos + 7..];
+        let end = after.find("]]").map(|e| e + 2).unwrap_or(after.len());
+        out.push(parse_vctx_token(&after[..end]));
+        rest = &after[end..];
+    }
+    out
+}
+
+/// 单条 token 解析（"[[vctx:" 前缀已剥除）：`path#L-<start>-L-<end>@<hash8>]]`
+fn parse_vctx_token(s: &str) -> Result<VctxToken, String> {
+    let (path, rest) = s
+        .split_once('#')
+        .ok_or_else(|| "缺少 # 行区间段".to_string())?;
+    if path.is_empty() || path.contains(']') {
+        return Err("路径为空或含非法字符 ]".to_string());
+    }
+    let rest = rest
+        .strip_prefix("L-")
+        .ok_or_else(|| "行区间段应以 L- 开头".to_string())?;
+    let (start_str, rest) = rest
+        .split_once("-L-")
+        .ok_or_else(|| "行区间缺 -L- 分隔".to_string())?;
+    let start: usize = start_str
+        .parse()
+        .map_err(|_| "起始行号非数字".to_string())?;
+    let (end_str, rest) = rest
+        .split_once('@')
+        .ok_or_else(|| "缺 @ 哈希分隔".to_string())?;
+    let end: usize = end_str
+        .parse()
+        .map_err(|_| "结束行号非数字".to_string())?;
+    let hash = rest
+        .strip_suffix("]]")
+        .ok_or_else(|| "哈希段后缺 ]] 收尾".to_string())?;
+    if hash.len() != 8 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("哈希必须为 8 位十六进制".to_string());
+    }
+    Ok(VctxToken {
+        path: path.to_string(),
+        start,
+        end,
+        hash: hash.to_ascii_lowercase(),
+    })
+}
+
+/// vctx 5 步哈希（对齐 vericontext src/core/file.ts readCanonicalText +
+/// hashLineSpan，t05 Resolution 第 2 节源码级核对）：
+/// 1. 严格 UTF-8 读取（read_to_string 失败即拒绝，不做字节替换）；
+/// 2. EOL 归一化：`\r\n` 与裸 `\r` → `\n`（跨平台一致，vericontext 自评
+///    "最重要的可移植性决策"；Rust lines() 等价处理 CRLF，但行哈希要求
+///    归一化后再取区间，故显式替换）；
+/// 3. 取 [start, end] 行区间（1-based 包含）；
+/// 4. 行间 join("\n") 且无尾换行；
+/// 5. SHA-256 hex 前 8 位小写（32 位截断够检测编辑，非安全边界）。
+fn vctx_line_hash(source: &str, start: usize, end: usize) -> String {
+    let normalized = source.replace("\r\n", "\n").replace('\r', "\n");
+    let lines: Vec<&str> = normalized.split('\n').collect();
+    let span = lines[start - 1..end].join("\n");
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(span.as_bytes());
+    hex::encode(hasher.finalize())[..8].to_string()
+}
+
+/// 4b. vctx 只读校验（v28 t06）：产物中人工手写的 `[[vctx:path#L-a-L-b@hash8]]`
+/// 标记做 5 步哈希校验（vericontext 协议）。t05 决议：vctx 是"写时哈希协议"
+/// 而非生成契约，不要求 LLM 产出——本检查只兜住人工/工具写出的标记，与
+/// bad-citation（结构校验）互补：存在性+行区间是"行号对"，哈希是"内容对"
+/// （防引用内容漂移）。
+fn check_vctx_tokens(
+    pages: &[PathBuf],
+    output_dir: &Path,
+    source_roots: &[PathBuf],
+    lang: &str,
+) -> Vec<LintIssue> {
+    let mut issues = Vec::new();
+    for page in pages {
+        // 页面读取失败（损坏/权限/竞态删除）时显式告警并跳过该页——
+        // 静默当作空内容会把页误报为孤儿/断链（失败必须可观测）
+        let Ok(content) = std::fs::read_to_string(page) else {
+            tracing::warn!("lint 读取页面失败（跳过检查）: {}", page.display());
+            continue;
+        };
+        let file_name = page
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        for token in extract_vctx_tokens(&content) {
+            let token = match token {
+                Ok(t) => t,
+                Err(reason) => {
+                    issues.push(LintIssue {
+                        kind: "bad-vctx",
+                        path: format!("wiki/{lang}/{file_name}"),
+                        message: format!("vctx 标记格式不完整: {reason}"),
+                    });
+                    continue;
+                }
+            };
+            // 路径越界段拒绝（与 check_citations 同一规则）：`..` 段可逃逸
+            // 项目根，即使目标真实存在也按无效处理
+            if token.path.split(['/', '\\']).any(|seg| seg == "..") {
+                issues.push(LintIssue {
+                    kind: "bad-vctx",
+                    path: format!("wiki/{lang}/{file_name}"),
+                    message: format!("vctx 路径含越界段 ..: `{}`", token.path),
+                });
+                continue;
+            }
+            // 路径相对项目根解析（output_dir 的父目录），source_roots 兜底
+            let project_root = output_dir.parent().unwrap_or_else(|| Path::new("."));
+            let primary_abs = project_root.join(&token.path);
+            let abs = if primary_abs.exists() {
+                primary_abs
+            } else {
+                resolve_source_path(source_roots, &token.path)
+            };
+            // 严格 UTF-8 读取：失败 = 文件不存在或非 UTF-8（vericontext 同
+            // fail-closed 语义：file_missing / invalid_utf8 均拒绝）
+            let Ok(source) = std::fs::read_to_string(&abs) else {
+                issues.push(LintIssue {
+                    kind: "bad-vctx",
+                    path: format!("wiki/{lang}/{file_name}"),
+                    message: format!("vctx 目标不存在或非 UTF-8: `{}`", token.path),
+                });
+                continue;
+            };
+            let total = source.lines().count();
+            // 行区间有效性：1-based 包含区间，0 不是合法行号
+            if token.start == 0 || token.start > token.end || token.end > total {
+                issues.push(LintIssue {
+                    kind: "bad-vctx",
+                    path: format!("wiki/{lang}/{file_name}"),
+                    message: format!(
+                        "vctx 行区间越界: `{}` 的 {}-{} 行超出文件总行数 {}",
+                        token.path, token.start, token.end, total
+                    ),
+                });
+                continue;
+            }
+            let actual = vctx_line_hash(&source, token.start, token.end);
+            if actual != token.hash {
+                issues.push(LintIssue {
+                    kind: "bad-vctx",
+                    path: format!("wiki/{lang}/{file_name}"),
+                    message: format!(
+                        "vctx 哈希不匹配: `{}` 的 {}-{} 行内容已变更（现哈希 {actual}，标记为 {}）",
+                        token.path, token.start, token.end, token.hash
                     ),
                 });
             }
@@ -1196,6 +1375,114 @@ mod tests {
         assert_eq!(bad.len(), 1, "越界段应报 bad-citation, 实际: {:?}", issues);
         assert!(bad[0].message.contains("越界段 .."), "消息应说明越界: {}", bad[0].message);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v28 t06：vctx 只读校验——合法标记（文件存在/行区间有效/哈希正确）不报错。
+    /// 哈希期望值硬编码为独立算法的已知输出（SHA-256("hello") 前 8 位 =
+    /// 2cf24dba），防实现自身偏差（自洽计算无法发现"两侧同错"）。
+    #[test]
+    fn test_lint_vctx_valid_passes() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_lint_vctx_ok_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let out = dir.join(".repo-wiki");
+        let wiki = out.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src").join("real.rs"), "hello\n").unwrap();
+        std::fs::write(
+            wiki.join("m.md"),
+            "# M\n\n核心逻辑见 [[vctx:src/real.rs#L-1-L-1@2cf24dba]]\n",
+        )
+        .unwrap();
+
+        let issues = lint(&out, &[]);
+        assert!(
+            !issues.iter().any(|i| i.kind == "bad-vctx"),
+            "合法 vctx 标记不应报错, 实际: {:?}",
+            issues
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v28 t06：路径不存在 → bad-vctx；顺带覆盖格式不完整标记
+    /// （`[[vctx:src/real.rs]]` 缺 # 行区间段）也报 bad-vctx（手写护栏，
+    /// 写坏的标记必须可观测）
+    #[test]
+    fn test_lint_vctx_missing_file_and_malformed() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_lint_vctx_miss_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let out = dir.join(".repo-wiki");
+        let wiki = out.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        std::fs::write(
+            wiki.join("m.md"),
+            "# M\n\n- [[vctx:src/ghost.rs#L-1-L-1@2cf24dba]]\n- [[vctx:src/real.rs]]\n",
+        )
+        .unwrap();
+
+        let issues = lint(&out, &[]);
+        let bad: Vec<_> = issues.iter().filter(|i| i.kind == "bad-vctx").collect();
+        assert_eq!(bad.len(), 2, "缺失文件与格式不完整各报一条, 实际: {:?}", issues);
+        assert!(
+            bad.iter().any(|i| i.message.contains("ghost.rs")),
+            "应指向缺失文件: {:?}",
+            issues
+        );
+        assert!(
+            bad.iter().any(|i| i.message.contains("格式不完整")),
+            "应报格式不完整: {:?}",
+            issues
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v28 t06：行区间越界（end > 文件总行数）→ bad-vctx
+    #[test]
+    fn test_lint_vctx_range_out_of_bounds() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_lint_vctx_range_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let out = dir.join(".repo-wiki");
+        let wiki = out.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src").join("small.rs"), "line1\nline2\n").unwrap();
+        std::fs::write(
+            wiki.join("m.md"),
+            "# M\n\n见 [[vctx:src/small.rs#L-3-L-3@2cf24dba]]\n",
+        )
+        .unwrap();
+
+        let issues = lint(&out, &[]);
+        let bad: Vec<_> = issues.iter().filter(|i| i.kind == "bad-vctx").collect();
+        assert_eq!(bad.len(), 1, "越界引用应报 bad-vctx, 实际: {:?}", issues);
+        assert!(bad[0].message.contains("越界"), "消息应说明越界: {}", bad[0].message);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v28 t06：文件内容变更但标记保留旧哈希 → bad-vctx（哈希防内容漂移：
+    /// 行号对、内容错也报警，补 bad-citation 结构校验之外的内容维度）
+    #[test]
+    fn test_lint_vctx_hash_mismatch() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_lint_vctx_hash_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let out = dir.join(".repo-wiki");
+        let wiki = out.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        // 先按原始内容计算标记哈希（模拟"标记写好后文件被改"）
+        let old_hash = vctx_line_hash("line1\nline2\n", 1, 2);
+        std::fs::write(dir.join("src").join("lib.rs"), "changed\nline2\n").unwrap();
+        std::fs::write(
+            wiki.join("m.md"),
+            format!("# M\n\n见 [[vctx:src/lib.rs#L-1-L-2@{old_hash}]]\n"),
+        )
+        .unwrap();
+
+        let issues = lint(&out, &[]);
+        let bad: Vec<_> = issues.iter().filter(|i| i.kind == "bad-vctx").collect();
+        assert_eq!(bad.len(), 1, "内容变更后旧哈希应报错, 实际: {:?}", issues);
+        assert!(bad[0].message.contains("哈希不匹配"), "消息应说明哈希不一致: {}", bad[0].message);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
