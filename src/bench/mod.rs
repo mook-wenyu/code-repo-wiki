@@ -143,7 +143,9 @@ pub struct RubricReport {
     pub leaf_count: usize,
     /// 判定为满足（1）的叶子数
     pub satisfied_leaves: usize,
-    /// 覆盖率 = satisfied / leaf（leaf 为 0 时为 1.0 空集约定）
+    /// 覆盖率 = satisfied / 有效判定叶子（leaf − abstain；0 时为 1.0
+    /// 空集约定）——t04 起 abstain 叶子排除出分母（2606.00093 item 8：
+    /// exclude 模式报 covered-subset 性能）
     pub coverage: f64,
     /// 加权总分 S（0-1；×10 可与 TQS 0-10 口径对比）
     pub score: f64,
@@ -153,6 +155,22 @@ pub struct RubricReport {
     pub generation_calls: usize,
     /// 裁判模型（config.llm.model）
     pub judge_model: String,
+    /// t04：abstain 叶子数（判定调用/解析失败——不再 recode 为 false；
+    /// 2606.00093 item 6：recode 改变 estimand，排除需显式报告）
+    #[serde(default)]
+    pub abstain_leaves: usize,
+    /// t04：abstain 率 = abstain / 总叶子（2606.00093 item 7：
+    /// abstention/tie/invalid 率本身作为指标报告）
+    #[serde(default)]
+    pub abstain_rate: f64,
+    /// t04：叶子判定轮数（3 次多数投票；1:2 争议升级 5 次——2606.13685：
+    /// 单次判定保真仅 86.6%，3 trials 达约 90%）
+    #[serde(default)]
+    pub leaf_verdict_repeats: usize,
+    /// t04：聚合层级声明（叶子级多数投票 → 权重自底向上；2606.00093
+    /// item 10 要求声明 micro/macro/item-level）
+    #[serde(default)]
+    pub aggregation_level: String,
 }
 
 /// Rubric 树节点（LLM 生成/合并/聚合的中间形态，仅内部使用）
@@ -203,11 +221,51 @@ pub struct TqsReport {
     /// 文档差异导致敏感（2606.19544 指出高 test-retest 与低位置偏差
     /// 可并存，一致性是可靠性下限）。
     pub kappa_like: f64,
-    /// v14 C 组（MVVP 缺口）：机会校正 Cohen's κ——把"同一维度分数差 ≤1"
+    /// v14 C 组（MVVP 缺口）：机会校正 κ——把"同一维度分数差 ≤1"
     /// 视为二分类判定（一致/不一致），一致率经机会一致性 p²+(1-p)² 校正：
-    /// κ = (P_o − P_e)/(1 − P_e)，负值截断为 0。kappa_like 是未校正的
-    /// 原始一致率；κ 衡量的是"超出偶然一致"的稳定性。
+    /// κ = (P_o − P_e)/(1 − P_e)，负值截断为 0。**注意：机会基线用 p_obs
+    /// 自身近似，非标准 Cohen's κ**（标准 κ 需两个独立 rater 的判定与
+    /// 边际表，见 kappa_cohen）；保留字段名与语义兼容既有消费方。
     pub kappa: f64,
+    /// t04：标准 Cohen's κ（2606.19544 通缩诊断的对照口径）——rater1 =
+    /// AB 顺序调用、rater2 = BA 顺序调用，item = (模块, 维度, 轮)，
+    /// 类别 = {A 胜, B 胜}（平局按 B 胜计入，连续分数相等概率近零）。
+    /// 与 kappa_like/kappa 的自定义稳定率口径不同，独立报告。
+    #[serde(default)]
+    pub kappa_cohen: f64,
+    /// t04：判定翻转率（模块级平均）——单次调用的 A 胜/平/B 胜判定与
+    /// 模块内多数判定不一致的比例（2606.13685 单次 flip rate 13.6%；
+    /// 2606.19544 self-consistency 的互补面）。
+    #[serde(default)]
+    pub flip_rate: f64,
+    /// t04：位置翻转率（模块级平均）——同一轮内 AB 顺序与 BA 顺序的
+    /// 判定相异比例（2606.19544 item 级定义：交换位置后判定翻转的比例；
+    /// 区别于 position_bias 的 AB/BA 组均值口径）。
+    #[serde(default)]
+    pub position_flip_rate: f64,
+    /// t04：κ 通缩诊断 = kappa_like − kappa——原始一致率被机会校正
+    /// 削掉多少（2606.19544：Δκ 33-41pp 量级；本地无 human 参考时以
+    /// 自稳定性口径替代）。
+    #[serde(default)]
+    pub delta_kappa: f64,
+    /// t04：有效模块数 = 新旧文档都存在的模块总数（2606.00093 item 8
+    /// coverage；judged_modules 仅计判定成功数，failed 模块不计入）
+    #[serde(default)]
+    pub eligible_modules: usize,
+    /// t04：解析成功率 = 成功解析的裁判调用 / 全部调用（含失败模块；
+    /// 2606.00093 item 7 要求 abstention/invalid 率单独作为指标报告）
+    #[serde(default)]
+    pub parse_success_rate: f64,
+    /// t04：判定尺度声明（2606.00093 item 1：必须声明判定尺度）
+    #[serde(default)]
+    pub judgment_scale: String,
+    /// t04：聚合层级声明（2606.00093 item 10）
+    #[serde(default)]
+    pub aggregation_level: String,
+    /// t04：tie/abstain 处理声明（2606.00093 item 6：exclude/recode/retain
+    /// 是三种不同 estimand，必须显式声明）
+    #[serde(default)]
+    pub tie_handling: String,
     /// v14 C 组（MVVP 缺口）：位置偏差 |P(A 胜) − 0.5|——对每模块每维度，
     /// AB 顺序（A 先）轮与 BA 顺序（B 先）轮的分数均值比较出 A 胜/负判定，
     /// P(A 胜) = A 胜判定数 / 判定总数。接近 0 = 文档顺序不影响裁判；
@@ -223,6 +281,33 @@ pub struct TqsReport {
     /// 单裁判时报告模型便于人工判断偏差来源——2604.23178）
     pub judge_model: String,
 }
+
+/// t04：判定尺度声明（2606.00093 item 1）——0-10 连续五维点分，
+/// 解析后 clamp 到 [0,10]（prompt 示例为整数，解析接受小数并收敛越界）
+const TQS_JUDGMENT_SCALE: &str =
+    "0-10 连续五维点分（clarity/readability/conciseness/richness/structure），解析后 clamp 到 [0,10]";
+
+/// t04：聚合层级声明（2606.00093 item 10）——模块级 macro average
+const TQS_AGGREGATION_LEVEL: &str = "模块级 macro average（每模块五维均值后跨模块平均）";
+
+/// t04：tie/abstain 处理声明（2606.00093 item 6）——三态判定口径：
+/// 平局不进胜；AB/BA 判定相异计位置翻转；2×2 一致表平局按 B 胜计入；
+/// 解析/调用失败 → 模块排除（计入 low_confidence，不 recode）
+const TQS_TIE_HANDLING: &str =
+    "判定三态（A胜/平/B胜）：平局不进胜；AB 与 BA 顺序判定相异计位置翻转；2×2 一致表平局按 B 胜计入；解析/调用失败的模块排除并计入 low_confidence（不 recode）";
+
+/// t04（Phase 2）：TQS 基础复测轮数（AB/BA 各 N 轮）——2606.13685：
+/// 单次判定翻转率均值 13.6%，多数投票 90% 保真需约 3 trials、95% 需
+/// 平均 11 trials；5 是 90%+ 区间内的性价比点
+const TQS_REPEATS: usize = 5;
+
+/// t04（Phase 2）：低置信模块的升级轮数（2606.13685：95% 保真需平均
+/// 11 trials；hard 档（FR≥10%）需 15 trials，11 是成本可控的收敛近似）
+const TQS_REPEATS_ESCALATED: usize = 11;
+
+/// t04（Phase 2）：模块级判定翻转率超过该阈值即升级复测轮数
+/// （2606.13685：28% 题目翻转率 >20%，hard 档需更多 trials）
+const TQS_FLIP_RATE_ESCALATION_THRESHOLD: f64 = 0.20;
 
 /// 收集全部产物页内容（wiki/{lang}/*.md，主语言 + 扩展语言）
 fn collect_wiki_pages(output_dir: &Path) -> Vec<(PathBuf, String)> {
@@ -709,8 +794,10 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
 
     // t05/MVVP：复测次数（AB/BA 各 TQS_REPEATS 轮）。2606.19544 的 MVVP
     // 协议要求 ≥3 次复测计算可靠性——单次打分不可信（exact-match 高估
-    // 33-41pp κ）。成本：每模块 2×repeats 次 LLM 调用，真实评测可接受。
-    const TQS_REPEATS: usize = 3;
+    // 33-41pp κ）。t04（2606.13685）：单次判定翻转率均值 13.6%，多数投票
+    // 90% 保真需约 3 trials、95% 需平均 11 trials；基础轮数取 5（90%+
+    // 区间内性价比点），低置信模块自动升级至 11（Phase 2，成本上限
+    // 每模块 2×11 次调用）。
     let mut sums = [0.0f64; 5];
     let mut judged = 0usize;
     // 复测一致性（κ 近似）与标准差：跨模块累计
@@ -724,16 +811,28 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
     let mut low_confidence: Vec<String> = Vec::new();
     // 模块级复测标准差（avg_std 的模块维度来源，低置信判定用）
     let mut module_stds: Vec<(String, f64)> = Vec::new();
+    // t04（Phase 1）：判定级指标跨模块累计——翻转率/位置翻转率/2×2 表
+    let mut flip_sum = 0.0f64;
+    let mut pos_flip_sum = 0.0f64;
+    let mut kappa_table = [[0usize; 2]; 2];
+    // 解析成功率（全部调用，含失败模块；2606.00093 item 7）
+    let mut parse_ok = 0usize;
+    let mut parse_total = 0usize;
     for (title, old, new) in &pairs {
-        // 每轮 = AB + BA 两次调用（顺序消偏）；共 repeats 轮
-        let mut round_scores: Vec<(bool, [f64; 5])> = Vec::new();
+        // 每轮 = AB + BA 两次调用（顺序消偏）；共 repeats 轮；低置信升级补轮
+        let mut round_scores: Vec<(bool, [f64; 5], [f64; 5])> = Vec::new();
         let mut failed = false;
-        for _ in 0..TQS_REPEATS {
+        let mut target = TQS_REPEATS;
+        while round_scores.len() < target * 2 {
             for a_first in [true, false] {
+                parse_total += 1;
                 let messages = tqs_prompt(&config.wiki.language, old, new, a_first);
                 match rt.block_on(provider.complete_with_budget(&messages, Some(BENCH_MAX_OUTPUT_TOKENS))) {
                     Ok(content) => match parse_tqs_score(&content) {
-                        Ok(s) => round_scores.push((a_first, s)),
+                        Ok((a, b)) => {
+                            parse_ok += 1;
+                            round_scores.push((a_first, a, b));
+                        }
                         Err(e) => {
                             tracing::warn!("TQS 裁判输出解析失败（模块 {title}）: {e}");
                             failed = true;
@@ -750,6 +849,15 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
             if failed {
                 break;
             }
+            // Phase 2（t03）：基础轮数跑满后低置信升级——翻转率 >20%
+            // 或模块 σ 超阈值（2606.13685 分层表：hard 档需更多 trials）
+            if round_scores.len() == TQS_REPEATS * 2
+                && (module_judgment_metrics(&round_scores).flip_rate
+                    > TQS_FLIP_RATE_ESCALATION_THRESHOLD
+                    || module_std(&round_scores) > LOW_CONFIDENCE_STD_THRESHOLD)
+            {
+                target = TQS_REPEATS_ESCALATED;
+            }
         }
         let rounds = round_scores.len();
         if failed || rounds < TQS_REPEATS * 2 {
@@ -759,8 +867,12 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
             continue;
         }
         // 每维均值（全部轮次平均，同时消位置偏差与复测波动）；
-        // scores 为去掉 a_first 标记的分数数组（一致性/标准差/均值共用）
-        let scores: Vec<[f64; 5]> = round_scores.iter().map(|(_, s)| *s).collect();
+        // scores 为去掉 a_first 标记的分数数组（一致性/标准差/均值共用，
+        // 与 v14 语义一致：a_first=true 取 A 分数，false 取 B 分数）
+        let scores: Vec<[f64; 5]> = round_scores
+            .iter()
+            .map(|(af, a, b)| if *af { *a } else { *b })
+            .collect();
         for i in 0..5 {
             let dim_sum: f64 = scores.iter().map(|s| s[i]).sum();
             sums[i] += dim_sum / scores.len() as f64;
@@ -785,8 +897,8 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
         // v14 C 组（MVVP 缺口）：位置偏差——每维度比较 AB 组与 BA 组
         // 均值，A 胜判定累计（P(A 胜) 偏离 0.5 即位置敏感）
         for i in 0..5 {
-            let ab: Vec<f64> = round_scores.iter().filter(|(af, _)| *af).map(|(_, s)| s[i]).collect();
-            let ba: Vec<f64> = round_scores.iter().filter(|(af, _)| !*af).map(|(_, s)| s[i]).collect();
+            let ab: Vec<f64> = round_scores.iter().filter(|(af, _, _)| *af).map(|(_, a, _)| a[i]).collect();
+            let ba: Vec<f64> = round_scores.iter().filter(|(af, _, _)| !*af).map(|(_, _, b)| b[i]).collect();
             if !ab.is_empty() && !ba.is_empty() {
                 position_pairs += 1;
                 let ab_mean = ab.iter().sum::<f64>() / ab.len() as f64;
@@ -798,14 +910,19 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
         }
         // v14 C 组：模块级复测标准差（五维平均，低置信判定依据——
         // 分数波动超过阈值说明该模块结论不可信，需人工复核）
-        let mut mod_var = 0.0f64;
-        for i in 0..5 {
-            let dim_sum: f64 = scores.iter().map(|s| s[i]).sum();
-            let mean = dim_sum / scores.len() as f64;
-            let var: f64 = scores.iter().map(|s| (s[i] - mean).powi(2)).sum::<f64>() / scores.len() as f64;
-            mod_var += var;
+        module_stds.push((title.clone(), module_std(&round_scores)));
+        // t04（Phase 1）：判定级指标——flip_rate 相对模块多数判定
+        // （2606.19544 self-consistency 互补面）、position_flip_rate
+        // （AB↔BA 交换后判定翻转，逐对口径）、kappa_cohen 的 2×2 一致表
+        let metrics = module_judgment_metrics(&round_scores);
+        flip_sum += metrics.flip_rate;
+        pos_flip_sum += metrics.position_flip_rate;
+        let table = module_kappa_table(&round_scores);
+        for (i, row) in table.iter().enumerate() {
+            for (j, &v) in row.iter().enumerate() {
+                kappa_table[i][j] += v;
+            }
         }
-        module_stds.push((title.clone(), (mod_var / 5.0).sqrt()));
         judged += 1;
     }
     if judged == 0 {
@@ -817,8 +934,9 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
     } else {
         consistent_pairs as f64 / total_pairs as f64
     };
-    // v14 C 组（MVVP 缺口）：机会校正 Cohen's κ——一致率经机会一致性
-    // p²+(1−p)² 校正，衡量"超出偶然一致"的稳定性（kappa_like 是原始率）
+    // v14 C 组（MVVP 缺口）：机会校正 κ——一致率经机会一致性
+    // p²+(1−p)² 校正，衡量"超出偶然一致"的稳定性（kappa_like 是原始率；
+    // 机会基线用 p_obs 近似，非标准 Cohen's κ，对照口径见 kappa_cohen）
     let kappa = if total_pairs == 0 {
         0.0
     } else {
@@ -861,12 +979,177 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
         low_confidence_modules: low_confidence,
         avg_std,
         judge_model: config.llm.model.clone(),
+        // t04（Phase 1）：判定级可靠性指标与协议声明
+        kappa_cohen: kappa_cohen_from_table(&kappa_table),
+        flip_rate: flip_sum / judged as f64,
+        position_flip_rate: pos_flip_sum / judged as f64,
+        delta_kappa: kappa_like - kappa,
+        eligible_modules: pairs.len(),
+        parse_success_rate: if parse_total == 0 {
+            1.0
+        } else {
+            parse_ok as f64 / parse_total as f64
+        },
+        judgment_scale: TQS_JUDGMENT_SCALE.into(),
+        aggregation_level: TQS_AGGREGATION_LEVEL.into(),
+        tie_handling: TQS_TIE_HANDLING.into(),
     }))
+}
+
+/// 五维总分（判定胜负的比较量，0-50）
+fn total_score(s: &[f64; 5]) -> f64 {
+    s.iter().sum()
+}
+
+/// 单次调用的 A 胜/平/B 胜三态判定：1 = A 胜、0 = 平、-1 = B 胜。
+/// t04：flip_rate 与 position_flip_rate 均基于该三态判定（tie 是独立
+/// 类别而非静默归入胜负——2606.00093 item 6 的 estimand 声明）
+fn judgment(a: &[f64; 5], b: &[f64; 5]) -> i8 {
+    let ta = total_score(a);
+    let tb = total_score(b);
+    if ta > tb {
+        1
+    } else if ta < tb {
+        -1
+    } else {
+        0
+    }
+}
+
+/// 多数判定（三态众数；并列按 A胜 > 平 > B胜 取——连续分数下平局
+/// 概率近零，仅保证确定性）
+fn majority_judgment(judgments: &[i8]) -> i8 {
+    // 三态计数：index = (判定 + 1)（-1→0, 0→1, 1→2）
+    let mut counts = [0usize; 3];
+    for &j in judgments {
+        counts[(j + 1) as usize] += 1;
+    }
+    if counts[2] >= counts[1] && counts[2] >= counts[0] {
+        1
+    } else if counts[1] >= counts[0] {
+        0
+    } else {
+        -1
+    }
+}
+
+/// 模块级判定指标（Phase 1，t03）：
+///
+/// - `flip_rate`：各调用的三态判定与模块内多数判定不一致的比例
+///   （2606.13685 flip rate 13.6% 的本地口径；2606.19544
+///   self-consistency = 1 − flip_rate）。
+/// - `position_flip_rate`：同一轮内 AB 顺序与 BA 顺序两次调用的判定
+///   相异比例（2606.19544 item 级定义：交换位置后判定翻转；逐对口径，
+///   区别于 position_bias 的组均值比较）。
+///
+/// 轮配对约定：round_scores 每轮写入两次调用（先 a_first=true 的 AB
+/// 再 a_first=false 的 BA），故 2k 与 2k+1 构成同轮 AB/BA 对。
+struct ModuleJudgmentMetrics {
+    flip_rate: f64,
+    position_flip_rate: f64,
+}
+
+fn module_judgment_metrics(round_scores: &[(bool, [f64; 5], [f64; 5])]) -> ModuleJudgmentMetrics {
+    let judgments: Vec<i8> = round_scores.iter().map(|(_, a, b)| judgment(a, b)).collect();
+    let majority = majority_judgment(&judgments);
+    let flips = judgments.iter().filter(|&&j| j != majority).count();
+    let mut pos_flips = 0usize;
+    let mut pairs = 0usize;
+    for k in (0..round_scores.len()).step_by(2) {
+        let (Some((_, a1, b1)), Some((_, a2, b2))) = (round_scores.get(k), round_scores.get(k + 1)) else {
+            continue;
+        };
+        if judgment(a1, b1) != judgment(a2, b2) {
+            pos_flips += 1;
+        }
+        pairs += 1;
+    }
+    ModuleJudgmentMetrics {
+        flip_rate: if round_scores.is_empty() {
+            0.0
+        } else {
+            flips as f64 / round_scores.len() as f64
+        },
+        position_flip_rate: if pairs == 0 { 0.0 } else { pos_flips as f64 / pairs as f64 },
+    }
+}
+
+/// 模块级复测标准差（五维平均；低置信判定与升级检查共用，
+/// 消除 v14 内联重复）
+fn module_std(round_scores: &[(bool, [f64; 5], [f64; 5])]) -> f64 {
+    if round_scores.is_empty() {
+        return 0.0;
+    }
+    let scores: Vec<[f64; 5]> = round_scores
+        .iter()
+        .map(|(af, a, b)| if *af { *a } else { *b })
+        .collect();
+    let mut var = 0.0f64;
+    for i in 0..5 {
+        let mean: f64 = scores.iter().map(|s| s[i]).sum::<f64>() / scores.len() as f64;
+        var += scores.iter().map(|s| (s[i] - mean).powi(2)).sum::<f64>() / scores.len() as f64;
+    }
+    (var / 5.0).sqrt()
+}
+
+/// 单模块 AB/BA 判定的 2×2 一致表（标准 Cohen's κ 的输入）：
+/// rater1 = AB 顺序调用、rater2 = BA 顺序调用；item = (模块, 维度, 轮)；
+/// 类别 = {A 胜, B 胜}，平局按 B 胜计入（连续分数相等概率近零，
+/// 该归并口径写入 tie_handling 声明）
+fn module_kappa_table(round_scores: &[(bool, [f64; 5], [f64; 5])]) -> [[usize; 2]; 2] {
+    let mut table = [[0usize; 2]; 2];
+    for k in (0..round_scores.len()).step_by(2) {
+        let (Some((_, a1, b1)), Some((_, a2, b2))) = (round_scores.get(k), round_scores.get(k + 1)) else {
+            continue;
+        };
+        for d in 0..5 {
+            // 0 = A 胜（a > b），1 = B 胜（含平）
+            let j1 = usize::from(a1[d] <= b1[d]);
+            let j2 = usize::from(a2[d] <= b2[d]);
+            table[j1][j2] += 1;
+        }
+    }
+    table
+}
+
+/// 标准 Cohen's κ = (P_o − P_e)/(1 − P_e)：
+/// P_o = 两 rater 判定一致比例，P_e = 边际概率乘积和（机会一致）。
+/// 与 kappa_like/kappa 的自定义稳定率口径不同：标准 κ 基于两个独立
+/// rater（AB/BA 调用）的真实边际表；负值保留（比随机更不一致是有效
+/// 信号，2606.19544 报告口径）。2606.19544：exact-match 高估
+/// 33.8-41.3pp，κ 才是机会校正后的可靠性。
+fn kappa_cohen_from_table(t: &[[usize; 2]; 2]) -> f64 {
+    let n = t[0][0] + t[0][1] + t[1][0] + t[1][1];
+    if n == 0 {
+        return 0.0;
+    }
+    let po = (t[0][0] + t[1][1]) as f64 / n as f64;
+    let r1_a = (t[0][0] + t[0][1]) as f64 / n as f64;
+    let r2_a = (t[0][0] + t[1][0]) as f64 / n as f64;
+    let pe = r1_a * r2_a + (1.0 - r1_a) * (1.0 - r2_a);
+    if pe >= 1.0 {
+        0.0
+    } else {
+        (po - pe) / (1.0 - pe)
+    }
 }
 
 /// Rubric 独立生成轮次（CodeWikiBench：多模型独立生成后语义合并；
 /// 单裁判下用多次独立生成近似多模型合成）
 const RUBRIC_GENERATIONS: usize = 3;
+
+/// t04（Phase 2）：叶子判定轮数——3 次多数投票（2606.13685：单次
+/// 判定保真仅 86.6%，3 trials 达约 90% 共识保真）
+const RUBRIC_LEAF_REPEATS: usize = 3;
+
+/// t04（Phase 2）：争议叶子（1:2 分裂或含 abstain 平票）升级轮数——
+/// 5 次仍无多数则整叶子 abstain（2606.13685：hard 档需更多 trials，
+/// 5 是成本可控的收敛点）
+const RUBRIC_LEAF_REPEATS_ESCALATED: usize = 5;
+
+/// t04：Rubric 聚合层级声明（2606.00093 item 10）——叶子级多数投票
+/// → 权重自底向上聚合
+const RUBRIC_AGGREGATION_LEVEL: &str = "叶子级 3 次多数投票（争议升级 5 次）→ 权重自底向上聚合（abstain 叶子排除）";
 
 /// Rubric 打分执行（维度 7）：docs_tree → 3 次独立生成 → 1 次合并 →
 /// 叶子 0/1 判定 → 加权自底向上聚合
@@ -962,8 +1245,12 @@ fn measure_rubrics(config: &WikiConfig, root: &ProjectRoot) -> Result<Option<Rub
     //    检索 wiki 页正文 top-K，命中页正文片段拼入证据补足判定依据。
     //    pages 一次收集全量复用，循环内只做关键词检索（正文读取 I/O 不重复）
     let pages = collect_wiki_pages(Path::new(&config.output.dir));
-    // 5. 叶子 0/1 判定（顺序与 collect_leaves 一致，供聚合索引）
-    let mut verdicts: Vec<bool> = Vec::with_capacity(leaves.len());
+    // 5. 叶子 0/1 判定（顺序与 collect_leaves 一致，供聚合索引）。
+    //    t04（Phase 2）：每叶子 3 次调用多数投票——2606.13685 单次判定
+    //    保真仅 86.6%，3 trials 达约 90%；1:2 争议（含 abstain 平票）
+    //    升级至 5 次；判定结果 2 类（0/1），解析/调用失败独立计 abstain
+    //    不再 recode 为 false（2606.00093 item 6：recode 改变 estimand）
+    let mut verdicts: Vec<Option<bool>> = Vec::with_capacity(leaves.len());
     for leaf in &leaves {
         // 每叶子独立构建证据：摘要锚点固定（全局基线），检索节随
         // requirement 变化；top_k=2（2 页 × 3000 字符 ≈ 6K，叠加摘要
@@ -978,26 +1265,46 @@ fn measure_rubrics(config: &WikiConfig, root: &ProjectRoot) -> Result<Option<Rub
             }
             evidence = truncate(&evidence, 20_000);
         }
-        let messages = rubric_judge_prompt(&leaf.requirement, &evidence);
-        // 同生成轮：判定输出短但需完整 message（推理型模型预算吞没
-        // 风险一致），与 TQS/合并同口径给足预算
-        match rt.block_on(provider.complete_with_budget(&messages, Some(BENCH_MAX_OUTPUT_TOKENS))) {
-            Ok(content) => match parse_rubric_verdict(&content) {
-                Some(true) => verdicts.push(true),
-                Some(false) => verdicts.push(false),
-                None => {
-                    tracing::warn!("Rubric 叶子判定解析失败（按不满足计）: {}", leaf.requirement);
-                    verdicts.push(false);
+        let mut votes: Vec<Option<bool>> = Vec::new();
+        while votes.len() < RUBRIC_LEAF_REPEATS_ESCALATED {
+            // 选项顺序随机化（2602.02219：2 选项 swap 即 n=2 平衡排列，
+            // 消 primacy/recency；按 requirement 哈希确定性取，复跑可复现）
+            let messages = rubric_judge_prompt(
+                &leaf.requirement,
+                &evidence,
+                option_variant(&leaf.requirement, votes.len()),
+            );
+            // 同生成轮：判定输出短但需完整 message（推理型模型预算吞没
+            // 风险一致），与 TQS/合并同口径给足预算
+            let vote = match rt.block_on(provider.complete_with_budget(&messages, Some(BENCH_MAX_OUTPUT_TOKENS))) {
+                Ok(content) => match parse_rubric_verdict(&content) {
+                    Some(v) => {
+                        votes.push(Some(v));
+                        Some(v)
+                    }
+                    None => {
+                        tracing::warn!("Rubric 叶子判定解析失败（计 abstain）: {}", leaf.requirement);
+                        None
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!("Rubric 叶子判定调用失败（计 abstain）: {e}");
+                    None
                 }
-            },
-            Err(e) => {
-                tracing::warn!("Rubric 叶子判定调用失败（按不满足计）: {e}");
-                verdicts.push(false);
+            };
+            if vote.is_none() {
+                votes.push(None);
+            }
+            // 3 票后多数已定（true/false 票数不等）即停；否则争议升级至 5 票
+            if votes.len() == RUBRIC_LEAF_REPEATS && verdict_resolved(&votes) {
+                break;
             }
         }
+        verdicts.push(majority_verdict(&votes));
     }
     // 6. 加权自底向上聚合（顶层多根包为虚拟根，weight=1；叶子 σ 二项
-    //    近似，非叶子按权重平方传播）
+    //    近似，非叶子按权重平方传播；abstain 叶子显式排除——不贡献
+    //    权重/分数/σ，coverage 以有效判定叶子为分母）
     let mut leaf_idx = 0usize;
     let root = RubricNode {
         requirement: "root".into(),
@@ -1006,11 +1313,20 @@ fn measure_rubrics(config: &WikiConfig, root: &ProjectRoot) -> Result<Option<Rub
     };
     let aggregated = aggregate_score(&root, &verdicts, &mut leaf_idx);
     let leaf_count = leaves.len();
-    let satisfied = verdicts.iter().filter(|v| **v).count();
-    let coverage = if leaf_count == 0 {
+    let abstain = verdicts.iter().filter(|v| v.is_none()).count();
+    let satisfied = verdicts.iter().filter(|v| **v == Some(true)).count();
+    // 排除 abstain 后 coverage（00093 item 8：exclude 模式报覆盖子集性能；
+    // 空集约定 1.0 与既有口径一致）
+    let judged = leaf_count - abstain;
+    let coverage = if judged == 0 {
         1.0
     } else {
-        satisfied as f64 / leaf_count as f64
+        satisfied as f64 / judged as f64
+    };
+    let abstain_rate = if leaf_count == 0 {
+        0.0
+    } else {
+        abstain as f64 / leaf_count as f64
     };
     Ok(Some(RubricReport {
         rubric_nodes: count_nodes(&root.sub_tasks),
@@ -1021,6 +1337,10 @@ fn measure_rubrics(config: &WikiConfig, root: &ProjectRoot) -> Result<Option<Rub
         score_std: aggregated.std,
         generation_calls: RUBRIC_GENERATIONS + 1,
         judge_model: config.llm.model.clone(),
+        abstain_leaves: abstain,
+        abstain_rate,
+        leaf_verdict_repeats: RUBRIC_LEAF_REPEATS,
+        aggregation_level: RUBRIC_AGGREGATION_LEVEL.into(),
     }))
 }
 
@@ -1049,9 +1369,17 @@ fn rubric_merge_prompt(trees: &[Vec<RubricNode>]) -> Vec<crate::generate::llm::M
     ]
 }
 
-/// Rubric 叶子判定 prompt：需求 vs 产物证据 → 0/1 满足判定
-fn rubric_judge_prompt(requirement: &str, evidence: &str) -> Vec<crate::generate::llm::Message> {
-    let system = "你是 Wiki 文档质量裁判。判断下面的文档产物是否满足给定的需求。只输出 JSON：{\"satisfied\": true 或 false}。";
+/// Rubric 叶子判定 prompt：需求 vs 产物证据 → 0/1 满足判定。
+///
+/// `reverse_options` 为 true 时输出模板的选项顺序反转为 "false 或 true"
+/// （2602.02219：rubric 判定 = 隐式 multiple-choice，选项位置影响选择
+/// 的 primacy/recency；2 选项 swap 即 n=2 的平衡排列特例，少量随机
+/// 顺序即可获得大部分消偏收益——budget-matched 对照结论）
+fn rubric_judge_prompt(requirement: &str, evidence: &str, reverse_options: bool) -> Vec<crate::generate::llm::Message> {
+    let options = if reverse_options { "false 或 true" } else { "true 或 false" };
+    let system = format!(
+        "你是 Wiki 文档质量裁判。判断下面的文档产物是否满足给定的需求。只输出 JSON：{{\"satisfied\": {options}}}。"
+    );
     vec![
         crate::generate::llm::Message::system(system),
         crate::generate::llm::Message::user(format!(
@@ -1171,17 +1499,21 @@ fn node_weight(w: f64) -> f64 {
 }
 
 /// 加权自底向上聚合：S(n)=Σw(c)S(c)/Σw(c)；叶子 σ=sqrt(p(1-p)) 二项近似，
-/// 非叶子 σ²=Σ(w²σ²)/Σw² 权重平方传播（CodeWikiBench 层级聚合公式）
-fn aggregate_score(node: &RubricNode, verdicts: &[bool], leaf_idx: &mut usize) -> RubricScore {
+/// 非叶子 σ²=Σ(w²σ²)/Σw² 权重平方传播（CodeWikiBench 层级聚合公式）。
+///
+/// verdicts 元素为 Option<bool>：Some = 0/1 判定，None = abstain
+/// （t04：abstain 叶子显式排除——不贡献权重/分数/σ/叶子计数，
+/// 与 2606.00093 item 6 的 exclude 模式一致，coverage 由调用方以
+/// 有效判定叶子为分母）
+fn aggregate_score(node: &RubricNode, verdicts: &[Option<bool>], leaf_idx: &mut usize) -> RubricScore {
     if node.sub_tasks.is_empty() {
-        let satisfied = verdicts.get(*leaf_idx).copied().unwrap_or(false) as usize;
+        let satisfied = verdicts.get(*leaf_idx).copied().flatten();
         *leaf_idx += 1;
-        let p = if satisfied == 1 { 1.0 } else { 0.0 };
-        return RubricScore {
-            score: p,
-            std: (p * (1.0 - p)).sqrt(),
-            leaves: 1,
-            satisfied,
+        return match satisfied {
+            Some(true) => RubricScore { score: 1.0, std: 0.0, leaves: 1, satisfied: 1 },
+            Some(false) => RubricScore { score: 0.0, std: 0.0, leaves: 1, satisfied: 0 },
+            // abstain：整叶子从聚合中排除（权重不进分母、不计数）
+            None => RubricScore { score: 0.0, std: 0.0, leaves: 0, satisfied: 0 },
         };
     }
     let mut w_sum = 0.0f64;
@@ -1193,10 +1525,13 @@ fn aggregate_score(node: &RubricNode, verdicts: &[bool], leaf_idx: &mut usize) -
     for sub in &node.sub_tasks {
         let w = node_weight(sub.weight);
         let rs = aggregate_score(sub, verdicts, leaf_idx);
-        w_sum += w;
-        s_sum += w * rs.score;
-        w2_sum += w * w;
-        s2_sum += w * w * rs.std * rs.std;
+        // abstain 子树（rs.leaves == 0）整体排除：权重不进分母、
+        // 分数/σ 不贡献（2606.00093 item 6 exclude 模式）
+        let w_eff = if rs.leaves == 0 { 0.0 } else { w };
+        w_sum += w_eff;
+        s_sum += w_eff * rs.score;
+        w2_sum += w_eff * w_eff;
+        s2_sum += w_eff * w_eff * rs.std * rs.std;
         leaves += rs.leaves;
         satisfied += rs.satisfied;
     }
@@ -1206,6 +1541,40 @@ fn aggregate_score(node: &RubricNode, verdicts: &[bool], leaf_idx: &mut usize) -
         leaves,
         satisfied,
     }
+}
+
+/// 多数投票：true 票 > false 票 → Some(true)；反之 Some(false)；
+/// 平票（含 abstain 票，如 1:1:1、2:2:1）→ None（叶子 abstain）。
+/// t04（2606.13685 多数投票聚合；叶子级聚合是 binary verdict flip
+/// 与其数据集形态的直接对应）
+fn majority_verdict(votes: &[Option<bool>]) -> Option<bool> {
+    let t = votes.iter().filter(|v| **v == Some(true)).count();
+    let f = votes.iter().filter(|v| **v == Some(false)).count();
+    if t > f {
+        Some(true)
+    } else if f > t {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// 投票是否已能定案（true/false 票数不等即多数已定）——3 票阶段用于
+/// 判定是否需要争议升级（1:1:1 或 1:1:abstain 等平票才升级到 5 票）
+fn verdict_resolved(votes: &[Option<bool>]) -> bool {
+    let t = votes.iter().filter(|v| **v == Some(true)).count();
+    let f = votes.iter().filter(|v| **v == Some(false)).count();
+    t != f
+}
+
+/// 判定选项顺序的确定性伪随机（2602.02219：选项位置影响选择，需要
+/// 随机顺序；用 requirement 文本哈希 + 调用序号取模，不引入 rand
+/// 依赖、复跑可复现——与本仓库 llm.rs 抖动做法一致）
+fn option_variant(requirement: &str, call_idx: usize) -> bool {
+    let h: u32 = requirement
+        .chars()
+        .fold(0u32, |acc, c| acc.wrapping_mul(31).wrapping_add(c as u32));
+    ((h as usize) + call_idx) % 2 == 1
 }
 
 /// 递归收集 docs 目录下全部 .md 文件
@@ -1357,8 +1726,13 @@ fn tqs_prompt(lang: &str, doc_a: &str, doc_b: &str, a_first: bool) -> Vec<crate:
 }
 
 /// 解析裁判 JSON 输出（容错：剥离代码围栏/围栏外文本，取首个 JSON 对象；
-/// 分数越界 clamp 到 0-10；缺字段/非 JSON 报错——整条作废重打而非静默裁剪）
-fn parse_tqs_score(content: &str) -> Result<[f64; 5]> {
+/// 分数越界 clamp 到 0-10；缺字段/非 JSON 报错——整条作废重打而非静默裁剪）。
+///
+/// 返回 (A 分数, B 分数) 两份：t04 的逐对判定指标（position_flip_rate、
+/// kappa_cohen）需要同一调用内 A 与 B 的相对判定，仅存第一份会丢失
+/// 一半信息（此前只取第一份是点分口径，保留原均值语义由调用方按
+/// a_first 选择）。
+fn parse_tqs_score(content: &str) -> Result<([f64; 5], [f64; 5])> {
     let trimmed = content.trim();
     // 剥离 ```json ... ``` 围栏（若裁判不遵守 strict JSON）
     let inner = trimmed
@@ -1372,20 +1746,26 @@ fn parse_tqs_score(content: &str) -> Result<[f64; 5]> {
     let json_str = &inner[start..=end];
     let v: serde_json::Value = serde_json::from_str(json_str)
         .with_context(|| "裁判输出不是合法 JSON")?;
-    // 顺序 AB 与 BA 都返回 {A:…, B:…}：取第一份文档的分数
-    let doc = v.get("A").or_else(|| v.get("B")).ok_or_else(|| anyhow::anyhow!("缺少 A/B 文档分数"))?;
-    let mut scores = [0.0f64; 5];
-    for (i, key) in ["clarity", "readability", "conciseness", "richness", "structure"]
-        .iter()
-        .enumerate()
-    {
-        scores[i] = doc
-            .get(*key)
-            .and_then(|x| x.as_f64())
-            .ok_or_else(|| anyhow::anyhow!("缺少维度 {key}"))?
-            .clamp(0.0, 10.0);
-    }
-    Ok(scores)
+    // 顺序 AB 与 BA 都返回 {A:…, B:…}：A/B 缺任一即报错（输出畸形作废，
+    // 不把 B 当 A 兜底——判定的 A 胜/平/B 胜三态依赖两份分数）
+    let parse_doc = |key: &str| -> Result<[f64; 5]> {
+        let doc = v
+            .get(key)
+            .ok_or_else(|| anyhow::anyhow!("缺少 {key} 文档分数"))?;
+        let mut scores = [0.0f64; 5];
+        for (i, dim) in ["clarity", "readability", "conciseness", "richness", "structure"]
+            .iter()
+            .enumerate()
+        {
+            scores[i] = doc
+                .get(*dim)
+                .and_then(|x| x.as_f64())
+                .ok_or_else(|| anyhow::anyhow!("缺少维度 {dim}"))?
+                .clamp(0.0, 10.0);
+        }
+        Ok(scores)
+    };
+    Ok((parse_doc("A")?, parse_doc("B")?))
 }
 
 /// 渲染 Markdown 报告（人类可读，CI/人工复跑对比用）
@@ -1447,8 +1827,9 @@ pub fn render_markdown(report: &BenchReport) -> String {
     out.push_str("## 6. TQS 文本质量（LLM 裁判，--judge）\n\n");
     if let Some(tqs) = &report.tqs {
         out.push_str(&format!(
-            "- 判定模块: {}（复测 {} 轮/模块，裁判 {}\n- Clarity: {:.1}\n- Readability: {:.1}\n- Conciseness: {:.1}\n- Richness: {:.1}\n- Structure: {:.1}\n- 总分: {:.1}\n- 复测一致性（κ 近似）: {:.2}\n- 机会校正 Cohen's κ: {:.2}\n- 位置偏差 |P(A胜)−0.5|: {:.2}\n- 复测标准差: {:.2}\n",
+            "- 判定模块: {}（有效 {}，复测 {} 轮/模块，裁判 {}\n- Clarity: {:.1}\n- Readability: {:.1}\n- Conciseness: {:.1}\n- Richness: {:.1}\n- Structure: {:.1}\n- 总分: {:.1}\n- 复测一致性（κ 近似）: {:.2}\n- 机会校正 κ: {:.2}\n- 位置偏差 |P(A胜)−0.5|: {:.2}\n- 复测标准差: {:.2}\n",
             tqs.judged_modules,
+            tqs.eligible_modules,
             tqs.repeats,
             tqs.judge_model,
             tqs.avg_clarity,
@@ -1461,6 +1842,18 @@ pub fn render_markdown(report: &BenchReport) -> String {
             tqs.kappa,
             tqs.position_bias,
             tqs.avg_std
+        ));
+        out.push_str(&format!(
+            "- 标准 Cohen's κ（AB/BA 交换一致，机会校正）: {:.2}\n- 判定翻转率（相对模块多数判定）: {:.2}\n- 位置翻转率（逐对 AB↔BA 交换）: {:.2}\n- κ 通缩 Δκ（一致率−机会校正）: {:.2}\n- 解析成功率: {:.2}\n",
+            tqs.kappa_cohen,
+            tqs.flip_rate,
+            tqs.position_flip_rate,
+            tqs.delta_kappa,
+            tqs.parse_success_rate
+        ));
+        out.push_str(&format!(
+            "- 判定尺度: {}\n- 聚合层级: {}\n- tie/abstain 处理: {}\n",
+            tqs.judgment_scale, tqs.aggregation_level, tqs.tie_handling
         ));
         if !tqs.low_confidence_modules.is_empty() {
             out.push_str(&format!(
@@ -1475,7 +1868,7 @@ pub fn render_markdown(report: &BenchReport) -> String {
     out.push_str("## 7. Rubric 层级完整性（LLM 裁判，--judge）\n\n");
     if let Some(rubric) = &report.rubric {
         out.push_str(&format!(
-            "- 节点 {} 个（叶子 {} 个，满足 {} 个），生成 {} 次 LLM 调用，裁判 {}\n- 覆盖率: {:.1}%\n- 加权总分 S: {:.3}（σ_R {:.3}）\n\n",
+            "- 节点 {} 个（叶子 {} 个，满足 {} 个），生成 {} 次 LLM 调用，裁判 {}\n- 覆盖率: {:.1}%（基于有效判定叶子）\n- 加权总分 S: {:.3}（σ_R {:.3}）\n",
             rubric.rubric_nodes,
             rubric.leaf_count,
             rubric.satisfied_leaves,
@@ -1484,6 +1877,13 @@ pub fn render_markdown(report: &BenchReport) -> String {
             rubric.coverage * 100.0,
             rubric.score,
             rubric.score_std
+        ));
+        out.push_str(&format!(
+            "- abstain 叶子: {}（{:.1}%，不计入覆盖率）\n- 叶子判定: {} 次多数投票/叶子\n- 聚合层级: {}\n\n",
+            rubric.abstain_leaves,
+            rubric.abstain_rate * 100.0,
+            rubric.leaf_verdict_repeats,
+            rubric.aggregation_level
         ));
     } else {
         out.push_str("- 未启用（使用 --judge 且被测仓库有 README/docs 时启用）\n\n");
@@ -1651,13 +2051,15 @@ mod tests {
         }
     }
 
-    /// U11：裁判 JSON 解析——围栏剥离 + 理由前缀容错 + 越界 clamp
+    /// U11：裁判 JSON 解析——围栏剥离 + 理由前缀容错 + 越界 clamp。
+    /// t04 起返回 (A, B) 双分数（逐对判定指标需要两份分数）
     #[test]
     fn test_parse_tqs_score_tolerates_fences_and_prose() {
-        let content = "理由：A 更清晰。\n```json\n{\"A\": {\"clarity\": 8.5, \"readability\": 7, \"conciseness\": 12, \"richness\": 6, \"structure\": 9}}\n```\n";
-        let scores = parse_tqs_score(content).unwrap();
-        assert_eq!(scores[0], 8.5, "clarity");
-        assert_eq!(scores[2], 10.0, "conciseness 越界应 clamp 到 10");
+        let content = "理由：A 更清晰。\n```json\n{\"A\": {\"clarity\": 8.5, \"readability\": 7, \"conciseness\": 12, \"richness\": 6, \"structure\": 9}, \"B\": {\"clarity\": 7, \"readability\": 6, \"conciseness\": 8, \"richness\": 5, \"structure\": 7}}\n```\n";
+        let (a, b) = parse_tqs_score(content).unwrap();
+        assert_eq!(a[0], 8.5, "clarity");
+        assert_eq!(a[2], 10.0, "conciseness 越界应 clamp 到 10");
+        assert_eq!(b[0], 7.0, "B 分数应独立解析");
     }
 
     /// v22 修复：Rubric 解析容错——字符串 sub_tasks 转叶子、字符串权重
@@ -1682,11 +2084,16 @@ mod tests {
         assert_eq!(nodes[1].weight, 1.0, "缺省 weight 回落 1.0");
     }
 
-    /// U11：缺维度/非 JSON → 报错（整条作废，不静默裁剪）
+    /// U11：缺 A/B/维度/非 JSON → 报错（整条作废，不静默裁剪；
+    /// t04 起 A 或 B 缺任一即报错，不把 B 当 A 兜底）
     #[test]
     fn test_parse_tqs_score_rejects_missing_field() {
         let content = r#"{"A": {"clarity": 8, "readability": 7}}"#;
-        assert!(parse_tqs_score(content).is_err(), "缺维度应报错");
+        assert!(parse_tqs_score(content).is_err(), "缺 B 文档应报错");
+        let only_b = r#"{"B": {"clarity": 8, "readability": 7, "conciseness": 6, "richness": 5, "structure": 4}}"#;
+        assert!(parse_tqs_score(only_b).is_err(), "缺 A 文档应报错");
+        let full = r#"{"A": {"clarity": 8, "readability": 7, "conciseness": 6, "richness": 5, "structure": 4}, "B": {"clarity": 1, "readability": 2, "conciseness": 3, "richness": 4, "structure": 5}}"#;
+        assert!(parse_tqs_score(full).is_ok(), "A/B 齐全应解析成功");
         assert!(parse_tqs_score("no json here").is_err(), "非 JSON 应报错");
     }
 
@@ -1715,19 +2122,31 @@ mod tests {
             avg_richness: 7.0,
             avg_structure: 8.5,
             avg_total: 7.4,
-            repeats: 3,
+            repeats: 5,
             kappa_like: 1.0,
             kappa: 0.5,
             position_bias: 0.05,
             low_confidence_modules: Vec::new(),
             avg_std: 0.5,
             judge_model: "mock-model".into(),
+            kappa_cohen: 0.8,
+            flip_rate: 0.1,
+            position_flip_rate: 0.2,
+            delta_kappa: 0.5,
+            eligible_modules: 2,
+            parse_success_rate: 1.0,
+            judgment_scale: "0-10 连续五维点分".into(),
+            aggregation_level: "模块级 macro average".into(),
+            tie_handling: "三态判定；失败模块排除".into(),
         });
         let md_on = render_markdown(&report);
         assert!(md_on.contains("判定模块: 2"), "应输出判定模块数: {md_on}");
         assert!(md_on.contains("Clarity: 8.0"), "应输出五维分数: {md_on}");
         assert!(md_on.contains("复测一致"), "应输出 MVVP 复测一致性: {md_on}");
         assert!(md_on.contains("位置偏差"), "应输出位置偏差: {md_on}");
+        assert!(md_on.contains("标准 Cohen's κ"), "应输出标准 κ: {md_on}");
+        assert!(md_on.contains("判定翻转率"), "应输出翻转率: {md_on}");
+        assert!(md_on.contains("判定尺度"), "应输出判定尺度声明: {md_on}");
     }
 
     /// v14 C 组：Rubric JSON 解析——围栏剥离/数组形态/rubrics 键形态/单对象形态
@@ -1776,7 +2195,7 @@ mod tests {
                 },
             ],
         };
-        let verdicts = vec![true, false, true];
+        let verdicts = vec![Some(true), Some(false), Some(true)];
         let mut idx = 0usize;
         let s = aggregate_score(&node, &verdicts, &mut idx);
         assert!((s.score - 0.7).abs() < 1e-9, "加权总分应为 0.7, 实际: {}", s.score);
@@ -1815,10 +2234,16 @@ mod tests {
             score_std: 0.35,
             generation_calls: 4,
             judge_model: "mock-model".into(),
+            abstain_leaves: 0,
+            abstain_rate: 0.0,
+            leaf_verdict_repeats: 3,
+            aggregation_level: "叶子级多数投票".into(),
         });
         let md_on = render_markdown(&report);
         assert!(md_on.contains("覆盖率: 66.7%"), "应输出覆盖率: {md_on}");
         assert!(md_on.contains("加权总分 S: 0.700"), "应输出加权总分: {md_on}");
+        assert!(md_on.contains("abstain 叶子"), "应输出 abstain 指标: {md_on}");
+        assert!(md_on.contains("多数投票"), "应输出叶子判定协议: {md_on}");
     }
 
     /// 方案甲：关键词提取——CJK 连续串 2-gram 切分 / 英文数字保留原样 /
@@ -1897,5 +2322,153 @@ mod tests {
         assert!(evidence.contains("认证"), "检索节应含关键词命中正文");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// t04：模块级判定指标——flip_rate（相对多数判定）与
+    /// position_flip_rate（逐对 AB↔BA 交换翻转）手算核对
+    #[test]
+    fn test_module_judgment_metrics() {
+        // 3 轮：判定序列 A胜, B胜, A胜, B胜, A胜, 平 → 众数 A 胜（3/6）
+        let mixed = vec![
+            (true, [10.0; 5], [5.0; 5]),
+            (false, [4.0; 5], [8.0; 5]),
+            (true, [9.0; 5], [6.0; 5]),
+            (false, [5.0; 5], [7.0; 5]),
+            (true, [8.0; 5], [7.0; 5]),
+            (false, [6.0; 5], [6.0; 5]),
+        ];
+        let m = module_judgment_metrics(&mixed);
+        // A 胜 3 次应为众数（多数判定），flip 相对该众数计算
+        assert_eq!(majority_judgment(&[1, -1, 1, -1, 1, 0]), 1);
+        assert_eq!(majority_judgment(&[1, -1]), 1, "并列按 A 胜优先");
+        assert_eq!(majority_judgment(&[-1, -1, 1]), -1);
+        // 与多数不一致：B 胜 ×2 + 平 ×1 = 3/6
+        assert!((m.flip_rate - 0.5).abs() < 1e-9, "flip_rate 应为 0.5: {}", m.flip_rate);
+        // 每轮 AB 与 BA 判定都不同：3/3
+        assert!((m.position_flip_rate - 1.0).abs() < 1e-9, "position_flip_rate 应为 1.0: {}", m.position_flip_rate);
+
+        // 全一致：无翻转
+        let consistent = vec![
+            (true, [10.0; 5], [5.0; 5]),
+            (false, [9.0; 5], [6.0; 5]),
+        ];
+        let m2 = module_judgment_metrics(&consistent);
+        assert!(m2.flip_rate.abs() < 1e-9);
+        assert!(m2.position_flip_rate.abs() < 1e-9);
+
+        // 空输入退化（不 panic）
+        let m3 = module_judgment_metrics(&[]);
+        assert_eq!(m3.flip_rate, 0.0);
+        assert_eq!(m3.position_flip_rate, 0.0);
+    }
+
+    /// t04：标准 Cohen's κ——2×2 一致表公式手算 + 模块级 2×2 表累计
+    #[test]
+    fn test_kappa_cohen_formula_and_table() {
+        // 完全一致：κ = 1.0
+        assert!((kappa_cohen_from_table(&[[5, 0], [0, 5]]) - 1.0).abs() < 1e-9);
+        // 完全不一致（AB 判 A 胜时 BA 恒判 B 胜）：负值保留（比随机更差）
+        assert!(kappa_cohen_from_table(&[[0, 5], [5, 0]]) < 0.0);
+        // 边际平衡：po = 2/3, pe = 0.5 → κ = 1/3
+        let k = kappa_cohen_from_table(&[[10, 5], [5, 10]]);
+        assert!((k - 1.0 / 3.0).abs() < 1e-6, "κ 应为 1/3: {k}");
+        // 空表：0.0
+        assert_eq!(kappa_cohen_from_table(&[[0; 2]; 2]), 0.0);
+
+        // 模块级 2×2 累计：3 轮 AB 恒 A 胜、BA 恒 B 胜 → 表 [0][1]=15
+        let rs = vec![
+            (true, [10.0; 5], [5.0; 5]),
+            (false, [4.0; 5], [8.0; 5]),
+            (true, [9.0; 5], [6.0; 5]),
+            (false, [5.0; 5], [7.0; 5]),
+            (true, [8.0; 5], [7.0; 5]),
+            (false, [6.0; 5], [6.0; 5]),
+        ];
+        let table = module_kappa_table(&rs);
+        assert_eq!(table, [[0, 15], [0, 0]], "3 轮 × 5 维全落 [AB A 胜][BA B 胜]");
+        // 平局（6.0 vs 6.0）按 B 胜计入（tie_handling 声明口径）；
+        // 轮内 AB 与 BA 调用都是 A=6,B=6 → 判定相同，双计 B 胜
+        let tie = vec![
+            (true, [6.0; 5], [6.0; 5]),
+            (false, [6.0; 5], [6.0; 5]),
+        ];
+        let table_tie = module_kappa_table(&tie);
+        assert_eq!(table_tie, [[0, 0], [0, 5]], "平局双计 B 胜");
+    }
+
+    /// t04：多数投票——平票（含 abstain）无多数 → None（叶子 abstain）；
+    /// abstain 票不影响已定多数
+    #[test]
+    fn test_majority_verdict_and_escalation() {
+        assert_eq!(majority_verdict(&[Some(true), Some(true), Some(false)]), Some(true));
+        assert_eq!(majority_verdict(&[Some(true), Some(false), Some(false)]), Some(false));
+        assert_eq!(majority_verdict(&[Some(true), Some(false), None]), None, "1:1 平票无多数");
+        assert_eq!(
+            majority_verdict(&[Some(true), Some(false), Some(true), Some(false), None]),
+            None,
+            "2:2 平票无多数"
+        );
+        assert_eq!(majority_verdict(&[Some(true), Some(true), None]), Some(true), "abstain 不影响已定多数");
+        assert_eq!(majority_verdict(&[Some(true), Some(true), Some(true)]), Some(true), "全票");
+        assert_eq!(majority_verdict(&[None, None, None]), None, "全 abstain 无多数");
+
+        // 升级判定：3 票时多数已定则停，否则升级 5 票
+        assert!(verdict_resolved(&[Some(true), Some(true), Some(false)]), "2:1 已定案");
+        assert!(!verdict_resolved(&[Some(true), Some(false), None]), "1:1+abstain 争议需升级");
+        assert!(verdict_resolved(&[Some(true), Some(true), None]), "2:0+abstain 已定案");
+    }
+
+    /// t04：abstain 叶子从聚合中显式排除——不贡献权重/分数/叶子计数，
+    /// 但叶子索引仍推进
+    #[test]
+    fn test_rubric_aggregate_excludes_abstain() {
+        // 树：根(weight 1) → [a(2): 叶子, b(3): [c(1): 叶子, d(1): 叶子]]
+        let node = RubricNode {
+            requirement: "root".into(),
+            weight: 1.0,
+            sub_tasks: vec![
+                RubricNode { requirement: "a".into(), weight: 2.0, sub_tasks: vec![] },
+                RubricNode {
+                    requirement: "b".into(),
+                    weight: 3.0,
+                    sub_tasks: vec![
+                        RubricNode { requirement: "c".into(), weight: 1.0, sub_tasks: vec![] },
+                        RubricNode { requirement: "d".into(), weight: 1.0, sub_tasks: vec![] },
+                    ],
+                },
+            ],
+        };
+        // 判定 [true, abstain, true]：c 排除 → b = (0·1 + 1·1)/1 = 1.0
+        // S = (2·1 + 3·1.0)/5 = 1.0，有效叶子 2，满足 2
+        let verdicts = vec![Some(true), None, Some(true)];
+        let mut idx = 0usize;
+        let s = aggregate_score(&node, &verdicts, &mut idx);
+        assert!((s.score - 1.0).abs() < 1e-9, "abstain 排除后总分应为 1.0: {}", s.score);
+        assert_eq!(s.leaves, 2, "abstain 叶子不计数");
+        assert_eq!(s.satisfied, 2);
+        assert_eq!(idx, 3, "索引仍遍历全部叶子");
+    }
+
+    /// t04：协议参数保护（2606.13685 多数投票 n 取值）——基础轮数与
+    /// 升级轮数锁死，防止后续改动静默退化
+    #[test]
+    fn test_repeat_protocol_constants() {
+        assert_eq!(TQS_REPEATS, 5, "TQS 基础轮数 5（90%+ 保真性价比点）");
+        assert_eq!(TQS_REPEATS_ESCALATED, 11, "低置信升级 11（95% 保真）");
+        assert_eq!(RUBRIC_LEAF_REPEATS, 3, "叶子 3 次多数投票（约 90% 保真）");
+        assert_eq!(RUBRIC_LEAF_REPEATS_ESCALATED, 5, "争议叶子升级 5 次");
+    }
+
+    /// t04：判定选项顺序的确定性伪随机——同一输入可复现，连续 3 次
+    /// 调用覆盖两种选项顺序（2602.02219 n=2 平衡排列）
+    #[test]
+    fn test_option_variant_balanced_and_deterministic() {
+        assert_eq!(
+            option_variant("需要认证", 0),
+            option_variant("需要认证", 0),
+            "同一输入应可复现"
+        );
+        let variants: Vec<bool> = (0..3).map(|k| option_variant("需要认证", k)).collect();
+        assert!(variants.contains(&true) && variants.contains(&false), "3 次调用应覆盖两种顺序: {variants:?}");
     }
 }
