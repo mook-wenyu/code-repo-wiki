@@ -44,7 +44,11 @@ fn generate_overview_doc(config: &WikiConfig) -> WikiDocument {
         documents: vec![],
         generation_stats: GenerationStats::default(),
     };
-    futures::executor::block_on(generator.generate_overview(&output, &graph, config)).unwrap()
+    // 临时根目录（产物输出目录由 config 控制，root 仅用于描述缓存指纹）
+    let root = repo_wiki::project::ProjectRoot::new(
+        std::env::temp_dir().join(format!("repo_wiki_test_overview_root_{}", std::process::id())),
+    );
+    futures::executor::block_on(generator.generate_overview(&output, &graph, config, &root)).unwrap()
 }
 
 /// overview 内容来自 overview prompt（mock LLM 输出）而非第一个模块页
@@ -195,8 +199,15 @@ fn test_overview_module_refs_match_write_path() {
         documents: vec![],
         generation_stats: GenerationStats::default(),
     };
-    let overview =
-        futures::executor::block_on(generator.generate_overview(&output, &graph, &config)).unwrap();
+    let overview = futures::executor::block_on(generator.generate_overview(
+        &output,
+        &graph,
+        &config,
+        &repo_wiki::project::ProjectRoot::new(
+            std::env::temp_dir().join(format!("repo_wiki_test_overview_root2_{}", std::process::id())),
+        ),
+    ))
+    .unwrap();
 
     // 每个引用 target_path = wiki/zh/<module.replace("::","_")>.md(与写盘一致)
     assert_eq!(overview.references.len(), 2, "应生成 2 个模块引用");

@@ -556,7 +556,7 @@ async fn generate_global_documents(
                 generation_stats: GenerationStats::default(),
             };
             match wiki_gen
-                .generate_architecture(&output_snapshot, graph, config)
+                .generate_architecture(&output_snapshot, graph, config, root)
                 .await
             {
                 Ok(arch) => documents.push(arch),
@@ -573,7 +573,7 @@ async fn generate_global_documents(
                 }
             }
             match wiki_gen
-                .generate_overview(&output_snapshot, graph, config)
+                .generate_overview(&output_snapshot, graph, config, root)
                 .await
             {
                 Ok(overview) => documents.push(overview),
@@ -600,7 +600,7 @@ async fn generate_global_documents(
             generation_stats: GenerationStats::default(),
         };
         match wiki_gen
-            .generate_architecture(&output_snapshot, graph, config)
+            .generate_architecture(&output_snapshot, graph, config, root)
             .await
         {
             Ok(arch) => documents.push(arch),
@@ -616,7 +616,7 @@ async fn generate_global_documents(
             }
         }
         match wiki_gen
-            .generate_overview(&output_snapshot, graph, config)
+            .generate_overview(&output_snapshot, graph, config, root)
             .await
         {
             Ok(overview) => documents.push(overview),

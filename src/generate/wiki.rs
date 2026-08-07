@@ -99,7 +99,7 @@ impl ModuleDescCache {
 fn module_files_fingerprint(
     module: &crate::model::ModuleCluster,
     graph: &KnowledgeGraph,
-    root: &Path,
+    root: &crate::project::ProjectRoot,
 ) -> String {
     let mut files: Vec<&str> = module
         .node_ids
@@ -112,8 +112,13 @@ fn module_files_fingerprint(
     files
         .iter()
         .map(|f| {
-            crate::incremental::state::GenerationState::compute_file_fingerprint(&root.join(f))
-                .unwrap_or_else(|_| "missing".to_string())
+            // 指纹基准=项目根（与 incremental::state 的 file_fingerprints 同源：
+            // state.rs 以 root.path().join(insight.path) 记录源文件指纹）——
+            // 源文件在根下，产物在根/.repo-wiki 下，二者必须区分
+            crate::incremental::state::GenerationState::compute_file_fingerprint(
+                &root.path().join(f),
+            )
+            .unwrap_or_else(|_| "missing".to_string())
         })
         .collect::<Vec<_>>()
         .join("|")
@@ -372,9 +377,10 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
         output: &GenerationOutput,
         graph: &KnowledgeGraph,
         config: &WikiConfig,
+        root: &crate::project::ProjectRoot,
     ) -> Result<WikiDocument> {
         let language = &config.wiki.language;
-        let modules = self.describe_modules(graph, language, config).await;
+        let modules = self.describe_modules(graph, language, config, root).await;
         let messages =
             prompt::architecture_overview_prompt(&modules, graph, language);
         // LLM 调用计数在 complete_with_mermaid_guard 内部（含重试）
@@ -424,6 +430,7 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
         graph: &KnowledgeGraph,
         language: &str,
         config: &WikiConfig,
+        root: &crate::project::ProjectRoot,
     ) -> Vec<crate::model::ModuleCluster> {
         // 缓存文件路径与 generation_state.json 同目录（.state/），
         // 随输出目录隔离（不同仓库/不同输出互不污染）
@@ -435,7 +442,6 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
                 *guard = Some(ModuleDescCache::load(&cache_path));
             }
         }
-        let root = config.output_dir().to_path_buf();
         // 并行生成所有需描述的模块描述（保留输入顺序）；Semaphore 限制
         // 并发（演进计划 T5.1）：0=不限时许可数巨大永不会阻塞。
         let semaphore = self.semaphore.clone();
@@ -445,7 +451,7 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
             .map(|module| {
                 let semaphore = semaphore.clone();
                 let cache_key = format!("{}@{}", module.name, language);
-                let fingerprint = module_files_fingerprint(module, graph, &root);
+                let fingerprint = module_files_fingerprint(module, graph, root);
                 async move {
                     // 兜底模块(src)与空模块跳过：无职责边界可描述
                     if module.name == "src" || module.node_ids.is_empty() {
@@ -532,12 +538,13 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
         output: &GenerationOutput,
         graph: &KnowledgeGraph,
         config: &WikiConfig,
+        root: &crate::project::ProjectRoot,
     ) -> Result<WikiDocument> {
         // 与 generate_architecture 一致：先补模块职责描述，概览内容才能
         // 表达"模块负责什么"；再叠加卡片摘要（自底向上合成：父概览基于
         // 子模块的职责描述 + 卡片摘要生成，而非仅模块名/节点数/边计数）
         // LLM 调用计数在 complete_with_mermaid_guard 内部（含重试）
-        let modules = self.describe_modules(graph, &config.wiki.language, config).await;
+        let modules = self.describe_modules(graph, &config.wiki.language, config, root).await;
         let messages = vec![Message::user(overview_prompt(&modules, &output.cards, graph, config))];
         let content = self.complete_with_mermaid_guard(messages, "项目概览").await?;
         let now = chrono::Utc::now().to_rfc3339();
@@ -1251,10 +1258,18 @@ mod tests {
             documents: vec![],
             generation_stats: crate::generate::GenerationStats::default(),
         };
+        // 临时根目录：避免默认输出目录污染工作区（缓存/产物落临时目录）
+        let root = crate::project::ProjectRoot::new(
+            std::env::temp_dir().join(format!("rw_arch_mermaid_{}", std::process::id())),
+        );
 
-        let doc = generator.generate_architecture(&output, &graph, &config).await.unwrap();
+        let doc = generator
+            .generate_architecture(&output, &graph, &config, &root)
+            .await
+            .unwrap();
         assert!(!doc.content.contains("```mermaid"), "坏图不应再以 mermaid 块出现");
         assert!(doc.content.contains("repo-wiki: mermaid parse failed"), "应含降级标记注释");
+        let _ = std::fs::remove_dir_all(root.path());
     }
 
     #[test]
@@ -1365,7 +1380,10 @@ mod tests {
             ),
             ..Default::default()
         };
-        let enriched = generator.describe_modules(&kg, "zh", &config).await;
+        let root = crate::project::ProjectRoot::new(
+            std::env::temp_dir().join(format!("rw_desc_root_test_{}", std::process::id())),
+        );
+        let enriched = generator.describe_modules(&kg, "zh", &config, &root).await;
         assert_eq!(enriched.len(), 2);
         assert!(enriched[0].description.is_some(), "带实体的模块应获得描述");
         assert_eq!(enriched[1].name, "src");
@@ -1413,11 +1431,14 @@ mod tests {
             ),
             ..Default::default()
         };
-        let first = generator.describe_modules(&kg, "zh", &config).await;
+        let root = crate::project::ProjectRoot::new(
+            std::env::temp_dir().join(format!("rw_desc_root_hit_{}", std::process::id())),
+        );
+        let first = generator.describe_modules(&kg, "zh", &config, &root).await;
         assert!(first[0].description.is_some(), "首次应走 LLM 获得描述");
         let calls_after_first = generator.llm_call_count();
         assert!(calls_after_first > 0, "首次必须真实调用 LLM");
-        let second = generator.describe_modules(&kg, "zh", &config).await;
+        let second = generator.describe_modules(&kg, "zh", &config, &root).await;
         assert_eq!(second[0].description, first[0].description, "缓存应返回相同描述");
         assert_eq!(
             generator.llm_call_count(),
@@ -1463,20 +1484,72 @@ mod tests {
         };
         let provider = MockProvider::new();
         let generator = WikiGenerator::new(&provider, 0);
+        // 真实布局：root=dir（源文件在 root/src/ 下），产物在 root/.repo-wiki 下
         let config = crate::config::schema::WikiConfig {
-            output_dir: Some(dir.clone()),
+            output_dir: Some(dir.join(".repo-wiki")),
             ..Default::default()
         };
-        generator.describe_modules(&kg, "zh", &config).await;
+        let root = crate::project::ProjectRoot::new(dir.clone());
+        generator.describe_modules(&kg, "zh", &config, &root).await;
         let calls_after_first = generator.llm_call_count();
 
         // 修改源文件内容 → 指纹变化 → 缓存失效
         std::fs::write(dir.join("src/net.rs"), "pub fn connect() {}\npub fn listen() {}\n").unwrap();
-        generator.describe_modules(&kg, "zh", &config).await;
+        generator.describe_modules(&kg, "zh", &config, &root).await;
         assert!(
             generator.llm_call_count() > calls_after_first,
             "文件内容变化后必须重新调用 LLM"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v31 C-02：缓存文件损坏（非法 JSON）时回退空缓存，不 panic、
+    /// 重新调用 LLM、正常产出（缓存故障绝不阻断主流程）
+    #[tokio::test]
+    async fn test_describe_modules_recovers_from_corrupt_cache() {
+        use crate::model::{CodeEdge, CodeNode, ModuleCluster, NodeId, NodeKind};
+        use petgraph::stable_graph::StableDiGraph;
+
+        let dir = std::env::temp_dir().join(format!("rw_desc_cache_corrupt_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".repo-wiki/.state")).unwrap();
+        // 写入损坏的缓存文件（非法 JSON）
+        std::fs::write(dir.join(".repo-wiki/.state/module_descriptions.json"), "{not-json").unwrap();
+
+        let mut g = StableDiGraph::<CodeNode, CodeEdge>::new();
+        g.add_node(CodeNode {
+            id: NodeId::new(0),
+            kind: NodeKind::File,
+            name: "net.rs".into(),
+            file_path: Some("src/net.rs".into()),
+            line_range: None,
+            doc_comment: None,
+            signature: None,
+            visibility: None,
+            module_path: vec!["src".into(), "net".into()],
+        });
+        let kg = KnowledgeGraph {
+            graph: g,
+            modules: vec![ModuleCluster {
+                name: "src::net".into(),
+                node_ids: vec![NodeId::new(0)],
+                cohesion: 1.0,
+                coupling: 0.0,
+                description: None,
+            }],
+            features: Vec::new(),
+        };
+        let provider = MockProvider::new();
+        let generator = WikiGenerator::new(&provider, 0);
+        let config = crate::config::schema::WikiConfig {
+            output_dir: Some(dir.join(".repo-wiki")),
+            ..Default::default()
+        };
+        let root = crate::project::ProjectRoot::new(dir.clone());
+        // 损坏缓存不应 panic，应走 LLM 重新生成并获得描述
+        let modules = generator.describe_modules(&kg, "zh", &config, &root).await;
+        assert!(modules[0].description.is_some(), "损坏缓存回退后应重新生成描述");
+        assert!(generator.llm_call_count() > 0, "损坏缓存必须触发 LLM 调用");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
