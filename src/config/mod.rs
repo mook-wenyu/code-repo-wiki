@@ -16,80 +16,9 @@ pub const PROJECT_CONFIG_FILE: &str = "config.toml";
 /// 同名同构；v24 及以前的全局 `config.toml` 已废弃不再读取）
 pub const USER_CONFIG_FILE: &str = "config.toml";
 
-/// 项目级配置中禁止携带的敏感/机器属性键（Codex DENYLIST 模式，
-/// v24 用户拍板）：凭据、提供商、模型归属用户级配置或 `--config`
-/// 显式指定——防止随仓库传播造成凭据重定向、模型锁死
-pub const PROJECT_CONFIG_DENY_KEYS: &[(&str, &str)] = &[
-    // 净化名单只保留真正敏感的键：端点（base_url，劫持风险）与凭据引用
-    // （api_key_env，泄露/越权风险）。provider/model 允许项目级覆盖——
-    // 协议选择与模型名无凭据泄露面（v25 用户需求：项目级 config.toml
-    // 覆盖用户级；项目级写 provider=mock 是 CI/本地模拟的常态用法）
-    ("llm", "base_url"),
-    ("llm", "api_key_env"),
-    ("embed", "base_url"),
-    ("embed", "api_key_env"),
-];
-
-/// 敏感键净化后的注入默认值（schema LlmSection 三字段必填无 serde 默认，
-/// 与 schema Default 阵营对齐——v29 用户确认可用阵营：opencode 网关 +
-/// 阿里百炼；不得回退旧阵营（DeepSeek 官方端点等初始示例，实际不可用，
-/// v28 t11 实测端点断裂））——「敏感键不生效」而非「配置缺失报错」
-const SANITIZE_DEFAULT_INJECT: &[(&str, &str, &str)] = &[
-    ("llm", "provider", "openai-compatible"),
-    ("llm", "model", "deepseek-v4-flash"),
-    // base_url 与模型配套：净化剥除后必须回填可用端点，否则 None 兜底
-    // OpenAI 官方端点把模型打到错误服务（v28 t11 一键安装断裂同款）
-    ("llm", "base_url", "https://opencode.ai/zen/go/v1"),
-    ("llm", "api_key_env", "OPENCODEGO2_API_KEY"),
-    // embed.model/api_key_env 同为必填（无 serde 默认）：默认模板自身含
-    // 这些键，净化后需回填，否则项目级 config.toml 无法再加载
-    ("embed", "model", "qwen3.7-text-embedding"),
-    (
-        "embed",
-        "base_url",
-        "https://llm-q0265e4he9m0qs23.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
-    ),
-    ("embed", "api_key_env", "BAILIAN_API_KEY"),
-];
-
-/// 项目级配置净化：移除敏感键并告警，返回（净化后的 TOML 文本,
-/// 注入默认键清单 section→key）
-///
-/// 用 `toml::Value` 中间层移除命中键后重新序列化——净化结果只用于本次
-/// 解析，丢失注释无碍。TOML 本身非法或序列化失败时原样返回（由后续
-/// 解析报出真实错误，不吞错）。注入键清单供字段级合并时剔除——净化
-/// 兜底默认值不得覆盖用户级配置中的真实值（见 [`merge_config`]）。
-fn sanitize_project_config(text: &str) -> (String, Vec<(String, String)>) {
-    let mut value: toml::Value = match toml::from_str(text) {
-        Ok(v) => v,
-        Err(_) => return (text.to_string(), Vec::new()),
-    };
-    for (section, key) in PROJECT_CONFIG_DENY_KEYS {
-        if let Some(tbl) = value.get_mut(*section).and_then(|v| v.as_table_mut())
-            && tbl.remove(*key).is_some()
-        {
-            tracing::warn!(
-                "项目级配置 {section}.{key} 属敏感/机器属性键，已忽略——请移入用户级配置或使用 --config 显式指定"
-            );
-        }
-    }
-    // 必填字段净化后注入 schema 默认，防止解析失败（见常量注释）
-    let mut injected = Vec::new();
-    for (section, key, default) in SANITIZE_DEFAULT_INJECT {
-        if let Some(tbl) = value.get_mut(*section).and_then(|v| v.as_table_mut())
-            && !tbl.contains_key(*key)
-        {
-            tbl.insert(key.to_string(), toml::Value::String((*default).to_string()));
-            injected.push(((*section).to_string(), (*key).to_string()));
-        }
-    }
-    (
-        toml::to_string(&value).unwrap_or_else(|_| text.to_string()),
-        injected,
-    )
-}
-
-/// 从文件加载配置，缺失字段用默认值填充
+/// 从文件加载配置（v30：原样解析，无净化无注入——缺失字段由 schema
+/// 字段级 serde 默认兜底，见 schema.rs LlmSection/EmbedSection 等；
+/// 项目级 config.toml 的 base_url/api_key_env 完整生效，用户拍板）
 pub fn load_config(path: &Path) -> Result<schema::WikiConfig> {
     if !path.exists() {
         // t05（v21）：显式 --config 缺失时给出一键引导——裸报"文件不存在"
@@ -101,23 +30,7 @@ pub fn load_config(path: &Path) -> Result<schema::WikiConfig> {
     }
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("读取配置文件失败: {}", path.display()))?;
-    // v25：项目级配置文件（文件名 config.toml）执行敏感键净化——
-    // 显式 --config 指向该文件同样生效（该文件语义即"项目级配置"，逃生门
-    // 不豁免安全护栏；其他文件名不净化）
-    // v30：用户级配置文件已统一为 config.toml（用户拍板：用户级文件名
-    // 本来就应该是 config.toml）——净化判定必须排除全局配置目录内的文件：
-    // 用户级配置是信任源（%APPDATA% 不外泄），其 provider/base_url/api_key_env
-    // 是用户真实可用配置（v29 确认阵营），净化会把它剥成不可用默认
-    let is_project_level = path.file_name().is_some_and(|n| n == PROJECT_CONFIG_FILE)
-        && !global_config_dir()
-            .map(|g| path.starts_with(g))
-            .unwrap_or(false);
-    let text = if is_project_level {
-        sanitize_project_config(&content).0
-    } else {
-        content
-    };
-    let config: schema::WikiConfig = toml::from_str(&text)
+    let config: schema::WikiConfig = toml::from_str(&content)
         .with_context(|| format!("解析配置文件失败: {}", path.display()))?;
     validate_config(&config)?;
     Ok(config)
@@ -193,31 +106,22 @@ fn merge_config(base: &toml::Value, overlay: &toml::Value) -> toml::Value {
     }
 }
 
-/// 从 overlay 中剔除净化注入的兜底默认键——merge 时注入值不得覆盖
-/// 用户级配置中的真实 provider/model（用户级写了 anthropic，项目级
-/// 净化注入的 openai 不能把它顶掉）
-fn strip_injected(mut value: toml::Value, injected: &[(String, String)]) -> toml::Value {
-    for (section, key) in injected {
-        if let Some(tbl) = value.get_mut(section).and_then(|v| v.as_table_mut()) {
-            tbl.remove(key);
-        }
-    }
-    value
-}
-
 /// 默认配置链加载（v25 拍板，核心入口）：项目级 `config.toml` 字段级
 /// 合并覆盖用户级 `config.toml`，返回（实际来源路径, 配置）。
 ///
 /// 链：
-/// 1. 项目级存在 → base = 用户级（存在时）或内置模板；项目级净化并
-///    剔除注入兜底键后字段级合并覆盖 base（项目级只写要覆盖的键，
-///    其余继承用户级；数组整体覆盖）
+/// 1. 项目级存在 → base = 用户级（存在时）或内置模板；项目级原样解析
+///    后字段级合并覆盖 base（项目级只写要覆盖的键，其余继承用户级；
+///    数组整体覆盖；缺键由 schema 字段级 serde 默认兜底）
 /// 2. 项目级不存在 → 用户级存在 → 用之（原样加载不合并）
 /// 3. 都缺 → 创建用户级默认配置（模板）→ 用之（自动创建只发生在
 ///    用户级目录，项目级永不自动创建——v24 用户要求延续）
 ///
 /// 与 [`resolve_default_config_path`] 的区别：本函数返回合并后的完整
 /// 配置（合成内容不落盘），路径解析函数只做文件定位。
+///
+/// v30 用户拍板：彻底删除净化/注入规则——项目级配置原样解析，任何键
+/// （含 base_url/api_key_env）完整生效，缺失字段走 schema serde 默认。
 pub fn load_default_config_with(
     root: &ProjectRoot,
     global_dir: &Path,
@@ -235,12 +139,8 @@ pub fn load_default_config_with(
             .with_context(|| "解析用户级配置（或模板）失败".to_string())?;
         let project_text = std::fs::read_to_string(&project_config)
             .with_context(|| format!("读取项目级配置失败: {}", project_config.display()))?;
-        let (sanitized, injected) = sanitize_project_config(&project_text);
-        let overlay = strip_injected(
-            toml::from_str(&sanitized)
-                .with_context(|| format!("解析项目级配置失败: {}", project_config.display()))?,
-            &injected,
-        );
+        let overlay: toml::Value = toml::from_str(&project_text)
+            .with_context(|| format!("解析项目级配置失败: {}", project_config.display()))?;
         let merged = merge_config(&base, &overlay);
         let text = toml::to_string(&merged).context("合并配置序列化失败")?;
         let config: schema::WikiConfig = toml::from_str(&text)
@@ -270,7 +170,7 @@ pub fn load_default_config(root: &ProjectRoot) -> Result<(PathBuf, schema::WikiC
 ///
 /// 搜索链（无 `--config` 显式指定时）：
 /// 1. `{项目根}/config.toml` 存在 → 用它（项目级配置优先，
-///    随 Git 提交共享，多项目隔离；敏感键净化见 [`sanitize_project_config`]）；
+///    随 Git 提交共享，多项目隔离；原样解析，缺失字段由 schema 默认）；
 /// 2. 全局 `{用户级目录}/config.toml` 存在 → 用它（用户默认偏好）；
 /// 3. 都不存在 → 创建全局目录 + 写入默认配置模板，返回全局路径
 ///    （引导式就绪：自动创建只发生在用户级目录，项目级永不自动创建——
@@ -394,7 +294,7 @@ mod tests {
 
     /// v25：三链加载——项目级 config.toml 存在时，以用户级
     /// config.toml（缺则模板）为基，字段级合并覆盖；
-    /// 项目级敏感键（llm/embed 四键）净化剔除后不覆盖用户级真实值。
+    /// v30：项目级 llm/embed 键（base_url/api_key_env）完整覆盖用户级值
     #[test]
     fn test_load_default_config_project_overrides_user() {
         let dir = std::env::temp_dir().join(format!("repo_wiki_merge_{}", std::process::id()));
@@ -408,7 +308,7 @@ mod tests {
             .replace("model = \"deepseek-v4-flash\"", "model = \"user-model\"");
         std::fs::write(global_dir.join(USER_CONFIG_FILE), &user_text).unwrap();
 
-        // 项目级：只写 model 覆盖 + 敏感键（应被净化剔除）
+        // 项目级：写 model + api_key_env 覆盖
         std::fs::write(
             dir.join(PROJECT_CONFIG_FILE),
             r#"
@@ -425,9 +325,9 @@ model = "claude-test"
         assert_eq!(path, dir.join(PROJECT_CONFIG_FILE));
         // model 字段级覆盖生效
         assert_eq!(config.llm.model, "claude-test");
-        // provider 非敏感允许覆盖（v25 调整）；api_key_env 净化保持用户级值
+        // v30：项目级 provider/api_key_env 完整覆盖用户级（不再净化剥离）
         assert_eq!(config.llm.provider, schema::LlmProviderType::Anthropic);
-        assert_eq!(config.llm.api_key_env, "OPENCODEGO2_API_KEY");
+        assert_eq!(config.llm.api_key_env, "ANTHROPIC_API_KEY");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -464,15 +364,16 @@ model = "claude-test"
     }
 
 
-    /// v24：项目级独立配置文件加载时，敏感键（provider/base_url/api_key_env/
-    /// model）被移除并回退默认值——不随仓库传播
+    /// v30：项目级配置文件加载时 base_url/api_key_env 完整生效——
+    /// 净化/注入规则已整体删除（端点/变量名非密钥明文，项目级可用
+    /// 配置即写即用）；缺失字段由 schema serde 默认兜底
     #[test]
-    fn test_load_project_config_sanitizes_sensitive_keys() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_sanitize_{}", std::process::id()));
+    fn test_load_project_config_keeps_sensitive_keys() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_projcfg_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(PROJECT_CONFIG_FILE);
-        // 项目级配置只声明项目契约（scope/语言/输出），敏感键被写入也无效
+        // 项目级配置声明项目契约（scope/语言）+ 完整端点与变量名
         std::fs::write(
             &path,
             r#"
@@ -489,17 +390,18 @@ dir = "docs"
 [llm]
 provider = "anthropic"
 model = "claude-opus"
+base_url = "https://custom.example.com/v1"
 api_key_env = "HACKED_KEY"
 "#,
         )
         .unwrap();
 
         let config = load_config(&path).unwrap();
-        // v25：provider/model 移出净化名单，项目级覆盖值保留
+        // 项目级覆盖值全部保留（v30：不再剥离）
         assert_eq!(config.llm.provider, crate::config::schema::LlmProviderType::Anthropic);
         assert_eq!(config.llm.model, "claude-opus");
-        // api_key_env 仍净化：回退注入模板值
-        assert_eq!(config.llm.api_key_env, "OPENCODEGO2_API_KEY");
+        assert_eq!(config.llm.base_url.as_deref(), Some("https://custom.example.com/v1"));
+        assert_eq!(config.llm.api_key_env, "HACKED_KEY");
         // 项目契约保留
         assert_eq!(config.wiki.language, "en");
         // v30: output.dir 已硬编码，项目级不可写
@@ -507,10 +409,41 @@ api_key_env = "HACKED_KEY"
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// v24：非项目级文件名（全局配置/显式 --config 其他文件）不净化
+    /// v30：缺键由 schema serde 默认兜底——项目级配置省略
+    /// base_url/api_key_env 等字段仍可加载（使用默认可用阵营）
+    #[test]
+    fn test_load_project_config_defaults_for_missing_keys() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_projcfg_defaults_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(PROJECT_CONFIG_FILE);
+        std::fs::write(
+            &path,
+            r#"
+[scope]
+include = ["src/**"]
+
+[llm]
+provider = "mock"
+"#,
+        )
+        .unwrap();
+
+        let config = load_config(&path).unwrap();
+        assert_eq!(config.llm.provider, crate::config::schema::LlmProviderType::Mock);
+        // 缺失字段由 schema 字段级 serde 默认兜底（v29 可用阵营）
+        assert_eq!(config.llm.base_url.as_deref(), Some("https://opencode.ai/zen/go/v1"));
+        assert_eq!(config.llm.api_key_env, "OPENCODEGO2_API_KEY");
+        assert_eq!(config.embed.model, "qwen3.7-text-embedding");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 任意文件名（显式 --config）均原样加载（v30：净化/注入已整体删除，
+    /// 文件名不再有语义差异）；缺失字段同样由 schema serde 默认兜底
     #[test]
     fn test_load_explicit_config_keeps_sensitive_keys() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_nosanitize_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("repo_wiki_anyname_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("my.toml");

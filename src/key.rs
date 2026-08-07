@@ -142,7 +142,7 @@ fn write_field(target: &Path, field: &str, value: &str) -> Result<()> {
     let updated = set_llm_field(&text, field, value)?;
     crate::fs::write_file_atomic(target, &updated)?;
     // 写后重新解析验证：字段必须真实生效（TOML 转义错误等在此暴露；
-    // 写入目标是用户级文件，不受项目级敏感键净化影响）
+    // 用户级文件原样加载，无注入无净化——v30 已整体删除）
     let cfg = load_config(target)
         .with_context(|| format!("写入后配置解析失败: {}", target.display()))?;
     let effective = if field == "api_key" {
@@ -258,10 +258,9 @@ mod tests {
     /// 匹配值随模板同源，避免替换落空），provider 可换（测 --env 建议名区分度）
     ///
     /// 临时目录必须位于真实全局配置目录之内：v30 起用户级配置文件名统一
-    /// 为 config.toml，load_config 的净化判定（文件名 config.toml 且不在
-    /// 全局目录）会误伤全局目录之外的"用户级"文件（净化剥 api_key_env
-    /// 后注入模板值，测试早退分支失控）——置于全局目录内则语义自洽，
-    /// 测试目录独立命名（pid）用完即删，不触碰真实配置文件本体。
+    /// 为 config.toml 且原样加载（无注入无净化，字段缺失由 schema 默认
+    /// 兜底）——置于全局目录内语义自洽（用户级信任源），测试目录独立
+    /// 命名（pid）用完即删，不触碰真实配置文件本体。
     fn temp_global(tag: &str, provider: &str) -> (PathBuf, PathBuf) {
         let dir = std::env::temp_dir().join(format!(
             "repo_wiki_key_{}_{}",

@@ -53,10 +53,15 @@ impl WikiConfig {
 }
 
 /// Wiki 基本配置（v30：多语言扩展已删除——恒只生成主语言，避免维护
-/// 多语言产物面；如需其他语言改 language 主键即可）
+/// 多语言产物面；如需其他语言改 language 主键即可；缺键默认 zh）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WikiSection {
+    #[serde(default = "default_language")]
     pub language: String,
+}
+
+fn default_language() -> String {
+    "zh".to_string()
 }
 
 impl Default for WikiSection {
@@ -67,11 +72,26 @@ impl Default for WikiSection {
     }
 }
 
-/// 扫描范围配置
+/// 扫描范围配置（缺键默认 src/**+lib/** 与常规排除）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScopeSection {
+    #[serde(default = "default_include")]
     pub include: Vec<String>,
+    #[serde(default = "default_exclude")]
     pub exclude: Vec<String>,
+}
+
+fn default_include() -> Vec<String> {
+    vec!["src/**".to_string(), "lib/**".to_string()]
+}
+
+fn default_exclude() -> Vec<String> {
+    vec![
+        "**/test/**".to_string(),
+        "**/vendor/**".to_string(),
+        "target/**".to_string(),
+        "**/node_modules/**".to_string(),
+    ]
 }
 
 impl Default for ScopeSection {
@@ -88,16 +108,38 @@ impl Default for ScopeSection {
     }
 }
 
-/// LLM 提供商配置
+/// LLM 提供商配置（v30：字段级 serde 默认=Default 阵营——缺键即用
+/// 默认可用组合，项目级配置可只写想覆盖的键）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmSection {
+    #[serde(default = "default_llm_provider")]
     pub provider: LlmProviderType,
+    #[serde(default = "default_llm_model")]
     pub model: String,
+    #[serde(default = "default_llm_base_url")]
     pub base_url: Option<String>,
     /// 直接指定 API Key（优先级高于 api_key_env）
+    #[serde(default)]
     pub api_key: Option<String>,
     /// 从环境变量读取 API Key（当 api_key 为 None 时使用）
+    #[serde(default = "default_llm_api_key_env")]
     pub api_key_env: String,
+}
+
+fn default_llm_model() -> String {
+    "deepseek-v4-flash".to_string()
+}
+
+fn default_llm_provider() -> LlmProviderType {
+    LlmProviderType::OpenAiCompatible
+}
+
+fn default_llm_base_url() -> Option<String> {
+    Some("https://opencode.ai/zen/go/v1".to_string())
+}
+
+fn default_llm_api_key_env() -> String {
+    "OPENCODEGO2_API_KEY".to_string()
 }
 
 impl Default for LlmSection {
@@ -144,13 +186,33 @@ pub enum LlmProviderType {
 }
 
 /// 嵌入模型配置（v30：enabled 开关已硬编码恒开启——无 Key 环境由
-/// 运行时降级处理，见 lib.rs attach_features 与 build_search_index）
+/// 运行时降级处理，见 lib.rs attach_features 与 build_search_index；
+/// 字段级 serde 默认=Default 阵营，缺键即用默认可用组合）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbedSection {
+    #[serde(default = "default_embed_model")]
     pub model: String,
+    #[serde(default = "default_embed_base_url")]
     pub base_url: Option<String>,
+    #[serde(default)]
     pub api_key: Option<String>,
+    #[serde(default = "default_embed_api_key_env")]
     pub api_key_env: String,
+}
+
+fn default_embed_model() -> String {
+    "qwen3.7-text-embedding".to_string()
+}
+
+fn default_embed_base_url() -> Option<String> {
+    Some(
+        "https://llm-q0265e4he9m0qs23.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+            .to_string(),
+    )
+}
+
+fn default_embed_api_key_env() -> String {
+    "BAILIAN_API_KEY".to_string()
 }
 
 impl Default for EmbedSection {
