@@ -5,7 +5,7 @@ use ignore::WalkBuilder;
 use crate::ingest::parser::SUPPORTED_EXTENSIONS;
 
 /// 默认扫描文件数上限（超过即报错，避免海量文件拖垮整条管线）
-const MAX_FILES: usize = 10_000;
+const MAX_FILES: usize = 100_000;
 
 const BINARY_EXTENSIONS: &[&str] = &[
     ".exe", ".dll", ".bin", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg",
