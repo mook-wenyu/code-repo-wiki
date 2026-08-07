@@ -164,7 +164,7 @@ repo-wiki generate
 
 不带 `--config` 时按以下链解析配置（v25 三合一）：
 
-1. **项目级**：`{root}/config.toml`（root 为当前目录或 `--root` 指定；项目契约如 scope/语言/输出/模型随 Git 提交共享，与产物目录 `.repo-wiki/` 物理分离）。存在时**字段级合并覆盖**用户级配置（数组整体覆盖），未写出的键继承用户级
+1. **项目级**：`{root}/config.toml`（root 为当前目录或 `--root` 指定；项目契约如语言/模型随 Git 提交共享，与产物目录 `.repo-wiki/` 物理分离）。存在时**字段级合并覆盖**用户级配置（数组整体覆盖），未写出的键继承用户级
 2. **用户级**：Windows `%APPDATA%\repo-wiki\config.toml`，其他平台 `~/repo-wiki/config.toml`
 3. **创建**：两者都不存在时自动创建**用户级**目录与默认配置（引导式，无需先手动 install）——自动创建只发生在用户级目录，项目级永不自动创建（v24 用户要求）
 
@@ -175,25 +175,39 @@ repo-wiki generate
 > 仅 `api_key` 明文字段放用户级更稳妥）。缺失的键由 schema 内置默认兜底
 > （LLM 默认 opencode 网关 + `OPENCODEGO2_API_KEY`，嵌入默认阿里百炼 +
 > `BAILIAN_API_KEY`）——项目级配置可只写要覆盖的键。
-> 项目级配置典型内容：`scope`、`wiki.language`、`provider`。
+> 项目级配置典型内容：`wiki.language`、`llm.provider`、`llm.base_url`。
 
 ```toml
 [wiki]
 language = "zh"
 
-[scope]
-include = ["src/**"]
-exclude = ["**/test/**", "target/**"]
-
 [llm]
 provider = "openai-compatible"      # openai-compatible = chat/completions（兼容端点）
 model = "deepseek-v4-flash"         # openai = Responses API（OpenAI/DeepSeek 归此）
-api_key_env = "DEEPSEEK_API_KEY"    # anthropic = Anthropic Messages API；mock = 本地模拟
+api_key_env = "OPENCODEGO2_API_KEY" # anthropic = Anthropic Messages API；mock = 本地模拟
 ```
+
+### 扫描范围（v30 零配置）
+
+源码扫描**恒为全量遍历仓库**（`scope` 段已删除），按四层内置边界自动过滤，
+无需任何配置：
+
+1. **`.gitignore`/`.ignore`/隐藏目录**：遵循 ignore crate 标准过滤（未纳入
+   git 管理的目录同样生效）
+2. **噪音目录清单**：`node_modules/.venv/venv/vendor/Pods/Library/target/dist/
+   build/out/.next/.nuxt/.output/coverage/.cache/__pycache__/...`（兜底，
+   与 .gitignore 互补，见 `src/ingest/scanner.rs` 的 `NOISE_DIRS`）
+3. **编程语言自动识别**：只收录受支持语言的源码文件（`.rs/.ts/.tsx/.py/
+   .go/.js/.jsx/.mjs/.cjs/.cs/.java`，见 `src/ingest/parser/mod.rs` 的
+   `SUPPORTED_EXTENSIONS`）——非 Rust 仓库（如 JS/Go/Python）开箱即用，
+   不再需要 `include` 白名单
+4. **二进制与上限**：二进制文件跳过；源文件数超 `MAX_FILES`（10 万）时显式
+   报错，不静默截断
 
 > **v30 起以下配置项已硬编码**（代码常量，见 `src/config/schema.rs` 顶部），
 > 不再需要也不应写在配置里（写了会被 serde 忽略）：
-> `output.dir`（恒 `.repo-wiki`）、`embed.enabled`（恒 true，无 Key 时自动降级
+> `output.dir`（恒 `.repo-wiki`）、`scope.include/exclude`（已删除，全量扫描 +
+> 四层内置边界，见上节）、`embed.enabled`（恒 true，无 Key 时自动降级
 > 纯结构聚类并保留旧索引）、`search.enabled`（恒 true）、
 > `incremental.enabled`/`incremental.strategy`（恒 **FileWatch 监听模式**——
 > 基于内容指纹，非 Git 仓库同样支持增量）、`expand_languages`（已删除，
