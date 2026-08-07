@@ -197,7 +197,6 @@ mod tests {
             line_end: 10,
             doc_comment: None,
             signature: None, visibility: None,
-            summary: None,
         }
     }
 

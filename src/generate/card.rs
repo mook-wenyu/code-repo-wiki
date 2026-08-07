@@ -480,7 +480,6 @@ mod tests {
             line_end: 30,
             doc_comment: Some("配置管理".into()),
             signature: None, visibility: None,
-            summary: None,
         };
         let insight = FileInsight {
             path: PathBuf::from("src/config.rs"),

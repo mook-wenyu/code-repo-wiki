@@ -65,11 +65,11 @@ impl SharedProcessor for TypeScriptProcessor {
             }
             let core = t.strip_prefix("export ").or_else(|| t.strip_prefix("export default ")).or_else(|| t.strip_prefix("export async ")).unwrap_or(t);
             if let Some(name) = core.strip_prefix("class ").and_then(|s| s.split(&['{', ' ', '<', '(', ';'][..]).next()).map(|s| s.trim()) {
-                entities.push(Entity { name: name.to_string(), kind: "class".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: None, summary: None, visibility: None });
+                entities.push(Entity { name: name.to_string(), kind: "class".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: None, visibility: None });
             } else if let Some(name) = core.strip_prefix("interface ").and_then(|s| s.split(&['{', ' ', '<', ';'][..]).next()).map(|s| s.trim()) {
-                entities.push(Entity { name: name.to_string(), kind: "interface".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: None, summary: None, visibility: None });
+                entities.push(Entity { name: name.to_string(), kind: "interface".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: None, visibility: None });
             } else if let Some(name) = core.strip_prefix("function ").and_then(|s| s.split(&['(', ' ', '<', '{', ';'][..]).next()).map(|s| s.trim()) {
-                entities.push(Entity { name: name.to_string(), kind: "function".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: Some(t.to_string()), summary: None, visibility: None });
+                entities.push(Entity { name: name.to_string(), kind: "function".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: Some(t.to_string()), visibility: None });
             }
         }
         (entities, imports)

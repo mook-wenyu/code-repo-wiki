@@ -44,7 +44,9 @@ pub struct Entity {
     pub line_end: usize,
     pub doc_comment: Option<String>,
     pub signature: Option<String>,
-    pub summary: Option<String>,
+    // 实体摘要字段已删除（v31）：原 generate_entity_summaries 对每实体一次
+    // LLM 调用但字段零消费者——纯 token 浪费；未来如需实体级语义索引，
+    // 应在生成时预索引重建，而非逐个惰性调用。
     /// 可见性修饰符（"pub"/"pub(crate)"/"private"/"internal"/"export" 等）；
     /// 由解析出口的 fill_visibilities 按行级文本统一提取，缺失（默认可见性）
     /// 为 None。serde(default) 兼容旧版 insights_cache 反序列化。
@@ -187,7 +189,7 @@ pub trait SharedProcessor: Sized {
             entities.push(Entity {
                 name: name.to_string(), kind: rule.entity_kind.to_string(),
                 line_start: node.start_position().row + 1,                line_end: node.end_position().row + 1,
-                doc_comment: None, signature: sig, summary: None, visibility: None,
+                doc_comment: None, signature: sig, visibility: None,
             });
         }
     }
@@ -291,7 +293,6 @@ mod tests {
             line_end: start,
             doc_comment: None,
             signature: None,
-            summary: None,
             visibility: None,
         }
     }

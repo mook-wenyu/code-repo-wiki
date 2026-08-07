@@ -325,7 +325,6 @@ mod tests {
             line_end: end,
             doc_comment: None,
             signature: Some(sig.into()), visibility: None,
-            summary: None,
         }
     }
 

@@ -812,7 +812,6 @@ mod tests {
             line_end: 50,
             doc_comment: Some("HTTP 服务".into()),
             signature: None, visibility: None,
-            summary: None,
         };
         let insight = FileInsight {
             path: PathBuf::from("src/server.rs"),

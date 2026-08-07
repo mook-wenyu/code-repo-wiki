@@ -1,6 +1,5 @@
 use crate::generate::chunk::Chunk;
 use crate::generate::llm::Message;
-use crate::ingest::parser::Entity;
 use crate::model::{KnowledgeGraph, ModuleCluster};
 
 /// 生成模块摘要的系统 prompt
@@ -421,28 +420,8 @@ pub fn schema_doc_prompt(
     vec![Message::system(system), Message::user(user)]
 }
 
-/// 生成单个实体摘要的 prompt
-pub fn entity_summary_prompt(
-    entity: &Entity,
-    language: &str,
-) -> String {
-    let system = format!(
-        "系统指令：你是一个代码分析专家。请为以下代码实体生成一段简短的技术摘要。\n\n\
-         实体信息：\n\
-         - 类型：{}\n\
-         - 名称：{}\n\
-         - 签名：{}\n\
-         - 文档注释：{}\n\
-         \n\
-         请用 {} 语言回复。",
-        entity.kind,
-        entity.name,
-        entity.signature.as_deref().unwrap_or("无"),
-        entity.doc_comment.as_deref().unwrap_or("无"),
-        language
-    );
-    system
-}
+// 实体摘要 prompt 已删除（v31）：随 generate_entity_summaries 一并移除——
+// Entity.summary 字段零消费者，每实体一次 LLM 调用纯浪费（见 mod.rs 注释）。
 
 #[cfg(test)]
 mod tests {
@@ -522,7 +501,6 @@ mod tests {
             line_end: 3,
             doc_comment: None,
             signature: None,
-            summary: None,
             visibility: None,
         }];
         chunk.entity_sources = vec![std::path::PathBuf::from("src/alpha.rs")];

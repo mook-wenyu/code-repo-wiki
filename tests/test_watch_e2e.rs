@@ -262,7 +262,6 @@ fn watch_path_dot_slash_prefix_boundary() {
             line_end: 1,
             doc_comment: None,
             signature: Some("pub fn foo_fn(x: u32) -> u32 { x + 1 }".into()), visibility: None,
-            summary: None,
         }],
         imports: Vec::new(),
         doc_comments: Vec::new(),

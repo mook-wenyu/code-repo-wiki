@@ -19,7 +19,7 @@ use crate::model::{KnowledgeCard, KnowledgeGraph, WikiDocument};
 
 use self::card::CardGenerator;
 use self::chunk::Chunk;
-use self::llm::{AnthropicProvider, LlmProvider, Message, OpenAiProvider, Provider};
+use self::llm::{AnthropicProvider, LlmProvider, OpenAiProvider, Provider};
 use self::wiki::WikiGenerator;
 
 /// 生成流水线的输出
@@ -80,7 +80,7 @@ pub async fn run_generation(
     let start = Instant::now();
 
     // 1. AST 感知分块
-    let mut chunks = if graph.modules.is_empty() {
+    let chunks = if graph.modules.is_empty() {
         tracing::warn!("未检测到模块聚类，回退到文件级分块");
         insights
             .iter()
@@ -93,16 +93,6 @@ pub async fn run_generation(
 
     // 2. 创建 LLM Provider
     let provider = create_provider(config)?;
-
-    // 2.5 Level 0 实体摘要（并行，演进计划 T3.1）：为每个实体生成摘要
-    generate_entity_summaries(
-        &provider,
-        &mut chunks,
-        &config.wiki.language,
-        crate::config::schema::LLM_MAX_CONCURRENT,
-        |_, _| true,
-    )
-    .await;
 
     // 3. 并行生成 Knowledge Card
     let card_gen = CardGenerator::new(
@@ -302,7 +292,7 @@ pub async fn run_generation_filtered(
     }
 
     // 1. AST 感知分块（仅变更文件）
-    let mut chunks: Vec<_> = if graph.modules.is_empty() {
+    let chunks: Vec<_> = if graph.modules.is_empty() {
         changed_insights
             .iter()
             .map(chunk::chunk_by_file)
@@ -315,40 +305,6 @@ pub async fn run_generation_filtered(
 
     // 2. 创建 LLM Provider
     let provider = create_provider(config)?;
-
-    // 2.5 增量实体摘要（演进计划 T2.3 实体级过滤 + T3.1 并行化）：
-    // 仅对**接口级变化文件**中的实体重新生成摘要（新增/删除/签名变更），
-    // 纯实现级变化（函数体修改）与未变化实体保留旧摘要，不浪费 LLM 调用。
-    // 变化集合为空（FileWatch 策略或无接口级变化）时跳过本步骤。
-    if !entity_changes.changes.is_empty() {
-        let interface_files: std::collections::HashSet<std::path::PathBuf> = entity_changes
-            .changes
-            .iter()
-            .filter(|c| {
-                matches!(
-                    c.kind,
-                    crate::incremental::change::EntityChangeKind::Added
-                        | crate::incremental::change::EntityChangeKind::Removed
-                        | crate::incremental::change::EntityChangeKind::SignatureChanged
-                )
-            })
-            .map(|c| c.file.clone())
-            .collect();
-        generate_entity_summaries(
-            &provider,
-            &mut chunks,
-            &config.wiki.language,
-            crate::config::schema::LLM_MAX_CONCURRENT,
-            |chunk, ei| {
-                chunk
-                    .entity_sources
-                    .get(ei)
-                    .map(|f| interface_files.contains(f))
-                    .unwrap_or(false)
-            },
-        )
-        .await;
-    }
 
     // 3. 并行生成 Knowledge Card（仅变更块）
     let card_gen = CardGenerator::new(
@@ -463,66 +419,10 @@ fn backfill_features(cards: &mut [KnowledgeCard], chunks: &[Chunk], graph: &Know
     }
 }
 
-/// 并行生成实体摘要（Level 0，演进计划 T3.1 并行化）
-///
-/// 只对通过 `filter` 且 summary 为 None 的实体发起 LLM 调用；
-/// 并发受 max_concurrent 信号量控制（与卡片/Schema 生成一致），
-/// 失败仅告警不中断。结果按收集顺序写回 chunks（join_all 保序），
-/// 与串行版的产物顺序一致。
-///
-/// `filter` 用于增量场景的实体级过滤（T2.3）：仅接口级变化文件的
-/// 实体重新生成摘要；全量场景传恒真闭包。
-async fn generate_entity_summaries(
-    provider: &Provider,
-    chunks: &mut [Chunk],
-    language: &str,
-    max_concurrent: usize,
-    filter: impl Fn(&Chunk, usize) -> bool,
-) {
-    // 收集任务（只读遍历收集，避免并发写 chunks 的借用冲突）
-    let tasks: Vec<(usize, usize, String)> = chunks
-        .iter()
-        .enumerate()
-        .flat_map(|(ci, chunk)| {
-            chunk
-                .entities
-                .iter()
-                .enumerate()
-                .filter(|(ei, e)| e.summary.is_none() && filter(chunk, *ei))
-                .map(move |(ei, entity)| {
-                    (ci, ei, prompt::entity_summary_prompt(entity, language))
-                })
-        })
-        .collect();
-    if tasks.is_empty() {
-        return;
-    }
-
-    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(max_concurrent.max(1)));
-    let handles: Vec<_> = tasks
-        .iter()
-        .map(|(_, _, prompt)| {
-            let semaphore = semaphore.clone();
-            let prompt = prompt.clone();
-            async move {
-                let _permit = semaphore
-                    .acquire()
-                    .await
-                    .map_err(|_| anyhow::anyhow!("信号量已关闭"))?;
-                provider.complete(&[Message::user(prompt)]).await
-            }
-        })
-        .collect();
-    let results = futures::future::join_all(handles).await;
-
-    // 按收集顺序写回（join_all 保序，产物与串行版一致）
-    for ((ci, ei, _), result) in tasks.iter().zip(results) {
-        match result {
-            Ok(summary) => chunks[*ci].entities[*ei].summary = Some(summary.trim().to_string()),
-            Err(e) => tracing::warn!("实体摘要生成失败: {}", e),
-        }
-    }
-}
+// 实体摘要生成已删除（v31）：原 generate_entity_summaries 对每实体一次
+// LLM 调用（全量 1500 实体=1500 次调用），但 Entity.summary 字段零消费者
+// （全仓库仅自身写入/过滤读取）——纯 token 浪费。未来如需实体级语义索引，
+// 应在生成时预索引重建，而非逐个惰性调用。
 
 /// 按语言并行生成 Wiki 页面（演进计划 T3.1 并行化）
 ///
