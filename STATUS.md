@@ -569,3 +569,30 @@
 - 验证：cargo test 426+28 套件全绿；clippy -D warnings 0；machete 0；doctor 六查全绿（config.toml 完整生效：OPENCODEGO2_API_KEY+opencode 网关可达，4 条误导 WARN 消失）
 - 提交 c1c19c3
 - 分析结论（未改代码）：include/exclude 语义互补均保留（白名单防漏扫/黑名单防扫错，include=[] 即全量已支持）
+
+## 六十节 v30 扫描零配置（用户拍板，2026-08-07）
+
+需求：scope.include/exclude 彻底删除（不同项目文件夹不同，不傻瓜）。
+
+落地：
+1. scanner.rs 全量遍历重写：Scanner::new(root)（无 scope/无 Result）+四层内置边界
+   ——.gitignore（standard_filters(true)）/内置噪音目录 NOISE_DIRS（node_modules/
+   .venv/dist/target/__pycache__ 等）/支持语言扩展名自动识别（SUPPORTED_EXTENSIONS
+   11 种：rs/ts/tsx/py/go/js/jsx/mjs/cjs/cs/java，与各处理器一一对应）/二进制与
+   MAX_FILES 上限（超限显式报错）
+2. schema.rs 删 ScopeSection；config.toml 模板四段→三段（wiki/llm/embed）；
+   旧配置含 [scope]/[output] 段静默忽略（serde 默认行为，不报错）
+3. watch.rs 监听根恒=仓库根，事件按支持扩展名+NOISE_DIRS 过滤；
+   run_watch_loop 删 config 参数
+4. incremental no-op 判定改 status_has_source_changes（全仓库任何变更=源码变更，
+   唯一例外=产物目录 output_dir 与 AGENTS.md——AGENTS.md 是 generate 自动写入的
+   代理导航模板，修复后 no-op 回归实测恢复）
+5. generate/schema.rs collect_sql_files_at 独立全量遍历（.sql 不在语言清单）
+6. ingest 全链删 config 参数（scan_and_parse_at/scan_and_parse_cached_at）
+7. 净化删除轮（五十九节）已提交 37bc04e；本轮提交 fda070a（31 文件 +314/-516）+
+   b90dfc6（docs）
+
+验证：423 lib+28 集成套件全绿；clippy -D warnings 0；machete 0；冒烟 generate
+（临时仓库 1 文件 3 实体 2 边 49ms 产物 5 页）；no-op 手动复现（修复前 AGENTS.md
+阻断 no-op→修复后「无文件变更，跳过更新」恢复）；embed 运行期失败降级保留旧索引
+实测。
