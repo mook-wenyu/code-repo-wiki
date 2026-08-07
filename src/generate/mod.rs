@@ -447,6 +447,13 @@ async fn generate_wiki_pages<P: LlmProvider>(
         let mut lang_cfg = config.clone();
         lang_cfg.wiki.language = lang.clone();
         for (i, chunk) in chunks.iter().enumerate() {
+            // v31 修复（C-03）：与卡片侧一致——空 chunk（增量模式未变更模块）
+            // 是确定性「无内容」而非生成失败，直接跳过不入 failed_modules
+            // （污染会使 should_skip_noop 永久失效并触发无关模块补偿重试）。
+            // generate_wiki_page 的空块 bail 保留给单页重生成等非空调用路径。
+            if chunk.is_empty() {
+                continue;
+            }
             let card_summary = cards.get(i).map(|c| c.summary.clone()).unwrap_or_default();
             let semaphore = semaphore.clone();
             let lang_cfg = lang_cfg.clone();

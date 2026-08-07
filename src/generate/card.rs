@@ -150,6 +150,15 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
         let mut handles = Vec::with_capacity(chunks.len());
 
         for chunk in chunks {
+            // v31 修复（C-03）：增量模式下未变更模块的 chunk 为空（chunk_by_module
+            // 对全部模块产 chunk，但增量只喂变更文件）——空 chunk 是确定性的
+            // 「无内容」，不是生成失败。调用方跳过而非走 generate_card 的
+            // 空块 bail，避免污染 failed_modules——后者会使 should_skip_noop
+            // 永久失效（no-op 快速跳过被禁用）并让失败补偿重试反复纳入无关模块。
+            // 真实 LLM 失败（网络/解析）仍由下方 Err 分支记录。
+            if chunk.is_empty() {
+                continue;
+            }
             let module = chunk.module_path.join("::");
             // 旧卡片读取失败按失败隔离语义降级（单卡不中断整体生成），
             // 但显式告警——静默丢人工修改记录会让人工修改保护失效
@@ -691,5 +700,66 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v31 C-03 防回归：空 chunk（增量模式下未变更模块）被调用方跳过——
+    /// 不产生 Err、不记 failed_modules（污染会使 should_skip_noop 永久失效、
+    /// 失败补偿重试反复纳入无关模块）；真实 LLM 失败（非空 chunk）仍记录
+    /// failed_modules（补偿重试与 no-op 判定依赖此语义）。
+    #[tokio::test]
+    async fn test_generate_all_cards_skips_empty_chunks_records_real_failures() {
+        // ① 空 chunk：跳过且不记失败
+        let provider = Provider::Mock(MockProvider::new());
+        let (config, dir) = card_fixture("emptychunk", "src", "# src\n\n## 摘要\n旧内容");
+        let generator = CardGenerator::new(&provider, config, 1, "zh".into());
+        let mut empty = make_test_chunk();
+        empty.entities = Vec::new();
+        empty.imports = Vec::new();
+        let cards = generator
+            .generate_all_cards(&[empty], &std::collections::HashMap::new())
+            .await
+            .unwrap();
+        assert!(cards.is_empty(), "空 chunk 应被调用方跳过");
+        assert!(
+            generator.failed_modules().is_empty(),
+            "空 chunk 不得记入 failed_modules: {:?}",
+            generator.failed_modules()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // ② 真实 LLM 失败：仍记录 failed_modules（仅失败模块）
+        let failing = FailingProvider;
+        let (config2, dir2) = card_fixture("realfail", "src", "# src\n\n## 摘要\n旧内容");
+        let gen2 = CardGenerator::new(&failing, config2, 1, "zh".into());
+        let cards2 = gen2
+            .generate_all_cards(&[make_test_chunk()], &std::collections::HashMap::new())
+            .await
+            .unwrap();
+        assert!(cards2.is_empty(), "失败模块不产出卡片");
+        assert_eq!(gen2.failed_modules(), vec!["src"], "真实 LLM 失败必须记录");
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    /// 测试专用：总是失败的 LLM provider（验证真实失败仍入 failed_modules）
+    struct FailingProvider;
+
+    impl LlmProvider for FailingProvider {
+        async fn complete(
+            &self,
+            _messages: &[crate::generate::llm::Message],
+        ) -> anyhow::Result<String> {
+            anyhow::bail!("模拟 LLM 调用失败")
+        }
+
+        async fn complete_stream(
+            &self,
+            _messages: &[crate::generate::llm::Message],
+        ) -> anyhow::Result<Vec<String>> {
+            anyhow::bail!("模拟 LLM 调用失败")
+        }
+
+        fn call_count(&self) -> usize {
+            0
+        }
     }
 }
