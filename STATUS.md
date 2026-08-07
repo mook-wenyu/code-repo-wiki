@@ -532,3 +532,14 @@
 - 归因修正：v23 satisfied 22/52 vs v29 0/51 系资金中断非多数投票保守化
 - 阻塞：真实 LLM 验证（rubrics 复测/大仓库跑分）需充值或换 key
 - 遗留：knowing 9/16 仓 mock 数据点；CodeWikiBench 22 仓清单留档（HF 不可达 commit 缺省 HEAD）；bad-vctx 4 条（v29 产物中人工 vctx 校验捕获）
+
+## 五十七节 v30 傻瓜式自动化配置（2026-08-07）
+
+- 用户拍板：plan 彻底删除；dir/embed/search/incremental 硬编码删字段；删 expand_languages
+- 硬编码：output.dir=\.repo-wiki（OUTPUT_DIR 常量）/ embed.enabled 恒 true（无 Key 自动降级）/ search.enabled 恒 true / incremental 恒 FileWatch 监听模式（内容 SHA256 指纹，非 Git 仓库可用）/ expand_languages 删除
+- plan 整体删除：wiki_plan.yaml/plan.path/白名单/模块规划全移除；删 src/config/plan.rs + tests/test_plan.rs + serde_yaml 依赖
+- output_dir 改为运行时注入字段（serde skip），output_dir() 方法统一访问；模板精简为 wiki/scope/llm/embed 四段
+- 语义索引运行期失败降级（不再中断主流程）；非 Git 仓库 FileWatch 增量修复（空分类保守保留起点）
+- watch 端到端竞态修复（测试改文件前等 notify 注册窗口）；删除检测补强（指纹表∖insights）
+- 验证：423 lib+27 集成套件全绿、clippy -D warnings 0、machete 0
+- 提交：ed2c5be(重构)/fa61851(测试)/9556bc2(文档)
