@@ -596,3 +596,17 @@
 （临时仓库 1 文件 3 实体 2 边 49ms 产物 5 页）；no-op 手动复现（修复前 AGENTS.md
 阻断 no-op→修复后「无文件变更，跳过更新」恢复）；embed 运行期失败降级保留旧索引
 实测。
+
+## 六十一节 真实 LLM 评测轮（A11 完成，2026-08-07）
+
+解锁：OPENCODEGO2_API_KEY（opencode 网关）可用，A7/A10/A11/A12 的 402 阻塞解除。
+
+真实生成冒烟：本仓库真实 generate 717729ms（~12 分钟），15 页/12 卡片/12 模块，语义索引 1576 实体真实向量化（百炼 embed），api.md 引用行号真实。
+
+A11 rubrics 复测（bench --root 本仓库 --rubrics-only --json，judge=deepseek-v4-flash 真实）：
+- TQS：judged 2 模块，avg_total 8.65（clarity 8.95/readability 8.84/conciseness 9.0/richness 7.68/structure 8.77），repeats 11，kappa_like 0.83，flip_rate 0.52（位置翻转率高=judge 稳定性已知问题），parse_success 1.0
+- Rubric：77 节点/65 叶子，satisfied 4（覆盖率 6.2%，score 0.063）——CodeWikiBench rubrics 树期望的文档形态（示例代码/教程步骤/交互功能）与 repo-wiki 生成的 Wiki 形态（api.md/architecture 参考型）不匹配，为真实评测结果而非缺陷
+- Coverage：实体覆盖率 1.0；lint 45 项（bad-vctx 4/entity-coverage 27/orphan 1/stale 13）
+- generate_ms 0（复用既有产物，bench 不重生成）
+
+knowing 全量 12 仓 mock 数据点齐（v29 9 + v30 3：rails 5239 实体/58 文件/58.4s、spark 2182/184/4.3s、cal.com 59047/5048/372.3s——大仓 MAX_FILES=100000 后通过）。
