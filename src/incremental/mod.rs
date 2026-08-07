@@ -24,8 +24,8 @@ use self::state::GenerationState;
 /// 满足才跳过：
 /// 1. 状态文件可读且 last_commit_hash 存在（上次成功生成过）
 /// 2. 当前 git HEAD == last_commit_hash（无新提交）
-/// 3. scope.include 覆盖范围内工作树无未提交变更（git status 过滤——
-///    产物目录/其他目录的改动不算，否则本仓库自身产物会恒阻断跳过）
+/// 3. 源码范围（全仓库）内工作树无未提交变更（git status 过滤——
+///    产物目录的改动不算，否则本仓库自身产物会恒阻断跳过）
 /// 4. 产物信号存在（wiki 目录）——产物被删时不得跳过（no-op 固有盲区）
 ///
 /// 为什么不需要 interrupted 标记（与 OpenWiki 方案的差异，G3 批判审查）：
@@ -67,41 +67,40 @@ pub fn should_skip_noop(root: &ProjectRoot, config: &WikiConfig) -> anyhow::Resu
     if head_hash.as_deref() != Some(last_hash.as_str()) {
         return Ok(false);
     }
-    // 3. scope 范围内工作树无未提交变更
-    if status_in_scope(&repo, config) {
+    // 3. 源码范围（全仓库）内工作树无未提交变更
+    if status_has_source_changes(&repo, config, root) {
         return Ok(false);
     }
     Ok(true)
 }
 
-/// 工作树未提交变更是否落在 scope.include 覆盖范围（相对仓库根判断）
+/// 工作树是否有源码未提交变更（相对仓库根判断）
+///
+/// v30+：扫描范围已硬编码为全量遍历，任何路径都算源码变更——
+/// 例外只有工具自身产物：产物目录（output_dir，含 .repo-wiki/.state/
+/// .search）与仓库根 AGENTS.md（generate 自动写入的代理导航模板，
+/// 非源码、不参与生成）。产物若算作变更则每次生成后 no-op 判定恒为
+/// false（快速跳过永久失效）。被忽略目录（.gitignore 已忽略产物）
+/// 不受影响，此处显式排除是为了未忽略产物的仓库也不退化。
 ///
 /// 路径比较统一走 norm_sep（正斜杠）：git2 status 路径恒用正斜杠，
-/// include glob 语义也是正斜杠分隔；Windows 上 Path::starts_with 的
-/// 反斜杠比较会失配。
-fn status_in_scope(repo: &git2::Repository, config: &WikiConfig) -> bool {
-    let patterns: Vec<glob::Pattern> = config
-        .scope
-        .include
-        .iter()
-        .filter_map(|p| glob::Pattern::new(p).ok())
-        .collect();
-    // include 的字面目录前缀（"src/**" → "src"；glob 无法匹配目录内文件）
-    let roots: Vec<String> = config
-        .scope
-        .include
-        .iter()
-        .map(|p| {
-            let dir = p.split('*').next().unwrap_or_default().trim_end_matches('/');
-            norm_sep(if dir.is_empty() { "." } else { dir })
-        })
-        .collect();
+/// Windows 上 Path::starts_with 的反斜杠比较会失配。
+fn status_has_source_changes(
+    repo: &git2::Repository,
+    config: &WikiConfig,
+    root: &ProjectRoot,
+) -> bool {
+    // 产物目录相对仓库根归一化（output_dir 可能是 root 化注入的绝对路径）
+    let out_abs = config.output_dir().to_string_lossy().replace('\\', "/");
+    let root_abs = root.path().to_string_lossy().replace('\\', "/");
+    let out_norm = out_abs.strip_prefix(&root_abs).map(|s| s.trim_start_matches('/')).unwrap_or(&out_abs);
     match repo.statuses(None) {
         Ok(statuses) => statuses.iter().any(|s| {
             let Some(path) = s.path() else { return false };
             let norm = norm_sep(path);
-            patterns.iter().any(|p| p.matches(&norm))
-                || roots.iter().any(|r| norm == *r || norm.starts_with(&format!("{r}/")))
+            let in_output = norm == out_norm || norm.starts_with(&format!("{out_norm}/"));
+            let is_agents_md = norm == "AGENTS.md";
+            !(in_output || is_agents_md)
         }),
         // status 读取失败：保守视为有变更（不跳过）——no-op 跳过只允许
         // 在证据齐全时发生，证据缺失时必须走正常路径
@@ -698,7 +697,6 @@ mod tests {
 
         let mut config = make_config();
         config.output_dir = Some(dir.join("out"));
-        config.scope.include = vec!["src/**".to_string()];
         (dir, head, config)
     }
 
@@ -753,29 +751,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// head 相同但工作树有 scope 内未提交变更 → 不跳过；
-    /// scope 外变更（产物目录）→ 仍跳过
+    /// head 相同但工作树有源码未提交变更 → 不跳过；
+    /// 产物目录（output_dir）内的变更 → 仍跳过（不算源码变更）
     #[test]
     fn test_noop_status_scope_filtering() {
         let (dir, head, config) = setup_noop_fixture();
         save_baseline(&dir, &config, &head);
 
-        // scope 内（src/）未提交变更 → 不跳过
+        // 源码（src/）未提交变更 → 不跳过
         std::fs::write(dir.join("src").join("a.rs"), "fn a() { /* dirty */ }\n").unwrap();
         assert!(
             !should_skip_noop(&ProjectRoot::new(dir.clone()), &config).unwrap(),
-            "scope 内未提交变更不得跳过"
+            "源码未提交变更不得跳过"
         );
-        // 还原后产物目录（out/，scope 外）出现新文件 → 仍跳过（不阻断）
+        // 还原后产物目录内出现新文件 → 仍跳过（产物不算源码变更）
         std::fs::write(dir.join("src").join("a.rs"), "fn a() {}\n").unwrap();
         std::fs::write(
-            config.output_dir().join("out-of-scope.txt"),
+            config.output_dir().join("out.txt"),
             "not code",
         )
         .unwrap();
         assert!(
             should_skip_noop(&ProjectRoot::new(dir.clone()), &config).unwrap(),
-            "scope 外变更（产物目录）不应阻断跳过"
+            "产物目录变更不应阻断跳过"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

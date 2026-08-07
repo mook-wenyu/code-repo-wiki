@@ -20,15 +20,13 @@ pub const OUTPUT_DIR: &str = ".repo-wiki";
 
 /// 全局配置
 ///
-/// v30 精简后的配置面：只保留「凭据 / 模型选择 / 扫描范围 / 主语言」四类
-/// 用户真正需要决策的项；输出目录、增量策略、搜索/嵌入开关、计划文件等
-/// 算法细节全部硬编码（见常量区）。
+/// v30 精简后的配置面：只保留「凭据 / 模型选择 / 主语言」三类
+/// 用户真正需要决策的项；输出目录、扫描范围、增量策略、搜索/嵌入开关、
+/// 计划文件等算法细节全部硬编码（见常量区与扫描器内置过滤）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WikiConfig {
     #[serde(default)]
     pub wiki: WikiSection,
-    #[serde(default)]
-    pub scope: ScopeSection,
     #[serde(default)]
     pub llm: LlmSection,
     #[serde(default)]
@@ -68,42 +66,6 @@ impl Default for WikiSection {
     fn default() -> Self {
         Self {
             language: "zh".to_string(),
-        }
-    }
-}
-
-/// 扫描范围配置（缺键默认 src/**+lib/** 与常规排除）
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScopeSection {
-    #[serde(default = "default_include")]
-    pub include: Vec<String>,
-    #[serde(default = "default_exclude")]
-    pub exclude: Vec<String>,
-}
-
-fn default_include() -> Vec<String> {
-    vec!["src/**".to_string(), "lib/**".to_string()]
-}
-
-fn default_exclude() -> Vec<String> {
-    vec![
-        "**/test/**".to_string(),
-        "**/vendor/**".to_string(),
-        "target/**".to_string(),
-        "**/node_modules/**".to_string(),
-    ]
-}
-
-impl Default for ScopeSection {
-    fn default() -> Self {
-        Self {
-            include: vec!["src/**".to_string(), "lib/**".to_string()],
-            exclude: vec![
-                "**/test/**".to_string(),
-                "**/vendor/**".to_string(),
-                "target/**".to_string(),
-                "**/node_modules/**".to_string(),
-            ],
         }
     }
 }

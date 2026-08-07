@@ -228,9 +228,9 @@ pub fn run_manifest(
         let result = match res {
             Ok(_) => {
                 let pages = collect_wiki_pages(&out_dir);
-                let cov = measure_coverage(&root, template_config, &pages);
+                let cov = measure_coverage(&root, &pages);
                 let doc_info = measure_doc_info(&pages);
-                let lint = measure_lint(&out_dir, &root, template_config);
+                let lint = measure_lint(&out_dir, &root);
                 RepoReport {
                     name: entry.name.clone(),
                     coverage: cov.unwrap_or_else(|e| {

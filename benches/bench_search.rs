@@ -8,24 +8,7 @@ use std::path::Path;
 
 use std::time::Instant;
 
-use repo_wiki::config::schema::{ScopeSection, WikiConfig};
 use repo_wiki::ingest::parser::FileInsight;
-
-/// 覆盖默认 scope 的配置：默认 include 只匹配 src/** 与 lib/**，基准仓库在临时目录根下
-fn bench_config() -> WikiConfig {
-    WikiConfig {
-        scope: ScopeSection {
-            include: vec![
-                "**/*.rs".into(),
-                "**/*.py".into(),
-                "**/*.js".into(),
-                "**/*.go".into(),
-            ],
-            exclude: vec![],
-        },
-        ..Default::default()
-    }
-}
 
 /// 在临时目录构造 200 文件仓库（rust/python/js/go 各 50）并解析
 ///
@@ -56,7 +39,7 @@ fn build_bench_repo(dir: &Path) -> Vec<FileInsight> {
         };
         std::fs::write(sub.join(name), content).unwrap();
     }
-    repo_wiki::ingest::scan_and_parse_at(&repo_wiki::project::ProjectRoot::new(dir.to_path_buf()), &bench_config()).unwrap().insights
+    repo_wiki::ingest::scan_and_parse_at(&repo_wiki::project::ProjectRoot::new(dir.to_path_buf())).unwrap().insights
 }
 
 /// 500 条索引下 BM25 搜索平均耗时
@@ -249,7 +232,7 @@ fn bench_clustering_detection() {
         }
     }
 
-    let insights = repo_wiki::ingest::scan_and_parse_at(&repo_wiki::project::ProjectRoot::new(dir.clone()), &bench_config()).unwrap().insights;
+    let insights = repo_wiki::ingest::scan_and_parse_at(&repo_wiki::project::ProjectRoot::new(dir.clone())).unwrap().insights;
     eprintln!(
         "debug: insights={} first_entities={:?} first_source={:?}",
         insights.len(),

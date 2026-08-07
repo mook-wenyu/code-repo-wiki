@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use repo_wiki::config::schema::{LlmProviderType, LlmSection, ScopeSection, WikiConfig, WikiSection};
+use repo_wiki::config::schema::{LlmProviderType, LlmSection, WikiConfig, WikiSection};
 use repo_wiki::ingest::parser::{Entity, FileInsight};
 use repo_wiki::incremental::state::GenerationState;
 
@@ -33,8 +33,7 @@ fn wait_until(mut cond: impl FnMut() -> bool, interval: Duration, what: &str) {
 
 /// watch 端到端配置：provider=mock（不发起网络）+ FileWatch 增量策略 + 输出到临时仓库
 ///
-/// scope.include 用默认值 ["src/**", "lib/**"]：watch_root_from_scope 取
-/// include[0] 的 glob 前缀前目录 → 监听根 = 临时仓库/src（与扫描范围一致）。
+/// v30+：监听根恒为仓库根（全量监听，事件按支持语言扩展名过滤）。
 fn watch_config(repo: &Path) -> WikiConfig {
     WikiConfig {
         output_dir: Some((repo.join(".repo-wiki").to_string_lossy().into_owned()).into()),
@@ -48,7 +47,6 @@ fn watch_config(repo: &Path) -> WikiConfig {
             api_key_env: String::new(),
             ..Default::default()
         },
-        ..Default::default()
     }
 }
 
@@ -164,14 +162,6 @@ fn insights_cache_size_reports() {
         std::fs::write(dir.join(format!("m{i}.rs")), content).expect("写入源文件失败");
     }
 
-    let config = WikiConfig {
-        output_dir: Some((dir.join(".repo-wiki").to_string_lossy().into_owned()).into()),
-        llm: LlmSection { provider: LlmProviderType::Mock, ..Default::default() },
-        // 默认 include 是 src/**/lib/**，文件在临时目录根下，必须显式覆盖
-        //（同 benches/bench_search.rs 的 bench_config 做法）
-        scope: ScopeSection { include: vec!["**/*.rs".into()], ..Default::default() },
-        ..Default::default()
-    };
     let root = repo_wiki::project::ProjectRoot::new(dir.clone());
     let cache_path = dir.join(".repo-wiki").join(".state").join("insights_cache.json");
     let empty_changed = std::collections::HashSet::new();
@@ -179,7 +169,6 @@ fn insights_cache_size_reports() {
     // 第一次：写缓存
     let first = repo_wiki::ingest::scan_and_parse_cached_at(
         &root,
-        &config,
         &Some(cache_path.clone()),
         &empty_changed,
     )
@@ -190,7 +179,6 @@ fn insights_cache_size_reports() {
     // 第二次：缓存复用路径（不崩溃、结果一致）
     let second = repo_wiki::ingest::scan_and_parse_cached_at(
         &root,
-        &config,
         &Some(cache_path.clone()),
         &empty_changed,
     )

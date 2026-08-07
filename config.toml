@@ -1,20 +1,16 @@
 # repo-wiki 默认配置模板（由 `repo-wiki install` 或缺省配置链写入用户级目录；
-# v25 起项目级配置为 config.toml（字段级合并覆盖用户级），敏感键会被净化）
+# v25 起项目级配置为 config.toml（字段级合并覆盖用户级）
 # 键集合与 src/config/schema.rs 严格对齐；未知键会被 serde 忽略（无效配置，勿写）。
-# v30 傻瓜式精简：输出目录/增量策略/搜索与嵌入开关/计划文件等全部硬编码
-# （见 schema.rs 顶部常量），模板只保留用户真正需要决策的四类键。
+# v30 傻瓜式精简：输出目录/扫描范围/增量策略/搜索与嵌入开关/计划文件等全部
+# 硬编码（见 schema.rs 顶部常量），模板只保留用户真正需要决策的三类键。
 
 [wiki]
 language = "zh"
 
-[scope]
-include = ["src/**", "lib/**"]
-exclude = ["**/test/**", "**/vendor/**", "target/**", "**/node_modules/**"]
-
 [llm]
 provider = "openai-compatible"
 model = "deepseek-v4-flash"
-# base_url 与模型配套（模板默认阵营=DeepSeek，v19 拍板）：provider=openai
+# base_url 与模型配套（模板默认阵营=v29 实测可用组合）：provider=openai
 # 缺省端点=OpenAI 官方（llm.rs OpenAiProvider 兜底），不写 base_url 会把
 # DeepSeek 模型打到 OpenAI 端点（v28 t11 一键 e2e 实测连接失败）——模板
 # 必须显式声明 DeepSeek 端点，换用 OpenAI/其他服务时改此处

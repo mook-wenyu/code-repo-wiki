@@ -25,7 +25,7 @@ fn test_template_no_dead_keys() {
     assert!(!table.contains_key("plan"), "模板不得含死键段 [plan]（v30 删除）");
 
     // schema 现有段必须齐全
-    for section in ["wiki", "scope", "llm", "embed"] {
+    for section in ["wiki", "llm", "embed"] {
         assert!(table.contains_key(section), "模板缺少配置段 [{section}]");
     }
 }
@@ -40,8 +40,7 @@ fn test_template_loads_cleanly() {
 
     let config: schema::WikiConfig = load_config(&path).expect("模板必须可被 load_config 加载");
     assert_eq!(config.llm.api_key_env, "OPENCODEGO2_API_KEY");
-    assert!(!config.scope.include.is_empty());
-    // embed 段随模板配置（当前模板启用百炼 embedding，仅断言字段可解析）
+        // embed 段随模板配置（当前模板启用百炼 embedding，仅断言字段可解析）
     assert!(!config.embed.model.is_empty());
 
     let _ = std::fs::remove_dir_all(&dir);

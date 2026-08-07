@@ -256,10 +256,10 @@ pub fn run_pipeline_with_progress(
     let (protected, old_state) = load_protection(&config, force)?;
 
     // v19 t06：no-op 快速跳过（OpenWiki git-head 模式）——增量模式且上次
-    // 成功生成到同一 commit 且 scope 内工作树无未提交变更且产物存在时，
-    // 在扫描之前直接跳过（定时 CI/watch 免费空转；判定细节与保守边界
-    // 见 incremental::should_skip_noop 注释）。与下方"无代码变更短路"
-    // 同一出口：人工修改反向同步照常执行。
+    // 成功生成到同一 commit 且源码工作树无未提交变更（产物目录除外）且
+    // 产物存在时，在扫描之前直接跳过（定时 CI/watch 免费空转；判定细节
+    // 与保守边界见 incremental::should_skip_noop 注释）。与下方"无代码
+    // 变更短路"同一出口：人工修改反向同步照常执行。
     if is_incremental && incremental::should_skip_noop(root, &config)? {
         tracing::info!("无文件变更，跳过更新（no-op 快速判定）");
         if let Some(state) = &old_state {
@@ -298,9 +298,9 @@ pub fn run_pipeline_with_progress(
         watch_paths.iter().cloned().collect();
     let scan = if is_incremental {
         let cache_path = config.output_dir().join(".state").join("insights_cache.json");
-        ingest::scan_and_parse_cached_at(root, &config, &Some(cache_path), &watch_set)?
+        ingest::scan_and_parse_cached_at(root, &Some(cache_path), &watch_set)?
     } else {
-        ingest::scan_and_parse_at(root, &config)?
+        ingest::scan_and_parse_at(root)?
     };
     let file_insights = scan.insights;
     let files_failed = scan.files_failed;
@@ -710,7 +710,8 @@ pub fn sync_manual_edits_to_cards(
 /// `root` 为注入的项目根：首次全量生成与监听根均以它为基准
 /// （扫描根一致，watch 常驻进程的 cwd 漂移不影响监听范围）。
 pub fn run_watch(config_path: Option<&Path>, root: &project::ProjectRoot) -> anyhow::Result<()> {
-    let config = match config_path {
+    // 配置在此 fail-fast 校验（无效配置提前报错）；监听循环本身不再读取配置
+    let _config = match config_path {
         Some(p) => config::load_config(p)?,
         None => config::load_default_config(root)?.1,
     };
@@ -739,7 +740,6 @@ pub fn run_watch(config_path: Option<&Path>, root: &project::ProjectRoot) -> any
     }
     incremental::watch::run_watch_loop(
         &watch_root_for_loop,
-        &config,
         stop_flag,
         move |events| {
             for event in events {
@@ -1129,7 +1129,7 @@ pub fn execute_search(
             // 调用链补全：重建知识图谱以获得 Calls 边，构建调用索引注入 agent。
             // CLI 场景单次搜索的重建开销可接受（实测本项目约 1.2s）；
             // 失败时静默降级为无补全（索引缺失等，搜索主功能不受影响）。
-            if let Ok(scan) = ingest::scan_and_parse_at(root, &config)
+            if let Ok(scan) = ingest::scan_and_parse_at(root)
                 && let Ok(graph) = analysis::build_graph(&scan.insights)
             {
                 let index = search::callgraph::CallGraph::new(&graph).build_call_index();
@@ -1157,11 +1157,12 @@ pub fn execute_ast_search(
     if symbol.trim().is_empty() {
         return Ok(Vec::new());
     }
-    let config = match config_path {
+    let _config = match config_path {
+        // 配置在此 fail-fast 校验（无效配置提前报错）；AST 检索本身不依赖配置
         Some(p) => config::load_config(p)?,
         None => config::load_default_config(root)?.1,
     };
-    let insights = ingest::scan_and_parse_at(root, &config)?.insights;
+    let insights = ingest::scan_and_parse_at(root)?.insights;
 
     let mut hits = Vec::new();
     for insight in &insights {

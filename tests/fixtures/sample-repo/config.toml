@@ -1,7 +1,4 @@
 
-[scope]
-include = ["**/*.rs"]
-exclude = []
 
 [output]
 dir = "wiki"

@@ -8,17 +8,6 @@
 
 use std::path::Path;
 
-use repo_wiki::config::schema::{ScopeSection, WikiConfig};
-
-fn bench_config() -> WikiConfig {
-    WikiConfig {
-        scope: ScopeSection {
-            include: vec!["**/*.rs".into()],
-            exclude: vec![],
-        },
-        ..Default::default()
-    }
-}
 
 /// 构造 10 簇 × 8 文件的模块化仓库：簇内完全图（每文件 f 调用同簇其余
 /// 文件的 g）+ 每簇第 0 文件的 g 调下一簇 f（单条跨簇边）
@@ -56,7 +45,7 @@ fn test_clustering_stable_across_runs() {
     build_cluster_repo(&dir);
 
     let root = repo_wiki::project::ProjectRoot::new(dir.clone());
-    let insights = repo_wiki::ingest::scan_and_parse_at(&root, &bench_config()).unwrap().insights;
+    let insights = repo_wiki::ingest::scan_and_parse_at(&root).unwrap().insights;
     let graph = repo_wiki::analysis::build_graph(&insights).unwrap();
 
     // 两次独立检测

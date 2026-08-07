@@ -53,9 +53,6 @@ fn test_output_override_writes_to_given_dir() {
     // 配置不写 [output] 段（默认 .repo-wiki），验证 --output 覆盖生效
     let config = format!(
         r#"
-[scope]
-include = ["**/*.rs"]
-exclude = []
 
 [llm]
 provider = "openai-compatible"

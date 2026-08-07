@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use repo_wiki::config::schema::{ScopeSection, WikiConfig};
+use repo_wiki::config::schema::WikiConfig;
 use repo_wiki::ingest::parser::ParserRegistry;
 use repo_wiki::ingest::scanner::Scanner;
 use repo_wiki::search::text::TextEngine;
@@ -19,22 +19,10 @@ fn fixture_src() -> std::path::PathBuf {
         .join("src")
 }
 
-/// 构建仅覆盖 fixture src/ 的配置（不触发 LLM）
-fn fixture_config() -> WikiConfig {
-    WikiConfig {
-        scope: ScopeSection {
-            include: vec!["**/*.rs".to_string()],
-            exclude: vec![],
-        },
-                ..Default::default()
-    }
-}
-
 /// 扫描并解析 fixture 仓库，返回 FileInsight 列表
 fn scan_fixture() -> Vec<repo_wiki::ingest::parser::FileInsight> {
     let root = fixture_src();
-    let config = fixture_config();
-    let scanner = Scanner::new(&root, &config.scope).unwrap();
+    let scanner = Scanner::new(&root);
     let files = scanner.scan().expect("扫描 fixture 目录失败");
 
     let registry = ParserRegistry::new();

@@ -403,7 +403,7 @@ fn main() -> anyhow::Result<()> {
             if dry_run {
                 let cfg = repo_wiki::load_config_rooted(config.as_deref(), &root)?;
                 // scan_and_parse_at 返回 ScanOutput（v13 B5），取 insights 喂下游
-                let scan = repo_wiki::ingest::scan_and_parse_at(&root, &cfg)?;
+                let scan = repo_wiki::ingest::scan_and_parse_at(&root)?;
                 let graph = repo_wiki::analysis::build_graph(&scan.insights)?;
                 let inc = repo_wiki::incremental::run_incremental_update_at(
                     &root, &scan.insights, &graph, &cfg, &[],
@@ -465,7 +465,7 @@ fn main() -> anyhow::Result<()> {
             // 缺陷由 lint 门禁兜底拦截，update 主流程语义不受影响）。
             let cfg = repo_wiki::load_config_rooted(config.as_deref(), &root)?;
             let output_dir = cfg.output_dir();
-            let source_roots = repo_wiki::commands::source_roots_from_include_rooted(&cfg.scope.include, &root);
+            let source_roots = repo_wiki::commands::source_roots(&root);
             let issues = repo_wiki::output::lint::lint(output_dir, &source_roots);
             // v14 D 组（t05 拍板）：语义一致性检查（LLM 跨页矛盾，变更驱动——
             // 只查本次 update 生成的受影响页；LLM 不可用/失败时"只告警"跳过，
@@ -553,11 +553,8 @@ fn main() -> anyhow::Result<()> {
                  }
              };
             let output_dir = cfg.output_dir();
-            // 源码根从 scope.include 派生(取通配符前的目录前缀,如 "src/**" → "src")：
-            // 过时检查需要对比源文件 mtime,空根会导致检查静默跳过(缺陷修复前行为)。
-            // 必须相对 root 绝对化——root≠cwd 时（--root 指向其他仓库）相对根会
-            // 扫到当前工作目录而非目标仓库（v21 I 轮 Unity 实测 1000 条 stale 误报）
-            let source_roots = repo_wiki::commands::source_roots_from_include_rooted(&cfg.scope.include, &root);
+            // v30+：源码根恒为仓库根（扫描范围已硬编码为全量遍历+内置过滤）
+            let source_roots = repo_wiki::commands::source_roots(&root);
             let issues = repo_wiki::output::lint::lint(output_dir, &source_roots);
             if issues.is_empty() {
                 println!("lint: 通过，无孤儿页/断链/过时问题");

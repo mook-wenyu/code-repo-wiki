@@ -23,11 +23,11 @@ pub fn status_report(config: &WikiConfig, root: &crate::project::ProjectRoot) ->
     // ready = wiki 目录存在且含 .md 文件（有产物才算生成过）
     let wiki_pages = collect_md_files(&output_dir.join("wiki")).len();
     let cards = collect_md_files(&output_dir.join("cards")).len();
-    // 源码根必须相对 root 解析（见 source_roots_from_include_rooted）：
-    // status 跨 cwd 运行时（--root 指向其他仓库）lint 才能扫到目标仓库
+    // 源码根必须相对 root 解析（见 source_roots）：status 跨 cwd 运行时
+    // （--root 指向其他仓库）lint 才能扫到目标仓库
     let issues = lint(
         output_dir,
-        &source_roots_from_include_rooted(&config.scope.include, root),
+        &source_roots(root),
     );
     StatusReport {
         ready: wiki_pages > 0,
@@ -38,38 +38,12 @@ pub fn status_report(config: &WikiConfig, root: &crate::project::ProjectRoot) ->
     }
 }
 
-/// 从 scope.include 派生源码根（取通配符前的目录前缀，如 "src/**" → "src"）
+/// 源码根（v30+：扫描范围已硬编码为全量遍历+内置过滤，源码根恒为仓库根）
 ///
 /// lint 过时检查需要对比源文件 mtime，空根会导致检查静默跳过；
 /// main.rs 的 lint 命令与 status 共用此派生，避免两处内联逻辑漂移。
-pub fn source_roots_from_include(include: &[String]) -> Vec<PathBuf> {
-    include
-        .iter()
-        .map(|p| {
-            let dir = p.split('*').next().unwrap_or_default().trim_end_matches('/');
-            PathBuf::from(if dir.is_empty() { "." } else { dir })
-        })
-        .collect()
-}
-
-/// 源码根 root 化版本：include 派生出的目录前缀是相对路径（如 "."），
-/// 在 root ≠ 当前工作目录时（--root 指向其他仓库）必须相对 root 解析，
-/// 否则 lint 会扫描 cwd 而非目标仓库——v21 I 轮 Unity 实机核证：
-/// 1000 条 stale 误报全部由此而来（扫到的是 repo-wiki 自己的 .rs 源码）。
-pub fn source_roots_from_include_rooted(
-    include: &[String],
-    root: &crate::project::ProjectRoot,
-) -> Vec<PathBuf> {
-    source_roots_from_include(include)
-        .into_iter()
-        .map(|p| {
-            if p.is_relative() {
-                root.path().join(p)
-            } else {
-                p
-            }
-        })
-        .collect()
+pub fn source_roots(root: &crate::project::ProjectRoot) -> Vec<PathBuf> {
+    vec![root.path().to_path_buf()]
 }
 
 /// 将产物目录（wiki/{lang}/、cards/{lang}/）的工作区内容同步到指纹库

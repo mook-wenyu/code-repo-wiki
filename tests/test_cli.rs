@@ -458,19 +458,19 @@ fn test_lint_detects_issues_in_artifacts() {
         "# 目录\n\n- [Core](wiki/zh/core.md)\n",
     )
     .unwrap();
-    std::fs::write(work_dir.join("mock-server.toml"), "\
-[scope]
-include = [\"**/*.rs\"]
-exclude = []
-
+    std::fs::write(
+        work_dir.join("mock-server.toml"),
+        r#"
 [llm]
-provider = \"mock\"
-model = \"mock\"
-base_url = \"x\"
-api_key = \"mock\"
-api_key_env = \"\"
+provider = "mock"
+model = "mock"
+base_url = "x"
+api_key = "mock"
+api_key_env = ""
 max_concurrent = 1
-").unwrap();
+"#,
+    )
+    .unwrap();
 
     // 干净产物 → lint 通过(无孤儿页)
     let clean = run_bin_with_envs(&work_dir, &["lint", "--config", "mock-server.toml"], &[]);

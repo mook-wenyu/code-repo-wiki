@@ -4,7 +4,6 @@ pub mod scanner;
 pub mod parser;
 
 use anyhow::Result;
-use crate::config::schema::WikiConfig;
 use crate::project::ProjectRoot;
 use parser::{FileInsight, ParserRegistry};
 
@@ -22,8 +21,8 @@ pub struct ScanOutput {
 /// 扫描根与路径相对化基准都取自 root，不再依赖进程 cwd——
 /// 测试可在临时目录构造 ProjectRoot 验证扫描行为，watch 常驻进程
 /// 的 cwd 漂移不再影响扫描范围。
-pub fn scan_and_parse_at(root: &ProjectRoot, config: &WikiConfig) -> Result<ScanOutput> {
-    scan_and_parse_cached_at(root, config, &None, &std::collections::HashSet::new())
+pub fn scan_and_parse_at(root: &ProjectRoot) -> Result<ScanOutput> {
+    scan_and_parse_cached_at(root, &None, &std::collections::HashSet::new())
 }
 
 /// 带解析缓存的扫描（真增量扫描的 parse 层增量）
@@ -37,11 +36,10 @@ pub fn scan_and_parse_at(root: &ProjectRoot, config: &WikiConfig) -> Result<Scan
 /// 与 git diff 的正斜杠相对路径形态一致）。
 pub fn scan_and_parse_cached_at(
     root: &ProjectRoot,
-    config: &WikiConfig,
     cache_path: &Option<std::path::PathBuf>,
     changed_files: &std::collections::HashSet<std::path::PathBuf>,
 ) -> Result<ScanOutput> {
-    let scanner = scanner::Scanner::new(root.path(), &config.scope)?;
+    let scanner = scanner::Scanner::new(root.path());
     // 扫描产出绝对路径；转换为相对扫描根的路径——
     // 模块名派生（graph/chunk 的 Normal 组件提取）、搜索索引、指纹记录
     // 全部以相对路径为基准，杜绝绝对路径污染模块名（此前产出
@@ -188,16 +186,14 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    /// 构造临时项目根：src/a.rs + src/b.rs，返回 (root, config)
-    fn temp_project(tag: &str) -> (ProjectRoot, crate::config::schema::WikiConfig) {
+    /// 构造临时项目根：src/a.rs + src/b.rs
+    fn temp_project(tag: &str) -> ProjectRoot {
         let dir = std::env::temp_dir().join(format!("repo_wiki_cache_{}_{}", tag, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(dir.join("src").join("a.rs"), "pub fn alpha() {}\n").unwrap();
         std::fs::write(dir.join("src").join("b.rs"), "pub fn beta() {}\n").unwrap();
-        let mut config = crate::config::schema::WikiConfig::default();
-        config.scope.include = vec!["**/*.rs".to_string()];
-        (ProjectRoot::new(dir), config)
+        ProjectRoot::new(dir)
     }
 
     fn cache_path(root: &ProjectRoot) -> std::path::PathBuf {
@@ -207,9 +203,9 @@ mod tests {
     /// 首次扫描写缓存：缓存文件存在且为合法 JSON（可反序列化为 CachedInsight 列表）
     #[test]
     fn test_cached_scan_writes_cache_file() {
-        let (root, config) = temp_project("write");
+        let root = temp_project("write");
         let cp = Some(cache_path(&root));
-        let insights = scan_and_parse_cached_at(&root, &config, &cp, &std::collections::HashSet::new()).unwrap().insights;
+        let insights = scan_and_parse_cached_at(&root, &cp, &std::collections::HashSet::new()).unwrap().insights;
         assert_eq!(insights.len(), 2, "两个 .rs 文件都应解析");
 
         let content = std::fs::read_to_string(cache_path(&root)).unwrap();
@@ -222,15 +218,15 @@ mod tests {
     ///（若缓存错误地命中旧指纹，source 会是旧内容——source 字段是复用的直接证据）
     #[test]
     fn test_cached_scan_reparses_on_fingerprint_change() {
-        let (root, config) = temp_project("invalidate");
+        let root = temp_project("invalidate");
         let cp = Some(cache_path(&root));
-        let first = scan_and_parse_cached_at(&root, &config, &cp, &std::collections::HashSet::new()).unwrap().insights;
+        let first = scan_and_parse_cached_at(&root, &cp, &std::collections::HashSet::new()).unwrap().insights;
         let alpha_source = first.iter().find(|i| i.path.ends_with("a.rs")).unwrap().source.clone();
         assert!(alpha_source.contains("alpha"), "初始内容含 alpha");
 
         // 修改 a.rs 内容（新函数 alpha_v2）
         std::fs::write(root.path().join("src").join("a.rs"), "pub fn alpha_v2() {}\n").unwrap();
-        let second = scan_and_parse_cached_at(&root, &config, &cp, &std::collections::HashSet::new()).unwrap().insights;
+        let second = scan_and_parse_cached_at(&root, &cp, &std::collections::HashSet::new()).unwrap().insights;
         let alpha2_source = second.iter().find(|i| i.path.ends_with("a.rs")).unwrap().source.clone();
         assert!(
             alpha2_source.contains("alpha_v2") && !alpha2_source.contains("alpha()"),
@@ -246,13 +242,13 @@ mod tests {
     /// 缓存损坏重建：缓存文件写入垃圾后扫描仍返回正确结果（warn + 全量重建）
     #[test]
     fn test_cached_scan_rebuilds_on_corrupt_cache() {
-        let (root, config) = temp_project("corrupt");
+        let root = temp_project("corrupt");
         let cp = Some(cache_path(&root));
         // 先正常扫一次（写缓存），再破坏缓存
-        scan_and_parse_cached_at(&root, &config, &cp, &std::collections::HashSet::new()).unwrap();
+        scan_and_parse_cached_at(&root, &cp, &std::collections::HashSet::new()).unwrap();
         std::fs::write(cache_path(&root), "{ 垃圾内容").unwrap();
 
-        let insights = scan_and_parse_cached_at(&root, &config, &cp, &std::collections::HashSet::new()).unwrap().insights;
+        let insights = scan_and_parse_cached_at(&root, &cp, &std::collections::HashSet::new()).unwrap().insights;
         assert_eq!(insights.len(), 2, "损坏缓存应触发全量重建而非失败");
         assert!(insights.iter().any(|i| i.source.contains("alpha")));
 
@@ -262,8 +258,8 @@ mod tests {
     /// 缓存路径为 None（全量模式）时不读写缓存文件
     #[test]
     fn test_cached_scan_without_cache_path() {
-        let (root, config) = temp_project("nocache");
-        let insights = scan_and_parse_cached_at(&root, &config, &None, &std::collections::HashSet::new()).unwrap().insights;
+        let root = temp_project("nocache");
+        let insights = scan_and_parse_cached_at(&root, &None, &std::collections::HashSet::new()).unwrap().insights;
         assert_eq!(insights.len(), 2);
         assert!(!root.path().join(".state").exists(), "无缓存路径时不应创建 .state 目录");
         let _ = std::fs::remove_dir_all(root.path());
@@ -273,13 +269,13 @@ mod tests {
     ///（watch 语义：事件路径是变更的直接证据，不受指纹缓存影响）
     #[test]
     fn test_cached_scan_forced_reparse_by_changed_set() {
-        let (root, config) = temp_project("forced");
+        let root = temp_project("forced");
         let cp = Some(cache_path(&root));
-        let _ = scan_and_parse_cached_at(&root, &config, &cp, &std::collections::HashSet::new()).unwrap();
+        let _ = scan_and_parse_cached_at(&root, &cp, &std::collections::HashSet::new()).unwrap();
 
         let mut changed = std::collections::HashSet::new();
         changed.insert(PathBuf::from("src/a.rs"));
-        let insights = scan_and_parse_cached_at(&root, &config, &cp, &changed).unwrap().insights;
+        let insights = scan_and_parse_cached_at(&root, &cp, &changed).unwrap().insights;
         assert_eq!(insights.len(), 2, "强制重解析不改变结果集合");
         let _ = std::fs::remove_dir_all(root.path());
     }
@@ -298,10 +294,8 @@ mod tests {
         // 非 .rs 文件（无处理器，不计入失败——扫描范围外）
         std::fs::write(dir.join("src").join("notes.txt"), "text").unwrap();
 
-        let mut config = crate::config::schema::WikiConfig::default();
-        config.scope.include = vec!["**/*.rs".to_string()];
         let root = ProjectRoot::new(dir.clone());
-        let out = scan_and_parse_at(&root, &config).unwrap();
+        let out = scan_and_parse_at(&root).unwrap();
 
         assert_eq!(out.insights.len(), 1, "只有正常文件被解析");
         assert_eq!(out.files_failed, 1, "非 UTF-8 文件应计数为失败");

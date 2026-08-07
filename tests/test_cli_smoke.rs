@@ -176,7 +176,7 @@ fn test_install_ensures_user_default_config() {
     let cfg_path = home.join("repo-wiki").join("config.toml");
     let content = std::fs::read_to_string(&cfg_path)
         .unwrap_or_else(|e| panic!("用户级配置应存在 {}: {}", cfg_path.display(), e));
-    for section in ["[wiki]", "[scope]", "[llm]", "[embed]"] {
+    for section in ["[wiki]", "[llm]", "[embed]"] {
         assert!(content.contains(section), "默认配置应含 {section} 段，实际:\n{content}");
     }
     assert!(!content.contains("[output]"), "默认配置不应含 [output]（已硬编码），实际:\n{content}");
@@ -548,7 +548,7 @@ fn test_watch_command_detects_change() {
     use std::time::{Duration, Instant};
 
     let work_dir = prepare_repo("watch_smoke");
-    // watch 监听根 = scope.include[0] 的通配符前目录；mock_config 的 include 是 "**/*.rs"，
+    // watch 监听根=仓库根（v30 全量监听，事件按支持语言扩展名过滤）
     // 监听根为仓库根，src/extra.rs 在其下
     std::fs::create_dir_all(work_dir.join("src")).unwrap();
     let extra = work_dir.join("src").join("extra.rs");

@@ -340,8 +340,8 @@ fn collect_wiki_pages(output_dir: &Path) -> Vec<(PathBuf, String)> {
 /// TS enum、Java 构造器、Python 模块常量），去重后逐一在产物文本中
 /// 做子串包含判定（实体名是文档必提的标识符，子串口径与 RepoDoc 的
 /// AST 提及率一致——同名误报由名称唯一性控制）。
-fn measure_coverage(root: &ProjectRoot, config: &WikiConfig, pages: &[(PathBuf, String)]) -> Result<CoverageReport> {
-    let insights = crate::ingest::scan_and_parse_at(root, config)?.insights;
+fn measure_coverage(root: &ProjectRoot, pages: &[(PathBuf, String)]) -> Result<CoverageReport> {
+    let insights = crate::ingest::scan_and_parse_at(root)?.insights;
     let mut entities: Vec<String> = insights
         .iter()
         .flat_map(|i| i.entities.iter().map(|e| e.name.clone()))
@@ -391,12 +391,13 @@ fn measure_doc_info(pages: &[(PathBuf, String)]) -> DocInfoReport {
 }
 
 /// 维度 3：lint 健康（复用 lint 6 类检查，问题数即质量分）
-fn measure_lint(output_dir: &Path, root: &ProjectRoot, config: &WikiConfig) -> LintReport {
+fn measure_lint(output_dir: &Path, root: &ProjectRoot) -> LintReport {
     // 源码根必须 root 化：lint 内部以相对路径扫描时基于进程 cwd 解析，
     // --root 指向其他仓库时会把 cwd 误当源码根（v21 修复过 CLI lint/status/
     // update 三处与 mcp，此处是 bench 的遗漏——实测 --root 场景下 stale-entity
-    // 检查扫错目录，实体表与引用键失配，区间重叠检查静默失效同源问题）
-    let source_roots = crate::commands::source_roots_from_include_rooted(&config.scope.include, root);
+    // 检查扫错目录，实体表与引用键失配，区间重叠检查静默失效同源问题）。
+    // v30+：扫描范围硬编码，源码根恒为仓库根。
+    let source_roots = crate::commands::source_roots(root);
     let issues = crate::output::lint::lint(output_dir, &source_roots);
     let mut by_kind: std::collections::BTreeMap<String, usize> = Default::default();
     for issue in &issues {
@@ -644,11 +645,11 @@ pub fn run_bench(
 
     let scan_start = Instant::now();
     let pages = collect_wiki_pages(config.output_dir());
-    let coverage = measure_coverage(root, config, &pages)?;
+    let coverage = measure_coverage(root, &pages)?;
     let scan_ms = scan_start.elapsed().as_millis() as u64;
 
     let doc_info = measure_doc_info(&pages);
-    let lint = measure_lint(config.output_dir(), root, config);
+    let lint = measure_lint(config.output_dir(), root);
 
     let gen_start = Instant::now();
     let update_recall = measure_update_recall(config_path, root)?;
@@ -700,11 +701,11 @@ pub fn run_rubrics_only(
 
     let scan_start = Instant::now();
     let pages = collect_wiki_pages(config.output_dir());
-    let coverage = measure_coverage(root, config, &pages)?;
+    let coverage = measure_coverage(root, &pages)?;
     let scan_ms = scan_start.elapsed().as_millis() as u64;
 
     let doc_info = measure_doc_info(&pages);
-    let lint = measure_lint(config.output_dir(), root, config);
+    let lint = measure_lint(config.output_dir(), root);
 
     // Update Recall 回放成本不可接受（v21 D 组）：大仓库跳过，
     // 语义上等价于"快照缺失"——回放入口（run_bench）仍可单独跑。
@@ -1964,7 +1965,7 @@ mod tests {
 
         let pages = collect_wiki_pages(config.output_dir());
         assert!(!pages.is_empty(), "全量生成后应有产物页");
-        let cov = measure_coverage(&root, &config, &pages).unwrap();
+        let cov = measure_coverage(&root, &pages).unwrap();
         assert_eq!(cov.total_entities, 2, "应解析出 alpha/beta 两个实体");
         assert_eq!(cov.covered_entities, 2, "mock 生成后产物应提及全部实体");
         assert!((cov.ratio - 1.0).abs() < 1e-9);
@@ -1978,7 +1979,7 @@ mod tests {
         let (root, _, config) = bench_repo("cov0");
         let pages = collect_wiki_pages(config.output_dir());
         assert!(pages.is_empty());
-        let cov = measure_coverage(&root, &config, &pages).unwrap();
+        let cov = measure_coverage(&root, &pages).unwrap();
         assert_eq!(cov.total_entities, 2);
         assert_eq!(cov.covered_entities, 0);
         assert!((cov.ratio - 0.0).abs() < 1e-9);

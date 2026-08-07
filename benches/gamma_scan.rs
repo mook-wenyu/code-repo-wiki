@@ -24,18 +24,11 @@ fn gamma_scan() {
         return;
     };
     let root = repo_wiki::project::ProjectRoot::new(Path::new(&repo).to_path_buf());
-    let mut config = repo_wiki::config::schema::WikiConfig::default();
-    // 扫描范围：GAMMA_REPO_SCOPE 逗号分隔的 glob 列表（缺省 C#——Unity 仓库主体）
-    let scope = std::env::var("GAMMA_REPO_SCOPE")
-        .unwrap_or_else(|_| "**/*.cs".to_string());
-    config.scope.include = scope
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
+    // v30+：扫描范围硬编码为全量+内置过滤（支持语言扩展名/噪音目录），
+    // Unity 仓库的 .cs 自动覆盖，GAMMA_REPO_SCOPE 环境变量已删除
 
     let start = std::time::Instant::now();
-    let scan = repo_wiki::ingest::scan_and_parse_at(&root, &config).expect("扫描失败");
+    let scan = repo_wiki::ingest::scan_and_parse_at(&root).expect("扫描失败");
     eprintln!(
         "扫描完成: {} 文件, {} 个解析失败, 耗时 {:.1}s",
         scan.insights.len(),

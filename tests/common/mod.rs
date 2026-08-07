@@ -78,9 +78,6 @@ pub fn run_bin_with_envs(dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> Ou
 ///（v30：output/incremental/search 键已硬编码，不再出现在模板中）
 pub fn mock_config() -> String {
     r#"
-[scope]
-include = ["**/*.rs"]
-exclude = []
 
 [llm]
 provider = "mock"
@@ -104,9 +101,6 @@ api_key_env = ""
 pub fn openai_compatible_config(port: u16) -> String {
     format!(
         r#"
-[scope]
-include = ["**/*.rs"]
-exclude = []
 
 [llm]
 provider = "openai-compatible"

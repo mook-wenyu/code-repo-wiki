@@ -11,6 +11,12 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tree_sitter::{Language, Node, Parser};
 
+/// 全部注册语言处理器的扩展名集合（含前导点，与各处理器 extensions() 逐项一致）。
+/// 扫描器与文件监听共用此集合：只收可解析语言，非支持语言一律不进入管线。
+pub const SUPPORTED_EXTENSIONS: &[&str] = &[
+    ".rs", ".ts", ".tsx", ".py", ".go", ".js", ".jsx", ".mjs", ".cjs", ".cs", ".java",
+];
+
 /// 解析后的文件洞察，包含所有提取的实体和导入信息
 ///
 /// Serialize/Deserialize 供增量管线的解析缓存使用（.state/insights_cache.json）：

@@ -16,9 +16,6 @@ template = "architecture"
 language = "zh"
 expand_languages = ["en", "ja"]
 
-[scope]
-include = ["src/**"]
-exclude = []
 
 [output]
 dir = ".repo-wiki"

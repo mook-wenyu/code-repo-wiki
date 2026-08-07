@@ -217,11 +217,9 @@ pub fn resolve_mcp_config(config: Option<&Path>, root: &ProjectRoot) -> Result<s
     }
 }
 
-/// 校验配置合法性
-fn validate_config(config: &schema::WikiConfig) -> Result<()> {
-    if config.scope.include.is_empty() {
-        anyhow::bail!("scope.include 至少需要一个模式");
-    }
+/// 校验配置合法性（v30+：扫描范围等算法项已硬编码，无可校验键——
+/// 保留入口便于未来新增约束；当前恒通过）
+fn validate_config(_config: &schema::WikiConfig) -> Result<()> {
     Ok(())
 }
 
@@ -239,13 +237,6 @@ mod tests {
         assert_eq!(parsed.llm.api_key_env, "OPENCODEGO2_API_KEY");
         assert_eq!(parsed.wiki.language, "zh");
         assert_eq!(parsed.output_dir(), std::path::Path::new(crate::config::schema::OUTPUT_DIR));
-    }
-
-    #[test]
-    fn test_validate_empty_include() {
-        let mut config = schema::WikiConfig::default();
-        config.scope.include = vec![];
-        assert!(validate_config(&config).is_err());
     }
 }
 
@@ -301,7 +292,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        // 用户级：模板 + 自定义 model + scope（模板缺 scope 时 include 为空校验失败）
+        // 用户级：模板 + 自定义 model（v30：scope/output 等段已硬编码，模板即全量默认）
         let global_dir = dir.join("global");
         std::fs::create_dir_all(&global_dir).unwrap();
         let user_text = include_str!("../../config.toml")
@@ -373,19 +364,12 @@ model = "claude-test"
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(PROJECT_CONFIG_FILE);
-        // 项目级配置声明项目契约（scope/语言）+ 完整端点与变量名
+        // 项目级配置声明项目契约（语言）+ 完整端点与变量名
         std::fs::write(
             &path,
             r#"
 [wiki]
 language = "en"
-
-[scope]
-include = ["src/**"]
-exclude = ["target/**"]
-
-[output]
-dir = "docs"
 
 [llm]
 provider = "anthropic"
@@ -420,9 +404,6 @@ api_key_env = "HACKED_KEY"
         std::fs::write(
             &path,
             r#"
-[scope]
-include = ["src/**"]
-
 [llm]
 provider = "mock"
 "#,
@@ -450,10 +431,6 @@ provider = "mock"
         std::fs::write(
             &path,
             r#"
-[scope]
-include = ["src/**"]
-exclude = ["target/**"]
-
 [llm]
 provider = "anthropic"
 model = "claude-opus"

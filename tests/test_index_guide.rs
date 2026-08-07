@@ -234,9 +234,6 @@ fn test_index_guide_primary_language_only_and_links() {
     // 输出目录恒 .repo-wiki——原 out_dir 独立目录断言已随硬编码移除）
     let config = format!(
         r#"
-[scope]
-include = ["**/*.rs"]
-exclude = []
 
 [wiki]
 language = "zh"

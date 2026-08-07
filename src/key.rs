@@ -374,10 +374,9 @@ mod tests {
     /// 无 [llm] 段时回退 toml::Value 往返（兜底路径）
     #[test]
     fn test_set_llm_field_falls_back_without_llm_section() {
-        let text = "[scope]\ninclude = [\"src/**\"]\n";
+        let text = "[llm]\nprovider = \"mock\"\n";
         let out = set_llm_field(text, "api_key", "sk-1").unwrap();
         let v: toml::Value = toml::from_str(&out).unwrap();
         assert_eq!(v["llm"]["api_key"].as_str(), Some("sk-1"));
-        assert_eq!(v["scope"]["include"][0].as_str(), Some("src/**"));
     }
 }

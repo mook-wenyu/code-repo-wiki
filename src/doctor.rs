@@ -233,14 +233,7 @@ mod tests {
         std::fs::write(
             &config,
             format!(
-                r#"[scope]
-include = ["src/**"]
-exclude = []
-
-[output]
-dir = ".repo-wiki"
-
-[llm]
+                r#"[llm]
 provider = "mock"
 model = "mock-model"
 api_key = "mock"

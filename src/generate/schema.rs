@@ -39,14 +39,33 @@ pub fn extract_create_table_blocks(sql: &str) -> Vec<&str> {
 }
 
 
-/// 在指定项目根下收集 .sql 文件（复用 Scanner 的 include/exclude 过滤）
-pub fn collect_sql_files_at(root: &ProjectRoot, config: &WikiConfig) -> Result<Vec<PathBuf>> {
-    let scanner = crate::ingest::scanner::Scanner::new(root.path(), &config.scope)?;
-    let files = scanner.scan()?;
-    Ok(files
-        .into_iter()
-        .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("sql")))
-        .collect())
+/// 在指定项目根下收集 .sql 文件（独立全量遍历：SQL 建模是附加能力，
+/// 不经 scanner 的支持语言过滤——scanner 只产出可解析语言文件）
+pub fn collect_sql_files_at(root: &ProjectRoot) -> Result<Vec<PathBuf>> {
+    use crate::ingest::scanner::NOISE_DIRS;
+    let mut out = Vec::new();
+    let mut stack = vec![root.path().to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let read = match std::fs::read_dir(&dir) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        for entry in read.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                // 噪音目录整棵跳过（与 scanner 同一边界）
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if NOISE_DIRS.contains(&name.as_str()) || name.starts_with('.') {
+                    continue;
+                }
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("sql")) {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
 }
 
 /// 在指定项目根下并行生成所有 .sql 文件的 Schema 文档
@@ -58,7 +77,7 @@ pub async fn generate_schema_documents_at(
     provider: &Provider,
     config: &WikiConfig,
 ) -> Result<Vec<WikiDocument>> {
-    let files = collect_sql_files_at(root, config)?;
+    let files = collect_sql_files_at(root)?;
     if files.is_empty() {
         return Ok(Vec::new());
     }
