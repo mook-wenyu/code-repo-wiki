@@ -99,7 +99,7 @@ pub fn run_watch_loop(
     // 累积到 pending，安静 2s（尾沿）或首个事件后 5s（强制）触发一次
     // 合并增量，避免连续保存 N 次触发 N 次全量管线（Token 节省核心）。
     use std::sync::atomic::Ordering;
-    let mut pending: Vec<WatchEvent> = Vec::new();
+    let mut pending: Vec<(PathBuf, ChangeKind)> = Vec::new();
     let mut pending_first_at: Option<Instant> = None;
     let mut quiet_since: Option<Instant> = None;
     loop {
@@ -111,13 +111,16 @@ pub fn run_watch_loop(
         }
         match rx.recv_timeout(Duration::from_millis(500)) {
             Ok(Ok(events)) => {
-                // 聚合 + 折叠（同路径跨 kind 按最终态合并），
+                // 聚合 + 折叠（批内同路径跨 kind 按最终态合并），
                 // 事件类型显式传递给下游，删除不再依赖 exists() 推断
                 let watch_events = process_batch(&events, &include_exts);
                 if !watch_events.is_empty() {
-                    // 跨批合并（同 kind 路径去重）+ 重新折叠（跨批同路径
-                    // 按最终态收敛，如先 Modified 后 Deleted → Deleted）
-                    pending = fold_events(merge_events(&pending, &watch_events));
+                    // 跨批按时间序收敛（apply_batch）：同路径后到达的 kind
+                    // 覆盖先到达的——删除重建（git checkout/codegen clean+
+                    // rebuild/IDE save-as）收敛为 Created/Modified 而非删除
+                    // 优先（删除优先只对批内最终态成立，跨批会把"删→建"
+                    // 误判为"仍删除"，下游误删现存文件的产物页）
+                    apply_batch(&mut pending, &watch_events);
                     let now = Instant::now();
                     pending_first_at.get_or_insert(now);
                     quiet_since = Some(now);
@@ -131,23 +134,23 @@ pub fn run_watch_loop(
             // 超时（轮询停止标记 + 冷却窗口判定）是正常路径：
             // 回到循环顶检查 stop_flag 与 pending 是否应触发
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                if !pending.is_empty() {
-                    let now = Instant::now();
-                    let quiet_elapsed = quiet_since
-                        .map(|q| now.saturating_duration_since(q))
-                        .unwrap_or(Duration::ZERO);
-                    let total_elapsed = pending_first_at
-                        .map(|f| now.saturating_duration_since(f))
-                        .unwrap_or(Duration::ZERO);
-                    if should_flush(quiet_elapsed, total_elapsed) {
-                        on_change(std::mem::take(&mut pending));
-                        pending_first_at = None;
-                        quiet_since = None;
-                    }
+                if should_flush_now(&pending, &mut pending_first_at, &mut quiet_since) {
+                    on_change(flush_events(&std::mem::take(&mut pending)));
                 }
             }
             // Disconnected = 接收端全部 drop，监听无意义
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+        // 持续事件流下（批间隔 <500ms 恒走 Ok 分支）5s 强制截止也必须可达
+        // ——每批处理完后求值一次 deadline（reviewer 修正：原实现只在
+        // Timeout 分支求值，<500ms 间隔的持续编辑会无限推迟触发）
+        if let Some(first_at) = pending_first_at {
+            let total = Instant::now().saturating_duration_since(first_at);
+            if total >= Duration::from_millis(COOLDOWN_DEADLINE_MS) {
+                on_change(flush_events(&std::mem::take(&mut pending)));
+                pending_first_at = None;
+                quiet_since = None;
+            }
         }
     }
     Ok(())
@@ -161,24 +164,55 @@ fn should_flush(quiet_elapsed: Duration, total_elapsed: Duration) -> bool {
         || total_elapsed >= Duration::from_millis(COOLDOWN_DEADLINE_MS)
 }
 
-/// 合并两批事件（纯函数）：同 kind 组路径去重合并，不同 kind 保留。
-///
-/// 合并结果仍需 fold_events 按最终态折叠——跨批同路径（如批 1 Modified、
-/// 批 2 Deleted）只有折叠后才收敛为唯一事件，否则下游会重复处理。
-fn merge_events(base: &[WatchEvent], new: &[WatchEvent]) -> Vec<WatchEvent> {
-    let mut out: Vec<WatchEvent> = base.to_vec();
-    for event in new {
-        match out.iter_mut().find(|e| e.kind == event.kind) {
-            // 该 kind 组已存在且路径未记录 → 合并
-            Some(ev) => {
-                for p in &event.paths {
-                    if !ev.paths.contains(p) {
-                        ev.paths.push(p.clone());
-                    }
-                }
+/// Timeout 分支的触发判定：pending 非空且冷却窗口到点
+fn should_flush_now(
+    pending: &[(PathBuf, ChangeKind)],
+    pending_first_at: &mut Option<Instant>,
+    quiet_since: &mut Option<Instant>,
+) -> bool {
+    if pending.is_empty() {
+        return false;
+    }
+    let now = Instant::now();
+    let quiet_elapsed = quiet_since
+        .map(|q| now.saturating_duration_since(q))
+        .unwrap_or(Duration::ZERO);
+    let total_elapsed = pending_first_at
+        .map(|f| now.saturating_duration_since(f))
+        .unwrap_or(Duration::ZERO);
+    let flush = should_flush(quiet_elapsed, total_elapsed);
+    if flush {
+        *pending_first_at = None;
+        *quiet_since = None;
+    }
+    flush
+}
+
+/// 把一批（已折叠的）事件应用到跨批累积表：同路径后到达的 kind 覆盖
+/// 先到达的（按时间序收敛），不同路径追加。路径在该批内唯一
+/// （process_batch 已按最终态折叠），无同批重复覆盖问题。
+fn apply_batch(pending: &mut Vec<(PathBuf, ChangeKind)>, events: &[WatchEvent]) {
+    for event in events {
+        for p in &event.paths {
+            match pending.iter_mut().find(|(path, _)| path == p) {
+                Some(entry) => entry.1 = event.kind,
+                None => pending.push((p.clone(), event.kind)),
             }
-            // 首个该 kind 的事件
-            None => out.push(event.clone()),
+        }
+    }
+}
+
+/// 把累积表分组为待回调的 WatchEvent 列表（保留各组首次出现顺序，
+/// 与单批 aggregate 语义一致；下游逐组跑 pipeline）
+fn flush_events(pending: &[(PathBuf, ChangeKind)]) -> Vec<WatchEvent> {
+    let mut out: Vec<WatchEvent> = Vec::new();
+    for (path, kind) in pending {
+        match out.iter_mut().find(|e| e.kind == *kind) {
+            Some(ev) => ev.paths.push(path.clone()),
+            None => out.push(WatchEvent {
+                paths: vec![path.clone()],
+                kind: *kind,
+            }),
         }
     }
     out
@@ -586,14 +620,15 @@ mod tests {
         );
     }
 
-    /// 合并：同 kind 路径去重合并、不同 kind 独立保留
+    /// 累积表：同 kind 路径合并、不同 kind 独立保留
     #[test]
-    fn test_merge_events_dedups_and_combines() {
-        let base = vec![WatchEvent {
+    fn test_apply_batch_dedups_and_combines() {
+        let mut pending: Vec<(PathBuf, ChangeKind)> = Vec::new();
+        let batch1 = vec![WatchEvent {
             paths: vec![PathBuf::from("src/a.rs")],
             kind: ChangeKind::Modified,
         }];
-        let new = vec![
+        let batch2 = vec![
             WatchEvent {
                 paths: vec![PathBuf::from("src/a.rs"), PathBuf::from("src/b.rs")],
                 kind: ChangeKind::Modified,
@@ -603,9 +638,11 @@ mod tests {
                 kind: ChangeKind::Deleted,
             },
         ];
-        let merged = merge_events(&base, &new);
-        assert_eq!(merged.len(), 2, "同 kind 合并为 1 组 + Deleted 1 组");
-        let modified = merged
+        apply_batch(&mut pending, &batch1);
+        apply_batch(&mut pending, &batch2);
+        let flushed = flush_events(&pending);
+        assert_eq!(flushed.len(), 2, "同 kind 合并为 1 组 + Deleted 1 组");
+        let modified = flushed
             .iter()
             .find(|e| e.kind == ChangeKind::Modified)
             .expect("应存在 Modified 组");
@@ -614,50 +651,96 @@ mod tests {
             vec![PathBuf::from("src/a.rs"), PathBuf::from("src/b.rs")],
             "a 去重、b 追加"
         );
-        assert!(merged.iter().any(|e| e.kind == ChangeKind::Deleted));
+        assert!(flushed.iter().any(|e| e.kind == ChangeKind::Deleted));
     }
 
-    /// 跨批最终态收敛：批 1 Modified a.rs、批 2 Deleted a.rs →
-    /// 合并 + 折叠后收敛为单个 Deleted（下游只跑一次删除清理）
+    /// 跨批时间序收敛：批 1 Modified a.rs、批 2 Deleted a.rs →
+    /// 后到达的 Deleted 覆盖 Modified（文件最终被删，下游只跑一次删除清理）
     #[test]
-    fn test_merge_then_fold_converges_cross_batch_deletion() {
-        let batch1 = vec![WatchEvent {
-            paths: vec![PathBuf::from("src/a.rs")],
-            kind: ChangeKind::Modified,
-        }];
-        let batch2 = vec![WatchEvent {
-            paths: vec![PathBuf::from("src/a.rs"), PathBuf::from("src/b.rs")],
-            kind: ChangeKind::Deleted,
-        }];
-        let merged = merge_events(&batch1, &batch2);
-        let folded = fold_events(merged);
-        assert_eq!(folded.len(), 1, "跨批 Modified+Deleted 收敛为单个事件");
-        assert_eq!(folded[0].kind, ChangeKind::Deleted);
+    fn test_apply_batch_later_kind_overwrites() {
+        let mut pending: Vec<(PathBuf, ChangeKind)> = Vec::new();
+        apply_batch(
+            &mut pending,
+            &[WatchEvent {
+                paths: vec![PathBuf::from("src/a.rs")],
+                kind: ChangeKind::Modified,
+            }],
+        );
+        apply_batch(
+            &mut pending,
+            &[WatchEvent {
+                paths: vec![PathBuf::from("src/a.rs"), PathBuf::from("src/b.rs")],
+                kind: ChangeKind::Deleted,
+            }],
+        );
+        let flushed = flush_events(&pending);
+        assert_eq!(flushed.len(), 1, "跨批 Modified+Deleted 收敛为单个事件");
+        assert_eq!(flushed[0].kind, ChangeKind::Deleted);
         assert_eq!(
-            folded[0].paths,
+            flushed[0].paths,
             vec![PathBuf::from("src/a.rs"), PathBuf::from("src/b.rs")]
         );
     }
 
-    /// 连续编辑合并不丢路径：三次批的路径全部累积（同 kind）
+    /// 跨批删除重建：批 1 Deleted a.rs、批 2 Created a.rs →
+    /// 后到达的 Created 覆盖 Deleted（文件最终存在，不能误跑删除清理——
+    /// reviewer HIGH 缺陷的回归测试：删除优先只对批内最终态成立）
     #[test]
-    fn test_merge_events_accumulates_across_batches() {
-        let b1 = vec![WatchEvent {
-            paths: vec![PathBuf::from("src/a.rs")],
-            kind: ChangeKind::Modified,
-        }];
-        let b2 = vec![WatchEvent {
-            paths: vec![PathBuf::from("src/b.rs")],
-            kind: ChangeKind::Modified,
-        }];
-        let b3 = vec![WatchEvent {
-            paths: vec![PathBuf::from("src/c.rs")],
-            kind: ChangeKind::Modified,
-        }];
-        let merged = merge_events(&merge_events(&b1, &b2), &b3);
-        assert_eq!(merged.len(), 1);
+    fn test_apply_batch_delete_then_recreate_keeps_created() {
+        let mut pending: Vec<(PathBuf, ChangeKind)> = Vec::new();
+        apply_batch(
+            &mut pending,
+            &[WatchEvent {
+                paths: vec![PathBuf::from("src/a.rs")],
+                kind: ChangeKind::Deleted,
+            }],
+        );
+        apply_batch(
+            &mut pending,
+            &[WatchEvent {
+                paths: vec![PathBuf::from("src/a.rs")],
+                kind: ChangeKind::Created,
+            }],
+        );
+        let flushed = flush_events(&pending);
+        assert_eq!(flushed.len(), 1);
         assert_eq!(
-            merged[0].paths,
+            flushed[0].kind,
+            ChangeKind::Created,
+            "删除重建必须收敛为 Created（文件最终存在），否则下游误删产物页"
+        );
+        assert_eq!(flushed[0].paths, vec![PathBuf::from("src/a.rs")]);
+    }
+
+    /// 连续编辑不丢路径：三次批的路径全部累积（同 kind）
+    #[test]
+    fn test_apply_batch_accumulates_across_batches() {
+        let mut pending: Vec<(PathBuf, ChangeKind)> = Vec::new();
+        apply_batch(
+            &mut pending,
+            &[WatchEvent {
+                paths: vec![PathBuf::from("src/a.rs")],
+                kind: ChangeKind::Modified,
+            }],
+        );
+        apply_batch(
+            &mut pending,
+            &[WatchEvent {
+                paths: vec![PathBuf::from("src/b.rs")],
+                kind: ChangeKind::Modified,
+            }],
+        );
+        apply_batch(
+            &mut pending,
+            &[WatchEvent {
+                paths: vec![PathBuf::from("src/c.rs")],
+                kind: ChangeKind::Modified,
+            }],
+        );
+        let flushed = flush_events(&pending);
+        assert_eq!(flushed.len(), 1);
+        assert_eq!(
+            flushed[0].paths,
             vec![
                 PathBuf::from("src/a.rs"),
                 PathBuf::from("src/b.rs"),
