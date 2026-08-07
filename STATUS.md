@@ -553,3 +553,11 @@
 - A6 发布流程文档：README 新增发布节（cargo publish+tag+干净环境六查自检）
 - A9 knowing 剩 7 仓 mock 跑分：2 并行后台子代理运行中（A: vscode/kubernetes/terraform/saleor；B: rails/spark/cal.com），结果落 C:\Users\WenYu\AppData\Local\Temp\opencode\knowing-a|b\results.md
 - 提交：e36f9dd（prompt 补强+文档）；全量测试+clippy+machete 全绿
+
+## 第五十九节 A9 knowing 16 仓全仓数据点完成（2026-08-07）
+
+- 子代理回收：vscode 1492实体/71文件/11模块/2.6s；rails 5239/58/24/58.4s（JS资产口径）；spark 2182/184/42/4.3s；cal.com 59047/5048/1502/372.3s
+- 无数据 3 仓（kubernetes/terraform/saleor）：非 Rust 主语言，include 命中 0 文件，lib.rs:308-310 显式报错（正确边界，非静默）
+- 边界结论：多语言 parser 实证（JS/Java/TS，parser/mod.rs:248）；Ruby 无 parser；rails 数据代表性受限已标注
+- 汇总归档：.scratch/bench/knowing-summary.md（git 忽略）
+- 全仓 16/16 数据点完成（v29 9 仓 + 本轮 4 仓 + 3 仓显式报错）
