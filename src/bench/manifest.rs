@@ -276,7 +276,17 @@ fn empty_coverage() -> CoverageReport {
     CoverageReport { total_entities: 0, covered_entities: 0, ratio: 0.0 }
 }
 fn empty_doc_info() -> DocInfoReport {
-    DocInfoReport { pages: 0, words: 0, cross_references: 0, code_blocks: 0, diagrams: 0 }
+    DocInfoReport {
+        pages: 0,
+        words: 0,
+        cross_references: 0,
+        code_blocks: 0,
+        diagrams: 0,
+        llm_judged: false,
+        llm_score: 0.0,
+        llm_judged_modules: 0,
+        llm_abstain_modules: 0,
+    }
 }
 fn empty_lint() -> LintReport {
     LintReport { total_issues: 0, by_kind: Default::default() }

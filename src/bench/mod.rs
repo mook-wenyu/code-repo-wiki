@@ -77,7 +77,7 @@ pub struct CoverageReport {
     pub ratio: f64,
 }
 
-/// 维度 2：文本统计
+/// 维度 2：文本统计（+ v32 6.2：LLM 信息性判定并存）
 #[derive(Debug, Clone, Serialize)]
 pub struct DocInfoReport {
     /// 产物页面数（wiki/{lang}/*.md）
@@ -90,6 +90,21 @@ pub struct DocInfoReport {
     pub code_blocks: usize,
     /// Mermaid 图数
     pub diagrams: usize,
+    /// v32（6.2 FR-101）：LLM 信息性判定是否执行——LLM 不可用时
+    /// 降级跳过（false），报告显式标注而非静默
+    #[serde(default)]
+    pub llm_judged: bool,
+    /// v32（6.2 FR-101）：LLM 信息性评分（0-10，已判定页面平均；
+    /// abstain 页面不计入分母——FR-102 exclude 模式）
+    #[serde(default)]
+    pub llm_score: f64,
+    /// v32（6.2）：LLM 判定成功的页面数
+    #[serde(default)]
+    pub llm_judged_modules: usize,
+    /// v32（6.2）：LLM 判定 abstain 的页面数（uncertain 重试后仍不确定
+    /// 或调用/解析失败；报告暴露 abstain 数——FR-102）
+    #[serde(default)]
+    pub llm_abstain_modules: usize,
 }
 
 /// 维度 3：lint 健康
@@ -280,6 +295,18 @@ pub struct TqsReport {
     /// 裁判模型（config.llm.model；style 消偏在多裁判轮转下才完整，
     /// 单裁判时报告模型便于人工判断偏差来源——2604.23178）
     pub judge_model: String,
+    /// v32（6.1 FR-102/FR-103）：三态判定中平局占比（模块级平均）——
+    /// 全部调用级判定（judgment()==0）中 tie 的比例。tie 率升高 =
+    /// 裁判区分度不足的信号（旧文档与产物五维总分经常相等），
+    /// >TQS_TIE_ESCALATION_THRESHOLD 时升级复测轮数。
+    #[serde(default)]
+    pub tie_rate: f64,
+    /// v32（6.1 FR-102）：三态判定明细 [A 胜, B 胜, 平局]——全部调用级
+    /// 判定（judgment() 的 1/-1/0）的累计计数。tie 是独立类别而非静默
+    /// 归入胜负（2606.00093 item 6 estimand 声明）；报告暴露三态结构
+    /// 供人工判断裁判区分度。
+    #[serde(default)]
+    pub agreement_breakdown: [usize; 3],
 }
 
 /// t04：判定尺度声明（2606.00093 item 1）——0-10 连续五维点分，
@@ -308,6 +335,12 @@ const TQS_REPEATS_ESCALATED: usize = 11;
 /// t04（Phase 2）：模块级判定翻转率超过该阈值即升级复测轮数
 /// （2606.13685：28% 题目翻转率 >20%，hard 档需更多 trials）
 const TQS_FLIP_RATE_ESCALATION_THRESHOLD: f64 = 0.20;
+
+/// v32（6.1 FR-103）：模块级判定平局率超过该阈值即升级复测轮数——
+/// tie 是独立类别（judgment()==0）而非静默计入 flip（2606.00093
+/// item 6 estimand 声明）。tie 率 >30% 说明裁判区分度不足（新旧文档
+/// 总分经常相等），单次判定不可信，需更多 trials 收敛。
+const TQS_TIE_ESCALATION_THRESHOLD: f64 = 0.30;
 
 /// 收集全部产物页内容（wiki/{lang}/*.md，主语言 + 扩展语言）
 fn collect_wiki_pages(output_dir: &Path) -> Vec<(PathBuf, String)> {
@@ -387,6 +420,140 @@ fn measure_doc_info(pages: &[(PathBuf, String)]) -> DocInfoReport {
         cross_references,
         code_blocks,
         diagrams,
+        llm_judged: false,
+        llm_score: 0.0,
+        llm_judged_modules: 0,
+        llm_abstain_modules: 0,
+    }
+}
+
+/// v32（6.2 FR-102）：Doc Info LLM 判定三态（评分/不确定/不可解析）
+enum DocInfoVerdict {
+    Score(f64),
+    Uncertain,
+    Unparseable,
+}
+
+/// v32（6.2 FR-101）：Doc Information 的 LLM 判定维度——逐页裁判
+/// 信息性评分（0-10，与文本统计并存）。LLM 不可用时降级跳过
+/// （judged=false，报告显式标注不静默）；每页 uncertain 重试一次，
+/// 仍不确定计 abstain（FR-102 三态协议；abstain 页面不计入评分分母）。
+struct DocInfoLlmOutcome {
+    judged: bool,
+    score: f64,
+    judged_modules: usize,
+    abstain_modules: usize,
+}
+
+/// v32（6.2）：Doc Info 信息性裁判 prompt——要求 0-10 评分；
+/// 页面过少/与模块无关时允许输出 uncertain（证据不足显式声明，
+/// 不猜测——与 rubric 三态同协议）
+fn doc_info_judge_prompt(module: &str, summary: &str) -> Vec<crate::generate::llm::Message> {
+    vec![
+        crate::generate::llm::Message::system(
+            "你是 Wiki 文档信息性裁判。判断模块文档页是否提供了关于该模块的实质信息（职责/实体/关系/用法示例）。只输出 JSON：{\"score\": 0-10}。若页面内容过少或与模块无关，输出 {\"verdict\": \"uncertain\"}，不要猜测。",
+        ),
+        crate::generate::llm::Message::user(format!(
+            "模块：{}\n\n--- 页面内容 ---\n{}",
+            module, summary
+        )),
+    ]
+}
+
+/// v32（6.2）：解析 Doc Info 判定输出——{"score": 0-10} → Score（clamp
+/// 到 [0,10] 收敛越界，与 TQS 口径一致）；{"verdict": "uncertain"} →
+/// Uncertain；其他 → Unparseable（不计入评分分母）
+fn parse_doc_info_score(content: &str) -> DocInfoVerdict {
+    let stripped = content
+        .trim()
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
+    let value: serde_json::Value = match serde_json::from_str(stripped) {
+        Ok(v) => v,
+        Err(_) => return DocInfoVerdict::Unparseable,
+    };
+    if let Some(s) = value.get("score").and_then(|v| v.as_f64()) {
+        return DocInfoVerdict::Score(s.clamp(0.0, 10.0));
+    }
+    if value.get("verdict").and_then(|v| v.as_str()) == Some("uncertain") {
+        return DocInfoVerdict::Uncertain;
+    }
+    DocInfoVerdict::Unparseable
+}
+
+/// v32（6.2 FR-101/FR-102）：Doc Info LLM 判定（逐页评分，uncertain
+/// 重试一次后 abstain；任一调用失败只影响该页不计中断）
+fn measure_doc_info_llm(
+    config: &WikiConfig,
+    pages: &[(PathBuf, String)],
+) -> DocInfoLlmOutcome {
+    let provider = match crate::generate::create_provider(config) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("Doc Info LLM 判定跳过（LLM 不可用）: {e}");
+            return DocInfoLlmOutcome {
+                judged: false,
+                score: 0.0,
+                judged_modules: 0,
+                abstain_modules: 0,
+            };
+        }
+    };
+    let rt = crate::get_global_runtime();
+    let mut total = 0.0f64;
+    let mut judged_n = 0usize;
+    let mut abstain_n = 0usize;
+    for (path, content) in pages {
+        let module = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        // 页面正文截断（api/overview 等大页 token 成本可控；
+        // 判定依据为信息性而非逐字内容）
+        let summary = truncate(content, 8000);
+        // FR-102 三态协议：uncertain 重试一次，仍不确定计 abstain
+        let mut uncertain_retried = false;
+        loop {
+            let messages = doc_info_judge_prompt(&module, &summary);
+            match rt
+                .block_on(provider.complete_with_budget(&messages, Some(BENCH_MAX_OUTPUT_TOKENS)))
+            {
+                Ok(out) => match parse_doc_info_score(&out) {
+                    DocInfoVerdict::Score(s) => {
+                        total += s;
+                        judged_n += 1;
+                        break;
+                    }
+                    DocInfoVerdict::Uncertain => {
+                        if !uncertain_retried {
+                            uncertain_retried = true;
+                            continue;
+                        }
+                        tracing::warn!("Doc Info 判定重试后仍 uncertain（计 abstain）: {module}");
+                        abstain_n += 1;
+                        break;
+                    }
+                    DocInfoVerdict::Unparseable => {
+                        tracing::warn!("Doc Info 判定解析失败（计 abstain）: {module}");
+                        abstain_n += 1;
+                        break;
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!("Doc Info 判定调用失败（计 abstain）: {e}");
+                    abstain_n += 1;
+                    break;
+                }
+            }
+        }
+    }
+    DocInfoLlmOutcome {
+        judged: true,
+        score: if judged_n == 0 { 0.0 } else { total / judged_n as f64 },
+        judged_modules: judged_n,
+        abstain_modules: abstain_n,
     }
 }
 
@@ -648,7 +815,13 @@ pub fn run_bench(
     let coverage = measure_coverage(root, &pages)?;
     let scan_ms = scan_start.elapsed().as_millis() as u64;
 
-    let doc_info = measure_doc_info(&pages);
+    let mut doc_info = measure_doc_info(&pages);
+    // v32（6.2 FR-101）：Doc Information LLM 判定维度与文本统计并存
+    let llm_info = measure_doc_info_llm(config, &pages);
+    doc_info.llm_judged = llm_info.judged;
+    doc_info.llm_score = llm_info.score;
+    doc_info.llm_judged_modules = llm_info.judged_modules;
+    doc_info.llm_abstain_modules = llm_info.abstain_modules;
     let lint = measure_lint(config.output_dir(), root);
 
     let gen_start = Instant::now();
@@ -704,7 +877,13 @@ pub fn run_rubrics_only(
     let coverage = measure_coverage(root, &pages)?;
     let scan_ms = scan_start.elapsed().as_millis() as u64;
 
-    let doc_info = measure_doc_info(&pages);
+    let mut doc_info = measure_doc_info(&pages);
+    // v32（6.2 FR-101）：rubrics-only 模式同样跑 Doc Info LLM 判定
+    let llm_info = measure_doc_info_llm(config, &pages);
+    doc_info.llm_judged = llm_info.judged;
+    doc_info.llm_score = llm_info.score;
+    doc_info.llm_judged_modules = llm_info.judged_modules;
+    doc_info.llm_abstain_modules = llm_info.abstain_modules;
     let lint = measure_lint(config.output_dir(), root);
 
     // Update Recall 回放成本不可接受（v21 D 组）：大仓库跳过，
@@ -821,6 +1000,10 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
     // 解析成功率（全部调用，含失败模块；2606.00093 item 7）
     let mut parse_ok = 0usize;
     let mut parse_total = 0usize;
+    // v32（6.1 FR-102/FR-103）：三态协议统计——平局率（模块级平均，
+    // 与 flip_rate 同口径）与三态明细 [A 胜, B 胜, 平局] 跨模块累计
+    let mut tie_sum = 0.0f64;
+    let mut agreement_breakdown = [0usize; 3];
     for (title, old, new) in &pairs {
         // 每轮 = AB + BA 两次调用（顺序消偏）；共 repeats 轮；低置信升级补轮
         let mut round_scores: Vec<(bool, [f64; 5], [f64; 5])> = Vec::new();
@@ -852,12 +1035,14 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
             if failed {
                 break;
             }
-            // Phase 2（t03）：基础轮数跑满后低置信升级——翻转率 >20%
-            // 或模块 σ 超阈值（2606.13685 分层表：hard 档需更多 trials）
+            // Phase 2（t03）：基础轮数跑满后低置信升级——翻转率 >20%、
+            // 模块 σ 超阈值（2606.13685 分层表：hard 档需更多 trials）
+            // 或平局率 >30%（v32 6.1：tie 独立类别，区分度不足同样需升级）
             if round_scores.len() == TQS_REPEATS * 2
                 && (module_judgment_metrics(&round_scores).flip_rate
                     > TQS_FLIP_RATE_ESCALATION_THRESHOLD
-                    || module_std(&round_scores) > LOW_CONFIDENCE_STD_THRESHOLD)
+                    || module_std(&round_scores) > LOW_CONFIDENCE_STD_THRESHOLD
+                    || module_tie_rate(&round_scores) > TQS_TIE_ESCALATION_THRESHOLD)
             {
                 target = TQS_REPEATS_ESCALATED;
             }
@@ -924,6 +1109,16 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
         let metrics = module_judgment_metrics(&round_scores);
         flip_sum += metrics.flip_rate;
         pos_flip_sum += metrics.position_flip_rate;
+        // v32（6.1）：平局率（模块级平均口径，与 flip_rate 一致）与
+        // 三态明细累计——每轮 AB/BA 两次调用判定各入一桶
+        tie_sum += module_tie_rate(&round_scores);
+        for (_, a, b) in &round_scores {
+            match judgment(a, b) {
+                1 => agreement_breakdown[0] += 1,
+                -1 => agreement_breakdown[1] += 1,
+                _ => agreement_breakdown[2] += 1,
+            }
+        }
         let table = module_kappa_table(&round_scores);
         for (i, row) in table.iter().enumerate() {
             for (j, &v) in row.iter().enumerate() {
@@ -1007,6 +1202,10 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
         judgment_scale: TQS_JUDGMENT_SCALE.into(),
         aggregation_level: TQS_AGGREGATION_LEVEL.into(),
         tie_handling: TQS_TIE_HANDLING.into(),
+        // v32（6.1 FR-102/FR-103）：三态协议——平局率与明细
+        // （judged>0 已由前面的 judged==0 早退保证）
+        tie_rate: tie_sum / judged as f64,
+        agreement_breakdown,
     }))
 }
 
@@ -1104,6 +1303,20 @@ fn module_std(round_scores: &[(bool, [f64; 5], [f64; 5])]) -> f64 {
         var += scores.iter().map(|s| (s[i] - mean).powi(2)).sum::<f64>() / scores.len() as f64;
     }
     (var / 5.0).sqrt()
+}
+
+/// v32（6.1 FR-103）：模块级平局率——round_scores 中 judgment()==0
+/// 的比例（tie 独立类别；与 module_judgment_metrics 共用 judgment 三态
+/// 口径，保证升级触发与报告统计一致）
+fn module_tie_rate(round_scores: &[(bool, [f64; 5], [f64; 5])]) -> f64 {
+    if round_scores.is_empty() {
+        return 0.0;
+    }
+    let ties = round_scores
+        .iter()
+        .filter(|(_, a, b)| judgment(a, b) == 0)
+        .count();
+    ties as f64 / round_scores.len() as f64
 }
 
 /// 单模块 AB/BA 判定的 2×2 一致表（标准 Cohen's κ 的输入）：
@@ -1280,35 +1493,50 @@ fn measure_rubrics(config: &WikiConfig, root: &ProjectRoot) -> Result<Option<Rub
             evidence = truncate(&evidence, 20_000);
         }
         let mut votes: Vec<Option<bool>> = Vec::new();
+        // v32（6.1 FR-102）：uncertain 重试标记与独立尝试计数——LLM
+        // 主动声明证据不足时换选项顺序重试一次；重试后仍 uncertain 记
+        // abstain（None）。attempts 独立于 votes.len() 自增（votes 在
+        // uncertain 重试时不增长），保证重试调用真正换 variant
+        let mut uncertain_retried = false;
+        let mut attempts = 0usize;
         while votes.len() < RUBRIC_LEAF_REPEATS_ESCALATED {
             // 选项顺序随机化（2602.02219：2 选项 swap 即 n=2 平衡排列，
             // 消 primacy/recency；按 requirement 哈希确定性取，复跑可复现）
             let messages = rubric_judge_prompt(
                 &leaf.requirement,
                 &evidence,
-                option_variant(&leaf.requirement, votes.len()),
+                option_variant(&leaf.requirement, attempts),
             );
+            attempts += 1;
             // 同生成轮：判定输出短但需完整 message（推理型模型预算吞没
             // 风险一致），与 TQS/合并同口径给足预算
-            let vote = match rt.block_on(provider.complete_with_budget(&messages, Some(BENCH_MAX_OUTPUT_TOKENS))) {
+            match rt.block_on(provider.complete_with_budget(&messages, Some(BENCH_MAX_OUTPUT_TOKENS))) {
                 Ok(content) => match parse_rubric_verdict(&content) {
-                    Some(v) => {
-                        votes.push(Some(v));
-                        Some(v)
+                    Some(RubricVerdict::Satisfied) => votes.push(Some(true)),
+                    Some(RubricVerdict::Unsatisfied) => votes.push(Some(false)),
+                    // 首次 uncertain：不 push（votes 不变），下轮换 variant
+                    // 重试；重试后仍 uncertain：记 abstain 推进循环收敛
+                    Some(RubricVerdict::Uncertain) => {
+                        if !uncertain_retried {
+                            uncertain_retried = true;
+                            continue;
+                        }
+                        tracing::warn!(
+                            "Rubric 叶子判定重试后仍 uncertain（计 abstain）: {}",
+                            leaf.requirement
+                        );
+                        votes.push(None);
                     }
                     None => {
                         tracing::warn!("Rubric 叶子判定解析失败（计 abstain）: {}", leaf.requirement);
-                        None
+                        votes.push(None);
                     }
                 },
                 Err(e) => {
                     tracing::warn!("Rubric 叶子判定调用失败（计 abstain）: {e}");
-                    None
+                    votes.push(None);
                 }
             };
-            if vote.is_none() {
-                votes.push(None);
-            }
             // 3 票后多数已定（true/false 票数不等）即停；否则争议升级至 5 票
             if votes.len() == RUBRIC_LEAF_REPEATS && verdict_resolved(&votes) {
                 break;
@@ -1383,16 +1611,24 @@ fn rubric_merge_prompt(trees: &[Vec<RubricNode>]) -> Vec<crate::generate::llm::M
     ]
 }
 
-/// Rubric 叶子判定 prompt：需求 vs 产物证据 → 0/1 满足判定。
+/// Rubric 叶子判定 prompt：需求 vs 产物证据 → 三态判定
+/// satisfied/unsatisfied/uncertain。
 ///
-/// `reverse_options` 为 true 时输出模板的选项顺序反转为 "false 或 true"
-/// （2602.02219：rubric 判定 = 隐式 multiple-choice，选项位置影响选择
-/// 的 primacy/recency；2 选项 swap 即 n=2 的平衡排列特例，少量随机
-/// 顺序即可获得大部分消偏收益——budget-matched 对照结论）
+/// `reverse_options` 为 true 时 satisfied/unsatisfied 选项顺序反转
+/// （2602.02219：2 选项 swap 即 n=2 的平衡排列特例，少量随机顺序即可
+/// 获得大部分 primacy/recency 消偏收益；uncertain 恒定第三项——它是
+/// "证据不足"类别而非选项位置消偏对象）。
+/// v32（6.1 FR-102）：三态协议——uncertain 表示 LLM 主动声明证据
+/// 不足以判定（区别于解析/调用失败的管线 abstain）；uncertain 由
+/// 调用方重试一次，仍不确定才记 abstain（不计入分母）。
 fn rubric_judge_prompt(requirement: &str, evidence: &str, reverse_options: bool) -> Vec<crate::generate::llm::Message> {
-    let options = if reverse_options { "false 或 true" } else { "true 或 false" };
+    let options = if reverse_options {
+        "\"unsatisfied\" 或 \"satisfied\""
+    } else {
+        "\"satisfied\" 或 \"unsatisfied\""
+    };
     let system = format!(
-        "你是 Wiki 文档质量裁判。判断下面的文档产物是否满足给定的需求。只输出 JSON：{{\"satisfied\": {options}}}。"
+        "你是 Wiki 文档质量裁判。判断下面的文档产物是否满足给定的需求。只输出 JSON：{{\"verdict\": {options} 或 \"uncertain\"}}。若给出的产物证据不足以判定（摘要与检索片段均未提及相关事实），输出 \"uncertain\"，不要猜测。"
     );
     vec![
         crate::generate::llm::Message::system(system),
@@ -1401,6 +1637,16 @@ fn rubric_judge_prompt(requirement: &str, evidence: &str, reverse_options: bool)
             requirement, evidence
         )),
     ]
+}
+
+/// v32（6.1 FR-102）：叶子判定三态（LLM 输出协议）——Satisfied/Unsatisfied
+/// 是 0/1 判定；Uncertain = LLM 主动声明证据不足（与解析/调用失败的
+/// 管线 abstain 区分：uncertain 由调用方重试一次，仍不确定才记 abstain）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RubricVerdict {
+    Satisfied,
+    Unsatisfied,
+    Uncertain,
 }
 
 /// 解析 rubric 生成/合并输出：剥离围栏 → JSON 数组或 {rubrics: [...]}
@@ -1474,8 +1720,10 @@ fn parse_rubric_node(v: &serde_json::Value) -> Result<RubricNode> {
     })
 }
 
-/// 解析叶子判定输出：{"satisfied": true/false}
-fn parse_rubric_verdict(content: &str) -> Option<bool> {
+/// 解析叶子判定输出：{"verdict": "satisfied"|"unsatisfied"|"uncertain"}
+/// （v32 6.1 三态协议；旧版 {"satisfied": bool} 字段不再产出——输出
+/// 模板已切换，产物仅在真实评测时生成，无向后兼容负担）
+fn parse_rubric_verdict(content: &str) -> Option<RubricVerdict> {
     let stripped = content
         .trim()
         .trim_start_matches("```json")
@@ -1483,7 +1731,12 @@ fn parse_rubric_verdict(content: &str) -> Option<bool> {
         .trim_end_matches("```")
         .trim();
     let value: serde_json::Value = serde_json::from_str(stripped).ok()?;
-    value.get("satisfied")?.as_bool()
+    match value.get("verdict")?.as_str()? {
+        "satisfied" => Some(RubricVerdict::Satisfied),
+        "unsatisfied" => Some(RubricVerdict::Unsatisfied),
+        "uncertain" => Some(RubricVerdict::Uncertain),
+        _ => None,
+    }
 }
 
 /// 递归收集叶子（sub_tasks 为空）
@@ -1798,13 +2051,26 @@ pub fn render_markdown(report: &BenchReport) -> String {
 
     out.push_str("## 2. 文本统计（Doc Info）\n\n");
     out.push_str(&format!(
-        "- 页面: {}\n- 词数: {}\n- 交叉引用: {}\n- 代码块: {}\n- Mermaid 图: {}\n\n",
+        "- 页面: {}\n- 词数: {}\n- 交叉引用: {}\n- 代码块: {}\n- Mermaid 图: {}\n",
         report.doc_info.pages,
         report.doc_info.words,
         report.doc_info.cross_references,
         report.doc_info.code_blocks,
         report.doc_info.diagrams
     ));
+    // v32（6.2 FR-101）：LLM 信息性判定与文本统计并存；未执行时
+    // 显式标注降级（不静默）
+    if report.doc_info.llm_judged {
+        out.push_str(&format!(
+            "- LLM 信息性评分（0-10）: {:.2}（判定 {} 页，abstain {} 页）\n",
+            report.doc_info.llm_score,
+            report.doc_info.llm_judged_modules,
+            report.doc_info.llm_abstain_modules
+        ));
+    } else {
+        out.push_str("- LLM 信息性判定: 未执行（LLM 不可用，降级跳过）\n");
+    }
+    out.push('\n');
 
     out.push_str("## 3. lint 健康\n\n");
     if report.lint.total_issues == 0 {
@@ -1858,12 +2124,16 @@ pub fn render_markdown(report: &BenchReport) -> String {
             tqs.avg_std
         ));
         out.push_str(&format!(
-            "- 标准 Cohen's κ（AB/BA 交换一致，机会校正）: {:.2}\n- 判定翻转率（相对模块多数判定）: {:.2}\n- 位置翻转率（逐对 AB↔BA 交换）: {:.2}\n- κ 通缩 Δκ（一致率−机会校正）: {:.2}\n- 解析成功率: {:.2}\n",
+            "- 标准 Cohen's κ（AB/BA 交换一致，机会校正）: {:.2}\n- 判定翻转率（相对模块多数判定）: {:.2}\n- 位置翻转率（逐对 AB↔BA 交换）: {:.2}\n- κ 通缩 Δκ（一致率−机会校正）: {:.2}\n- 解析成功率: {:.2}\n- v32 三态明细（A 胜/B 胜/平局）: {}/{}/{}\n- 平局率（模块级平均，三态判定中 tie 占比）: {:.2}\n",
             tqs.kappa_cohen,
             tqs.flip_rate,
             tqs.position_flip_rate,
             tqs.delta_kappa,
-            tqs.parse_success_rate
+            tqs.parse_success_rate,
+            tqs.agreement_breakdown[0],
+            tqs.agreement_breakdown[1],
+            tqs.agreement_breakdown[2],
+            tqs.tie_rate
         ));
         out.push_str(&format!(
             "- 判定尺度: {}\n- 聚合层级: {}\n- tie/abstain 处理: {}\n",
@@ -2000,6 +2270,34 @@ mod tests {
         assert_eq!(info.code_blocks, 2);
         assert_eq!(info.diagrams, 1);
         assert!(info.words > 0);
+        // v32（6.2）：文本统计函数不触发 LLM 判定（字段默认未执行）
+        assert!(!info.llm_judged);
+        assert_eq!(info.llm_score, 0.0);
+    }
+
+    /// v32（6.2 FR-101/FR-102）：Doc Info LLM 判定解析——0-10 评分
+    /// clamp、uncertain 三态、非法输出 → Unparseable
+    #[test]
+    fn test_parse_doc_info_score() {
+        assert!(matches!(
+            parse_doc_info_score(r#"{"score": 8}"#),
+            DocInfoVerdict::Score(s) if (s - 8.0).abs() < 1e-9
+        ));
+        assert!(matches!(
+            parse_doc_info_score("```json\n{\"score\": 11}\n```"),
+            DocInfoVerdict::Score(s) if (s - 10.0).abs() < 1e-9
+        ), "越界评分应 clamp 到 10");
+        assert!(matches!(
+            parse_doc_info_score(r#"{"score": -3}"#),
+            DocInfoVerdict::Score(s) if s.abs() < 1e-9
+        ), "负分应 clamp 到 0");
+        assert!(matches!(
+            parse_doc_info_score(r#"{"verdict": "uncertain"}"#),
+            DocInfoVerdict::Uncertain
+        ));
+        assert!(matches!(parse_doc_info_score("no json"), DocInfoVerdict::Unparseable));
+        assert!(matches!(parse_doc_info_score(r#"{"score": "高"}"#), DocInfoVerdict::Unparseable));
+        assert!(matches!(parse_doc_info_score(r#"{}"#), DocInfoVerdict::Unparseable));
     }
 
     /// 增量召回：有变更的 commit 应全部触发重生成（mock 下正确更新）
@@ -2052,7 +2350,17 @@ mod tests {
             repo_name: "demo".into(),
             generated_at: "2026-08-03T00:00:00Z".into(),
             coverage: CoverageReport { total_entities: 0, covered_entities: 0, ratio: 1.0 },
-            doc_info: DocInfoReport { pages: 0, words: 0, cross_references: 0, code_blocks: 0, diagrams: 0 },
+            doc_info: DocInfoReport {
+    pages: 0,
+    words: 0,
+    cross_references: 0,
+    code_blocks: 0,
+    diagrams: 0,
+    llm_judged: false,
+    llm_score: 0.0,
+    llm_judged_modules: 0,
+    llm_abstain_modules: 0,
+},
             lint: LintReport { total_issues: 0, by_kind: Default::default() },
             update_recall: UpdateRecallReport { commits_scanned: 0, commits_with_changes: 0, correctly_updated: 0, recall: 1.0 },
             time: TimeReport { scan_ms: 0, generate_ms: 0, total_ms: 0 },
@@ -2118,7 +2426,17 @@ mod tests {
             repo_name: "demo".into(),
             generated_at: "2026-08-03T00:00:00Z".into(),
             coverage: CoverageReport { total_entities: 0, covered_entities: 0, ratio: 1.0 },
-            doc_info: DocInfoReport { pages: 0, words: 0, cross_references: 0, code_blocks: 0, diagrams: 0 },
+            doc_info: DocInfoReport {
+    pages: 0,
+    words: 0,
+    cross_references: 0,
+    code_blocks: 0,
+    diagrams: 0,
+    llm_judged: false,
+    llm_score: 0.0,
+    llm_judged_modules: 0,
+    llm_abstain_modules: 0,
+},
             lint: LintReport { total_issues: 0, by_kind: Default::default() },
             update_recall: UpdateRecallReport { commits_scanned: 0, commits_with_changes: 0, correctly_updated: 0, recall: 1.0 },
             time: TimeReport { scan_ms: 0, generate_ms: 0, total_ms: 0 },
@@ -2152,6 +2470,8 @@ mod tests {
             judgment_scale: "0-10 连续五维点分".into(),
             aggregation_level: "模块级 macro average".into(),
             tie_handling: "三态判定；失败模块排除".into(),
+            tie_rate: 0.1,
+            agreement_breakdown: [8, 9, 3],
         });
         let md_on = render_markdown(&report);
         assert!(md_on.contains("判定模块: 2"), "应输出判定模块数: {md_on}");
@@ -2160,6 +2480,8 @@ mod tests {
         assert!(md_on.contains("位置偏差"), "应输出位置偏差: {md_on}");
         assert!(md_on.contains("标准 Cohen's κ"), "应输出标准 κ: {md_on}");
         assert!(md_on.contains("判定翻转率"), "应输出翻转率: {md_on}");
+        assert!(md_on.contains("三态明细"), "应输出三态明细: {md_on}");
+        assert!(md_on.contains("平局率"), "应输出平局率: {md_on}");
         assert!(md_on.contains("判定尺度"), "应输出判定尺度声明: {md_on}");
     }
 
@@ -2184,12 +2506,21 @@ mod tests {
         assert!(parse_rubric_tree("not json").is_err(), "非 JSON 应报错");
     }
 
-    /// v14 C 组：叶子判定解析 + 权重 clamp + 加权聚合确定性
+    /// v14 C 组 + v32（6.1 FR-102）：叶子判定三态解析（satisfied/
+    /// unsatisfied/uncertain）+ 权重 clamp + 加权聚合确定性
     #[test]
     fn test_rubric_aggregate_and_verdict() {
-        assert_eq!(parse_rubric_verdict(r#"{"satisfied": true}"#), Some(true));
-        assert_eq!(parse_rubric_verdict("```json\n{\"satisfied\": false}\n```"), Some(false));
+        use RubricVerdict as V;
+        assert_eq!(parse_rubric_verdict(r#"{"verdict": "satisfied"}"#), Some(V::Satisfied));
+        assert_eq!(
+            parse_rubric_verdict("```json\n{\"verdict\": \"unsatisfied\"}\n```"),
+            Some(V::Unsatisfied)
+        );
+        assert_eq!(parse_rubric_verdict(r#"{"verdict": "uncertain"}"#), Some(V::Uncertain));
+        assert_eq!(parse_rubric_verdict(r#"{"verdict": "satisfied"}"#), Some(V::Satisfied), "围栏剥离");
         assert_eq!(parse_rubric_verdict("no json"), None);
+        assert_eq!(parse_rubric_verdict(r#"{"verdict": "maybe"}"#), None, "非法三态值");
+        assert_eq!(parse_rubric_verdict(r#"{"satisfied": true}"#), None, "旧字段不再接受");
 
         // 树：根(weight 1) → [a(2): 叶子, b(3): [c(1): 叶子, d(1): 叶子]]
         // 叶子判定 [true, false, true] → a=1, c=0, d=1 → b=(0+1)/2=0.5
@@ -2229,7 +2560,17 @@ mod tests {
             repo_name: "demo".into(),
             generated_at: "2026-08-03T00:00:00Z".into(),
             coverage: CoverageReport { total_entities: 0, covered_entities: 0, ratio: 1.0 },
-            doc_info: DocInfoReport { pages: 0, words: 0, cross_references: 0, code_blocks: 0, diagrams: 0 },
+            doc_info: DocInfoReport {
+    pages: 0,
+    words: 0,
+    cross_references: 0,
+    code_blocks: 0,
+    diagrams: 0,
+    llm_judged: false,
+    llm_score: 0.0,
+    llm_judged_modules: 0,
+    llm_abstain_modules: 0,
+},
             lint: LintReport { total_issues: 0, by_kind: Default::default() },
             update_recall: UpdateRecallReport { commits_scanned: 0, commits_with_changes: 0, correctly_updated: 0, recall: 1.0 },
             time: TimeReport { scan_ms: 0, generate_ms: 0, total_ms: 0 },
@@ -2374,6 +2715,33 @@ mod tests {
         let m3 = module_judgment_metrics(&[]);
         assert_eq!(m3.flip_rate, 0.0);
         assert_eq!(m3.position_flip_rate, 0.0);
+    }
+
+    /// v32（6.1 FR-103）：模块级平局率——tie 独立类别（judgment()==0）
+    /// 占比，供升级触发与报告统计共用
+    #[test]
+    fn test_module_tie_rate() {
+        // 3 轮 6 次调用：A 胜×3、B 胜×1、平×2 → tie 率 2/6
+        let mixed = vec![
+            (true, [10.0; 5], [5.0; 5]),
+            (false, [4.0; 5], [8.0; 5]),
+            (true, [9.0; 5], [6.0; 5]),
+            (false, [5.0; 5], [7.0; 5]),
+            (true, [6.0; 5], [6.0; 5]),
+            (false, [6.0; 5], [6.0; 5]),
+        ];
+        assert!((module_tie_rate(&mixed) - 2.0 / 6.0).abs() < 1e-9, "tie 率应为 1/3: {}", module_tie_rate(&mixed));
+        // 无平局
+        let no_tie = vec![(true, [10.0; 5], [5.0; 5]), (false, [4.0; 5], [8.0; 5])];
+        assert_eq!(module_tie_rate(&no_tie), 0.0);
+        // 全平局
+        let all_tie = vec![(true, [6.0; 5], [6.0; 5]), (false, [6.0; 5], [6.0; 5])];
+        assert_eq!(module_tie_rate(&all_tie), 1.0);
+        // 空输入退化
+        assert_eq!(module_tie_rate(&[]), 0.0);
+        // 升级阈值判定：>0.30 触发
+        assert!(module_tie_rate(&all_tie) > TQS_TIE_ESCALATION_THRESHOLD);
+        assert!(module_tie_rate(&no_tie) < TQS_TIE_ESCALATION_THRESHOLD);
     }
 
     /// t04：标准 Cohen's κ——2×2 一致表公式手算 + 模块级 2×2 表累计
