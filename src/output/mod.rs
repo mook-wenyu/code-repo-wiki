@@ -24,8 +24,7 @@ use self::markdown::write_document;
 /// 由 generate::collect_languages 移入（消除 output→generate 反向依赖；
 /// generate 侧调用点改向本函数——generate→output 依赖本就存在，card.rs 已用）。
 pub fn wiki_languages(config: &WikiConfig) -> Vec<String> {
-    let mut languages = vec![config.wiki.language.clone()];
-    languages.extend(config.wiki.expand_languages.iter().cloned());
+    let languages = vec![config.wiki.language.clone()];
     languages
 }
 
@@ -259,7 +258,7 @@ pub fn rendered_paths(
     cards: &[KnowledgeCard],
     config: &WikiConfig,
 ) -> Vec<PathBuf> {
-    let output_dir = Path::new(&config.output.dir);
+    let output_dir = config.output_dir();
     let mut paths: std::collections::BTreeSet<PathBuf> = Default::default();
     for doc in documents {
         paths.insert(wiki_page_path(output_dir, &doc.language, doc));
@@ -305,7 +304,7 @@ pub fn render_all(
     config: &WikiConfig,
     protected: &std::collections::HashSet<String>,
 ) -> Result<()> {
-    let output_dir = Path::new(&config.output.dir);
+    let output_dir = config.output_dir();
     let assets_dir = output_dir.join("assets");
     let languages = wiki_languages(config);
 
@@ -427,7 +426,7 @@ pub fn render_all(
         documents.len(),
         cards.len(),
         graph.modules.len(),
-        config.output.dir
+        config.output_dir().display()
     );
 
     // AGENTS.md 引导文件：不存在才生成（幂等），人工已有 AGENTS.md 时跳过。
@@ -560,17 +559,16 @@ mod tests {
         let config = WikiConfig::default();
         assert_eq!(wiki_languages(&config), vec!["zh"]);
     }
-
     #[test]
-    fn test_collect_languages_with_expand() {
+    fn test_collect_languages_single_main() {
         let config = WikiConfig {
             wiki: crate::config::schema::WikiSection {
                 language: "zh".into(),
-                expand_languages: vec!["en".into(), "ja".into()],
             },
             ..Default::default()
         };
-        assert_eq!(wiki_languages(&config), vec!["zh", "en", "ja"]);
+        // v30：expand_languages 已删除，恒只生成主语言
+        assert_eq!(wiki_languages(&config), vec!["zh"]);
     }
 
     /// A4：wiki 页与卡片的路径规则收敛后，路径计算必须与
@@ -613,8 +611,7 @@ mod tests {
         let dir = std::env::temp_dir()
             .join(format!("repo_wiki_test_protected_card_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let mut config = WikiConfig::default();
-        config.output.dir = dir.to_string_lossy().into_owned();
+        let config = WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
 
         let card = make_card();
         let doc = make_doc("zh");
@@ -654,8 +651,7 @@ mod tests {
         let dir = std::env::temp_dir()
             .join(format!("repo_wiki_test_cards_no_docs_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let mut config = WikiConfig::default();
-        config.output.dir = dir.to_string_lossy().into_owned();
+        let config = WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
 
         let card = make_card();
         let graph = KnowledgeGraph::default();

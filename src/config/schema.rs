@@ -14,9 +14,15 @@ pub const SEARCH_DEFAULT_TOP_K: usize = 10;
 pub const SEARCH_RRF_K: f64 = 60.0;
 /// BFS 传播变更影响的最大深度
 pub const IMPACT_MAX_DEPTH: usize = 3;
-pub const PLAN_PATH: &str = "wiki_plan.yaml";
+/// v30 硬编码常量：傻瓜式全自动（用户拍板「彻底硬编码删字段」）——
+/// 以下配置项从配置文件移除、以代码常量固定，用户零配置开箱即用。
+pub const OUTPUT_DIR: &str = ".repo-wiki";
 
 /// 全局配置
+///
+/// v30 精简后的配置面：只保留「凭据 / 模型选择 / 扫描范围 / 主语言」四类
+/// 用户真正需要决策的项；输出目录、增量策略、搜索/嵌入开关、计划文件等
+/// 算法细节全部硬编码（见常量区）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WikiConfig {
     #[serde(default)]
@@ -27,29 +33,36 @@ pub struct WikiConfig {
     pub llm: LlmSection,
     #[serde(default)]
     pub embed: EmbedSection,
-    #[serde(default)]
-    pub output: OutputSection,
-    #[serde(default)]
-    pub incremental: IncrementalSection,
-    #[serde(default)]
-    pub search: SearchSection,
-    #[serde(default)]
-    pub plan: PlanConfig,
+    /// 运行时输出目录（serde(skip)：配置文件中不可写，由
+    /// load_config_with_output 注入——CLI --output 覆盖或 root 化后的
+    /// 绝对路径；None 时由 output_dir() 方法兜底硬编码常量）。
+    /// 使用场景：bench 跑分把产物写到隔离目录，不污染真实 .repo-wiki。
+    #[serde(skip)]
+    pub output_dir: Option<std::path::PathBuf>,
 }
 
-/// Wiki 基本配置
+impl WikiConfig {
+    /// 输出目录解析：运行时注入优先（--output 覆盖 / root 化），
+    /// 缺省回退硬编码常量 OUTPUT_DIR（相对当前工作目录）。
+    pub fn output_dir(&self) -> &std::path::Path {
+        match &self.output_dir {
+            Some(p) => p,
+            None => std::path::Path::new(crate::config::schema::OUTPUT_DIR),
+        }
+    }
+}
+
+/// Wiki 基本配置（v30：多语言扩展已删除——恒只生成主语言，避免维护
+/// 多语言产物面；如需其他语言改 language 主键即可）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WikiSection {
     pub language: String,
-    #[serde(default)]
-    pub expand_languages: Vec<String>,
 }
 
 impl Default for WikiSection {
     fn default() -> Self {
         Self {
             language: "zh".to_string(),
-            expand_languages: Vec::new(),
         }
     }
 }
@@ -130,25 +143,10 @@ pub enum LlmProviderType {
     Mock,
 }
 
-/// 输出配置
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OutputSection {
-    pub dir: String,
-}
-
-impl Default for OutputSection {
-    fn default() -> Self {
-        Self {
-            dir: ".repo-wiki".to_string(),
-        }
-    }
-}
-
-/// 嵌入模型配置
+/// 嵌入模型配置（v30：enabled 开关已硬编码恒开启——无 Key 环境由
+/// 运行时降级处理，见 lib.rs attach_features 与 build_search_index）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbedSection {
-    /// 是否启用嵌入生成
-    pub enabled: bool,
     pub model: String,
     pub base_url: Option<String>,
     pub api_key: Option<String>,
@@ -159,10 +157,7 @@ impl Default for EmbedSection {
     fn default() -> Self {
         // v29 用户确认的实际可用配置：阿里百炼兼容端点。schema 缺省与模板
         // 同源（model/base_url/api_key_env 三键），合并回退时嵌入仍可用。
-        // enabled 保持 false：开关非凭据，默认关防无 key 环境触网/测试误调用
-        // （模板显式 enabled=true 由用户自行开启）。
         Self {
-            enabled: false,
             model: "qwen3.7-text-embedding".to_string(),
             base_url: Some(
                 "https://llm-q0265e4he9m0qs23.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
@@ -171,19 +166,6 @@ impl Default for EmbedSection {
             api_key: None,
             api_key_env: "BAILIAN_API_KEY".to_string(),
         }
-    }
-}
-
-/// 搜索引擎配置
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SearchSection {
-    /// 是否在 generate 后自动构建搜索索引
-    pub enabled: bool,
-}
-
-impl Default for SearchSection {
-    fn default() -> Self {
-        Self { enabled: true }
     }
 }
 
@@ -199,34 +181,4 @@ pub enum SearchEngineType {
     /// RRF 混合排序
     #[serde(rename = "hybrid")]
     Hybrid,
-}
-
-/// 增量更新配置
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IncrementalSection {
-    pub enabled: bool,
-    pub strategy: IncrementalStrategy,
-}
-
-impl Default for IncrementalSection {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            strategy: IncrementalStrategy::GitDiff,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum IncrementalStrategy {
-    #[serde(rename = "git-diff")]
-    GitDiff,
-    #[serde(rename = "file-watch")]
-    FileWatch,
-}
-
-/// wiki_plan.yaml 前置干预配置
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct PlanConfig {
-    pub enabled: bool,
 }

@@ -34,7 +34,7 @@ pub struct LintIssue {
 
 /// 执行 lint 检查，返回所有发现的问题（无问题返回空列表）
 ///
-/// `output_dir` 为产物根目录（config.output.dir），
+/// `output_dir` 为产物根目录（config.output_dir()），
 /// `source_roots` 为源码扫描根列表（用于过时检查的源文件 mtime 对比）。
 ///
 /// 各类检查各一个私有函数（B7：单函数承载单一职责，lint() 只做组合）：

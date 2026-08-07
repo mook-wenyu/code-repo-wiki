@@ -82,6 +82,14 @@ pub fn no_entity_change_files(
     entity_changes: &EntityChangeSet,
     root: &crate::project::ProjectRoot,
 ) -> std::collections::HashSet<PathBuf> {
+    // 空变化集 = 无分类信息（非 git 仓库/无上次提交时 classify 返回
+    // 默认空集，见 classify_entity_changes_at:107），不是"确无实体变化"。
+    // 此时剔除会把起点全清空，FileWatch 增量在非 git 仓库退化为 0 模块
+    // （回归：test_watch_e2e 修改文件后 api.md 永不更新）。与
+    // classification_failed 同语义：无法分类时保守保留全部起点。
+    if entity_changes.changes.is_empty() {
+        return std::collections::HashSet::new();
+    }
     changed_files
         .iter()
         .filter(|f| {
@@ -116,10 +124,18 @@ pub fn classify_entity_changes_at(
     let registry = ParserRegistry::new();
 
     // 当前工作区实体：路径 → 实体列表（键归一化：git diff 路径正斜杠，
-    // insight 路径在 Windows 上是反斜杠，统一为 "/" 才能匹配）
+    // insight 路径在 Windows 上是反斜杠，统一为 "/" 才能匹配；且 insight
+    // 路径是绝对路径，须先相对化（strip root），否则与 diff.modified 的
+    // 相对路径永远不匹配→旧实体有、新实体空→误判 Removed（接口级双向
+    // 传播误伤依赖方，见 test_incremental_git_e2e 场景 A 回归）
     let current: HashMap<String, Vec<Entity>> = current_insights
         .iter()
-        .map(|i| (super::norm_sep(&i.path.to_string_lossy()), i.entities.clone()))
+        .map(|i| {
+            let rel = std::path::Path::new(&i.path)
+                .strip_prefix(root.path())
+                .unwrap_or(std::path::Path::new(&i.path));
+            (super::norm_sep(&rel.to_string_lossy()), i.entities.clone())
+        })
         .collect();
 
     let mut set = EntityChangeSet::default();

@@ -24,7 +24,7 @@ pub fn export_html(
     modules: &[ExportModuleSnapshot],
     config: &WikiConfig,
 ) -> Result<()> {
-    let output_dir = Path::new(&config.output.dir);
+    let output_dir = config.output_dir();
     let wiki_dir = output_dir.join("wiki");
     let cards_dir = output_dir.join("cards");
     let assets_dir = output_dir.join("assets");
@@ -379,13 +379,11 @@ fn escape_html(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::model::{EntitySummary, KnowledgeCard, WikiDocument};
-    use crate::config::schema::{WikiConfig, OutputSection};
+    use crate::config::schema::{WikiConfig};
 
     fn test_config() -> WikiConfig {
         WikiConfig {
-            output: OutputSection {
-                dir: ".repo-wiki".to_string(),
-            },
+            output_dir: Some(std::path::PathBuf::from(".repo-wiki")),
             ..Default::default()
         }
     }
@@ -494,7 +492,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
 
         let mut config = test_config();
-        config.output.dir = dir.to_str().unwrap().to_string();
+        config.output_dir = Some((dir).to_path_buf());
 
         // 文档与卡片同模块（精确关联的前提）：module_path ["核心","模块"] 与
         // module_name "核心::模块" 精确相等，卡片随文档语言落盘 cards/zh/

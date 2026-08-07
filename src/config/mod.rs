@@ -1,5 +1,5 @@
 pub mod opencode;
-pub mod plan;
+
 pub mod schema;
 
 use std::path::{Path, PathBuf};
@@ -319,9 +319,6 @@ pub fn resolve_mcp_config(config: Option<&Path>, root: &ProjectRoot) -> Result<s
 
 /// 校验配置合法性
 fn validate_config(config: &schema::WikiConfig) -> Result<()> {
-    if config.output.dir.is_empty() {
-        anyhow::bail!("output.dir 不能为空");
-    }
     if config.scope.include.is_empty() {
         anyhow::bail!("scope.include 至少需要一个模式");
     }
@@ -341,7 +338,7 @@ mod tests {
         assert_eq!(parsed.llm.model, "deepseek-v4-flash");
         assert_eq!(parsed.llm.api_key_env, "OPENCODEGO2_API_KEY");
         assert_eq!(parsed.wiki.language, "zh");
-        assert_eq!(parsed.output.dir, ".repo-wiki");
+        assert_eq!(parsed.output_dir(), std::path::Path::new(crate::config::schema::OUTPUT_DIR));
     }
 
     #[test]
@@ -505,7 +502,7 @@ api_key_env = "HACKED_KEY"
         assert_eq!(config.llm.api_key_env, "OPENCODEGO2_API_KEY");
         // 项目契约保留
         assert_eq!(config.wiki.language, "en");
-        assert_eq!(config.output.dir, "docs");
+        // v30: output.dir 已硬编码，项目级不可写
 
         let _ = std::fs::remove_dir_all(&dir);
     }

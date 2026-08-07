@@ -1,18 +1,7 @@
-use crate::config::plan::{PlanTemplateType, ResolvedPlan};
 use crate::generate::chunk::Chunk;
 use crate::generate::llm::Message;
 use crate::ingest::parser::Entity;
 use crate::model::{KnowledgeGraph, ModuleCluster};
-
-/// 将全局 notes 追加到 system prompt 末尾（Some 时）
-///
-/// notes 与模板内容用空行分隔，避免粘连影响格式。
-fn append_plan_notes(system: &mut String, plan: Option<&ResolvedPlan>) {
-    if let Some(notes) = plan.and_then(|p| p.notes.as_ref()) {
-        system.push_str("\n\n");
-        system.push_str(notes);
-    }
-}
 
 /// 生成模块摘要的系统 prompt
 fn module_summary_system_prompt(language: &str) -> String {
@@ -87,10 +76,8 @@ fn module_summary_user_prompt(chunk: &Chunk) -> String {
 pub fn module_summary_prompt(
     chunk: &Chunk,
     language: &str,
-    plan: Option<&ResolvedPlan>,
 ) -> Vec<Message> {
-    let mut system = module_summary_system_prompt(language);
-    append_plan_notes(&mut system, plan);
+    let system = module_summary_system_prompt(language);
     vec![
         Message::system(system),
         Message::user(module_summary_user_prompt(chunk)),
@@ -182,10 +169,8 @@ pub fn architecture_overview_prompt(
     modules: &[ModuleCluster],
     graph: &KnowledgeGraph,
     language: &str,
-    plan: Option<&ResolvedPlan>,
 ) -> Vec<Message> {
-    let mut system = architecture_overview_system_prompt(language);
-    append_plan_notes(&mut system, plan);
+    let system = architecture_overview_system_prompt(language);
     vec![
         Message::system(system),
         Message::user(architecture_overview_user_prompt(modules, graph)),
@@ -233,16 +218,9 @@ Knowledge Card 是给 AI Agent 阅读的模块级结构化摘要。
 pub fn knowledge_card_prompt(
     chunk: &Chunk,
     language: &str,
-    plan: Option<&ResolvedPlan>,
     pending_manual_edits: &[String],
 ) -> Vec<Message> {
-    let mut system = knowledge_card_system_prompt(language);
-    append_plan_notes(&mut system, plan);
-    // 卡片专用 notes 叠加在全局 notes 之后
-    if let Some(card_notes) = plan.and_then(|p| p.card_notes.as_ref()) {
-        system.push_str("\n\n");
-        system.push_str(card_notes);
-    }
+    let system = knowledge_card_system_prompt(language);
     let mut user = module_summary_user_prompt(chunk);
     // 人工修改待同步：只在存在记录时注入，避免空节污染输入
     if !pending_manual_edits.is_empty() {
@@ -350,44 +328,6 @@ Wiki 页面是给人类开发者阅读的叙述性文档。
     )
 }
 
-/// 生成 API 参考页的 system prompt
-///
-/// 由 plan sections 中 template_type=api-ref 的模块触发，
-/// 输出面向开发者的紧凑 API 清单而非叙述性文档。
-fn api_ref_system_prompt(language: &str) -> String {
-    format!(
-        r#"你是一个 API 文档专家，负责生成 API 参考页面。
-API 参考页面面向开发者，逐条列出公开接口，格式紧凑、无冗余叙述。
-
-请基于模块信息生成以下格式的 Markdown：
-
-# 模块名称 API 参考
-
-## 函数
-- `fn_name(args) -> Ret` — 用途说明
-
-## 结构体 / 枚举
-- `TypeName` — 用途说明
-
-## Trait / 接口
-- `TraitName` — 用途说明
-
-未出现的类别省略。
-
-## 防编造契约（必须遵守）
-- 只列出输入实体列表中真实存在的符号：不得编造不存在的函数、类型或
-  接口名（api-ref 是全量 API 清单，编造一个不存在的 API 比遗漏危害更大）。
-- 符号名称保持输入给出的拼写与形态（含私有字段/属性等细粒度实体时，
-  照实列出，不猜测可见性或语义）。
-- 不编写任何源码引用/行号（api-ref 不做引用声明，确定性渲染的实体行
-  已自带定位信息）。
-- 每个 API 条目只写一行，不得添加输入中不存在的说明性细节。
-
-请用 {} 语言输出。保持简洁。"#,
-        language
-    )
-}
-
 /// 生成 Wiki Page 的 user prompt
 fn wiki_page_user_prompt(chunk: &Chunk, module_summary: &str) -> String {
     format!(
@@ -399,66 +339,14 @@ fn wiki_page_user_prompt(chunk: &Chunk, module_summary: &str) -> String {
     )
 }
 
-/// 判断模块模式是否命中 chunk：同时匹配 :: 与 / 两种路径形态
-fn section_matches(pattern: &str, module_path: &[String]) -> bool {
-    let by_colon = module_path.join("::");
-    let by_slash = module_path.join("/");
-    let pat = match glob::Pattern::new(pattern) {
-        Ok(p) => p,
-        Err(_) => return false, // 无效模式视为不匹配
-    };
-    if pat.matches(&by_colon) || pat.matches(&by_slash) {
-        return true;
-    }
-    // glob 的尾部 /** 不匹配目录本身（src/config/** 不含 src/config），剥掉后缀补一次匹配
-    pattern
-        .strip_suffix("/**")
-        .is_some_and(|base| base == by_colon || base == by_slash)
-}
-
 /// 生成 Wiki Page 的 prompt
 pub fn wiki_page_prompt(
     chunk: &Chunk,
     module_summary: &str,
     language: &str,
-    plan: Option<&ResolvedPlan>,
 ) -> Vec<Message> {
-    // 命中 sections 时按模板类型切换 system prompt，未命中回退默认模板
-    let matching_section = plan
-        .and_then(|p| p.sections.iter().find(|s| section_matches(&s.module_pattern, &chunk.module_path)));
-    let mut system = match matching_section {
-        Some(section) => match section.template_type {
-            // api-ref：以 API 参考模板生成
-            PlanTemplateType::ApiRef => api_ref_system_prompt(language),
-            PlanTemplateType::Architecture | PlanTemplateType::Prd => {
-                wiki_page_system_prompt(language)
-            }
-        },
-        None => wiki_page_system_prompt(language),
-    };
-    // 全局 notes 追加到所有 system prompt 末尾
-    append_plan_notes(&mut system, plan);
-    // 模块级 notes 叠加在全局 notes 之后
-    if let Some(section) = matching_section
-        && let Some(ref notes) = section.notes
-    {
-        system.push_str("\n\n");
-        system.push_str(notes);
-    }
-    // 白名单文档的写作提示：title 匹配模块名时追加到 user 消息末尾
-    let module_name = chunk.module_path.last().map(String::as_str);
-    let hints = plan
-        .and_then(|p| p.whitelist.as_ref())
-        .and_then(|docs| {
-            docs.iter()
-                .find(|d| d.hints.is_some() && Some(d.title.as_str()) == module_name)
-                .and_then(|d| d.hints.as_deref())
-        });
-    let mut user = wiki_page_user_prompt(chunk, module_summary);
-    if let Some(hints) = hints {
-        user.push_str("\n\n写作提示（用户指定）: ");
-        user.push_str(hints);
-    }
+    let system = wiki_page_system_prompt(language);
+    let user = wiki_page_user_prompt(chunk, module_summary);
     vec![Message::system(system), Message::user(user)]
 }
 
@@ -494,10 +382,8 @@ pub fn schema_doc_prompt(
     path: &std::path::Path,
     blocks: &[&str],
     language: &str,
-    plan: Option<&ResolvedPlan>,
 ) -> Vec<Message> {
-    let mut system = schema_doc_system_prompt(language);
-    append_plan_notes(&mut system, plan);
+    let system = schema_doc_system_prompt(language);
     let mut user = format!("SQL 文件路径: {}\n\n## 建表语句块\n", path.display());
     for (i, block) in blocks.iter().enumerate() {
         user.push_str(&format!("### 语句块 {}\n```sql\n{}\n```\n\n", i + 1, block));
@@ -509,9 +395,8 @@ pub fn schema_doc_prompt(
 pub fn entity_summary_prompt(
     entity: &Entity,
     language: &str,
-    plan: Option<&ResolvedPlan>,
 ) -> String {
-    let mut system = format!(
+    let system = format!(
         "系统指令：你是一个代码分析专家。请为以下代码实体生成一段简短的技术摘要。\n\n\
          实体信息：\n\
          - 类型：{}\n\
@@ -526,14 +411,12 @@ pub fn entity_summary_prompt(
         entity.doc_comment.as_deref().unwrap_or("无"),
         language
     );
-    append_plan_notes(&mut system, plan);
     system
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::plan::PlanSection;
 
     /// 构造指定模块路径的空 Chunk（测试辅助）
     ///
@@ -550,72 +433,16 @@ mod tests {
     }
 
     #[test]
-    fn test_plan_notes_injected_into_prompt() {
-        let chunk = make_test_chunk(&["src", "config", "plan"]);
-        // notes=Some：全局 notes 应追加到 system prompt 末尾，LLM 能看到计划指令
-        let plan = ResolvedPlan {
-            notes: Some("优先关注错误处理路径".into()),
-            ..Default::default()
-        };
-        let messages = module_summary_prompt(&chunk, "zh", Some(&plan));
-        assert!(messages[0].content.contains("优先关注错误处理路径"));
-        // notes=None：system prompt 不应包含 notes 内容（特性开关关闭时零注入）
-        let messages = module_summary_prompt(&chunk, "zh", None);
-        assert!(!messages[0].content.contains("优先关注错误处理路径"));
-    }
-
-    #[test]
-    fn test_api_ref_section_selects_api_template() {
-        // sections 指定 src/config/** 使用 api-ref 模板
-        let plan = ResolvedPlan {
-            sections: vec![PlanSection {
-                module_pattern: "src/config/**".into(),
-                template_type: PlanTemplateType::ApiRef,
-                notes: None,
-            }],
-            ..Default::default()
-        };
-        // 命中模块：system prompt 切换为 API 参考模板，
-        // 特征文本为标题"API 参考"、函数段与签名标注（args -> Ret 即参数/返回值信息）
-        let chunk = make_test_chunk(&["src", "config", "plan"]);
-        let messages = wiki_page_prompt(&chunk, "摘要", "zh", Some(&plan));
-        let system = &messages[0].content;
-        assert!(system.contains("API 参考"));
-        assert!(system.contains("## 函数"));
-        assert!(system.contains("-> Ret"));
-        // 未命中模块：回退默认叙述性模板，不应出现 API 参考特征文本
-        let chunk = make_test_chunk(&["src", "generate", "prompt"]);
-        let messages = wiki_page_prompt(&chunk, "摘要", "zh", Some(&plan));
-        let system = &messages[0].content;
-        assert!(system.contains("## 概述"));
-        assert!(!system.contains("API 参考"));
-        assert!(!system.contains("## 函数"));
-    }
-
-    #[test]
-    fn test_section_matches_both_separators() {
-        let path = vec!["src".to_string(), "config".to_string()];
-        // 模块路径形态（::）与文件路径形态（/）都应命中
-        assert!(section_matches("src::config", &path));
-        assert!(section_matches("src/config", &path));
-        assert!(section_matches("src/config/**", &path));
-        // 无效模式视为不匹配
-        assert!(!section_matches("[", &path));
-        // 不相关模式不命中
-        assert!(!section_matches("src/generate", &path));
-    }
-
-    #[test]
     fn test_knowledge_card_prompt_injects_pending_manual_edits() {
         let chunk = make_test_chunk(&["src", "config"]);
         // 存在记录：user 消息包含"人工修改待同步"节与记录内容
         let pending = vec!["人工修改待同步: wiki/zh/src_config.md 内容摘要: 用户改的".into()];
-        let messages = knowledge_card_prompt(&chunk, "zh", None, &pending);
+        let messages = knowledge_card_prompt(&chunk, "zh", &pending);
         let user = &messages[1].content;
         assert!(user.contains("## 人工修改待同步"));
         assert!(user.contains("wiki/zh/src_config.md"));
         // 无记录：不注入该节（避免空节）
-        let messages = knowledge_card_prompt(&chunk, "zh", None, &[]);
+        let messages = knowledge_card_prompt(&chunk, "zh", &[]);
         assert!(!messages[1].content.contains("人工修改待同步"));
     }
 
@@ -625,26 +452,11 @@ mod tests {
             std::path::Path::new("db/migrations/001_init.sql"),
             &blocks,
             "zh",
-            None,
         );
         let user = &messages[1].content;
         assert!(user.contains("db/migrations/001_init.sql"));
         assert!(user.contains("CREATE TABLE users"));
         assert!(user.contains("```sql"));
         assert!(messages[0].content.contains("erDiagram"));
-    }
-
-    /// t04b（v21）：api-ref 模板必须携带防编造契约——api-ref 是全量 API 清单，
-    /// 编造一个不存在的 API 比遗漏危害更大；且明确禁止编写源码引用
-    /// （确定性渲染的实体行自带定位，LLM 不参与定位声明）。
-    #[test]
-    fn test_api_ref_prompt_has_anti_fabrication_contract() {
-        let system = api_ref_system_prompt("zh");
-        assert!(system.contains("防编造契约"));
-        assert!(system.contains("不得编造不存在的函数、类型或"));
-        assert!(system.contains("不编写任何源码引用"));
-        // 契约措辞与 wiki 页模板同一强度层级（都含"不得编造"字样）
-        let wiki_system = crate::generate::prompt::wiki_page_system_prompt("zh");
-        assert!(wiki_system.contains("不得编造"));
     }
 }

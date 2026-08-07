@@ -2,7 +2,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::Result;
 
-use crate::config::plan::ResolvedPlan;
 use crate::config::schema::WikiConfig;
 use crate::generate::chunk::Chunk;
 use crate::generate::llm::{LlmProvider, Message};
@@ -17,8 +16,6 @@ use crate::model::{DocumentKind, EdgeKind, KnowledgeGraph, NodeId, Reference, Wi
 pub struct WikiGenerator<'a, P: LlmProvider> {
     provider: &'a P,
     call_count: AtomicUsize,
-    /// 生效计划（用于 notes 注入与模板选择，None 表示未启用）
-    plan: Option<ResolvedPlan>,
     /// 生成失败的模块名列表（演进计划 T3.2 失败隔离：失败只记录不中断）
     failed: std::sync::Mutex<Vec<String>>,
     /// describe_modules 并发信号量（演进计划 T5.1：模块职责描述并行
@@ -76,16 +73,14 @@ async fn complete_with_retry<P: LlmProvider>(
 impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
     /// 使用指定的 LLM Provider 创建 WikiGenerator
     ///
-    /// plan 为解析后的生效计划（无计划时传 None）。
     /// max_concurrent 控制 describe_modules 的并行上限（0 表示不限制）。
-    pub fn new(provider: &'a P, plan: Option<ResolvedPlan>, max_concurrent: usize) -> Self {
+    pub fn new(provider: &'a P, max_concurrent: usize) -> Self {
         // tokio Semaphore 许可数有 MAX_PERMITS 上限（约 2^61），usize::MAX 会 panic；
         // "0=不限制" 用足够大的许可数表达（对真实并发规模永不构成瓶颈）
         let max = if max_concurrent == 0 { 1_000_000_000 } else { max_concurrent };
         Self {
             provider,
             call_count: AtomicUsize::new(0),
-            plan,
             failed: std::sync::Mutex::new(Vec::new()),
             semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(max)),
         }
@@ -135,7 +130,7 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
 
         let language = &config.wiki.language;
         let mut messages =
-            prompt::wiki_page_prompt(chunk, card_summary, language, self.plan.as_ref());
+            prompt::wiki_page_prompt(chunk, card_summary, language);
         let mut content = String::new();
         let mut last_invalid = Vec::new();
         let mut last_mermaid = Vec::new();
@@ -283,7 +278,7 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
         let language = &config.wiki.language;
         let modules = self.describe_modules(graph, language).await;
         let messages =
-            prompt::architecture_overview_prompt(&modules, graph, language, self.plan.as_ref());
+            prompt::architecture_overview_prompt(&modules, graph, language);
         // LLM 调用计数在 complete_with_mermaid_guard 内部（含重试）
         let content = self.complete_with_mermaid_guard(messages, "架构概览").await?;
         let now = chrono::Utc::now().to_rfc3339();
@@ -837,7 +832,7 @@ mod tests {
     #[tokio::test]
     async fn test_skip_empty_chunk() {
         let provider = MockProvider::new();
-        let generator = WikiGenerator::new(&provider, None, 0);
+        let generator = WikiGenerator::new(&provider, 0);
         let config = WikiConfig::default();
         let root = crate::project::ProjectRoot::new(std::env::temp_dir());
         let empty_chunk = Chunk {
@@ -869,7 +864,7 @@ mod tests {
             "模块职责是管理连接。核心实体 `Server` 定义见 nonexistent.rs:99。".to_string(),
             "模块职责是管理连接。核心实体 `Server` 定义见 src/server.rs:1。".to_string(),
         ]);
-        let generator = WikiGenerator::new(&provider, None, 0);
+        let generator = WikiGenerator::new(&provider, 0);
         let config = WikiConfig::default();
         let chunk = make_test_chunk();
 
@@ -893,7 +888,7 @@ mod tests {
             "引用 nonexistent.rs:99".to_string(),
             "引用 nonexistent.rs:99".to_string(),
         ]);
-        let generator = WikiGenerator::new(&provider, None, 0);
+        let generator = WikiGenerator::new(&provider, 0);
         let config = WikiConfig::default();
         let chunk = make_test_chunk();
 
@@ -918,7 +913,7 @@ mod tests {
         let root = crate::project::ProjectRoot::new(dir.clone());
 
         let provider = ScriptedProvider::new(vec!["模块职责是管理连接。".to_string()]);
-        let generator = WikiGenerator::new(&provider, None, 0);
+        let generator = WikiGenerator::new(&provider, 0);
         let config = WikiConfig::default();
         let chunk = make_test_chunk();
 
@@ -941,7 +936,7 @@ mod tests {
             "```mermaid\nflowchart LR\nA[hello world\nB --> C\n```\n".to_string(),
             "```mermaid\nflowchart LR\nA[Start] --> B[End]\n```\n".to_string(),
         ]);
-        let generator = WikiGenerator::new(&provider, None, 0);
+        let generator = WikiGenerator::new(&provider, 0);
         let config = WikiConfig::default();
         let chunk = make_test_chunk();
 
@@ -974,7 +969,7 @@ mod tests {
             "模块职责是管理连接。核心实体 `Server` 定义见 src/server.rs:8。".to_string(),
             "模块职责是管理连接。核心实体 `Server` 定义见 src/server.rs:2。".to_string(),
         ]);
-        let generator = WikiGenerator::new(&provider, None, 0);
+        let generator = WikiGenerator::new(&provider, 0);
         let config = WikiConfig::default();
         let chunk = make_test_chunk();
 
@@ -1014,7 +1009,7 @@ mod tests {
             "核心实体 `Server` 见 src/server.rs:8。".to_string(),
             "核心实体 `Server` 见 src/server.rs:8。".to_string(),
         ]);
-        let generator = WikiGenerator::new(&provider, None, 0);
+        let generator = WikiGenerator::new(&provider, 0);
         let config = WikiConfig::default();
         let chunk = make_test_chunk();
 
@@ -1044,7 +1039,7 @@ mod tests {
         let provider = ScriptedProvider::new(vec![
             "模块说明见 README.md:1。".to_string(),
         ]);
-        let generator = WikiGenerator::new(&provider, None, 0);
+        let generator = WikiGenerator::new(&provider, 0);
         let config = WikiConfig::default();
         let chunk = make_test_chunk();
 
@@ -1072,7 +1067,7 @@ mod tests {
             "```mermaid\nflowchart LR\nA[hello world\nB --> C\n```\n".to_string(),
             "```mermaid\nflowchart LR\nA[hello world\nB --> C\n```\n".to_string(),
         ]);
-        let generator = WikiGenerator::new(&provider, None, 0);
+        let generator = WikiGenerator::new(&provider, 0);
         let config = WikiConfig::default();
         let chunk = make_test_chunk();
 
@@ -1097,7 +1092,7 @@ mod tests {
             "```mermaid\nflowchart LR\nA[hello world\n```\n".to_string(),
             "```mermaid\nflowchart LR\nA[hello world\n```\n".to_string(),
         ]);
-        let generator = WikiGenerator::new(&provider, None, 0);
+        let generator = WikiGenerator::new(&provider, 0);
         let config = WikiConfig::default();
         let graph = crate::model::KnowledgeGraph::default();
         let output = crate::generate::GenerationOutput {
@@ -1145,40 +1140,6 @@ mod tests {
         let refs = build_references(&chunk, "zh");
         assert_eq!(refs[0].target_path, "wiki/zh/src_analysis.md");
         assert_eq!(refs[1].target_path, "wiki/zh/src_output.md");
-    }
-
-    fn make_hints_plan(title: &str) -> ResolvedPlan {
-        use crate::config::plan::PlanDocument;
-        ResolvedPlan {
-            whitelist: Some(vec![PlanDocument {
-                title: title.into(),
-                goal: String::new(),
-                parent: None,
-                include_patterns: vec![],
-                exclude_patterns: vec![],
-                hints: Some("重点写服务启动流程".into()),
-            }]),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn test_whitelist_hints_injected_on_title_match() {
-        // make_test_chunk（src/server.rs）的模块路径为 ["src"]，模块名为 "src"
-        let chunk = make_test_chunk();
-        let plan = make_hints_plan("src");
-        let messages = prompt::wiki_page_prompt(&chunk, "摘要", "zh", Some(&plan));
-        let user = &messages[1].content;
-        assert!(user.contains("写作提示（用户指定）: 重点写服务启动流程"));
-    }
-
-    #[test]
-    fn test_whitelist_hints_not_injected_on_title_mismatch() {
-        let chunk = make_test_chunk();
-        let plan = make_hints_plan("other");
-        let messages = prompt::wiki_page_prompt(&chunk, "摘要", "zh", Some(&plan));
-        let user = &messages[1].content;
-        assert!(!user.contains("写作提示"));
     }
 
     /// 模块职责描述 prompt:含模块名与实体列表,并约束一行输出
@@ -1244,7 +1205,7 @@ mod tests {
             features: Vec::new(),
         };
         let provider = MockProvider::new();
-        let generator = WikiGenerator::new(&provider, None, 0);
+        let generator = WikiGenerator::new(&provider, 0);
         let enriched = generator.describe_modules(&kg, "zh").await;
         assert_eq!(enriched.len(), 2);
         assert!(enriched[0].description.is_some(), "带实体的模块应获得描述");

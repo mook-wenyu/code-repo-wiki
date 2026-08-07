@@ -57,9 +57,8 @@ pub fn get_global_runtime() -> &'static Arc<Runtime> {
 ///
 /// output.dir 是相对路径（默认 .repo-wiki），覆盖后渲染、搜索索引、状态目录
 /// 等所有下游引用自然指向新目录。
-///
-/// 同时消费 wiki_plan.yaml 的 scope_override：生效计划存在且提供 scope 时
-/// 覆盖 config.scope（plan.enabled=false 或文件缺失时不影响）。
+/// 加载配置并统一注入输出目录（v30：output.dir 已硬编码，运行时注入
+/// `--output` 覆盖或 root 化绝对路径，见 schema::WikiConfig::output_dir）。
 fn load_config_with_output(
     config_path: Option<&Path>,
     output: Option<&Path>,
@@ -68,32 +67,19 @@ fn load_config_with_output(
     // v25：None 走默认配置链（项目级 config.toml 字段级合并覆盖用户级
     // config.toml，见 config::load_default_config）；Some 为显式
     // --config 单文件原样加载
-    let config = match config_path {
+    let mut config = match config_path {
         Some(p) => config::load_config(p)?,
         None => config::load_default_config(root)?.1,
     };
-    let mut config = if let Some(out) = output {
-        let mut c = config;
-        c.output.dir = out.to_string_lossy().into_owned();
-        c
-    } else {
-        config
+    // root 统一（v17 F 组，t09 实测发现）：输出目录默认相对路径
+    // （.repo-wiki）时必须解析到 root，否则 --root 场景（cwd ≠ root）
+    // 产物写到进程 cwd 错位。--output 覆盖与 root 化都注入运行时字段，
+    // 下游统一走 config.output_dir()（见 schema.rs 注释）。
+    let output_dir = match output {
+        Some(out) => root.path().join(out),
+        None => root.path().join(crate::config::schema::OUTPUT_DIR),
     };
-    // root 统一（v17 F 组，t09 实测发现）：output.dir 是相对路径（默认
-    // .repo-wiki）时必须解析到 root，否则 --root 场景（cwd ≠ root）产物
-    // 写到进程 cwd 错位。此前 main.rs 在 status/lint/note 三分支各自 root
-    // 化（重复且 generate/update 漏掉），收敛到本单一入口后所有下游
-    // （generate/update/lint/status/note/doctor/dry-run）行为一致。
-    let output_dir = Path::new(&config.output.dir);
-    if output_dir.is_relative() {
-        config.output.dir = root.path().join(output_dir).to_string_lossy().into_owned();
-    }
-    // wiki_plan.yaml 的 scope 覆盖相对项目根解析（不依赖进程 cwd）
-    if let Some(plan) = crate::config::plan::resolve_plan_at(root, &config)?
-        && let Some(scope) = plan.scope_override
-    {
-        config.scope = scope;
-    }
+    config.output_dir = Some(output_dir);
     Ok(config)
 }
 
@@ -121,7 +107,7 @@ fn load_protection(
     if force {
         return Ok((std::collections::HashSet::new(), None));
     }
-    let state_dir = Path::new(&config.output.dir).join(".state");
+    let state_dir = config.output_dir().join(".state");
     let state_path = state_dir.join("generation_state.json");
     if !state_path.exists() {
         // 无状态文件 = 从未生成过，合法空保护
@@ -161,7 +147,7 @@ fn save_generation_state(
     commit_hash: &str,
     failed_modules: &[String],
 ) {
-    let output_dir = Path::new(&config.output.dir);
+    let output_dir = config.output_dir();
     let state_dir = output_dir.join(".state");
     // t02/P1-2：三处落盘失败全部告警（此前静默——状态写失败会导致下次 update
     // 无指纹基线，人工修改保护与反向同步**静默失效**，与模块头"不静默丢失保护"
@@ -311,7 +297,7 @@ pub fn run_pipeline_with_progress(
     let watch_set: std::collections::HashSet<std::path::PathBuf> =
         watch_paths.iter().cloned().collect();
     let scan = if is_incremental {
-        let cache_path = Path::new(&config.output.dir).join(".state").join("insights_cache.json");
+        let cache_path = config.output_dir().join(".state").join("insights_cache.json");
         ingest::scan_and_parse_cached_at(root, &config, &Some(cache_path), &watch_set)?
     } else {
         ingest::scan_and_parse_at(root, &config)?
@@ -467,44 +453,40 @@ pub fn run_pipeline_with_progress(
     on_progress(ProgressEvent { stage: "output", percent: 95 });
 
     // Phase 5: 构建/增量更新搜索索引
-    if config.search.enabled {
-        let index_result = if is_incremental {
-            let changed_set: std::collections::HashSet<std::path::PathBuf> = inc_result
-                .as_ref()
-                .map(|i| i.changed_files.iter().cloned().collect())
-                .unwrap_or_default();
-            update_search_index_incremental(&graph, &file_insights, &config, &changed_set)
-        } else {
-            build_search_index(&graph, &file_insights, &config)
-        };
-        if let Err(e) = index_result {
-            tracing::warn!("搜索索引构建失败（不影响主流程）: {}", e);
-        }
+    let index_result = if is_incremental {
+        let changed_set: std::collections::HashSet<std::path::PathBuf> = inc_result
+            .as_ref()
+            .map(|i| i.changed_files.iter().cloned().collect())
+            .unwrap_or_default();
+        update_search_index_incremental(&graph, &file_insights, &config, &changed_set)
+    } else {
+        build_search_index(&graph, &file_insights, &config)
+    };
+    if let Err(e) = index_result {
+        tracing::warn!("搜索索引构建失败（不影响主流程）: {}", e);
     }
     on_progress(ProgressEvent { stage: "index", percent: 98 });
 
     // Phase 6: 保存增量状态（含文档指纹用于人工修改保护）
-    if config.incremental.enabled {
-        // A3（v14）：git 基线获取失败显式区分——非 git 仓库（info：预期
-        // 场景，无基线则状态不推进、下次 update 回退全量）与 git 仓库内
-        // 失败（warn：仓库损坏/无 HEAD/HEAD 无目标等）。此前 unwrap_or_default
-        // 把两者混为一谈静默吞掉，git 命令失败时用户无从知晓状态为何不推进。
-        let head_hash = match incremental::diff::get_head_commit_hash_at(root) {
-            Ok(h) => h,
-            Err(e) => {
-                if e.downcast_ref::<git2::Error>()
-                    .map(|g| g.code() == git2::ErrorCode::NotFound)
-                    .unwrap_or(false)
-                {
-                    tracing::info!("非 git 仓库，无 git 基线（增量状态不推进）: {}", e);
-                } else {
-                    tracing::warn!("获取 git HEAD 失败（增量状态不推进）: {}", e);
-                }
-                String::new()
+    // A3（v14）：git 基线获取失败显式区分——非 git 仓库（info：预期
+    // 场景，无基线则状态不推进、下次 update 回退全量）与 git 仓库内
+    // 失败（warn：仓库损坏/无 HEAD/HEAD 无目标等）。此前 unwrap_or_default
+    // 把两者混为一谈静默吞掉，git 命令失败时用户无从知晓状态为何不推进。
+    let head_hash = match incremental::diff::get_head_commit_hash_at(root) {
+        Ok(h) => h,
+        Err(e) => {
+            if e.downcast_ref::<git2::Error>()
+                .map(|g| g.code() == git2::ErrorCode::NotFound)
+                .unwrap_or(false)
+            {
+                tracing::info!("非 git 仓库，无 git 基线（增量状态不推进）: {}", e);
+            } else {
+                tracing::warn!("获取 git HEAD 失败（增量状态不推进）: {}", e);
             }
-        };
-        save_generation_state(root, &config, &file_insights, &gen_output.documents, &gen_output.cards, &protected, &head_hash, &gen_output.generation_stats.failed_modules);
-    }
+            String::new()
+        }
+    };
+    save_generation_state(root, &config, &file_insights, &gen_output.documents, &gen_output.cards, &protected, &head_hash, &gen_output.generation_stats.failed_modules);
 
     on_progress(ProgressEvent { stage: "done", percent: 100 });
     stats.generation_time_ms = start.elapsed().as_millis() as u64;
@@ -687,7 +669,7 @@ pub fn sync_manual_edits_to_cards(
     let mut synced = 0usize;
     for (module, notes) in &edits {
         let card_path =
-            output::card_page_path(Path::new(&config.output.dir), &config.wiki.language, module);
+            output::card_page_path(config.output_dir(), &config.wiki.language, module);
         // 卡片读取失败（含不存在/损坏/权限）显式告警并跳过该卡片——
         // 原实现 unwrap_or_default 会把"读不到"当作"空卡片"，随后追加
         // 人工修改节写盘，凭空重建被删除的卡片，且吞掉损坏错误。
@@ -789,7 +771,7 @@ pub fn run_watch(config_path: Option<&Path>, root: &project::ProjectRoot) -> any
 
 /// 获取搜索索引目录的绝对路径
 fn search_index_dir(config: &config::schema::WikiConfig) -> std::path::PathBuf {
-    Path::new(&config.output.dir).join(config::schema::SEARCH_INDEX_DIR)
+    config.output_dir().join(config::schema::SEARCH_INDEX_DIR)
 }
 
 /// 实体级特征聚类接线（演进计划 T1.2b）
@@ -798,20 +780,17 @@ fn search_index_dir(config: &config::schema::WikiConfig) -> std::path::PathBuf {
 /// 降级为纯结构聚类（detect_features 的 embedder 参数传 None）。
 /// 特征聚类失败只告警不中断主流程（特征是附加信息，不影响生成主链路）。
 fn attach_features(graph: &mut model::KnowledgeGraph, config: &config::schema::WikiConfig) {
-    let embedder: Option<std::sync::Arc<dyn analysis::feature::Embedder>> = if config.embed.enabled {
+    let embedder: Option<std::sync::Arc<dyn analysis::feature::Embedder>> =
         match generate::embed::EmbeddingEngine::new(&config.embed, get_global_runtime().handle().clone()) {
-            Ok(e) => {
-                // 显式经中间 let 触发 unsize coercion（Option 内不自动转换）
-                let engine: std::sync::Arc<dyn analysis::feature::Embedder> = std::sync::Arc::new(e);
-                Some(engine)
-            }
-            Err(e) => {
-                tracing::warn!("特征聚类 Embedding 初始化失败，降级为纯结构聚类: {e}");
-                None
-            }
+        Ok(e) => {
+            // 显式经中间 let 触发 unsize coercion（Option 内不自动转换）
+            let engine: std::sync::Arc<dyn analysis::feature::Embedder> = std::sync::Arc::new(e);
+            Some(engine)
         }
-    } else {
-        None
+        Err(e) => {
+            tracing::warn!("特征聚类 Embedding 初始化失败，降级为纯结构聚类: {e}");
+            None
+        }
     };
     match analysis::feature::detect_features(graph, embedder.as_deref()) {
         Ok(features) => {
@@ -850,23 +829,36 @@ fn build_search_index(
     text_engine.index_batch(&items)?;
 
     // 如果 embed 已启用，构建语义索引
-    if config.embed.enabled {
-        let semantic_path = index_dir.join("semantic_index.db");
-        // 票 10 时序修正：先初始化 Embedding 引擎、成功后再删旧索引——
-        // 旧实现先删后初始化，key 缺失时旧索引已丢且引导误导
-        //（"请启用 embed"掩盖了真实原因是 key 未配置）。
-        // 失败时保留旧索引（可回退旧语义结果），并在引导中区分两种失败。
-        match generate::embed::EmbeddingEngine::new(&config.embed, get_global_runtime().handle().clone()) {
-            Ok(embedder) => {
-                let _ = std::fs::remove_file(&semantic_path);
-                let embedder = std::sync::Arc::new(embedder);
-                let mut semantic_engine = search::semantic::SemanticEngine::open(&semantic_path, embedder, get_global_runtime().clone())?;
-                semantic_engine.index_batch(&items)?;
-                tracing::info!("语义索引构建完成: {} 个实体已向量化", items.len());
+    let semantic_path = index_dir.join("semantic_index.db");
+    // 票 10 时序修正：先初始化 Embedding 引擎、成功后再删旧索引——
+    // 旧实现先删后初始化，key 缺失时旧索引已丢且引导误导
+    //（"请启用 embed"掩盖了真实原因是 key 未配置）。
+    // 失败时保留旧索引（可回退旧语义结果），并在引导中区分两种失败。
+    match generate::embed::EmbeddingEngine::new(&config.embed, get_global_runtime().handle().clone()) {
+        Ok(embedder) => {
+            let _ = std::fs::remove_file(&semantic_path);
+            let embedder = std::sync::Arc::new(embedder);
+            // 运行期失败（key 缺失/网络不可达）同样降级保留旧索引，不得
+            // `?` 中断主流程——与上方初始化失败的降级语义一致（v30 前
+            // embed.enabled=false 时整段跳过，无此失败路径；恒启用后
+            // 必须把两类失败都按"附加能力"对待）
+            match search::semantic::SemanticEngine::open(&semantic_path, embedder, get_global_runtime().clone()) {
+                Ok(mut semantic_engine) => match semantic_engine.index_batch(&items) {
+                    Ok(()) => {
+                        tracing::info!("语义索引构建完成: {} 个实体已向量化", items.len());
+                    }
+                    Err(e) => {
+                        tracing::warn!("语义索引构建失败（保留旧索引，搜索回退纯文本）: {}", e);
+                        let _ = std::fs::remove_file(&semantic_path);
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!("语义索引构建失败（保留旧索引，搜索回退纯文本）: {}", e);
+                }
             }
-            Err(e) => {
-                tracing::warn!("语义索引构建跳过（Embedding 引擎初始化失败，保留旧索引）: {}", e);
-            }
+        }
+        Err(e) => {
+            tracing::warn!("语义索引构建跳过（Embedding 引擎初始化失败，保留旧索引）: {}", e);
         }
     }
 
@@ -925,71 +917,69 @@ fn update_search_index_incremental(
     text_engine.index_batch(&items)?;
 
     // 增量更新语义索引（如已启用）
-    if config.embed.enabled {
-        let semantic_path = index_dir.join("semantic_index.db");
-        // A1（v14）：入口失败显式告警——此前两处 `if let Ok(...)` 静默吞掉
-        // EmbeddingEngine::new（key 缺失）与 SemanticEngine::open（DB 损坏）的
-        // 失败，增量语义更新在用户不知情时整段跳过（与全量路径 :702/:707 的
-        // warn 语义对齐：保留旧索引可观测，不静默）。
-        if semantic_path.exists() {
-            match generate::embed::EmbeddingEngine::new(&config.embed, get_global_runtime().handle().clone()) {
-                Ok(embedder) => {
-                    let embedder = std::sync::Arc::new(embedder);
-                    match search::semantic::SemanticEngine::open(&semantic_path, embedder.clone(), get_global_runtime().clone()) {
-                        Ok(mut semantic_engine) => {
-                            // U04/D2：embedding 维度探测——换模型（维度变化）时，增量
-                            // 删除 + 只回填变更集会把既有全部向量丢掉（vecdb 维度不匹配
-                            // 重建 DROP 全表，仅 warn）。探测到维度变化则回退全量重建
-                            // 语义索引（clear + 全量 items），与全量路径行为一致。
-                            let probe_dim = if items.is_empty() {
-                                None
-                            } else {
-                                match get_global_runtime().block_on(embedder.embed(&items[0].1)) {
-                                    Ok(v) => Some(v.len()),
-                                    Err(e) => {
-                                        tracing::warn!("embedding 维度探测失败，跳过维度重建检查: {}", e);
-                                        None
-                                    }
-                                }
-                            };
-                            // 维度探测失败（数据库损坏/权限）显式告警并跳过重建检查，
-                            // 不静默当作"维度未变"——保持行为的同时错误可见
-                            let dim_changed = match semantic_engine.table_dimension() {
-                                Ok(existing_dim) => probe_dim
-                                    .zip(existing_dim)
-                                    .is_some_and(|(new_dim, existing)| new_dim != existing),
+    let semantic_path = index_dir.join("semantic_index.db");
+    // A1（v14）：入口失败显式告警——此前两处 `if let Ok(...)` 静默吞掉
+    // EmbeddingEngine::new（key 缺失）与 SemanticEngine::open（DB 损坏）的
+    // 失败，增量语义更新在用户不知情时整段跳过（与全量路径 :702/:707 的
+    // warn 语义对齐：保留旧索引可观测，不静默）。
+    if semantic_path.exists() {
+        match generate::embed::EmbeddingEngine::new(&config.embed, get_global_runtime().handle().clone()) {
+            Ok(embedder) => {
+                let embedder = std::sync::Arc::new(embedder);
+                match search::semantic::SemanticEngine::open(&semantic_path, embedder.clone(), get_global_runtime().clone()) {
+                    Ok(mut semantic_engine) => {
+                        // U04/D2：embedding 维度探测——换模型（维度变化）时，增量
+                        // 删除 + 只回填变更集会把既有全部向量丢掉（vecdb 维度不匹配
+                        // 重建 DROP 全表，仅 warn）。探测到维度变化则回退全量重建
+                        // 语义索引（clear + 全量 items），与全量路径行为一致。
+                        let probe_dim = if items.is_empty() {
+                            None
+                        } else {
+                            match get_global_runtime().block_on(embedder.embed(&items[0].1)) {
+                                Ok(v) => Some(v.len()),
                                 Err(e) => {
-                                    tracing::warn!("读取语义索引维度失败，跳过维度重建检查: {}", e);
-                                    false
+                                    tracing::warn!("embedding 维度探测失败，跳过维度重建检查: {}", e);
+                                    None
                                 }
-                            };
-                            if dim_changed {
-                                tracing::warn!(
-                                    "embedding 维度变化，回退全量重建语义索引（增量删除+回填会丢全部既有向量）"
-                                );
-                                let all_items = collect_index_items(graph, &source_map);
-                                semantic_engine.clear()?;
-                                semantic_engine.index_batch(&all_items)?;
-                            } else {
-                                // t01/P1-1：删除与回填错误显式传播（与同函数 text 路径一致）。
-                                // 此前 `let _` 吞错：文本索引已更新而向量库停留旧态（新旧混存），
-                                // 搜索返回陈旧/错位结果且无任何日志；语义索引是搜索功能的一部分，
-                                // 静默失败不可接受。函数级隔离哲学不变——调用方（lib.rs Phase 5）
-                                // 仍以 warn 包装，不中断主流程。
-                                for file in changed_files {
-                                    semantic_engine.remove_by_file(&file.to_string_lossy())?;
-                                }
-                                semantic_engine.index_batch(&items)?;
                             }
-                        }
-                        Err(e) => {
-                            tracing::warn!("语义索引打开失败，增量语义更新跳过（保留旧索引）: {}", e);
+                        };
+                        // 维度探测失败（数据库损坏/权限）显式告警并跳过重建检查，
+                        // 不静默当作"维度未变"——保持行为的同时错误可见
+                        let dim_changed = match semantic_engine.table_dimension() {
+                            Ok(existing_dim) => probe_dim
+                                .zip(existing_dim)
+                                .is_some_and(|(new_dim, existing)| new_dim != existing),
+                            Err(e) => {
+                                tracing::warn!("读取语义索引维度失败，跳过维度重建检查: {}", e);
+                                false
+                            }
+                        };
+                        if dim_changed {
+                            tracing::warn!(
+                                "embedding 维度变化，回退全量重建语义索引（增量删除+回填会丢全部既有向量）"
+                            );
+                            let all_items = collect_index_items(graph, &source_map);
+                            semantic_engine.clear()?;
+                            semantic_engine.index_batch(&all_items)?;
+                        } else {
+                            // t01/P1-1：删除与回填错误显式传播（与同函数 text 路径一致）。
+                            // 此前 `let _` 吞错：文本索引已更新而向量库停留旧态（新旧混存），
+                            // 搜索返回陈旧/错位结果且无任何日志；语义索引是搜索功能的一部分，
+                            // 静默失败不可接受。函数级隔离哲学不变——调用方（lib.rs Phase 5）
+                            // 仍以 warn 包装，不中断主流程。
+                            for file in changed_files {
+                                semantic_engine.remove_by_file(&file.to_string_lossy())?;
+                            }
+                            semantic_engine.index_batch(&items)?;
                         }
                     }
+                    Err(e) => {
+                        tracing::warn!("语义索引打开失败，增量语义更新跳过（保留旧索引）: {}", e);
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!("Embedding 引擎初始化失败，增量语义更新跳过（保留旧索引）: {}", e);
-                }
+            }
+            Err(e) => {
+                tracing::warn!("Embedding 引擎初始化失败，增量语义更新跳过（保留旧索引）: {}", e);
             }
         }
     }
@@ -1093,14 +1083,10 @@ pub fn execute_search(
             Ok(search::hybrid::text_results_to_hits(results))
         }
         config::schema::SearchEngineType::Semantic => {
-            // U04/P3：与 hybrid 分支一致——embed 未启用时显式报错而非
-            // 继续打开索引（旧行为只查索引存在性，配置关闭 embed 时
-            // 语义搜索照常运行，与配置意图矛盾且无任何提示）。
-            if !config.embed.enabled {
-                anyhow::bail!("语义搜索未启用（配置 embed.enabled = false），请在配置中启用 embed 后重新运行 `repo-wiki generate`");
-            }
+            // v30：embed 已硬编码恒启用——语义索引缺失即引导（无嵌入
+            // key 时 generate 会告警跳过语义索引构建，见 build_search_index）
             if !semantic_path.exists() {
-                anyhow::bail!("语义索引不存在，请在配置中启用 embed 并运行 `repo-wiki generate`");
+                anyhow::bail!("语义索引不存在——未配置嵌入 key（embed.api_key_env）或索引未构建，请配置后重新运行 `repo-wiki generate`");
             }
             let embedder = generate::embed::EmbeddingEngine::new(&config.embed, get_global_runtime().handle().clone())?;
             let embedder = std::sync::Arc::new(embedder);
@@ -1120,7 +1106,7 @@ pub fn execute_search(
             // 召回，但错误可见而非静默（v5 审计：全 .ok() 链把失败全吞掉，
             // 用户配置了 embed 却永远收不到语义结果且无任何提示）
             let semantic_engine: Option<Box<dyn search::semantic::SemanticSearch>> =
-                if semantic_path.exists() && config.embed.enabled {
+                if semantic_path.exists() {
                     match generate::embed::EmbeddingEngine::new(&config.embed, get_global_runtime().handle().clone()) {
                         Ok(e) => match search::semantic::SemanticEngine::open(
                             &semantic_path,
@@ -1408,8 +1394,7 @@ mod tests {
             .join(format!("repo_wiki_test_force_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
-        let mut config = crate::config::schema::WikiConfig::default();
-        config.output.dir = dir.to_string_lossy().into_owned();
+        let config = crate::config::schema::WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
 
         // 构造旧 state：一个"人工修改过"的文档（磁盘内容与指纹不匹配）
         let state_dir = dir.join(".state");
@@ -1460,8 +1445,7 @@ mod tests {
             .join(format!("repo_wiki_test_corrupt_state_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
-        let mut config = crate::config::schema::WikiConfig::default();
-        config.output.dir = dir.to_string_lossy().into_owned();
+        let config = crate::config::schema::WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
 
         // 写入损坏的状态文件（半截 JSON）
         let state_dir = dir.join(".state");
@@ -1485,8 +1469,7 @@ mod tests {
             .join(format!("repo_wiki_test_missing_state_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
-        let mut config = crate::config::schema::WikiConfig::default();
-        config.output.dir = dir.to_string_lossy().into_owned();
+        let config = crate::config::schema::WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
 
         let (protected, state) = load_protection(&config, false).unwrap();
         assert!(protected.is_empty());

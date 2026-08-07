@@ -16,7 +16,6 @@
 
 use anyhow::Result;
 
-use std::path::Path;
 
 use crate::config::schema::WikiConfig;
 use crate::generate::llm::{LlmProvider, Message};
@@ -58,7 +57,7 @@ pub fn check_semantic_consistency(
             doc.content.chars().take(PAGE_EVIDENCE_LIMIT).collect::<String>()
         ));
     }
-    let api_path = crate::output::api_doc_path(Path::new(&config.output.dir), &config.wiki.language);
+    let api_path = crate::output::api_doc_path(config.output_dir(), &config.wiki.language);
     if let Ok(api_content) = std::fs::read_to_string(&api_path) {
         evidence.push_str(&format!(
             "### api.md 权威清单\n{}\n",

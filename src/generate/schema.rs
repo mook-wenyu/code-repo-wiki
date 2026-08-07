@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::config::plan::ResolvedPlan;
 use crate::config::schema::WikiConfig;
 use crate::generate::llm::{LlmProvider, Provider};
 use crate::generate::prompt;
@@ -58,7 +57,6 @@ pub async fn generate_schema_documents_at(
     root: &ProjectRoot,
     provider: &Provider,
     config: &WikiConfig,
-    plan: Option<&ResolvedPlan>,
 ) -> Result<Vec<WikiDocument>> {
     let files = collect_sql_files_at(root, config)?;
     if files.is_empty() {
@@ -72,7 +70,7 @@ pub async fn generate_schema_documents_at(
         let semaphore = &semaphore;
         handles.push(async move {
             let _permit = semaphore.acquire().await.map_err(|_| anyhow::anyhow!("信号量已关闭"))?;
-            generate_schema_document(provider, &file, config, plan).await
+            generate_schema_document(provider, &file, config).await
         });
     }
 
@@ -100,7 +98,6 @@ async fn generate_schema_document<P: LlmProvider>(
     provider: &P,
     path: &Path,
     config: &WikiConfig,
-    plan: Option<&ResolvedPlan>,
 ) -> Result<Option<WikiDocument>> {
     let sql = tokio::fs::read_to_string(path).await?;
     let blocks = extract_create_table_blocks(&sql);
@@ -108,7 +105,7 @@ async fn generate_schema_document<P: LlmProvider>(
         return Ok(None);
     }
 
-    let messages = prompt::schema_doc_prompt(path, &blocks, &config.wiki.language, plan);
+    let messages = prompt::schema_doc_prompt(path, &blocks, &config.wiki.language);
     let content =
         crate::generate::wiki::complete_with_mermaid_guard_free(provider, messages, "Schema 文档", None)
             .await?;
@@ -185,7 +182,7 @@ CREATE TABLE "quoted table" (
 
         let config = WikiConfig::default();
         let provider = Provider::Mock(MockProvider::new());
-        let doc = generate_schema_document(&provider, &sql_path, &config, None)
+        let doc = generate_schema_document(&provider, &sql_path, &config)
             .await
             .unwrap()
             .expect("应生成 Schema 文档");
@@ -208,7 +205,7 @@ CREATE TABLE "quoted table" (
         let config = WikiConfig::default();
         let provider = Provider::Mock(MockProvider::new());
         // 无建表语句的文件不生成文档，也不调用 LLM
-        let doc = generate_schema_document(&provider, &sql_path, &config, None)
+        let doc = generate_schema_document(&provider, &sql_path, &config)
             .await
             .unwrap();
         assert!(doc.is_none());
@@ -243,7 +240,7 @@ CREATE TABLE "quoted table" (
 
         let config = WikiConfig::default();
         let provider = BadMermaidProvider { calls: AtomicUsize::new(0) };
-        let doc = generate_schema_document(&provider, &sql_path, &config, None)
+        let doc = generate_schema_document(&provider, &sql_path, &config)
             .await
             .unwrap()
             .expect("坏图重试耗尽应降级而非失败");
@@ -286,7 +283,7 @@ CREATE TABLE "quoted table" (
 
         let config = WikiConfig::default();
         let provider = GoodMermaidProvider { calls: AtomicUsize::new(0) };
-        let doc = generate_schema_document(&provider, &sql_path, &config, None)
+        let doc = generate_schema_document(&provider, &sql_path, &config)
             .await
             .unwrap()
             .expect("好图应直通");

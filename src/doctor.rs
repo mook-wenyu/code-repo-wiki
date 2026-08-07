@@ -43,10 +43,10 @@ pub fn run(config_path: Option<&Path>, root: &ProjectRoot) -> Result<Vec<CheckRe
     };
     let config = match resolved {
         Ok((path, mut c)) => {
-            // output.dir 相对路径统一解析到 root（与 load_config_rooted 同语义）
-            let output_dir = Path::new(&c.output.dir);
+            // 输出目录相对路径统一解析到 root（与 load_config_rooted 同语义）
+            let output_dir = c.output_dir();
             if output_dir.is_relative() {
-                c.output.dir = root.path().join(output_dir).to_string_lossy().into_owned();
+                c.output_dir = Some(root.path().join(output_dir));
             }
             checks.push(CheckResult {
                 name: "配置",
@@ -67,7 +67,7 @@ pub fn run(config_path: Option<&Path>, root: &ProjectRoot) -> Result<Vec<CheckRe
 
     // 2. 产物目录可写（建目录 + 写探针文件删除；不可写时生成必失败，
     // 提前暴露比生成中途报错友好）
-    let output_dir = Path::new(&config.output.dir);
+    let output_dir = config.output_dir();
     let probe = output_dir.join(".doctor-write-probe");
     let writable = std::fs::create_dir_all(output_dir)
         .and_then(|_| std::fs::write(&probe, b"probe"))

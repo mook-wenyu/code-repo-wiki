@@ -643,12 +643,12 @@ pub fn run_bench(
     let start = Instant::now();
 
     let scan_start = Instant::now();
-    let pages = collect_wiki_pages(Path::new(&config.output.dir));
+    let pages = collect_wiki_pages(config.output_dir());
     let coverage = measure_coverage(root, config, &pages)?;
     let scan_ms = scan_start.elapsed().as_millis() as u64;
 
     let doc_info = measure_doc_info(&pages);
-    let lint = measure_lint(Path::new(&config.output.dir), root, config);
+    let lint = measure_lint(config.output_dir(), root, config);
 
     let gen_start = Instant::now();
     let update_recall = measure_update_recall(config_path, root)?;
@@ -699,12 +699,12 @@ pub fn run_rubrics_only(
     let start = Instant::now();
 
     let scan_start = Instant::now();
-    let pages = collect_wiki_pages(Path::new(&config.output.dir));
+    let pages = collect_wiki_pages(config.output_dir());
     let coverage = measure_coverage(root, config, &pages)?;
     let scan_ms = scan_start.elapsed().as_millis() as u64;
 
     let doc_info = measure_doc_info(&pages);
-    let lint = measure_lint(Path::new(&config.output.dir), root, config);
+    let lint = measure_lint(config.output_dir(), root, config);
 
     // Update Recall 回放成本不可接受（v21 D 组）：大仓库跳过，
     // 语义上等价于"快照缺失"——回放入口（run_bench）仍可单独跑。
@@ -741,7 +741,7 @@ pub fn run_rubrics_only(
 /// 或快照缺失时返回 None（与自动层"失败只告警"策略一致，不中断评测）。
 fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
     // 快照 = 旧文档集（上次生成意图）；当前产物从磁盘读
-    let snapshot_path = crate::output::export_snapshot_path(Path::new(&config.output.dir));
+    let snapshot_path = crate::output::export_snapshot_path(config.output_dir());
     let Ok(snapshot_content) = std::fs::read_to_string(&snapshot_path) else {
         tracing::warn!("TQS 跳过：导出快照不存在（先运行 generate 落盘快照）");
         return Ok(None);
@@ -760,7 +760,7 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
     let mut pairs: Vec<(String, String, String)> = Vec::new(); // (title, old, new)
     for title in old_docs.keys() {
         let page_path = crate::output::wiki_page_path(
-            Path::new(&config.output.dir),
+            config.output_dir(),
             &config.wiki.language,
             &crate::model::WikiDocument {
                 title: title.clone(),
@@ -1167,7 +1167,7 @@ const RUBRIC_AGGREGATION_LEVEL: &str = "叶子级 3 次多数投票（争议升�
 /// Rubric 打分执行（维度 7）：docs_tree → 3 次独立生成 → 1 次合并 →
 /// 叶子 0/1 判定 → 加权自底向上聚合
 ///
-/// root 为被测仓库根（README/docs 收集基准）；产物证据从 config.output.dir
+/// root 为被测仓库根（README/docs 收集基准）；产物证据从 config.output_dir().display()
 /// 读取（overview + api + 模块页标题，截断控制 token 成本）。
 /// LLM 不可用或 docs_tree 缺失时返回 None（"失败只告警"，不中断评测）。
 fn measure_rubrics(config: &WikiConfig, root: &ProjectRoot) -> Result<Option<RubricReport>> {
@@ -1257,7 +1257,7 @@ fn measure_rubrics(config: &WikiConfig, root: &ProjectRoot) -> Result<Option<Rub
     //    不满足」（实测 satisfied 0-12.6%），故按叶子 requirement 关键词
     //    检索 wiki 页正文 top-K，命中页正文片段拼入证据补足判定依据。
     //    pages 一次收集全量复用，循环内只做关键词检索（正文读取 I/O 不重复）
-    let pages = collect_wiki_pages(Path::new(&config.output.dir));
+    let pages = collect_wiki_pages(config.output_dir());
     // 5. 叶子 0/1 判定（顺序与 collect_leaves 一致，供聚合索引）。
     //    t04（Phase 2）：每叶子 3 次调用多数投票——2606.13685 单次判定
     //    保真仅 86.6%，3 trials 达约 90%；1:2 争议（含 abstain 平票）
@@ -1269,7 +1269,7 @@ fn measure_rubrics(config: &WikiConfig, root: &ProjectRoot) -> Result<Option<Rub
         // requirement 变化；top_k=2（2 页 × 3000 字符 ≈ 6K，叠加摘要
         // ≈ 19K 仍在 20K cap 内，页数再多检索节尾部会被截断而失去
         // 意义）；检索节追加后整体截断，总证据仍 cap 20K 防 token 失控
-        let mut evidence = build_evidence(Path::new(&config.output.dir), &config.wiki.language);
+        let mut evidence = build_evidence(config.output_dir(), &config.wiki.language);
         let retrieved = search_pages(&pages, &extract_keywords(&leaf.requirement), 2);
         if !retrieved.is_empty() {
             evidence.push_str("\n\n# 检索到的页面正文\n");
@@ -1908,7 +1908,7 @@ pub fn render_markdown(report: &BenchReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::schema::{LlmProviderType, LlmSection, OutputSection, WikiSection};
+    use crate::config::schema::{LlmProviderType, LlmSection, WikiSection};
     use std::path::PathBuf;
 
     /// 构造临时小仓库：src/a.rs + src/b.rs（含 git 仓库，供增量回放）
@@ -1920,8 +1920,8 @@ mod tests {
         std::fs::write(dir.join("src").join("b.rs"), "pub fn beta(x: u32) -> u32 { x + 2 }\n").unwrap();
 
         let config = WikiConfig {
-            output: OutputSection { dir: dir.join(".repo-wiki").to_string_lossy().into_owned() },
-            wiki: WikiSection { language: "zh".into(), ..Default::default() },
+            output_dir: Some((dir.join(".repo-wiki").to_string_lossy().into_owned()).into()),
+            wiki: WikiSection { language: "zh".into() },
             llm: LlmSection { provider: LlmProviderType::Mock, ..Default::default() },
             ..Default::default()
         };
@@ -1962,7 +1962,7 @@ mod tests {
         commit_all(root.path(), "init");
         crate::run_pipeline(Some(&config_path), None, false, &root, &crate::GenerationMode::Full).unwrap();
 
-        let pages = collect_wiki_pages(Path::new(&config.output.dir));
+        let pages = collect_wiki_pages(config.output_dir());
         assert!(!pages.is_empty(), "全量生成后应有产物页");
         let cov = measure_coverage(&root, &config, &pages).unwrap();
         assert_eq!(cov.total_entities, 2, "应解析出 alpha/beta 两个实体");
@@ -1976,7 +1976,7 @@ mod tests {
     #[test]
     fn test_coverage_zero_without_pages() {
         let (root, _, config) = bench_repo("cov0");
-        let pages = collect_wiki_pages(Path::new(&config.output.dir));
+        let pages = collect_wiki_pages(config.output_dir());
         assert!(pages.is_empty());
         let cov = measure_coverage(&root, &config, &pages).unwrap();
         assert_eq!(cov.total_entities, 2);

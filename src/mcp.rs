@@ -163,7 +163,7 @@ impl RepoWikiMcp {
         if page.contains('/') || page.contains('\\') || page.contains("..") || Path::new(&page).is_absolute() {
             return format!("非法的页面名: {page}（只允许单段文件名）");
         }
-        let path = std::path::Path::new(&config.output.dir)
+        let path = config.output_dir()
             .join("wiki")
             .join(&lang)
             .join(format!("{page}.md"));
@@ -193,7 +193,7 @@ impl RepoWikiMcp {
         if card.contains('/') || card.contains('\\') || card.contains("..") || Path::new(&card).is_absolute() {
             return format!("非法的卡片名: {card}（只允许单段文件名）");
         }
-        let path = std::path::Path::new(&config.output.dir)
+        let path = config.output_dir()
             .join("cards")
             .join(&lang)
             .join(format!("{card}.md"));

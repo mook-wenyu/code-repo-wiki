@@ -13,7 +13,6 @@ use std::time::Instant;
 
 use anyhow::Result;
 
-use crate::config::plan::ResolvedPlan;
 use crate::config::schema::WikiConfig;
 use crate::ingest::parser::FileInsight;
 use crate::model::{KnowledgeCard, KnowledgeGraph, WikiDocument};
@@ -95,16 +94,11 @@ pub async fn run_generation(
     // 2. 创建 LLM Provider
     let provider = create_provider(config)?;
 
-    // 2.3 解析 wiki_plan.yaml 生效计划（禁用或文件缺失 → None；坏文件中断；
-    // 路径相对项目根解析，不依赖进程 cwd）
-    let plan = crate::config::plan::resolve_plan_at(root, config)?;
-
     // 2.5 Level 0 实体摘要（并行，演进计划 T3.1）：为每个实体生成摘要
     generate_entity_summaries(
         &provider,
         &mut chunks,
         &config.wiki.language,
-        plan.as_ref(),
         crate::config::schema::LLM_MAX_CONCURRENT,
         |_, _| true,
     )
@@ -116,7 +110,6 @@ pub async fn run_generation(
         config.clone(),
         crate::config::schema::LLM_MAX_CONCURRENT,
         config.wiki.language.clone(),
-        plan.clone(),
     );
     let mut cards = card_gen
         .generate_all_cards(&chunks, extra_edits)
@@ -127,16 +120,13 @@ pub async fn run_generation(
 
     // 4. 按语言独立生成 Wiki 页面（并行，演进计划 T3.1；卡片仅主语言生成一次，
     // 各语言页面复用主语言卡片摘要；语言列表在 generate_wiki_pages 内部计算）
-    let wiki_gen = WikiGenerator::new(&provider, plan.clone(), crate::config::schema::LLM_MAX_CONCURRENT);
+    let wiki_gen = WikiGenerator::new(&provider, crate::config::schema::LLM_MAX_CONCURRENT);
     let mut documents =
         generate_wiki_pages(&wiki_gen, &chunks, &cards, config, crate::config::schema::LLM_MAX_CONCURRENT, root, &build_entity_ranges(insights)).await;
     tracing::info!("生成进度: 90% - Wiki 页面生成完成，共 {} 个页面", documents.len());
 
     // 5. 生成全局文档（架构概览 + 数据库 Schema，全量/增量共用同一辅助函数）
-    generate_global_documents(&wiki_gen, &provider, graph, config, root, plan.as_ref(), &cards, &mut documents, &GlobalDocAffected::all(), false).await?;
-
-    // 6. 按计划文档白名单过滤（严格只输出列出的页面）
-    documents = filter_by_whitelist(documents, plan.as_ref());
+    generate_global_documents(&wiki_gen, &provider, graph, config, root, &cards, &mut documents, &GlobalDocAffected::all(), false).await?;
 
     let elapsed = start.elapsed();
     let stats = GenerationStats {
@@ -176,11 +166,6 @@ pub async fn run_generation_filtered(
     let changed_files = &inc.changed_files;
     let entity_changes = &inc.entity_changes;
     let affected_modules = &inc.affected_modules;
-
-    // 2.5 解析 wiki_plan.yaml 生效计划（禁用或文件缺失 → None；坏文件中断；
-    // 路径相对项目根解析，不依赖进程 cwd）。提前到纯删除分支之前：
-    // 该分支的产物回填同样需要白名单过滤（与正常路径一致）。
-    let plan = crate::config::plan::resolve_plan_at(root, config)?;
 
     // 过滤出变更文件的 Insight（克隆为拥有数据）。
     // T2 传播闭环接线：除变更文件外，语义传播判定的受影响模块文件也
@@ -228,7 +213,7 @@ pub async fn run_generation_filtered(
     let surviving_files: std::collections::HashSet<std::path::PathBuf> = if deleted_files.is_empty() {
         std::collections::HashSet::new()
     } else if let Ok(content) =
-        std::fs::read_to_string(crate::output::export_snapshot_path(Path::new(&config.output.dir)))
+        std::fs::read_to_string(crate::output::export_snapshot_path(config.output_dir()))
         && let Ok(snapshot) = serde_json::from_str::<crate::output::ExportSnapshot>(&content)
     {
         snapshot
@@ -270,7 +255,7 @@ pub async fn run_generation_filtered(
         // 差集语义把**全部**旧产物清空（无关模块页也被删）。
         // 修复：从导出快照回填未删除模块的旧产物（零 LLM 成本）；
         // 快照缺失（异常）时回退全量生成，宁可多生成也不丢数据。
-        if let Ok(content) = std::fs::read_to_string(crate::output::export_snapshot_path(Path::new(&config.output.dir)))
+        if let Ok(content) = std::fs::read_to_string(crate::output::export_snapshot_path(config.output_dir()))
             && let Ok(snapshot) = serde_json::from_str::<crate::output::ExportSnapshot>(&content)
         {
             // 快照回填：仅剔除整模块全删（related_files 全部不存在）的卡片与
@@ -302,8 +287,6 @@ pub async fn run_generation_filtered(
                 cards.len(),
                 deleted_modules.len()
             );
-            // 与正常路径一致：回填产物同样过白名单过滤（严格只输出列出的页面）
-            let documents = filter_by_whitelist(documents, plan.as_ref());
             return Ok(GenerationOutput {
                 cards,
                 documents,
@@ -355,7 +338,6 @@ pub async fn run_generation_filtered(
             &provider,
             &mut chunks,
             &config.wiki.language,
-            plan.as_ref(),
             crate::config::schema::LLM_MAX_CONCURRENT,
             |chunk, ei| {
                 chunk
@@ -374,7 +356,6 @@ pub async fn run_generation_filtered(
         config.clone(),
         crate::config::schema::LLM_MAX_CONCURRENT,
         config.wiki.language.clone(),
-        plan.clone(),
     );
     let mut cards = card_gen
         .generate_all_cards(&chunks, extra_edits)
@@ -384,7 +365,7 @@ pub async fn run_generation_filtered(
 
     // 4. 按语言独立生成 Wiki 页面（并行，演进计划 T3.1；仅变更块；卡片仅主语言生成一次，
     // 各语言页面复用主语言卡片摘要）
-    let wiki_gen = WikiGenerator::new(&provider, plan.clone(), crate::config::schema::LLM_MAX_CONCURRENT);
+    let wiki_gen = WikiGenerator::new(&provider, crate::config::schema::LLM_MAX_CONCURRENT);
     let mut documents =
         generate_wiki_pages(&wiki_gen, &chunks, &cards, config, crate::config::schema::LLM_MAX_CONCURRENT, root, &build_entity_ranges(insights)).await;
 
@@ -400,10 +381,7 @@ pub async fn run_generation_filtered(
             .iter()
             .any(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("sql"))),
     };
-    generate_global_documents(&wiki_gen, &provider, graph, config, root, plan.as_ref(), &cards, &mut documents, &global_affected, inc.has_deleted_files).await?;
-
-    // 6. 按计划文档白名单过滤（严格只输出列出的页面）
-    documents = filter_by_whitelist(documents, plan.as_ref());
+    generate_global_documents(&wiki_gen, &provider, graph, config, root, &cards, &mut documents, &global_affected, inc.has_deleted_files).await?;
 
     let elapsed = start.elapsed();
     let stats = GenerationStats {
@@ -446,27 +424,6 @@ fn build_entity_ranges(insights: &[FileInsight]) -> crate::output::citation::Ent
                 .collect();
             (key, ranges)
         })
-        .collect()
-}
-
-/// 按计划文档白名单过滤输出文档
-///
-/// 全量与增量两条生成路径共用（DRY），避免复制过滤实现。
-/// 语义：白名单列出严格只输出的页面集合，未列出的文档丢弃；
-/// 白名单为 None 时原样返回（"全部生成"）。过滤发生在生成之后、
-/// 渲染之前，LLM 调用成本不受白名单影响（与 Qoder 语义一致）。
-fn filter_by_whitelist(
-    documents: Vec<WikiDocument>,
-    plan: Option<&ResolvedPlan>,
-) -> Vec<WikiDocument> {
-    let Some(whitelist) = plan.and_then(|p| p.whitelist.as_ref()) else {
-        return documents;
-    };
-    let allowed: std::collections::HashSet<&str> =
-        whitelist.iter().map(|d| d.title.as_str()).collect();
-    documents
-        .into_iter()
-        .filter(|d| allowed.contains(d.title.as_str()))
         .collect()
 }
 
@@ -519,7 +476,6 @@ async fn generate_entity_summaries(
     provider: &Provider,
     chunks: &mut [Chunk],
     language: &str,
-    plan: Option<&ResolvedPlan>,
     max_concurrent: usize,
     filter: impl Fn(&Chunk, usize) -> bool,
 ) {
@@ -534,7 +490,7 @@ async fn generate_entity_summaries(
                 .enumerate()
                 .filter(|(ei, e)| e.summary.is_none() && filter(chunk, *ei))
                 .map(move |(ei, entity)| {
-                    (ci, ei, prompt::entity_summary_prompt(entity, language, plan))
+                    (ci, ei, prompt::entity_summary_prompt(entity, language))
                 })
         })
         .collect();
@@ -650,9 +606,9 @@ impl GlobalDocAffected {
 /// 因此增量路径也必须重新生成，否则增量输出会比全量输出缺少这三类页面。
 /// 全局文档生成（架构概览 + 项目概览 + 数据库 Schema）
 ///
-/// 参数为生成上下文的完整输入集（8 个）：wiki_gen 与 provider 是两条独立
-/// LLM 通道（页面 vs 全局文档）、graph/config/root/plan/cards 是生成所需的
-/// 图结构、配置、项目根、计划与卡片摘要、documents 是输出累加器。
+/// 参数为生成上下文的完整输入集（7 个）：wiki_gen 与 provider 是两条独立
+/// LLM 通道（页面 vs 全局文档）、graph/config/root/cards 是生成所需的
+/// 图结构、配置、项目根与卡片摘要、documents 是输出累加器。
 /// 引入上下文结构体需新增类型仅服务本函数两处调用，YAGNI——保留平铺
 /// 参数并在此说明，属明确的例外。
 #[allow(clippy::too_many_arguments)]
@@ -662,7 +618,6 @@ async fn generate_global_documents(
     graph: &KnowledgeGraph,
     config: &WikiConfig,
     root: &crate::project::ProjectRoot,
-    plan: Option<&ResolvedPlan>,
     cards: &[KnowledgeCard],
     documents: &mut Vec<WikiDocument>,
     affected: &GlobalDocAffected,
@@ -763,13 +718,13 @@ async fn generate_global_documents(
 
     // 数据库 Schema 文档：无 .sql 文件时内部直接返回空列表，不调用 LLM
     if affected.schema {
-        match schema::generate_schema_documents_at(root, provider, config, plan).await {
+        match schema::generate_schema_documents_at(root, provider, config).await {
             Ok(mut schema_docs) => documents.append(&mut schema_docs),
             Err(e) => tracing::warn!("数据库 Schema 文档生成跳过: {}", e),
         }
     } else if !backfill_global_docs(config, documents, &[crate::model::DocumentKind::DatabaseSchema]) {
         tracing::info!("Schema 快照回填不可用，回退重新生成");
-        match schema::generate_schema_documents_at(root, provider, config, plan).await {
+        match schema::generate_schema_documents_at(root, provider, config).await {
             Ok(mut schema_docs) => documents.append(&mut schema_docs),
             Err(e) => tracing::warn!("数据库 Schema 文档生成跳过: {}", e),
         }
@@ -795,7 +750,7 @@ pub(crate) fn backfill_global_docs(
     documents: &mut Vec<WikiDocument>,
     kinds: &[crate::model::DocumentKind],
 ) -> bool {
-    let snapshot_path = crate::output::export_snapshot_path(Path::new(&config.output.dir));
+    let snapshot_path = crate::output::export_snapshot_path(config.output_dir());
     let Ok(content) = std::fs::read_to_string(&snapshot_path) else {
         return false;
     };
@@ -824,7 +779,6 @@ pub(crate) fn backfill_global_docs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::plan::PlanDocument;
     use crate::model::DocumentKind;
 
     /// 构造指定标题的 WikiDocument（测试辅助，其余字段留空）
@@ -839,53 +793,6 @@ mod tests {
             last_updated: String::new(),
             fingerprint: None,
         }
-    }
-
-    /// 构造只含白名单标题的 ResolvedPlan（测试辅助）
-    fn make_whitelist_plan(titles: &[&str]) -> ResolvedPlan {
-        ResolvedPlan {
-            whitelist: Some(
-                titles
-                    .iter()
-                    .map(|t| PlanDocument {
-                        title: (*t).into(),
-                        goal: String::new(),
-                        parent: None,
-                        include_patterns: vec![],
-                        exclude_patterns: vec![],
-                        hints: None,
-                    })
-                    .collect(),
-            ),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn test_whitelist_filters_documents() {
-        // 3 个文档 + 白名单 2 个 → 输出仅保留白名单内的 2 个，顺序不变
-        let documents = vec![
-            make_document("模块A"),
-            make_document("模块B"),
-            make_document("模块C"),
-        ];
-        let plan = make_whitelist_plan(&["模块A", "模块C"]);
-        let filtered = filter_by_whitelist(documents, Some(&plan));
-        assert_eq!(filtered.len(), 2);
-        assert_eq!(filtered[0].title, "模块A");
-        assert_eq!(filtered[1].title, "模块C");
-    }
-
-    #[test]
-    fn test_whitelist_none_keeps_all_documents() {
-        // 白名单为 None（未配置或空白名单折叠）→ 全部文档保留
-        let documents = vec![
-            make_document("模块A"),
-            make_document("模块B"),
-            make_document("模块C"),
-        ];
-        let filtered = filter_by_whitelist(documents, None);
-        assert_eq!(filtered.len(), 3);
     }
 
     /// P1-2：导出快照回填——未受影响的全局文档从快照恢复，且不与
@@ -928,8 +835,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut config = WikiConfig::default();
-        config.output.dir = dir.to_string_lossy().to_string();
+        let config = WikiConfig { output_dir: Some(dir.clone()), ..Default::default() };
 
         // 本次已生成 overview（模拟模块页变化触发概览重生成）→ 只回填架构
         let mut documents = vec![overview.clone()];
@@ -952,8 +858,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        let mut config = WikiConfig::default();
-        config.output.dir = dir.to_string_lossy().to_string();
+        let config = WikiConfig { output_dir: Some(dir.clone()), ..Default::default() };
 
         let mut documents = Vec::new();
         let filled = backfill_global_docs(&config, &mut documents, &[DocumentKind::ArchitectureOverview]);
@@ -985,9 +890,11 @@ mod tests {
         )
         .unwrap();
 
-        let mut config = WikiConfig::default();
-        config.output.dir = dir.to_string_lossy().to_string();
-        config.wiki.language = "en".into(); // 当前配置已切换为 en
+        let config = WikiConfig {
+            output_dir: Some(dir.clone()),
+            wiki: crate::config::schema::WikiSection { language: "en".into() },
+            ..Default::default()
+        };
 
         let mut documents = Vec::new();
         let filled = backfill_global_docs(&config, &mut documents, &[DocumentKind::ArchitectureOverview]);
@@ -1070,8 +977,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut config = WikiConfig::default();
-        config.output.dir = dir.to_string_lossy().to_string();
+        let config = WikiConfig { output_dir: Some(dir.clone()), ..Default::default() };
 
         let mut documents = Vec::new();
         let filled = backfill_global_docs(&config, &mut documents, &[DocumentKind::DatabaseSchema]);

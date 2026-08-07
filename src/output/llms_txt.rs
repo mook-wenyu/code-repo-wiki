@@ -647,8 +647,7 @@ mod tests {
             .join(format!("repo_wiki_test_llms_mtime_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let mut config = WikiConfig::default();
-        config.output.dir = dir.to_string_lossy().into_owned();
+        let config = WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
         write_llms_txt(&dir, &[], &[], &config).unwrap();
         let content = std::fs::read_to_string(llms_txt_path(&dir)).unwrap();
         assert!(

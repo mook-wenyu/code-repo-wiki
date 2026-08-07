@@ -1,10 +1,9 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::Result;
 use futures::future::join_all;
 
-use crate::config::plan::ResolvedPlan;
 use crate::config::schema::WikiConfig;
 use crate::generate::chunk::Chunk;
 use crate::generate::llm::{LlmProvider, Provider};
@@ -53,8 +52,6 @@ pub struct CardGenerator<'a, P: LlmProvider> {
     semaphore: tokio::sync::Semaphore,
     /// 输出语言（用于 prompt 模板）
     language: String,
-    /// 生效计划（用于 notes 注入，None 表示未启用）
-    plan: Option<ResolvedPlan>,
     /// 项目配置（卡片定位：生成前从旧卡片恢复人工修改记录，与单卡路径同构）
     config: WikiConfig,
     /// 生成失败的模块名列表（演进计划 T3.2 失败隔离：失败只记录不中断）
@@ -66,14 +63,12 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
     ///
     /// max_concurrent 控制并行 LLM 调用的最大并发数（0 表示不限制）。
     /// language 指定生成内容的语言。
-    /// plan 为解析后的生效计划（无计划时传 None）。
     /// config 提供产物路径定位（卡片文件读/写规则），供人工修改记录恢复。
     pub fn new(
         provider: &'a P,
         config: WikiConfig,
         max_concurrent: usize,
         language: String,
-        plan: Option<ResolvedPlan>,
     ) -> Self {
         // tokio Semaphore 许可数有 MAX_PERMITS 上限（约 2^61），usize::MAX 会 panic；
         // "0=不限制" 用足够大的许可数表达（对真实并发规模永不构成瓶颈）
@@ -83,7 +78,6 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
             call_count: AtomicUsize::new(0),
             semaphore: tokio::sync::Semaphore::new(max),
             language,
-            plan,
             config,
             failed: std::sync::Mutex::new(Vec::new()),
         }
@@ -124,7 +118,6 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
         let messages = prompt::knowledge_card_prompt(
             chunk,
             &self.language,
-            self.plan.as_ref(),
             pending_manual_edits,
         );
         let response = self.provider.complete(&messages).await?;
@@ -225,7 +218,7 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
 /// 卡片文件路径：cards/{主语言}/{module.replace("::","_")}.md（与 render_all 写盘规则一致）
 fn card_path(config: &WikiConfig, module: &str) -> PathBuf {
     let primary_lang = &crate::output::wiki_languages(config)[0];
-    crate::output::card_page_path(Path::new(&config.output.dir), primary_lang, module)
+    crate::output::card_page_path(config.output_dir(), primary_lang, module)
 }
 
 /// 读取现有卡片 markdown（按模块名定位 cards/{lang}/{module}.md）
@@ -315,8 +308,7 @@ pub async fn generate_module_card(
         .map(|content| extract_pending_manual_edits(&content))
         .unwrap_or_default();
 
-    let plan = crate::config::plan::resolve_plan_at(root, config)?;
-    let generator = CardGenerator::new(provider, config.clone(), 1, config.wiki.language.clone(), plan);
+    let generator = CardGenerator::new(provider, config.clone(), 1, config.wiki.language.clone());
     let card = generator.generate_card(&chunk, &pending).await?;
     let content = crate::output::markdown::render_knowledge_card(&card);
 
@@ -549,9 +541,8 @@ mod tests {
     fn card_fixture(tag: &str, module: &str, content: &str) -> (WikiConfig, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("repo_wiki_card_{tag}_{}_{}", module.replace("::", "_"), std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let mut config = WikiConfig::default();
-        config.output.dir = dir.to_string_lossy().into_owned();
-        std::fs::create_dir_all(Path::new(&config.output.dir).join("cards").join("zh")).unwrap();
+        let config = WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
+        std::fs::create_dir_all(config.output_dir().join("cards").join("zh")).unwrap();
         std::fs::write(card_path(&config, module), content).unwrap();
         (config, dir)
     }
@@ -572,7 +563,7 @@ mod tests {
         .unwrap();
 
         // 写回路径与 render_all 一致：cards/zh/crate_test.md
-        let written = std::fs::read_to_string(Path::new(&config.output.dir).join("cards").join("zh").join("crate_test.md")).unwrap();
+        let written = std::fs::read_to_string(config.output_dir().join("cards").join("zh").join("crate_test.md")).unwrap();
         assert!(written.contains("模拟摘要"), "应写入 Mock Provider 的响应内容");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -617,7 +608,7 @@ mod tests {
         let chunk = make_test_chunk();
         let provider = Provider::Mock(MockProvider::new());
         let (config, dir) = card_fixture("pending", "src", "旧卡片内容");
-        let generator = CardGenerator::new(&provider, config, 1, "zh".into(), None);
+        let generator = CardGenerator::new(&provider, config, 1, "zh".into());
         // 带记录：LLM 输入注入且生成后回填（渲染不丢）
         let pending = vec!["人工修改待同步: wiki/zh/src_config.md 内容摘要: 用户改的".into()];
         let card = generator.generate_card(&chunk, &pending).await.unwrap();
@@ -643,7 +634,7 @@ mod tests {
             "# src\n\n## 摘要\n旧内容\n\n## 人工修改待同步\n\n- 人工修改待同步: wiki/zh/src.md 内容摘要: 旧记录\n",
         );
 
-        let generator = CardGenerator::new(&provider, config, 1, "zh".into(), None);
+        let generator = CardGenerator::new(&provider, config, 1, "zh".into());
         // 本次新增记录（模块名 → 记录文本，lib.rs 组装）
         let mut extra = std::collections::HashMap::new();
         extra.insert(
@@ -685,7 +676,7 @@ mod tests {
         std::fs::remove_file(&card_file).unwrap();
         std::fs::create_dir_all(&card_file).unwrap();
 
-        let generator = CardGenerator::new(&provider, config, 1, "zh".into(), None);
+        let generator = CardGenerator::new(&provider, config, 1, "zh".into());
         let mut extra = std::collections::HashMap::new();
         extra.insert(
             "src".to_string(),

@@ -19,7 +19,7 @@ pub struct StatusReport {
 ///
 /// 目录不存在时数量计 0、lint 无问题，不算缺陷（未生成也是合法状态）。
 pub fn status_report(config: &WikiConfig, root: &crate::project::ProjectRoot) -> StatusReport {
-    let output_dir = Path::new(&config.output.dir);
+    let output_dir = config.output_dir();
     // ready = wiki 目录存在且含 .md 文件（有产物才算生成过）
     let wiki_pages = collect_md_files(&output_dir.join("wiki")).len();
     let cards = collect_md_files(&output_dir.join("cards")).len();
@@ -34,7 +34,7 @@ pub fn status_report(config: &WikiConfig, root: &crate::project::ProjectRoot) ->
         wiki_pages,
         cards,
         issues,
-        config_path: config.output.dir.clone(),
+        config_path: config.output_dir().to_string_lossy().into_owned(),
     }
 }
 
@@ -530,7 +530,7 @@ pub fn install_wiki(root: &crate::project::ProjectRoot, also_claude: bool) -> Re
     // 形态自动生效），此处取的是 output.dir/language（项目契约，不受净化影响）
     let config_path = root.join(Path::new(crate::config::PROJECT_CONFIG_FILE));
     let (output_dir, lang) = match crate::config::load_config(&config_path) {
-        Ok(c) => (c.output.dir, c.wiki.language),
+        Ok(c) => (c.output_dir().to_string_lossy().into_owned(), c.wiki.language),
         Err(e) => {
             println!("提示: 未找到有效配置（{}），注入块按默认产物路径 (.repo-wiki / zh) 渲染", e);
             (".repo-wiki".to_string(), "zh".to_string())

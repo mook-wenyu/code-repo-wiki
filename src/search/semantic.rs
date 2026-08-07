@@ -224,7 +224,7 @@ mod tests {
 
     fn mock_embedder() -> Arc<EmbeddingEngine> {
         let config = EmbedSection {
-            enabled: false,
+
             model: "text-embedding-3-small".into(),
             api_key: Some("test-key".into()),
             api_key_env: "OPENAI_API_KEY".into(),
@@ -236,7 +236,7 @@ mod tests {
     /// 构造指向本地 mock 的 Embedding 引擎（base_url 带 /v1 前缀）
     fn embedder_with_server(base_url: &str, rt: &Arc<Runtime>) -> Arc<EmbeddingEngine> {
         let config = EmbedSection {
-            enabled: false,
+
             model: "text-embedding-3-small".into(),
             api_key: Some("test-key".into()),
             api_key_env: "OPENAI_API_KEY".into(),

@@ -464,7 +464,7 @@ fn main() -> anyhow::Result<()> {
             // 用户立即可见；只告警不改变退出码（"失败只告警"策略——产物
             // 缺陷由 lint 门禁兜底拦截，update 主流程语义不受影响）。
             let cfg = repo_wiki::load_config_rooted(config.as_deref(), &root)?;
-            let output_dir = Path::new(&cfg.output.dir);
+            let output_dir = cfg.output_dir();
             let source_roots = repo_wiki::commands::source_roots_from_include_rooted(&cfg.scope.include, &root);
             let issues = repo_wiki::output::lint::lint(output_dir, &source_roots);
             // v14 D 组（t05 拍板）：语义一致性检查（LLM 跨页矛盾，变更驱动——
@@ -500,7 +500,7 @@ fn main() -> anyhow::Result<()> {
             // 人工修改保护检测失效（旧实现 sync 相对 cwd 解析，root 化后错位）。
             let root = resolve_root(root.as_deref())?;
             let cfg = repo_wiki::load_config_rooted(config.as_deref(), &root)?;
-            repo_wiki::commands::sync_from_git(Path::new(&cfg.output.dir))?;
+            repo_wiki::commands::sync_from_git(cfg.output_dir())?;
             tracing::info!("同步完成 (--config {})", config.as_deref().map(|p| p.display().to_string()).unwrap_or_else(|| "默认链".into()));
         }
         Commands::Status { config, root } => {
@@ -552,7 +552,7 @@ fn main() -> anyhow::Result<()> {
                      std::process::exit(2);
                  }
              };
-            let output_dir = Path::new(&cfg.output.dir);
+            let output_dir = cfg.output_dir();
             // 源码根从 scope.include 派生(取通配符前的目录前缀,如 "src/**" → "src")：
             // 过时检查需要对比源文件 mtime,空根会导致检查静默跳过(缺陷修复前行为)。
             // 必须相对 root 绝对化——root≠cwd 时（--root 指向其他仓库）相对根会
@@ -632,13 +632,13 @@ fn main() -> anyhow::Result<()> {
                 // 快照缺失时明确报错（不静默回退重生成——回退会掩盖
                 // 快照契约被破坏的事实）。
                 let snapshot_path =
-                    repo_wiki::output::export_snapshot_path(Path::new(&cfg.output.dir));
+                    repo_wiki::output::export_snapshot_path(cfg.output_dir());
                 // 票 04 陈旧检测：快照 mtime 早于任一 wiki 页 mtime = 产物在
                 // 快照之后被更新（快照写入失败/被外部改动/产物被手动编辑），
                 // 继续导出会静默输出过期内容——显式报错引导重新生成。
                 if let (Ok(snapshot_mtime), Some(latest_page)) = (
                     std::fs::metadata(&snapshot_path).and_then(|m| m.modified()),
-                    repo_wiki::output::latest_wiki_page_mtime(Path::new(&cfg.output.dir)),
+                    repo_wiki::output::latest_wiki_page_mtime(cfg.output_dir()),
                 ) && snapshot_mtime < latest_page
                 {
                     anyhow::bail!(
@@ -687,7 +687,7 @@ fn main() -> anyhow::Result<()> {
             let root = resolve_root(root.as_deref())?;
             let cfg = repo_wiki::load_config_rooted(config.as_deref(), &root)?;
             repo_wiki::commands::append_note(
-                Path::new(&cfg.output.dir),
+                cfg.output_dir(),
                 &cfg.wiki.language,
                 &text,
             )?;
