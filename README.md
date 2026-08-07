@@ -246,3 +246,17 @@ CLI 使用：`repo-wiki search --query "keyword" --engine hybrid --top-k 10`
 - **`llms-full.txt`**：模块职责一句话 + 实体清单（签名级）内联索引（llms.txt 的超集，社区惯例格式非官方规范）。单次读取即获得完整骨架，无需逐页打开；32K token 预算内按启发式裁剪（丢常量级条目 → 丢无源码定位条目 → 实体签名截断 → 整模块省略，模块名始终保留）
 
 两者都是确定性重生成产物，不参与人工修改保护。
+
+## 发布（维护者）
+
+新版本发布流程（HITL，需 GitHub 凭证）：
+
+1. **版本号**：按 SemVer 更新 `Cargo.toml` 的 `version`；`CHANGELOG.md` 把
+   `[Unreleased]` 归档为 `[版本号] - 日期`
+2. **验证**：`cargo test`（全量）+ `cargo clippy --all-targets -- -D warnings`
+   + `cargo machete` 全部通过；在真实仓库跑一次 `repo-wiki generate` 冒烟
+3. **发布**：`cargo publish`（crates.io 凭证）；发布成功后打 tag：
+   `git tag v<版本号> && git push origin v<版本号>`
+4. **产物自检**：`cargo install repo-wiki` 在干净环境安装后运行
+   `repo-wiki install` + `repo-wiki doctor` 验证六查全绿
+

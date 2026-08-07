@@ -109,6 +109,9 @@ fn architecture_overview_system_prompt(language: &str) -> String {
 ## 架构决策
 可以从此架构中推断出的关键架构决策。
 
+**模块真实性约束（必须遵守）**：模块划分小节只列出输入模块聚类信息中给出的
+模块名，不得添加、改名或合并输入中不存在的模块。
+
 请用 {} 语言输出。保留 Markdown 格式。"#,
         language
     )
@@ -189,6 +192,9 @@ Knowledge Card 是给 AI Agent 阅读的模块级结构化摘要。
 3. 推断设计模式、技术栈与编码规范；
 4. 若输入中含"人工修改待同步"记录，将其内容纳入描述（不要删除记录本身）；
 5. 严格按 JSON 格式输出最终结果。
+
+**实体真实性约束（必须遵守）**：key_entities 只允许列出输入实体信息中真实存在的
+实体（名称与输入一致），不得编造不存在的实体；找不到时列表可以为空。
 
 请严格按以下 JSON 格式输出，不包含其他内容：
 
@@ -329,12 +335,36 @@ Wiki 页面是给人类开发者阅读的叙述性文档。
 }
 
 /// 生成 Wiki Page 的 user prompt
+///
+/// 输入包含「实体引用清单」：实体名+类型+文件路径:行号（真源），
+/// 是源码引用契约（不得编造）唯一允许的引用来源——此前只传卡片摘要，
+/// 摘要不含行号，LLM 无法兑现契约只能编造（v29 实测 bad-citation 来源）。
+/// 实体过多时截断前 80 条并注明总数，避免输入超长。
 fn wiki_page_user_prompt(chunk: &Chunk, module_summary: &str) -> String {
+    let mut entity_lines: Vec<String> = chunk
+        .entities
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            match chunk.entity_sources.get(i) {
+                Some(path) => format!("- `{}` ({}) — {}:{}", e.name, e.kind, path.display(), e.line_start),
+                None => format!(
+                    "- `{}` ({}) — 第 {}-{} 行（所属文件未记录）",
+                    e.name, e.kind, e.line_start, e.line_end
+                ),
+            }
+        })
+        .take(80)
+        .collect();
+    if chunk.entities.len() > 80 {
+        entity_lines.push(format!("- …共 {} 个实体，仅列出前 80 个", chunk.entities.len()));
+    }
     format!(
-        "模块路径: {}\n\n## 代码信息\n实体数: {}, 文件数: {}\n\n## 卡片摘要\n{}",
+        "模块路径: {}\n\n## 代码信息\n实体数: {}, 文件数: {}\n\n## 实体引用清单\n{}\n\n## 卡片摘要\n{}",
         chunk.module_path.join("::"),
         chunk.entity_count(),
         chunk.file_paths.len(),
+        entity_lines.join("\n"),
         module_summary
     )
 }
@@ -458,5 +488,54 @@ mod tests {
         assert!(user.contains("CREATE TABLE users"));
         assert!(user.contains("```sql"));
         assert!(messages[0].content.contains("erDiagram"));
+    }
+
+    /// 防编造契约（A1 补强）：卡片与架构 prompt 必须显式约束实体/模块真实性，
+    /// 防止 LLM 输出输入中不存在的实体名或模块名（anti-fabrication 契约）。
+    #[test]
+    fn test_anti_fabrication_constraints_in_card_and_architecture_prompts() {
+        let chunk = make_test_chunk(&["src", "config"]);
+        let card_messages = knowledge_card_prompt(&chunk, "zh", &[]);
+        assert!(
+            card_messages[0].content.contains("不得编造"),
+            "卡片 prompt 必须含实体真实性约束: {}",
+            card_messages[0].content
+        );
+
+        let arch = architecture_overview_prompt(&[], &KnowledgeGraph::default(), "zh");
+        assert!(
+            arch[0].content.contains("不得添加"),
+            "架构 prompt 必须含模块真实性约束: {}",
+            arch[0].content
+        );
+    }
+
+    /// 实体引用清单（A8）：wiki page 的 user 输入必须携带实体名+文件:行号真源，
+    /// 引用契约才能兑现（LLM 不得编造，且输入中确有其物可引）。
+    #[test]
+    fn test_wiki_page_user_prompt_contains_entity_reference_list() {
+        let mut chunk = make_test_chunk(&["src", "alpha"]);
+        chunk.entities = vec![crate::ingest::parser::Entity {
+            name: "alpha_fn".into(),
+            kind: "fn".into(),
+            line_start: 1,
+            line_end: 3,
+            doc_comment: None,
+            signature: None,
+            summary: None,
+            visibility: None,
+        }];
+        chunk.entity_sources = vec![std::path::PathBuf::from("src/alpha.rs")];
+        let user = wiki_page_user_prompt(&chunk, "卡片摘要");
+        assert!(
+            user.contains("src/alpha.rs:1"),
+            "引用清单必须含文件:行号: {}",
+            user
+        );
+        assert!(user.contains("alpha_fn"));
+        // 无文件记录时的诚实标注路径（不得编造文件）
+        chunk.entity_sources = vec![];
+        let user = wiki_page_user_prompt(&chunk, "卡片摘要");
+        assert!(user.contains("所属文件未记录"));
     }
 }
