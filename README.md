@@ -114,9 +114,9 @@ Linux/macOS 上构建与运行需要 OpenSSL 与 zlib 开发库（`reqwest` 的
 cargo install --path . --locked
 
 # 2. 配置 LLM Key（默认 deepseek-v4-flash，配置链：项目 config.toml
-#    → 用户级 config.toml → 自动创建用户级配置；凭据/端点键
-#    只放用户级，项目级写入会被净化忽略）
-export DEEPSEEK_API_KEY="sk-..."
+#    → 用户级 config.toml → 自动创建用户级配置；项目级可写
+#    base_url/api_key_env，原样生效无净化——v30 拍板）
+export OPENCODEGO2_API_KEY="sk-..."
 
 # 3. 生成 Wiki（首次零参数全自动：无配置自动创建，产物在 .repo-wiki/）
 repo-wiki generate
@@ -170,11 +170,11 @@ repo-wiki generate
 
 显式 `--config <path>` 指定时原样使用（缺失则报错，不走创建链）。
 
-> **敏感键净化（v24/v25）**：项目级配置 `config.toml` 中的凭据与端点键——
-> `llm.base_url/api_key_env`、`embed.base_url/api_key_env`——会被**忽略并告警**
-> （Codex DENYLIST 模式）：端点重定向与凭据泄露随仓库传播的防护，须放用户级配置
-> 或 `--config` 显式指定。v25 起 `provider/model` 允许项目级覆盖（协议/模型无凭据
-> 泄露面，项目级写 `provider = "mock"` 是 CI/本地模拟的常态用法）。
+> **配置加载（v30）**：项目级 `config.toml` 的任意键（含 `base_url/api_key_env`）
+> 原样生效，无净化无注入（用户拍板：端点/变量名非密钥明文，项目级即写即用；
+> 仅 `api_key` 明文字段放用户级更稳妥）。缺失的键由 schema 内置默认兜底
+> （LLM 默认 opencode 网关 + `OPENCODEGO2_API_KEY`，嵌入默认阿里百炼 +
+> `BAILIAN_API_KEY`）——项目级配置可只写要覆盖的键。
 > 项目级配置典型内容：`scope`、`wiki.language`、`provider`。
 
 ```toml

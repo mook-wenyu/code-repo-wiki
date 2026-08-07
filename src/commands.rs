@@ -526,8 +526,8 @@ fn remove_wiki_block_from_file(path: &Path) -> Result<bool> {
 /// (".repo-wiki", "zh") 不报错——wiki 块缺失比注入失败更隐蔽。
 pub fn install_wiki(root: &crate::project::ProjectRoot, also_claude: bool) -> Result<()> {
     // 目标仓库配置路径（v25：项目级 config.toml，与产物目录分离）；
-    // 缺失时回退默认——注意该路径含敏感键时 load_config 会净化（config.toml
-    // 形态自动生效），此处取的是 output.dir/language（项目契约，不受净化影响）
+    // 缺失时回退默认——v30 起 load_config 原样加载无净化（用户拍板），
+    // 此处取的是 output_dir/language（项目契约）
     let config_path = root.join(Path::new(crate::config::PROJECT_CONFIG_FILE));
     let (output_dir, lang) = match crate::config::load_config(&config_path) {
         Ok(c) => (c.output_dir().to_string_lossy().into_owned(), c.wiki.language),

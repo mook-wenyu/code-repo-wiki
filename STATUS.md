@@ -561,3 +561,11 @@
 - 边界结论：多语言 parser 实证（JS/Java/TS，parser/mod.rs:248）；Ruby 无 parser；rails 数据代表性受限已标注
 - 汇总归档：.scratch/bench/knowing-summary.md（git 忽略）
 - 全仓 16/16 数据点完成（v29 9 仓 + 本轮 4 仓 + 3 仓显式报错）
+
+## 五十九节 v30 净化/注入规则彻底删除（用户拍板）
+- 删除：SANITIZE_DEFAULT_INJECT 常量、inject_defaults_project_config、strip_injected、load_config 的 is_project_level 分支、load_default_config_with 注入链（净 -136 行）
+- schema.rs：LlmSection/EmbedSection/WikiSection/ScopeSection 全部字段级 serde(default)，缺键即用 v29 可用阵营
+- 测试：注入测试改名为 defaults_for_missing_keys（语义=serde 默认兜底），explicit 测试注释更新（文件名无差异）
+- 验证：cargo test 426+28 套件全绿；clippy -D warnings 0；machete 0；doctor 六查全绿（config.toml 完整生效：OPENCODEGO2_API_KEY+opencode 网关可达，4 条误导 WARN 消失）
+- 提交 c1c19c3
+- 分析结论（未改代码）：include/exclude 语义互补均保留（白名单防漏扫/黑名单防扫错，include=[] 即全量已支持）
