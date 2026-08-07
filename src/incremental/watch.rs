@@ -143,10 +143,12 @@ pub fn run_watch_loop(
         }
         // 持续事件流下（批间隔 <500ms 恒走 Ok 分支）5s 强制截止也必须可达
         // ——每批处理完后求值一次 deadline（reviewer 修正：原实现只在
-        // Timeout 分支求值，<500ms 间隔的持续编辑会无限推迟触发）
+        // Timeout 分支求值，<500ms 间隔的持续编辑会无限推迟触发）。
+        // quiet=0：只依赖强制截止（与 should_flush 共享同一判定逻辑，DRY；
+        // 阈值语义由 test_should_flush_deadline_forced 纯函数测试覆盖）
         if let Some(first_at) = pending_first_at {
             let total = Instant::now().saturating_duration_since(first_at);
-            if total >= Duration::from_millis(COOLDOWN_DEADLINE_MS) {
+            if should_flush(Duration::ZERO, total) {
                 on_change(flush_events(&std::mem::take(&mut pending)));
                 pending_first_at = None;
                 quiet_since = None;
