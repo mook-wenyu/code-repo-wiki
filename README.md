@@ -144,35 +144,9 @@ repo-wiki generate
 `repo-wiki update`；`repo-wiki watch` 可常驻实时模式（代码保存即更新）。
 前提：`repo-wiki` 在 PATH 中（`cargo install repo-wiki` 安装时默认满足）。
 
-## 生成干预（wiki_plan.yaml）
-
-仓库根放置 `wiki_plan.yaml`（随 Git 提交共享），可干预 LLM 生成方向：
-
-```yaml
-version: 1
-notes: "请重点描述安全设计"        # 全局引导提示（追加到所有 system prompt）
-knowledgecard:
-  notes: "卡片请注明编码规约"       # 知识卡片专用提示
-scope:
-  include: ["src/**"]             # 覆盖扫描范围（优先于 config.toml scope）
-  exclude: []
-sections:                          # 模块级规划（按模块路径 glob 匹配）
-  - module_pattern: "src/config/**"
-    template_type: "api-ref"       # architecture / prd / api-ref
-    notes: "重点列出接口签名与参数"
-documents:                         # 页面白名单（提供时严格只输出列出的页面）
-  - title: "src::config"
-    goal: "介绍配置系统"
-    parent: ""
-    hints: ""
-```
-
-修改后需手动触发 `generate` 才生效。`notes` 追加到 system prompt 末尾；模块级 `sections` 按模块路径匹配（支持 `src/config/**` 与 `src::config` 两种形态）；`documents` 白名单过滤输出页面集合。
-
 ## 限制项
 
 - 单项目最多扫描 10,000 个文件，超限显式报错
-- 增量更新仅支持 Git 仓库（非 Git 目录自动回退全量生成）
 - 单次变更超过 10,000 行自动回退全量生成
 - 同一输出目录并发运行 repo-wiki 不被支持：状态/快照/缓存文件无锁，最后写入者胜（CI/编辑器/插件集成请串行调用）
 
@@ -201,7 +175,7 @@ documents:                         # 页面白名单（提供时严格只输出�
 > （Codex DENYLIST 模式）：端点重定向与凭据泄露随仓库传播的防护，须放用户级配置
 > 或 `--config` 显式指定。v25 起 `provider/model` 允许项目级覆盖（协议/模型无凭据
 > 泄露面，项目级写 `provider = "mock"` 是 CI/本地模拟的常态用法）。
-> 项目级配置典型内容：`scope`、`wiki.language`、`output.dir`、`provider`。
+> 项目级配置典型内容：`scope`、`wiki.language`、`provider`。
 
 ```toml
 [wiki]
@@ -212,27 +186,22 @@ include = ["src/**"]
 exclude = ["**/test/**", "target/**"]
 
 [llm]
-provider = "openai"        # openai = Responses API（可配 base_url，DeepSeek 归此）
-model = "deepseek-v4-flash" # openai-compatible = chat/completions（兼容端点）
-api_key_env = "DEEPSEEK_API_KEY"
-
-[embed]
-enabled = false  # 启用后开启语义搜索
-model = "text-embedding-3-small"
-
-[search]
-enabled = true
-
-[incremental]
-enabled = true
-strategy = "git-diff"
+provider = "openai-compatible"      # openai-compatible = chat/completions（兼容端点）
+model = "deepseek-v4-flash"         # openai = Responses API（OpenAI/DeepSeek 归此）
+api_key_env = "DEEPSEEK_API_KEY"    # anthropic = Anthropic Messages API；mock = 本地模拟
 ```
 
-> v22 起以下键已硬编码（代码常量，见 `src/config/schema.rs` 顶部），不再需要也
-> 不应写在配置里：`llm.max_concurrent`（=16，DeepSeek 官方并发上限 2500 内实测无 429；更大值 TPM 打满时触发重试）、`llm.max_tokens`、`llm.temperature`、
-> `embed.batch_size`（=20）、`search.index_dir`（=.search）、`search.default_engine`
-> （=text）、`search.default_top_k`（=10）、`search.rrf_k`（=60.0）、
-> `incremental.max_depth`（=3）、`plan.path`（=wiki_plan.yaml）。
+> **v30 起以下配置项已硬编码**（代码常量，见 `src/config/schema.rs` 顶部），
+> 不再需要也不应写在配置里（写了会被 serde 忽略）：
+> `output.dir`（恒 `.repo-wiki`）、`embed.enabled`（恒 true，无 Key 时自动降级
+> 纯结构聚类并保留旧索引）、`search.enabled`（恒 true）、
+> `incremental.enabled`/`incremental.strategy`（恒 **FileWatch 监听模式**——
+> 基于内容指纹，非 Git 仓库同样支持增量）、`expand_languages`（已删除，
+> 只输出主语言）、`plan.path` 与全部 plan 配置（已删除）。
+> 其余硬编码键沿用 v22 列表：`llm.max_concurrent`（=16）、`llm.max_tokens`、
+> `llm.temperature`、`embed.batch_size`（=20）、`search.index_dir`（=.search）、
+> `search.default_engine`（=text）、`search.default_top_k`（=10）、`search.rrf_k`
+> （=60.0）、`incremental.max_depth`（=3）。
 > 旧配置中残留这些键会被 serde 忽略，可安全删除。
 
 ### LLM Provider 协议说明（v17 t02 拆分）
@@ -250,25 +219,21 @@ strategy = "git-diff"
 
 ## 多语言输出
 
-配置 `[wiki] expand_languages` 可为扩展语言**独立生成** Wiki 页面（LLM 每种语言各生成一次，非翻译）：
-
-```toml
-[wiki]
-language = "zh"
-expand_languages = ["en"]  # 增加英文独立生成
-```
-
-- **独立生成而非翻译**：每种语言由 LLM 单独生成，LLM 调用成本与耗时随语言数量线性增长，扩展语言多意味着生成时间成倍增加
-- **卡片仅主语言生成一次**：KnowledgeCard 是给 Agent 读取的结构化数据，跨语言共享，只按主语言生成（存放于 `cards/{主语言}/`）
-- **输出结构**：`wiki/{lang}/{module}.md`、`wiki/{lang}/api.md` 每种语言各自生成；`overview.md` 仅写入主语言目录
-- **默认关闭**：`expand_languages` 默认为空数组，行为与单语言完全一致
+v30 起 `expand_languages` 已删除：每种语言都独立生成会线性放大 LLM 成本与耗时，
+而多语言场景尚未出现真实需求（YAGNI）。当前只输出主语言 `wiki.language`
+（默认 `zh`）一种语言：
+- **产物结构**：`wiki/{lang}/{module}.md`、`wiki/{lang}/api.md`、`overview.md`
+  仅写入主语言目录
+- **卡片仅主语言生成一次**：KnowledgeCard 是给 Agent 读取的结构化数据，
+  跨语言共享，只按主语言生成（存放于 `cards/{主语言}/`）
 
 ## 搜索
 
 repo-wiki 提供三种搜索引擎：
 
 - **text**：SQLite FTS5 BM25 全文搜索，无需额外依赖
-- **semantic**：基于向量嵌入的语义搜索（需 `[embed]` 配置且 `enabled = true`）
+- **semantic**：基于向量嵌入的语义搜索（`[embed]` 配置了可用 Key 时自动构建，
+  无 Key 自动降级纯文本，搜索时报错提示引导）
 - **hybrid**：RRF 算法融合全文与语义结果，`k=60`
 
 CLI 使用：`repo-wiki search --query "keyword" --engine hybrid --top-k 10`

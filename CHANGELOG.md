@@ -1,7 +1,22 @@
 # Changelog
 
-本文件记录 repo-wiki 的显著变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
+本文件记录 repo-wiki 的重要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（SemVer）。
+
+## [Unreleased]
+
+### Changed
+- 傻瓜式自动化配置（v30）：`output.dir`（恒 `.repo-wiki`）、`embed.enabled`
+  （恒 true）、`search.enabled`（恒 true）、`incremental.enabled`/
+  `incremental.strategy`（恒 FileWatch 监听模式）全部硬编码为代码常量，
+  配置文件不再需要也不接受这些键；`expand_languages` 扩展语言删除（只输出
+  主语言）
+- plan 功能整体删除（v30）：`wiki_plan.yaml`、`plan.path` 配置、plan 驱动的
+  页面白名单/模块规划全部移除——生成范围完全由扫描结果自动决定，无需人工干预
+- 语义索引失败降级（v30）：embedding 运行期失败（Key 缺失/网络不可达）不再
+  `?` 中断主流程，改为告警+保留旧索引（与初始化失败同语义）
+- 非 Git 仓库 FileWatch 增量修复（v30）：实体变化分类空集（非 Git/无上次
+  提交）时保守保留全部变更起点，不再把 changed_files 全部剔除导致 0 模块
 
 ## [0.3.0] - 2026-08-05
 
