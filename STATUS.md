@@ -610,3 +610,27 @@ A11 rubrics 复测（bench --root 本仓库 --rubrics-only --json，judge=deepse
 - generate_ms 0（复用既有产物，bench 不重生成）
 
 knowing 全量 12 仓 mock 数据点齐（v29 9 + v30 3：rails 5239 实体/58 文件/58.4s、spark 2182/184/4.3s、cal.com 59047/5048/372.3s——大仓 MAX_FILES=100000 后通过）。
+## 六十三节：v31 Token 节省（2026-08-08）
+
+### C-01 删除实体摘要 LLM 调用
+- 删 generate_entity_summaries（全量/增量两路径）+ entity_summary_prompt + Entity.summary 字段 + 57 处构造点
+- 提交 d50cb3d（17 文件 +61/-187），测试 79/10/5/19/4 定向绿，双门通过
+
+### C-03 增量空 chunk 不记 failed_modules
+- 管线入口过滤 + generate_all_cards 循环内跳过 + module_names 与 handles 同源收集
+- 修复 failed_modules 污染导致 should_skip_noop 永久失效、无关模块补偿重试
+- 提交 277c16d + 26cb62e（test_engineer 边界测试 3 个），双门通过
+
+### C-02 describe_modules 单次遍历共享 + 落盘缓存
+- 内存 memo（generate_architecture/overview 共享一次 LLM）+ 指纹落盘缓存（.state/module_descriptions.json，键=模块文件指纹）
+- reviewer REJECTED 指纹基准 bug（output_dir 拼接→恒 missing→缓存永不过期）→ 修复为项目根基准（root.path().join，对齐 state.rs:131）
+- 提交 8db5685 + 2396244，双门复审通过（5 验收点 SATISFIED + 22/22 定向 + 100/100 集成）
+
+### C-07 watch 冷却窗口
+- 高频编辑事件累积 pending，安静 2s（尾沿）/ 首个事件后 5s（强制）触发一次合并增量
+- reviewer REJECTED 双缺陷 → 修复：跨批按时间序覆盖（删除重建收敛为 Created 不误删产物页）+ 5s 强制在持续事件流下可达 + 循环尾复用 should_flush（DRY）
+- 提交 82d7500 + b98a730 + 7f59a6d，双门复审通过（24 watch 单测 + e2e 3 + 全量 560）
+
+### 验证
+- 全量 29 套件 0 失败、clippy -D warnings 0、machete 0
+- 提交链 9 个（d50cb3d → 26cb62e）
