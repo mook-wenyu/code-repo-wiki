@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use notify::RecursiveMode;
@@ -13,6 +13,14 @@ use notify_debouncer_full::{new_debouncer, DebouncedEvent, DebounceEventResult};
 
 use crate::ingest::scanner::NOISE_DIRS;
 use crate::ingest::parser::SUPPORTED_EXTENSIONS;
+
+/// 冷却窗口常量（v31 C-07）：连续编辑期间合并事件，安静 `COOLDOWN_QUIET_MS`
+/// 或首个事件后 `COOLDOWN_DEADLINE_MS` 触发一次合并增量。
+/// 2s/5s 取值依据（SME v31）：主流 IDE 自动保存频率 1-2s，2s 静默覆盖单次
+/// 保存后的停顿；5s 上限保证批量编辑（git checkout、重构重命名）不会无限
+/// 推迟更新。
+pub const COOLDOWN_QUIET_MS: u64 = 2000;
+pub const COOLDOWN_DEADLINE_MS: u64 = 5000;
 
 /// 文件变更类型（由监听事件显式标记，下游无需以 exists() 推断删除）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,9 +95,17 @@ pub fn run_watch_loop(
     // v14 F 组（t06 拍板）：Ctrl-C 优雅退出——主循环每 500ms 检查停止
     // 标记，置位时退出（当前正在执行的 on_change 完成后才检查，即
     // "等当前增量生成完成"；不会在生成中途打断状态落盘）。
+    // v31 C-07：冷却窗口——高频编辑（IDE 自动保存、批量重构）期间把事件
+    // 累积到 pending，安静 2s（尾沿）或首个事件后 5s（强制）触发一次
+    // 合并增量，避免连续保存 N 次触发 N 次全量管线（Token 节省核心）。
     use std::sync::atomic::Ordering;
+    let mut pending: Vec<WatchEvent> = Vec::new();
+    let mut pending_first_at: Option<Instant> = None;
+    let mut quiet_since: Option<Instant> = None;
     loop {
         if stop_flag.load(Ordering::Relaxed) {
+            // 退出丢弃 pending：事件只是"待触发"的请求，进程退出后由
+            // 下次启动的全量/增量兜底，丢弃不产生数据丢失
             tracing::info!("收到停止信号，文件监听退出");
             return Ok(());
         }
@@ -99,7 +115,12 @@ pub fn run_watch_loop(
                 // 事件类型显式传递给下游，删除不再依赖 exists() 推断
                 let watch_events = process_batch(&events, &include_exts);
                 if !watch_events.is_empty() {
-                    on_change(watch_events);
+                    // 跨批合并（同 kind 路径去重）+ 重新折叠（跨批同路径
+                    // 按最终态收敛，如先 Modified 后 Deleted → Deleted）
+                    pending = fold_events(merge_events(&pending, &watch_events));
+                    let now = Instant::now();
+                    pending_first_at.get_or_insert(now);
+                    quiet_since = Some(now);
                 }
             }
             Ok(Err(errors)) => {
@@ -107,13 +128,60 @@ pub fn run_watch_loop(
                     tracing::warn!("文件监听错误: {:?}", e);
                 }
             }
-            // 超时（轮询停止标记）是正常路径：回到循环顶检查 stop_flag；
+            // 超时（轮询停止标记 + 冷却窗口判定）是正常路径：
+            // 回到循环顶检查 stop_flag 与 pending 是否应触发
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if !pending.is_empty() {
+                    let now = Instant::now();
+                    let quiet_elapsed = quiet_since
+                        .map(|q| now.saturating_duration_since(q))
+                        .unwrap_or(Duration::ZERO);
+                    let total_elapsed = pending_first_at
+                        .map(|f| now.saturating_duration_since(f))
+                        .unwrap_or(Duration::ZERO);
+                    if should_flush(quiet_elapsed, total_elapsed) {
+                        on_change(std::mem::take(&mut pending));
+                        pending_first_at = None;
+                        quiet_since = None;
+                    }
+                }
+            }
             // Disconnected = 接收端全部 drop，监听无意义
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
     Ok(())
+}
+
+/// 冷却窗口触发判定（纯函数，可测）：
+/// 尾沿——安静期 ≥ `COOLDOWN_QUIET_MS`（连续编辑停止后尽快收敛）；
+/// 强制——总时长 ≥ `COOLDOWN_DEADLINE_MS`（防无限推迟，保证最终一致性）。
+fn should_flush(quiet_elapsed: Duration, total_elapsed: Duration) -> bool {
+    quiet_elapsed >= Duration::from_millis(COOLDOWN_QUIET_MS)
+        || total_elapsed >= Duration::from_millis(COOLDOWN_DEADLINE_MS)
+}
+
+/// 合并两批事件（纯函数）：同 kind 组路径去重合并，不同 kind 保留。
+///
+/// 合并结果仍需 fold_events 按最终态折叠——跨批同路径（如批 1 Modified、
+/// 批 2 Deleted）只有折叠后才收敛为唯一事件，否则下游会重复处理。
+fn merge_events(base: &[WatchEvent], new: &[WatchEvent]) -> Vec<WatchEvent> {
+    let mut out: Vec<WatchEvent> = base.to_vec();
+    for event in new {
+        match out.iter_mut().find(|e| e.kind == event.kind) {
+            // 该 kind 组已存在且路径未记录 → 合并
+            Some(ev) => {
+                for p in &event.paths {
+                    if !ev.paths.contains(p) {
+                        ev.paths.push(p.clone());
+                    }
+                }
+            }
+            // 首个该 kind 的事件
+            None => out.push(event.clone()),
+        }
+    }
+    out
 }
 
 /// 将防抖窗口内的事件批处理为待回调的 WatchEvent 列表（纯函数，主循环可测化）
@@ -467,5 +535,135 @@ mod tests {
             "预置停止标记应在监听启动后立即退出（无需等待事件）"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- v31 C-07 冷却窗口测试 ----
+
+    /// 尾沿触发：安静期 ≥2s → 触发（连续编辑停止后的收敛路径）
+    #[test]
+    fn test_should_flush_quiet_elapsed_reaches_threshold() {
+        assert!(
+            should_flush(
+                Duration::from_millis(COOLDOWN_QUIET_MS),
+                Duration::from_millis(500)
+            ),
+            "安静 2s 应触发（尾沿）"
+        );
+        assert!(
+            should_flush(
+                Duration::from_millis(3000),
+                Duration::from_millis(3000)
+            ),
+            "安静 3s 应触发"
+        );
+    }
+
+    /// 强制触发：总时长 ≥5s → 触发（即使一直在编辑，最终一致性保证）
+    #[test]
+    fn test_should_flush_deadline_forced() {
+        assert!(
+            should_flush(
+                Duration::from_millis(300),
+                Duration::from_millis(COOLDOWN_DEADLINE_MS)
+            ),
+            "总时长 5s 应强制触发（编辑未停也触发）"
+        );
+    }
+
+    /// 冷却期内不触发：安静 <2s 且总时长 <5s
+    #[test]
+    fn test_should_flush_within_cooldown_does_not_trigger() {
+        assert!(
+            !should_flush(
+                Duration::from_millis(1500),
+                Duration::from_millis(1500)
+            ),
+            "编辑未停且未到 5s 上限不应触发"
+        );
+        assert!(
+            !should_flush(Duration::ZERO, Duration::ZERO),
+            "刚收到事件不应触发"
+        );
+    }
+
+    /// 合并：同 kind 路径去重合并、不同 kind 独立保留
+    #[test]
+    fn test_merge_events_dedups_and_combines() {
+        let base = vec![WatchEvent {
+            paths: vec![PathBuf::from("src/a.rs")],
+            kind: ChangeKind::Modified,
+        }];
+        let new = vec![
+            WatchEvent {
+                paths: vec![PathBuf::from("src/a.rs"), PathBuf::from("src/b.rs")],
+                kind: ChangeKind::Modified,
+            },
+            WatchEvent {
+                paths: vec![PathBuf::from("src/c.rs")],
+                kind: ChangeKind::Deleted,
+            },
+        ];
+        let merged = merge_events(&base, &new);
+        assert_eq!(merged.len(), 2, "同 kind 合并为 1 组 + Deleted 1 组");
+        let modified = merged
+            .iter()
+            .find(|e| e.kind == ChangeKind::Modified)
+            .expect("应存在 Modified 组");
+        assert_eq!(
+            modified.paths,
+            vec![PathBuf::from("src/a.rs"), PathBuf::from("src/b.rs")],
+            "a 去重、b 追加"
+        );
+        assert!(merged.iter().any(|e| e.kind == ChangeKind::Deleted));
+    }
+
+    /// 跨批最终态收敛：批 1 Modified a.rs、批 2 Deleted a.rs →
+    /// 合并 + 折叠后收敛为单个 Deleted（下游只跑一次删除清理）
+    #[test]
+    fn test_merge_then_fold_converges_cross_batch_deletion() {
+        let batch1 = vec![WatchEvent {
+            paths: vec![PathBuf::from("src/a.rs")],
+            kind: ChangeKind::Modified,
+        }];
+        let batch2 = vec![WatchEvent {
+            paths: vec![PathBuf::from("src/a.rs"), PathBuf::from("src/b.rs")],
+            kind: ChangeKind::Deleted,
+        }];
+        let merged = merge_events(&batch1, &batch2);
+        let folded = fold_events(merged);
+        assert_eq!(folded.len(), 1, "跨批 Modified+Deleted 收敛为单个事件");
+        assert_eq!(folded[0].kind, ChangeKind::Deleted);
+        assert_eq!(
+            folded[0].paths,
+            vec![PathBuf::from("src/a.rs"), PathBuf::from("src/b.rs")]
+        );
+    }
+
+    /// 连续编辑合并不丢路径：三次批的路径全部累积（同 kind）
+    #[test]
+    fn test_merge_events_accumulates_across_batches() {
+        let b1 = vec![WatchEvent {
+            paths: vec![PathBuf::from("src/a.rs")],
+            kind: ChangeKind::Modified,
+        }];
+        let b2 = vec![WatchEvent {
+            paths: vec![PathBuf::from("src/b.rs")],
+            kind: ChangeKind::Modified,
+        }];
+        let b3 = vec![WatchEvent {
+            paths: vec![PathBuf::from("src/c.rs")],
+            kind: ChangeKind::Modified,
+        }];
+        let merged = merge_events(&merge_events(&b1, &b2), &b3);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(
+            merged[0].paths,
+            vec![
+                PathBuf::from("src/a.rs"),
+                PathBuf::from("src/b.rs"),
+                PathBuf::from("src/c.rs")
+            ],
+            "三批同 kind 路径应全部累积"
+        );
     }
 }
