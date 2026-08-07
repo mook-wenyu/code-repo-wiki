@@ -74,18 +74,13 @@ pub fn run_bin_with_envs(dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> Ou
 /// 的字符串形式）。相对路径依赖进程 cwd——watch 常驻、CI 目录漂移或
 /// 并行测试时可能解析到仓库根，把产物泄漏进工作区（v13 C2 曾清理过
 /// 仓库根 wiki/ 泄漏）。mock provider 不触网，无需 mock server。
-pub fn mock_config(output_dir: &str) -> String {
-    // Windows 绝对路径含反斜杠：TOML 字符串内反斜杠是转义符，必须转义
-    // （`C:\Users\...` 中 \U 是非法转义 → 解析失败；其余平台无影响）
-    let escaped = output_dir.replace('\\', "\\\\");
-    format!(
-        r#"
+/// mock provider 不触网，无需 mock server；embed 同样用内置 mock
+///（v30：output/incremental/search 键已硬编码，不再出现在模板中）
+pub fn mock_config() -> String {
+    r#"
 [scope]
 include = ["**/*.rs"]
 exclude = []
-
-[output]
-dir = "{escaped}"
 
 [llm]
 provider = "mock"
@@ -94,28 +89,24 @@ api_key = "mock"
 api_key_env = ""
 max_concurrent = 1
 
-[incremental]
-enabled = true
-strategy = "git-diff"
+[embed]
+provider = "mock"
+model = "mock-embed"
+api_key_env = ""
 "#
-    )
+    .to_string()
 }
 
 /// openai-compatible 形态配置模板（走本地 mock SSE server）
 ///
 /// 与 mock_config 同规则：output_dir 必须传绝对路径（cwd 依赖 = 泄漏
 /// 隐患）。port 为 mock_llm_server() 返回的监听端口。
-pub fn openai_compatible_config(port: u16, output_dir: &str) -> String {
-    let escaped = output_dir.replace('\\', "\\\\");
+pub fn openai_compatible_config(port: u16) -> String {
     format!(
         r#"
 [scope]
 include = ["**/*.rs"]
 exclude = []
-
-[output]
-dir = "{escaped}"
-format = "markdown"
 
 [llm]
 provider = "openai-compatible"
@@ -125,9 +116,10 @@ api_key = "mock"
 api_key_env = "OPENAI_API_KEY"
 max_concurrent = 1
 
-[incremental]
-enabled = false
-strategy = "git-diff"
+[embed]
+provider = "mock"
+model = "mock-embed"
+api_key_env = ""
 "#
     )
 }

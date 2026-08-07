@@ -16,12 +16,16 @@ fn test_template_no_dead_keys() {
     let value: toml::Value = toml::from_str(TEMPLATE).expect("模板必须是合法 TOML");
     let table = value.as_table().expect("模板必须是表结构");
 
-    // 死键段：`[project]`、`[generate]` 已从 schema 移除
+    // 死键段：已随 v30 硬编码从模板移除（output/search/incremental/plan/expand_languages）
     assert!(!table.contains_key("project"), "模板不得含死键段 [project]");
     assert!(!table.contains_key("generate"), "模板不得含死键段 [generate]");
+    assert!(!table.contains_key("output"), "模板不得含死键段 [output]（v30 硬编码）");
+    assert!(!table.contains_key("search"), "模板不得含死键段 [search]（v30 硬编码）");
+    assert!(!table.contains_key("incremental"), "模板不得含死键段 [incremental]（v30 硬编码）");
+    assert!(!table.contains_key("plan"), "模板不得含死键段 [plan]（v30 删除）");
 
     // schema 现有段必须齐全
-    for section in ["wiki", "scope", "output", "llm", "embed", "search", "incremental", "plan"] {
+    for section in ["wiki", "scope", "llm", "embed"] {
         assert!(table.contains_key(section), "模板缺少配置段 [{section}]");
     }
 }
@@ -39,7 +43,6 @@ fn test_template_loads_cleanly() {
     assert!(!config.scope.include.is_empty());
     // embed 段随模板配置（当前模板启用百炼 embedding，仅断言字段可解析）
     assert!(!config.embed.model.is_empty());
-    assert!(!config.plan.enabled);
 
     let _ = std::fs::remove_dir_all(&dir);
 }

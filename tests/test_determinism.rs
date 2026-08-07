@@ -14,7 +14,7 @@
 use std::path::Path;
 
 use repo_wiki::config::schema::{LlmProviderType, LlmSection, WikiConfig};
-use repo_wiki::config::schema::{OutputSection, WikiSection};
+use repo_wiki::config::schema::{WikiSection};
 
 fn build_fixture_repo(repo: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(repo.join("src").join("a"))?;
@@ -23,12 +23,9 @@ fn build_fixture_repo(repo: &Path) -> anyhow::Result<()> {
     std::fs::write(repo.join("src").join("b").join("mod.rs"), "pub fn beta() -> &'static str { \"beta\" }\n")?;
 
     let config = WikiConfig {
-        output: OutputSection {
-            dir: repo.join(".repo-wiki").to_string_lossy().into_owned(),
-        },
+        output_dir: Some((repo.join(".repo-wiki").to_string_lossy().into_owned()).into()),
         wiki: WikiSection {
             language: "zh".into(),
-            ..Default::default()
         },
         llm: LlmSection {
             provider: LlmProviderType::Mock,

@@ -15,10 +15,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use repo_wiki::config::schema::{
-    IncrementalSection, IncrementalStrategy, LlmProviderType, LlmSection, OutputSection,
-    ScopeSection, WikiConfig, WikiSection,
-};
+use repo_wiki::config::schema::{LlmProviderType, LlmSection, ScopeSection, WikiConfig, WikiSection};
 use repo_wiki::ingest::parser::{Entity, FileInsight};
 use repo_wiki::incremental::state::GenerationState;
 
@@ -40,12 +37,16 @@ fn wait_until(mut cond: impl FnMut() -> bool, interval: Duration, what: &str) {
 /// include[0] 的 glob 前缀前目录 → 监听根 = 临时仓库/src（与扫描范围一致）。
 fn watch_config(repo: &Path) -> WikiConfig {
     WikiConfig {
-        output: OutputSection { dir: repo.join(".repo-wiki").to_string_lossy().into_owned() },
-        wiki: WikiSection { language: "zh".into(), ..Default::default() },
+        output_dir: Some((repo.join(".repo-wiki").to_string_lossy().into_owned()).into()),
+        wiki: WikiSection { language: "zh".into() },
         llm: LlmSection { provider: LlmProviderType::Mock, ..Default::default() },
-        incremental: IncrementalSection {
-            enabled: true,
-            strategy: IncrementalStrategy::FileWatch,
+        // v30：embed 默认真实阵营（百炼）且 EmbedSection 无 mock 通道——
+        // 环境有 BAILIAN_API_KEY 时嵌入会真实触网拖慢全量。api_key_env=""
+        // 让 resolve_api_key 立即失败（不做网络重试）→语义索引/特征聚类
+        // 降级跳过，测试保持全离线（与 smoke watch 回归同因）。
+        embed: repo_wiki::config::schema::EmbedSection {
+            api_key_env: String::new(),
+            ..Default::default()
         },
         ..Default::default()
     }
@@ -117,7 +118,13 @@ fn watch_e2e_file_change_triggers_incremental() {
         "初始全量生成产物（.repo-wiki/wiki/zh/api.md 含 alpha_fn）",
     );
 
-    // 第二步：修改 src/alpha.rs，追加新函数（新增实体 → api.md 变化）
+    // 第二步：修改 src/alpha.rs，追加新函数（新增实体 → api.md 变化）。
+    // 竞态说明：wait 初始产物在 run_watch 的全量阶段（监听建立之前）即可
+    // 满足，此时立即改文件会落在 notify 注册窗口内（Windows 目录句柄未
+    // 建立）→ 事件丢失、增量永不触发（实测复现：03:06 全量完成与监听
+    // 启动同毫秒，事件未到）。固定等待 500ms 跨过注册窗口（notify 注册
+    // 毫秒级，500ms 余量足够，慢机亦然）。
+    std::thread::sleep(std::time::Duration::from_millis(500));
     std::fs::write(
         repo.join("src").join("alpha.rs"),
         "pub fn alpha_fn(x: u32) -> u32 { x + 1 }\npub fn alpha_fn_v2(x: u32) -> u32 { x + 100 }\n",
@@ -158,7 +165,7 @@ fn insights_cache_size_reports() {
     }
 
     let config = WikiConfig {
-        output: OutputSection { dir: dir.join(".repo-wiki").to_string_lossy().into_owned() },
+        output_dir: Some((dir.join(".repo-wiki").to_string_lossy().into_owned()).into()),
         llm: LlmSection { provider: LlmProviderType::Mock, ..Default::default() },
         // 默认 include 是 src/**/lib/**，文件在临时目录根下，必须显式覆盖
         //（同 benches/bench_search.rs 的 bench_config 做法）
@@ -275,7 +282,7 @@ fn watch_path_dot_slash_prefix_boundary() {
     };
     let graph = repo_wiki::analysis::build_graph(std::slice::from_ref(&insight)).expect("构建 graph 失败");
     let config = watch_config(&repo);
-    let state_dir = Path::new(&config.output.dir).join(".state");
+    let state_dir = config.output_dir().join(".state");
 
     // 预存状态：文件指纹与磁盘当前内容一致 → is_file_changed 返回 Ok(false)，
     // 指纹比对分支不命中，changed_files 只来自 watch_paths 透传（隔离观测点）

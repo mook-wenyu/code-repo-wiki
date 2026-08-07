@@ -11,7 +11,7 @@
 use std::path::Path;
 
 use repo_wiki::config::schema::{LlmProviderType, LlmSection, WikiConfig};
-use repo_wiki::config::schema::{OutputSection, WikiSection};
+use repo_wiki::config::schema::{WikiSection};
 
 /// 构造临时仓库（src/a.rs + src/b.rs + config.toml，provider=mock）
 fn build_fixture_repo(repo: &Path) -> anyhow::Result<()> {
@@ -43,12 +43,9 @@ pub fn beta() -> &'static str { "beta" }
 
     // 配置：mock provider（无网络）、输出到仓库内 .repo-wiki
     let config = WikiConfig {
-        output: OutputSection {
-            dir: repo.join(".repo-wiki").to_string_lossy().into_owned(),
-        },
+        output_dir: Some((repo.join(".repo-wiki").to_string_lossy().into_owned()).into()),
         wiki: WikiSection {
             language: "zh".into(),
-            ..Default::default()
         },
         llm: LlmSection {
             provider: LlmProviderType::Mock,

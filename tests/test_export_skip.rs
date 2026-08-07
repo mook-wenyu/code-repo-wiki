@@ -25,11 +25,7 @@ fn prepare_repo(tag: &str) -> PathBuf {
     let work_dir = unique_dir(tag);
     let _ = std::fs::remove_dir_all(&work_dir);
     copy_dir(&fixture, &work_dir);
-    std::fs::write(
-        work_dir.join("config.toml"),
-        mock_config(&work_dir.join(".repo-wiki").to_string_lossy()),
-    )
-    .unwrap();
+    std::fs::write(work_dir.join("config.toml"), mock_config()).unwrap();
     work_dir
 }
 

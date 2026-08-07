@@ -17,7 +17,7 @@
 use std::path::Path;
 
 use repo_wiki::config::schema::{LlmProviderType, LlmSection, WikiConfig};
-use repo_wiki::config::schema::{OutputSection, WikiSection};
+use repo_wiki::config::schema::{WikiSection};
 
 /// 构造带跨社区调用的临时 git 仓库：
 ///
@@ -47,12 +47,9 @@ fn build_git_repo(repo: &Path) -> anyhow::Result<()> {
     )?;
 
     let config = WikiConfig {
-        output: OutputSection {
-            dir: repo.join(".repo-wiki").to_string_lossy().into_owned(),
-        },
+        output_dir: Some((repo.join(".repo-wiki").to_string_lossy().into_owned()).into()),
         wiki: WikiSection {
             language: "zh".into(),
-            ..Default::default()
         },
         llm: LlmSection {
             provider: LlmProviderType::Mock,

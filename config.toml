@@ -1,21 +1,15 @@
 # repo-wiki 默认配置模板（由 `repo-wiki install` 或缺省配置链写入用户级目录；
 # v25 起项目级配置为 config.toml（字段级合并覆盖用户级），敏感键会被净化）
 # 键集合与 src/config/schema.rs 严格对齐；未知键会被 serde 忽略（无效配置，勿写）。
+# v30 傻瓜式精简：输出目录/增量策略/搜索与嵌入开关/计划文件等全部硬编码
+# （见 schema.rs 顶部常量），模板只保留用户真正需要决策的四类键。
 
 [wiki]
 language = "zh"
-# 扩展语言（每语言独立生成叙事页面）：["en"]
-expand_languages = []
 
 [scope]
 include = ["src/**", "lib/**"]
 exclude = ["**/test/**", "**/vendor/**", "target/**", "**/node_modules/**"]
-
-[output]
-# 产物根目录：wiki 页/卡片/资产都写在其下（render_all 内部再建 wiki/{lang}/
-# 子目录，因此这里必须是"产物根"而非 wiki 目录本身——dir="wiki" 会造成
-# wiki/wiki/zh 嵌套，schema 默认与 install 模板一致用 .repo-wiki）
-dir = ".repo-wiki"
 
 [llm]
 provider = "openai-compatible"
@@ -30,26 +24,10 @@ api_key_env = "OPENCODEGO2_API_KEY"
 # 并发 LLM 调用数与温度等已硬编码（v22 简化：见 schema.rs 顶部常量）
 
 [embed]
-# 语义搜索与实体级特征聚类的向量来源；false 时特征聚类降级为纯调用边结构聚类
-enabled = true
-# 与 schema 默认值保持一致（v19 t02 统一 + v23 复核：模型与端点/key 名
-# 全部对齐 schema 默认，此前模板残留个人环境的 key 名/端点，新用户 init
-# 后与代码默认分裂）
+# 语义搜索与实体级特征聚类的向量来源（开关已硬编码恒启用；无 Key 环境
+# 自动降级为纯结构聚类，见 lib.rs attach_features/build_search_index）
 model = "qwen3.7-text-embedding"
 base_url = "https://llm-q0265e4he9m0qs23.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
 #api_key = ""
 api_key_env = "BAILIAN_API_KEY"
 # batch_size 已硬编码（v22 简化：见 schema.rs 顶部常量）
-
-[search]
-enabled = true
-# index_dir/默认引擎/条数/rrf_k 已硬编码（v22 简化：见 schema.rs 顶部常量）
-
-[incremental]
-enabled = true
-strategy = "git-diff"
-# BFS 传播深度已硬编码 IMPACT_MAX_DEPTH=3（v22 简化：见 schema.rs 顶部常量）
-
-[plan]
-enabled = false
-# 计划文件名已硬编码 PLAN_PATH=wiki_plan.yaml（v22 简化：见 schema.rs 顶部常量）

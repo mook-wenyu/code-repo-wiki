@@ -14,12 +14,10 @@ mod common;
 use common::{copy_dir, mock_llm_server, openai_compatible_config, run_bin_with_envs, unique_dir};
 use std::path::{Path, PathBuf};
 
-/// 最小可用配置：LLM 指向本地 mock server，增量/搜索关闭，输出到绝对临时路径
-/// （v19 t04：output.dir 用绝对路径，消除 cwd 依赖的泄漏隐患）
-fn minimal_config(port: u16, out_dir: &Path) -> String {
-    let cfg = openai_compatible_config(port, out_dir.to_str().unwrap());
-    // 与 helper 的差异：搜索段关闭（helper 无 search 段，默认开）
-    format!("{cfg}\n[search]\nenabled = false\nindex_dir = \".search\"\ndefault_engine = \"text\"\ndefault_top_k = 10\n")
+/// 最小可用配置：LLM 指向本地 mock server，输出硬编码 .repo-wiki
+/// （v30：output/incremental/search 键已硬编码，配置仅 scope/llm/embed 三段）
+fn minimal_config(port: u16) -> String {
+    openai_compatible_config(port)
 }
 
 /// 复制 fixture 并写入指向 mock LLM 的 mock-server.toml，返回工作目录
@@ -34,7 +32,7 @@ fn prepare_repo(tag: &str) -> PathBuf {
     let port = mock_llm_server();
     std::fs::write(
         work_dir.join("mock-server.toml"),
-        minimal_config(port, &work_dir.join("wiki")),
+        minimal_config(port),
     )
     .unwrap();
     work_dir
@@ -132,7 +130,7 @@ fn test_progress_json_cli() {
     assert_eq!(events.last().unwrap().0, "done", "末个事件应为 done");
     assert_eq!(events.last().unwrap().1, 100, "末个事件 progress 应为 100");
     // 输出产物存在
-    assert!(work_dir.join("wiki").is_dir(), "应生成 wiki 输出目录");
+    assert!(work_dir.join(".repo-wiki").is_dir(), "应生成 wiki 输出目录");
 
     let _ = std::fs::remove_dir_all(&work_dir);
 }
@@ -197,7 +195,7 @@ fn test_card_cli_commands() {
         "generate 应成功，stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let cards_dir = work_dir.join("wiki").join("cards").join("zh");
+    let cards_dir = work_dir.join(".repo-wiki").join("cards").join("zh");
     let card_file = std::fs::read_dir(&cards_dir)
         .unwrap_or_else(|e| panic!("卡片目录应存在 {}: {}", cards_dir.display(), e))
         .filter_map(|e| e.ok())
@@ -249,7 +247,7 @@ fn test_card_reference_validation() {
         "generate 应成功，stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let cards_dir = work_dir.join("wiki").join("cards").join("zh");
+    let cards_dir = work_dir.join(".repo-wiki").join("cards").join("zh");
     let card_file = std::fs::read_dir(&cards_dir)
         .unwrap_or_else(|e| panic!("卡片目录应存在 {}: {}", cards_dir.display(), e))
         .filter_map(|e| e.ok())
@@ -349,7 +347,7 @@ fn test_export_produces_html_artifacts() {
     // 以实际落盘文件断言(不臆测路径,失败时列出目录内容)
     // html 产物:export_html 在 wiki/ 目录内写 {title}.html + 根 index.html
     // (与 .md 并存,不建独立 html/ 子目录)
-    let html_dir = work_dir.join("wiki");
+    let html_dir = work_dir.join(".repo-wiki");
     let html_files: Vec<_> = std::fs::read_dir(&html_dir)
         .unwrap()
         .filter_map(|e| e.ok())
@@ -366,7 +364,7 @@ fn test_export_produces_html_artifacts() {
         html_dir.display()
     );
     assert!(
-        work_dir.join("wiki").join("index.html").exists(),
+        work_dir.join(".repo-wiki").join("index.html").exists(),
         "wiki/index.html(目录页)应生成"
     );
     assert!(
@@ -394,9 +392,8 @@ fn test_search_hybrid_includes_callchain() {
     // 覆盖 mock-server.toml：启用搜索索引（fixture 自带 config 可能未开）
     // v19 t04：基于 helper 模板 + 追加 search 段（搜索特例，dir 绝对路径）
     let port = mock_llm_server();
-    let cfg = openai_compatible_config(port, work_dir.join("wiki").to_str().unwrap());
-    let config = format!("{cfg}[search]\nenabled = true\nindex_dir = \".search\"\ndefault_engine = \"hybrid\"\ndefault_top_k = 10\n");
-    std::fs::write(work_dir.join("mock-server.toml"), config).unwrap();
+    let cfg = openai_compatible_config(port);
+    std::fs::write(work_dir.join("mock-server.toml"), cfg).unwrap();
 
     let gen_out = run_bin_with_envs(&work_dir, &["generate", "--config", "mock-server.toml"], &[]);
     assert!(
@@ -452,12 +449,12 @@ fn test_lint_detects_issues_in_artifacts() {
     let work_dir = unique_dir("lint");
     let _ = std::fs::remove_dir_all(&work_dir);
     // 构造"干净"产物:单个 wiki 页 + 目录页(链接指向 core → core 有入链非孤儿)。
-    // 产物布局遵循 render_all 规则:config.output.dir 下再建 wiki/{lang}/ 子目录
-    let wiki = work_dir.join("wiki").join("wiki").join("zh");
+    // 产物布局遵循 render_all 规则:config.output_dir() 下再建 wiki/{lang}/ 子目录
+    let wiki = work_dir.join(".repo-wiki").join("wiki").join("zh");
     std::fs::create_dir_all(&wiki).unwrap();
     std::fs::write(wiki.join("core.md"), "# Core\n\n模块页\n").unwrap();
     std::fs::write(
-        work_dir.join("wiki").join("_toc.md"),
+        work_dir.join(".repo-wiki").join("_toc.md"),
         "# 目录\n\n- [Core](wiki/zh/core.md)\n",
     )
     .unwrap();
@@ -466,9 +463,6 @@ fn test_lint_detects_issues_in_artifacts() {
 include = [\"**/*.rs\"]
 exclude = []
 
-[output]
-dir = \"wiki\"
-
 [llm]
 provider = \"mock\"
 model = \"mock\"
@@ -476,16 +470,6 @@ base_url = \"x\"
 api_key = \"mock\"
 api_key_env = \"\"
 max_concurrent = 1
-
-[incremental]
-enabled = false
-strategy = \"git-diff\"
-
-[search]
-enabled = false
-index_dir = \".search\"
-default_engine = \"text\"
-default_top_k = 10
 ").unwrap();
 
     // 干净产物 → lint 通过(无孤儿页)

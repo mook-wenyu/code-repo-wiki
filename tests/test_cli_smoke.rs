@@ -23,17 +23,6 @@ use std::process::Command;
 mod common;
 use common::{copy_dir, mock_config, run_bin, run_bin_with_envs, unique_dir};
 
-/// 冒烟测试共用 search 段：search 测试需要文本索引
-/// （mock_config helper 已含 scope/output/llm/incremental 段，
-/// v19 t04 起 output.dir 绝对路径化，不依赖进程 cwd）
-const SEARCH_SECTION: &str = r#"
-[search]
-enabled = true
-index_dir = ".search"
-default_engine = "text"
-default_top_k = 10
-"#;
-
 /// 复制 sample-repo 到唯一临时目录并改写 config.toml（mock provider，不触网），返回工作目录
 fn prepare_repo(tag: &str) -> PathBuf {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -43,13 +32,8 @@ fn prepare_repo(tag: &str) -> PathBuf {
     let work_dir = unique_dir(tag);
     let _ = std::fs::remove_dir_all(&work_dir);
     copy_dir(&fixture, &work_dir);
-    // v19 t04：output.dir 指向仓库内 .repo-wiki（对齐 CLI 默认约定），
-    // 以绝对路径写入，杜绝 cwd 依赖导致的产物泄漏
-    let config = format!(
-        "{}{SEARCH_SECTION}",
-        mock_config(&work_dir.join(".repo-wiki").to_string_lossy())
-    );
-    std::fs::write(work_dir.join("config.toml"), config).unwrap();
+    // v30：输出目录硬编码 .repo-wiki（配置不再含 output 段）
+    std::fs::write(work_dir.join("config.toml"), mock_config()).unwrap();
     work_dir
 }
 
@@ -188,15 +172,17 @@ fn test_install_ensures_user_default_config() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    // 用户级默认配置被创建（含 schema 8 段，无死键）
+    // 用户级默认配置被创建（v30：硬编码段不再写入模板，仅 wiki/scope/llm/embed 四段）
     let cfg_path = home.join("repo-wiki").join("config.toml");
     let content = std::fs::read_to_string(&cfg_path)
         .unwrap_or_else(|e| panic!("用户级配置应存在 {}: {}", cfg_path.display(), e));
-    for section in ["[wiki]", "[scope]", "[llm]", "[embed]", "[output]", "[incremental]", "[search]", "[plan]"] {
+    for section in ["[wiki]", "[scope]", "[llm]", "[embed]"] {
         assert!(content.contains(section), "默认配置应含 {section} 段，实际:\n{content}");
     }
-    assert!(!content.contains("[project]"), "默认配置不应含 [project]，实际:\n{content}");
-    assert!(!content.contains("[generate]"), "默认配置不应含 [generate]，实际:\n{content}");
+    assert!(!content.contains("[output]"), "默认配置不应含 [output]（已硬编码），实际:\n{content}");
+    assert!(!content.contains("[incremental]"), "默认配置不应含 [incremental]（已硬编码），实际:\n{content}");
+    assert!(!content.contains("[search]"), "默认配置不应含 [search]（已硬编码），实际:\n{content}");
+    assert!(!content.contains("[plan]"), "默认配置不应含 [plan]（已删除），实际:\n{content}");
 
     // 项目级配置不被自动创建（v24 用户要求的边界；v25 项目级文件名=config.toml，
     // 旧名 .repo-wiki.toml 已停用）
@@ -351,10 +337,10 @@ fn test_search_top_k_falls_back_to_config() {
     let _ = std::fs::remove_dir_all(&work_dir);
 }
 
-/// search semantic 引擎边界：embed 未启用时无语义索引，
+/// search semantic 引擎边界：语义索引缺失（embedding 端点不可用/未构建）时
 /// 显式请求 semantic 应报错指引（非 0 退出码）。
-/// 注：完整语义检索需 embed.enabled=true + 真实 embedding API key，
-/// 违反本文件"generate 不触网"约束，故跳过（仅断言无索引时的降级报错）。
+/// v30：embed 已硬编码恒启用——报错路径收敛为"索引缺失"单一形态，
+/// 测试通过删除索引模拟 embedding 不可用场景（保留 bail 分支覆盖）。
 #[test]
 fn test_search_semantic_without_embed_errors() {
     let work_dir = prepare_repo("search_semantic");
@@ -365,6 +351,10 @@ fn test_search_semantic_without_embed_errors() {
         "generate 应成功，stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+
+    // 删除语义索引，模拟 embedding 端点不可用/索引未构建
+    let semantic_index = work_dir.join(".repo-wiki").join(".search").join("semantic_index.db");
+    let _ = std::fs::remove_file(&semantic_index);
 
     let out = run_bin(
         &work_dir,
@@ -377,11 +367,11 @@ fn test_search_semantic_without_embed_errors() {
     );
     assert!(
         !out.status.success(),
-        "embed 未启用时应显式失败，输出: {combined}"
+        "语义索引缺失时应显式失败，输出: {combined}"
     );
     assert!(
-        combined.contains("语义搜索未启用"),
-        "应提示语义索引缺失并指引启用 embed，实际: {combined}"
+        combined.contains("语义索引不存在"),
+        "应提示语义索引缺失并指引配置嵌入 key，实际: {combined}"
     );
 
     let _ = std::fs::remove_dir_all(&work_dir);
@@ -582,18 +572,40 @@ fn test_watch_command_detects_change() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("启动 watch 失败");
-    // 排空 stdout（watch 输出量小，这里只排空 stderr；stdout 管道保持打开）
+    // 排空 stdout（watch 输出量小，这里只排空 stderr；stdout 管道保持打开）。
+    // 收集 stderr 行供"监听就绪"判定（watch 全量完成后打印"开始监听文件变化"，
+    // v30 起全量含 embedding 初始化，耗时波动大——固定 sleep 会在监听注册前
+    // 写入变更导致事件丢失，必须等就绪信号）
     let mut stderr_reader = BufReader::new(child.stderr.take().unwrap());
+    let stderr_lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let lines_for_reader = stderr_lines.clone();
     let drain_thread = std::thread::spawn(move || {
         let mut line = String::new();
         while let Ok(n) = stderr_reader.read_line(&mut line) {
             if n == 0 { break; }
+            lines_for_reader.lock().unwrap().push(line.trim().to_string());
             line.clear();
         }
     });
 
-    // 等待 watch 完成启动（监听目录就绪）后写入变更
-    std::thread::sleep(Duration::from_millis(500));
+    // 等待 watch 完成启动（首次全量 + 监听注册）后写入变更。
+    // 就绪信号不能用 stderr 日志（本测试 RUST_LOG=off 会过滤掉"开始监听"）：
+    // 以状态文件 mtime 变化（全量完成时写盘）为信号，再留 300ms 给监听注册。
+    let state_file = work_dir.join(".repo-wiki").join(".state").join("generation_state.json");
+    let baseline_state_mtime = std::fs::metadata(&state_file).and_then(|m| m.modified()).ok();
+    let ready_deadline = Instant::now() + Duration::from_secs(30);
+    let mut state_updated = false;
+    while Instant::now() < ready_deadline {
+        std::thread::sleep(Duration::from_millis(200));
+        if let Ok(m) = std::fs::metadata(&state_file).and_then(|m| m.modified())
+            && baseline_state_mtime.map(|b| m > b).unwrap_or(false)
+        {
+            state_updated = true;
+            break;
+        }
+    }
+    assert!(state_updated, "watch 首次全量应更新状态文件（监听就绪信号），stderr: {:?}", *stderr_lines.lock().unwrap());
+    std::thread::sleep(Duration::from_millis(300));
     std::fs::write(&extra, "pub fn extra() -> u32 { 9 }\n").unwrap();
 
     // 轮询：变更应触发增量更新（产物 mtime 更新；以 api.md 的修改时间变化为信号）
@@ -613,7 +625,7 @@ fn test_watch_command_detects_change() {
             break;
         }
     }
-    assert!(detected, "watch 应检测到文件变更并触发增量更新");
+    assert!(detected, "watch 应检测到文件变更并触发增量更新，watch stderr: {:?}", *stderr_lines.lock().unwrap());
 
     // 收尾：kill 子进程（watch 是阻塞监听，必须显式终止）
     let _ = child.kill();
@@ -655,11 +667,7 @@ fn test_default_config_chain_prefers_project_config() {
     let _ = std::fs::remove_dir_all(&work_dir);
     std::fs::create_dir_all(&work_dir).unwrap();
     // v25：项目级配置 = config.toml（独立于产物目录）
-    std::fs::write(
-        work_dir.join("config.toml"),
-        mock_config(&work_dir.join("out").to_string_lossy()),
-    )
-    .unwrap();
+    std::fs::write(work_dir.join("config.toml"), mock_config()).unwrap();
 
     // 不带 --config 运行 status：应命中项目级配置（未生成提示 + 配置路径）
     let out = run_bin(&work_dir, &["status"]);
@@ -888,11 +896,7 @@ fn test_bench_manifest_smoke() {
     .unwrap();
     // 模板配置：mock provider（与 sample-repo 相同的生成语义，全程不触网）
     let config_path = base.join("config.toml");
-    std::fs::write(
-        &config_path,
-        mock_config(&base.join("work").join("tpl-out").to_string_lossy()),
-    )
-    .unwrap();
+    std::fs::write(&config_path, mock_config()).unwrap();
 
     let out = run_bin(
         &base,

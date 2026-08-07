@@ -13,16 +13,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 mod common;
 use common::{mock_config, unique_dir};
 
-/// 冒烟配置：mock provider + 仓库内 .repo-wiki（search 开启，供 search 工具验证）。
-/// v19 t04：基于 common helper（output.dir 绝对路径），追加 search 段
-const SEARCH_SECTION: &str = r#"
-[search]
-enabled = true
-index_dir = ".search"
-default_engine = "text"
-default_top_k = 10
-"#;
-
 /// 启动 repo-wiki mcp 子进程，返回子进程句柄
 fn spawn_mcp(dir: &Path) -> tokio::process::Child {
     tokio::process::Command::new(env!("CARGO_BIN_EXE_repo-wiki"))
@@ -81,10 +71,7 @@ async fn test_mcp_initialize_lists_tools_and_calls() {
     let dir = unique_dir("server");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join(".repo-wiki")).unwrap();
-    let config = format!(
-        "{}{SEARCH_SECTION}",
-        mock_config(&dir.join(".repo-wiki").to_string_lossy())
-    );
+    let config = mock_config();
     std::fs::write(dir.join("mcp-test.toml"), &config).unwrap();
     // 建一个源文件供 search/ast_search 扫描
     std::fs::create_dir_all(dir.join("src")).unwrap();
@@ -189,10 +176,7 @@ async fn test_mcp_lang_traversal_rejected() {
     let dir = unique_dir("traversal");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join(".repo-wiki")).unwrap();
-    let config = format!(
-        "{}{SEARCH_SECTION}",
-        mock_config(&dir.join(".repo-wiki").to_string_lossy())
-    );
+    let config = mock_config();
     std::fs::write(dir.join("mcp-test.toml"), &config).unwrap();
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(dir.join("src").join("main.rs"), "pub fn hello_world() {}\n").unwrap();

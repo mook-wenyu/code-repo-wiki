@@ -145,7 +145,7 @@ fn test_detect_manually_modified() {
 /// render_all 传保护集：被保护文档不写盘，其余文档正常写盘
 #[test]
 fn test_render_all_protected_skips() {
-    use repo_wiki::config::schema::{WikiConfig, OutputSection, WikiSection};
+    use repo_wiki::config::schema::{WikiConfig, WikiSection};
     use repo_wiki::model::{WikiDocument, DocumentKind, KnowledgeGraph};
 
     let dir = std::env::temp_dir().join(format!("repo_wiki_test_render_protected_{}", std::process::id()));
@@ -163,8 +163,8 @@ fn test_render_all_protected_skips() {
     };
 
     let config = WikiConfig {
-        output: OutputSection { dir: dir.to_string_lossy().to_string() },
-        wiki: WikiSection { language: "zh".into(), ..Default::default() },
+        output_dir: Some((dir.to_string_lossy().to_string()).into()),
+        wiki: WikiSection { language: "zh".into() },
         ..Default::default()
     };
 
@@ -185,7 +185,7 @@ fn test_render_all_protected_skips() {
 /// 保护只跳过页面写盘，不连带跳过卡片的 pending_manual_edits 写入
 #[test]
 fn test_render_all_protected_page_still_writes_card() {
-    use repo_wiki::config::schema::{WikiConfig, OutputSection, WikiSection};
+    use repo_wiki::config::schema::{WikiConfig, WikiSection};
     use repo_wiki::model::{WikiDocument, DocumentKind, KnowledgeCard, KnowledgeGraph};
 
     let dir = std::env::temp_dir().join(format!("repo_wiki_test_protected_card_{}", std::process::id()));
@@ -218,8 +218,8 @@ fn test_render_all_protected_page_still_writes_card() {
 
 
     let config = WikiConfig {
-        output: OutputSection { dir: dir.to_string_lossy().to_string() },
-        wiki: WikiSection { language: "zh".into(), ..Default::default() },
+        output_dir: Some((dir.to_string_lossy().to_string()).into()),
+        wiki: WikiSection { language: "zh".into() },
         ..Default::default()
     };
 
@@ -241,7 +241,7 @@ fn test_render_all_protected_page_still_writes_card() {
 /// schema 文档（title 含 / 与 :，module_path 为空）的指纹路径与 render_all 写盘路径一致
 #[test]
 fn test_schema_doc_fingerprint_path_matches_render_all() {
-    use repo_wiki::config::schema::{WikiConfig, OutputSection, WikiSection};
+    use repo_wiki::config::schema::{WikiConfig, WikiSection};
     use repo_wiki::incremental::state::GenerationState;
     use repo_wiki::model::{WikiDocument, DocumentKind, KnowledgeGraph};
 
@@ -260,8 +260,8 @@ fn test_schema_doc_fingerprint_path_matches_render_all() {
     };
 
     let config = WikiConfig {
-        output: OutputSection { dir: dir.to_string_lossy().to_string() },
-        wiki: WikiSection { language: "zh".into(), ..Default::default() },
+        output_dir: Some((dir.to_string_lossy().to_string()).into()),
+        wiki: WikiSection { language: "zh".into() },
         ..Default::default()
     };
 
@@ -286,7 +286,7 @@ fn test_schema_doc_fingerprint_path_matches_render_all() {
 }
 #[test]
 fn test_doc_fingerprint_path_matches_render_all() {
-    use repo_wiki::config::schema::{WikiConfig, OutputSection, WikiSection};
+    use repo_wiki::config::schema::{WikiConfig, WikiSection};
     use repo_wiki::incremental::state::GenerationState;
     use repo_wiki::model::{WikiDocument, DocumentKind, KnowledgeGraph};
 
@@ -305,8 +305,8 @@ fn test_doc_fingerprint_path_matches_render_all() {
     };
 
     let config = WikiConfig {
-        output: OutputSection { dir: dir.to_string_lossy().to_string() },
-        wiki: WikiSection { language: "zh".into(), ..Default::default() },
+        output_dir: Some((dir.to_string_lossy().to_string()).into()),
+        wiki: WikiSection { language: "zh".into() },
         ..Default::default()
     };
 
@@ -445,8 +445,7 @@ fn test_manual_edit_synced_to_card_without_code_change() {
     };
 
     // 配置：卡片写盘路径（主语言 zh）与产物目录一致
-    let mut config = repo_wiki::config::schema::WikiConfig::default();
-    config.output.dir = dir.to_string_lossy().into_owned();
+    let config = repo_wiki::config::schema::WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
 
     let synced = repo_wiki::sync_manual_edits_to_cards(&config, &state).unwrap();
     assert_eq!(synced, 1, "应同步一张卡片");
@@ -502,8 +501,7 @@ fn test_manual_edit_sync_skips_missing_card() {
         failed_modules: vec![],
     };
 
-    let mut config = repo_wiki::config::schema::WikiConfig::default();
-    config.output.dir = dir.to_string_lossy().into_owned();
+    let config = repo_wiki::config::schema::WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
 
     let synced = repo_wiki::sync_manual_edits_to_cards(&config, &state).unwrap();
     assert_eq!(synced, 0, "卡片缺失时应跳过，不得凭空创建");

@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use repo_wiki::config::schema::{ScopeSection, WikiConfig, SearchSection};
+use repo_wiki::config::schema::{ScopeSection, WikiConfig};
 use repo_wiki::ingest::parser::ParserRegistry;
 use repo_wiki::ingest::scanner::Scanner;
 use repo_wiki::search::text::TextEngine;
@@ -26,10 +26,7 @@ fn fixture_config() -> WikiConfig {
             include: vec!["**/*.rs".to_string()],
             exclude: vec![],
         },
-        search: SearchSection {
-            enabled: true,
-        },
-        ..Default::default()
+                ..Default::default()
     }
 }
 
@@ -222,7 +219,6 @@ fn test_config_roundtrip() {
     assert_eq!(parsed.llm.model, "deepseek-v4-flash");
     assert_eq!(parsed.llm.api_key_env, "OPENCODEGO2_API_KEY");
     assert_eq!(parsed.wiki.language, "zh");
-    assert_eq!(parsed.output.dir, ".repo-wiki");
-    assert!(parsed.search.enabled);
-    assert!(!parsed.embed.enabled);
+    assert_eq!(parsed.output_dir(), std::path::Path::new(".repo-wiki"));
+        assert!(!parsed.embed.model.is_empty());
 }

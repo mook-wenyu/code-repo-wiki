@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use repo_wiki::config::schema::{LlmProviderType, LlmSection, WikiConfig};
-use repo_wiki::config::schema::{OutputSection, WikiSection};
+use repo_wiki::config::schema::{WikiSection};
 
 /// 模块数 × 每模块文件数 = 150 文件；每组 5 模块
 const MODULES: usize = 15;
@@ -63,12 +63,9 @@ fn build_large_repo(repo: &Path) -> anyhow::Result<()> {
     }
 
     let config = WikiConfig {
-        output: OutputSection {
-            dir: repo.join(".repo-wiki").to_string_lossy().into_owned(),
-        },
+        output_dir: Some((repo.join(".repo-wiki").to_string_lossy().into_owned()).into()),
         wiki: WikiSection {
             language: "zh".into(),
-            ..Default::default()
         },
         llm: LlmSection {
             provider: LlmProviderType::Mock,
@@ -319,12 +316,9 @@ fn build_pair_module_repo(repo: &Path) -> anyhow::Result<()> {
     std::fs::write(repo.join("src").join("solo.rs"), "pub fn solo_fn() -> u32 { 3 }\n")?;
 
     let config = WikiConfig {
-        output: OutputSection {
-            dir: repo.join(".repo-wiki").to_string_lossy().into_owned(),
-        },
+        output_dir: Some((repo.join(".repo-wiki").to_string_lossy().into_owned()).into()),
         wiki: WikiSection {
             language: "zh".into(),
-            ..Default::default()
         },
         llm: LlmSection {
             provider: LlmProviderType::Mock,

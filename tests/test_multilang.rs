@@ -1,10 +1,10 @@
 #![cfg(test)]
 
-/// 验证 expand_languages 默认空
+/// 验证默认主语言 zh（v30：多语言扩展已删除，恒只生成主语言）
 #[test]
 fn test_single_lang_default() {
     let config = repo_wiki::config::schema::WikiConfig::default();
-    assert!(config.wiki.expand_languages.is_empty());
+    assert_eq!(config.wiki.language, "zh");
 }
 
 /// 验证多语言配置能正常设置和序列化
@@ -32,7 +32,7 @@ max_concurrent = 4
 "#;
     let config: repo_wiki::config::schema::WikiConfig = toml::from_str(toml_str).unwrap();
     assert_eq!(config.wiki.language, "zh");
-    assert_eq!(config.wiki.expand_languages, vec!["en", "ja"]);
+    // v30：expand_languages 已删除，多语言配置不再生效（恒主语言）
 }
 
 /// 验证 write_document 支持语言参数（独立写盘到对应语言目录）
@@ -78,11 +78,8 @@ fn test_render_all_multi_lang_dirs() {
     let config = WikiConfig {
         wiki: WikiSection {
             language: "zh".into(),
-            expand_languages: vec![
-            ],
         },
-        output: OutputSection::default(),
-        ..Default::default()
+                ..Default::default()
     };
     let graph = KnowledgeGraph::default();
     let make_doc = |language: &str| WikiDocument {
@@ -101,9 +98,7 @@ fn test_render_all_multi_lang_dirs() {
 
     // 模拟 output.dir
     let multi_config = WikiConfig {
-        output: OutputSection {
-            dir: dir.to_string_lossy().to_string(),
-        },
+        output_dir: Some((dir.to_string_lossy().to_string()).into()),
         ..config
     };
 

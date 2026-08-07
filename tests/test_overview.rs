@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use repo_wiki::config::schema::{OutputSection, WikiConfig, WikiSection};
+use repo_wiki::config::schema::{WikiConfig, WikiSection};
 use repo_wiki::generate::llm::MockProvider;
 use repo_wiki::generate::wiki::WikiGenerator;
 use repo_wiki::generate::{GenerationOutput, GenerationStats};
@@ -12,12 +12,9 @@ use repo_wiki::output::render_all;
 
 fn make_config(dir: &std::path::Path) -> WikiConfig {
     WikiConfig {
-        output: OutputSection {
-            dir: dir.to_string_lossy().into_owned(),
-        },
+        output_dir: Some((dir.to_string_lossy().into_owned()).into()),
         wiki: WikiSection {
             language: "zh".into(),
-            ..Default::default()
         },
         ..Default::default()
     }
@@ -40,7 +37,7 @@ fn make_module_doc() -> WikiDocument {
 /// 用 mock LLM 生成 overview 文档
 fn generate_overview_doc(config: &WikiConfig) -> WikiDocument {
     let provider = MockProvider::new();
-    let generator = WikiGenerator::new(&provider, None, 0);
+    let generator = WikiGenerator::new(&provider, 0);
     let graph = KnowledgeGraph::default();
     let output = GenerationOutput {
         cards: vec![],
@@ -191,7 +188,7 @@ fn test_overview_module_refs_match_write_path() {
 
 
     let provider = MockProvider::new();
-    let generator = WikiGenerator::new(&provider, None, 0);
+    let generator = WikiGenerator::new(&provider, 0);
     let graph = KnowledgeGraph::default();
     let output = GenerationOutput {
         cards: vec![card1, card2],

@@ -50,10 +50,7 @@ fn test_pipeline_progress_events_monotonic_and_done() {
 
     // v19 t04：基于 common helper（dir 绝对路径，杜绝 cwd 泄漏）；
     // 本测试内联自定义 mock server（非 SSE 形态），port 取自该 server
-    let config = format!(
-        "{}[search]\nenabled = true\nindex_dir = \".search\"\ndefault_engine = \"text\"\ndefault_top_k = 10\n",
-        openai_compatible_config(port, work_dir.join("wiki").to_str().unwrap())
-    );
+    let config = openai_compatible_config(port);
     std::fs::write(work_dir.join("mock-server.toml"), config).unwrap();
 
     let events: Mutex<Vec<repo_wiki::ProgressEvent>> = Mutex::new(Vec::new());

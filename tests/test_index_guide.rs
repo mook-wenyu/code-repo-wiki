@@ -230,10 +230,8 @@ fn test_index_guide_primary_language_only_and_links() {
         }
     });
 
-    // expand_languages=["en"]：主语言 zh + 扩展语言 en，index.md 必须只写 zh。
-    // output.dir 用绝对路径（独立 out 目录）：相对路径相对测试进程 cwd 解析，
-    // 会污染仓库根；渲染路径 = output.dir/wiki/{lang}/index.md
-    let out_dir = work_dir.join("out");
+    // 主语言 zh：index.md 只写 zh 目录（v30 后 expand_languages 键删除，
+    // 输出目录恒 .repo-wiki——原 out_dir 独立目录断言已随硬编码移除）
     let config = format!(
         r#"
 [scope]
@@ -242,11 +240,6 @@ exclude = []
 
 [wiki]
 language = "zh"
-expand_languages = ["en"]
-
-[output]
-dir = "{out_dir}"
-format = "markdown"
 
 [llm]
 provider = "openai-compatible"
@@ -255,18 +248,7 @@ base_url = "http://127.0.0.1:{port}/v1"
 api_key = "mock"
 api_key_env = "OPENAI_API_KEY"
 max_concurrent = 1
-
-[incremental]
-enabled = false
-strategy = "git-diff"
-
-[search]
-enabled = false
-index_dir = ".search"
-default_engine = "text"
-default_top_k = 10
 "#,
-        out_dir = out_dir.to_string_lossy().replace('\\', "/"),
         port = port,
     );
     std::fs::write(work_dir.join("mock-server.toml"), config).unwrap();
@@ -280,13 +262,13 @@ default_top_k = 10
     );
     assert!(result.is_ok(), "流水线应成功: {:?}", result.err());
 
-    let zh_index = out_dir.join("wiki").join("zh").join("index.md");
-    assert!(zh_index.exists(), "index.md 应写入主语言目录 wiki/zh/");
+    let zh_index = work_dir.join(".repo-wiki").join("wiki").join("zh").join("index.md");
+    assert!(zh_index.exists(), "index.md 应写入主语言目录 .repo-wiki/wiki/zh/");
     let content = std::fs::read_to_string(&zh_index).unwrap();
     assert!(content.contains("wiki/zh/"), "正常路径产物应含模块链接，实际: {content}");
     assert!(
-        !out_dir.join("wiki").join("en").join("index.md").exists(),
-        "index.md 只写主语言，扩展语言目录不得出现"
+        !work_dir.join(".repo-wiki").join("wiki").join("en").join("index.md").exists(),
+        "index.md 只写主语言，其他语言目录不得出现"
     );
 
     let _ = std::fs::remove_dir_all(&work_dir);
