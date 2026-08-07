@@ -543,3 +543,13 @@
 - watch 端到端竞态修复（测试改文件前等 notify 注册窗口）；删除检测补强（指纹表∖insights）
 - 验证：423 lib+27 集成套件全绿、clippy -D warnings 0、machete 0
 - 提交：ed2c5be(重构)/fa61851(测试)/9556bc2(文档)
+
+## 五十八节 v30 收尾+剩余项推进轮（2026-08-07）
+
+- A1 anti-fabrication 补强：卡片 prompt 约束 key_entities 只列真实实体；架构 prompt 约束模块只列输入模块（e36f9dd）
+- A8 实体引用清单注入：wiki page user prompt 增加实体名+类型+文件:行号真源清单（截断 80 条）——修复引用契约不可兑现的结构性缺口（v29 bad-citation 来源）
+- A2/A3 本仓库 FileWatch 增量基准（mock 隔离输出 .repo-wiki-mock，release 二进制）：
+  全量 3s（66 文件/1502 实体/5 模块）；no-op 注释 0 模块跳生；新增实体文件 2 模块受影响+新页+api.md 真实行号 2s；删除文件 5 模块传播+清理 2 产物+索引删 2 条 2s；语义索引降级路径实测（mock embed 失败→保留旧索引→纯文本回退 warn）
+- A6 发布流程文档：README 新增发布节（cargo publish+tag+干净环境六查自检）
+- A9 knowing 剩 7 仓 mock 跑分：2 并行后台子代理运行中（A: vscode/kubernetes/terraform/saleor；B: rails/spark/cal.com），结果落 C:\Users\WenYu\AppData\Local\Temp\opencode\knowing-a|b\results.md
+- 提交：e36f9dd（prompt 补强+文档）；全量测试+clippy+machete 全绿
