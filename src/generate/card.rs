@@ -149,17 +149,20 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
     ) -> Result<Vec<KnowledgeCard>> {
         let mut handles = Vec::with_capacity(chunks.len());
 
+        // task_modules 与 handles 同源收集：循环内仅对非空 chunk push，
+        // 下方 zip 时二者长度/顺序 1:1，空 chunk 跳过不会造成失败归因错位
+        let mut task_modules: Vec<String> = Vec::with_capacity(chunks.len());
         for chunk in chunks {
-            // v31 修复（C-03）：增量模式下未变更模块的 chunk 为空（chunk_by_module
-            // 对全部模块产 chunk，但增量只喂变更文件）——空 chunk 是确定性的
-            // 「无内容」，不是生成失败。调用方跳过而非走 generate_card 的
-            // 空块 bail，避免污染 failed_modules——后者会使 should_skip_noop
-            // 永久失效（no-op 快速跳过被禁用）并让失败补偿重试反复纳入无关模块。
-            // 真实 LLM 失败（网络/解析）仍由下方 Err 分支记录。
+            // v31 修复（C-03）：空 chunk 是确定性「无内容」而非生成失败——
+            // 跳过不产生 Err、不记 failed_modules（污染会使 should_skip_noop
+            // 永久失效并引发无关模块补偿重试）。真实 LLM 失败仍由 Err 分支记录。
+            // module 名与 handles 同源收集（下方 zip 与 task_modules 1:1 对齐，
+            // 空 chunk 跳过不会造成失败归因错位或结果截断）。
             if chunk.is_empty() {
                 continue;
             }
             let module = chunk.module_path.join("::");
+            task_modules.push(module.clone());
             // 旧卡片读取失败按失败隔离语义降级（单卡不中断整体生成），
             // 但显式告警——静默丢人工修改记录会让人工修改保护失效
             let mut pending = match self.recover_pending_manual_edits(&module) {
@@ -187,8 +190,7 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
         }
 
         let results = join_all(handles).await;
-        let module_names: Vec<String> = chunks.iter().map(|c| c.module_path.join("::")).collect();
-        let cards: Vec<KnowledgeCard> = module_names
+        let cards: Vec<KnowledgeCard> = task_modules
             .into_iter()
             .zip(results)
             .filter_map(|(module, r)| {
@@ -702,41 +704,46 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// v31 C-03 防回归：空 chunk（增量模式下未变更模块）被调用方跳过——
-    /// 不产生 Err、不记 failed_modules（污染会使 should_skip_noop 永久失效、
-    /// 失败补偿重试反复纳入无关模块）；真实 LLM 失败（非空 chunk）仍记录
-    /// failed_modules（补偿重试与 no-op 判定依赖此语义）。
+    /// v31 C-03 防回归：管线入口已剔除空 chunk（chunks/cards/wiki/backfill
+    /// 全链路 1:1 对齐）——generate_all_cards 收到非空 chunk 数组；
+    /// 空 chunk 交错在中间时（[空, 失败] 与 [空, 成功]）失败归因必须
+    /// 正确落在真实失败模块名下、成功卡片不得静默丢失、不得记入空模块。
     #[tokio::test]
     async fn test_generate_all_cards_skips_empty_chunks_records_real_failures() {
-        // ① 空 chunk：跳过且不记失败
-        let provider = Provider::Mock(MockProvider::new());
-        let (config, dir) = card_fixture("emptychunk", "src", "# src\n\n## 摘要\n旧内容");
-        let generator = CardGenerator::new(&provider, config, 1, "zh".into());
+        // 构造空 chunk（管线入口过滤后不应到达生成循环；此处验证交错对齐）
         let mut empty = make_test_chunk();
+        empty.module_path = vec!["zzz".into()];
         empty.entities = Vec::new();
         empty.imports = Vec::new();
-        let cards = generator
-            .generate_all_cards(&[empty], &std::collections::HashMap::new())
+        let provider = Provider::Mock(MockProvider::new());
+
+        // ① [空, 真实失败]：失败必须记在真实模块 src 名下，而非空模块 zzz
+        let failing = FailingProvider;
+        let (config, dir) = card_fixture("interleave-fail", "src", "# src\n\n## 摘要\n旧内容");
+        let fail_gen = CardGenerator::new(&failing, config, 1, "zh".into());
+        let cards = fail_gen
+            .generate_all_cards(&[empty.clone(), make_test_chunk()], &std::collections::HashMap::new())
             .await
             .unwrap();
-        assert!(cards.is_empty(), "空 chunk 应被调用方跳过");
-        assert!(
-            generator.failed_modules().is_empty(),
-            "空 chunk 不得记入 failed_modules: {:?}",
-            generator.failed_modules()
+        assert!(cards.is_empty(), "失败模块不产出卡片");
+        assert_eq!(
+            fail_gen.failed_modules(),
+            vec!["src"],
+            "失败必须归因到真实失败模块（空 chunk 已被入口剔除，不参与对齐）: {:?}",
+            fail_gen.failed_modules()
         );
         let _ = std::fs::remove_dir_all(&dir);
 
-        // ② 真实 LLM 失败：仍记录 failed_modules（仅失败模块）
-        let failing = FailingProvider;
-        let (config2, dir2) = card_fixture("realfail", "src", "# src\n\n## 摘要\n旧内容");
-        let gen2 = CardGenerator::new(&failing, config2, 1, "zh".into());
+        // ② [空, 成功]：成功卡片保留且摘要正确（无错位截断）
+        let (config2, dir2) = card_fixture("interleave-ok", "src", "# src\n\n## 摘要\n旧内容");
+        let gen2 = CardGenerator::new(&provider, config2, 1, "zh".into());
         let cards2 = gen2
-            .generate_all_cards(&[make_test_chunk()], &std::collections::HashMap::new())
+            .generate_all_cards(&[empty, make_test_chunk()], &std::collections::HashMap::new())
             .await
             .unwrap();
-        assert!(cards2.is_empty(), "失败模块不产出卡片");
-        assert_eq!(gen2.failed_modules(), vec!["src"], "真实 LLM 失败必须记录");
+        assert_eq!(cards2.len(), 1, "成功卡片不得静默丢失");
+        assert_eq!(cards2[0].module_name, "src");
+        assert!(gen2.failed_modules().is_empty(), "无真实失败时不记 failed_modules");
         let _ = std::fs::remove_dir_all(&dir2);
     }
 

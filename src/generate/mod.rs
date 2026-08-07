@@ -89,6 +89,15 @@ pub async fn run_generation(
     } else {
         chunk::chunk_by_module(insights, &graph.modules, graph)
     };
+    // v31 修复（C-03）：分块后统一剔除空 chunk——chunk_by_module 对全部模块
+    // 产 chunk，增量只喂变更文件时未变更模块 chunk 为空；空 chunk 是确定性
+    // 「无内容」而非生成失败，若放行会在生成循环里被空块 bail 记入
+    // failed_modules（毒化 should_skip_noop 并引发无关模块补偿重试），且
+    // 过滤必须发生在管线入口，保证 chunks/cards/wiki/backfill 全链路 1:1 对齐。
+    let chunks: Vec<_> = chunks
+        .into_iter()
+        .filter(|c| !c.is_empty())
+        .collect();
     tracing::info!("生成进度: 30% - 分块完成，共 {} 个块", chunks.len());
 
     // 2. 创建 LLM Provider
@@ -301,6 +310,13 @@ pub async fn run_generation_filtered(
         // 按模块重新组织变更文件，保持模块上下文
         chunk::chunk_by_module(&changed_insights, &graph.modules, graph)
     };
+    // v31 修复（C-03）：同全量路径——管线入口剔除空 chunk（增量模式未变更
+    // 模块），保证 chunks/cards/wiki/backfill 全链路 1:1 对齐，且空 chunk
+    // 不会经空块 bail 污染 failed_modules。
+    let chunks: Vec<_> = chunks
+        .into_iter()
+        .filter(|c| !c.is_empty())
+        .collect();
     tracing::info!("增量分块完成: {} 个块", chunks.len());
 
     // 2. 创建 LLM Provider
@@ -447,13 +463,6 @@ async fn generate_wiki_pages<P: LlmProvider>(
         let mut lang_cfg = config.clone();
         lang_cfg.wiki.language = lang.clone();
         for (i, chunk) in chunks.iter().enumerate() {
-            // v31 修复（C-03）：与卡片侧一致——空 chunk（增量模式未变更模块）
-            // 是确定性「无内容」而非生成失败，直接跳过不入 failed_modules
-            // （污染会使 should_skip_noop 永久失效并触发无关模块补偿重试）。
-            // generate_wiki_page 的空块 bail 保留给单页重生成等非空调用路径。
-            if chunk.is_empty() {
-                continue;
-            }
             let card_summary = cards.get(i).map(|c| c.summary.clone()).unwrap_or_default();
             let semaphore = semaphore.clone();
             let lang_cfg = lang_cfg.clone();
