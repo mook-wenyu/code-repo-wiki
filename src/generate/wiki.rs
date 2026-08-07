@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::Result;
@@ -21,6 +22,101 @@ pub struct WikiGenerator<'a, P: LlmProvider> {
     /// describe_modules 并发信号量（演进计划 T5.1：模块职责描述并行
     /// 生成时限制并发，避免 10+ 模块仓库一次性打爆 LLM API 限流）
     semaphore: std::sync::Arc<tokio::sync::Semaphore>,
+    /// 模块职责描述缓存（v31 C-02）：内存 memo + 落盘缓存。
+    /// 架构概览与项目概览同一轮生成会各调一次 describe_modules——
+    /// 内存 memo 消除同一轮内的重复 LLM 调用；落盘缓存按模块内容
+    /// 指纹（涉及源文件 SHA256）跨进程复用，增量更新（watch 频繁
+    /// 触发）不再对未变模块重复调用 LLM。锁内只做短同步操作
+    /// （查/写 HashMap），绝不在持有锁时 await。
+    desc_cache: std::sync::Mutex<Option<ModuleDescCache>>,
+}
+
+/// 模块职责描述缓存条目
+///
+/// fingerprint = 模块涉及源文件的联合内容指纹（见 module_files_fingerprint）；
+/// 文件内容未变则指纹一致，描述可直接复用（不触发 LLM 调用）。
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CacheEntry {
+    fingerprint: String,
+    description: String,
+}
+
+/// 模块职责描述缓存（v31 C-02）
+///
+/// 落盘位置 `{output_dir}/.state/module_descriptions.json`（与
+/// generation_state.json 同目录）。加载损坏/缺失时返回空缓存并告警——
+/// 描述按需回退 LLM 重新生成，缓存故障绝不阻断主流程。
+struct ModuleDescCache {
+    entries: std::collections::HashMap<String, CacheEntry>,
+}
+
+impl ModuleDescCache {
+    fn new() -> Self {
+        Self {
+            entries: std::collections::HashMap::new(),
+        }
+    }
+
+    /// 从磁盘加载（损坏/缺失→空缓存，调用方决定是否告警）
+    fn load(path: &Path) -> Self {
+        let Ok(content) = std::fs::read_to_string(path) else {
+            return Self::new();
+        };
+        match serde_json::from_str::<std::collections::HashMap<String, CacheEntry>>(&content) {
+            Ok(entries) => Self { entries },
+            Err(e) => {
+                tracing::warn!(
+                    "模块描述缓存解析失败（回退空缓存，按需重新生成）: {} {}",
+                    path.display(),
+                    e
+                );
+                Self::new()
+            }
+        }
+    }
+
+    /// 原子写盘（temp + rename）；失败仅告警不阻断
+    fn save(&self, path: &Path) {
+        let Ok(content) = serde_json::to_string(&self.entries) else {
+            return;
+        };
+        let Some(parent) = path.parent() else {
+            return;
+        };
+        let _ = std::fs::create_dir_all(parent);
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, content).is_ok() {
+            let _ = std::fs::rename(&tmp, path);
+        }
+    }
+}
+
+/// 计算模块涉及源文件的联合内容指纹
+///
+/// 取模块全部实体节点所属文件（去重排序），逐个计算 SHA256 后拼接——
+/// 任一文件内容变化都会改变指纹，使该模块的描述缓存失效。
+/// 文件不存在/不可读时以 "missing" 占位（该文件变更=指纹变化=重新描述）。
+fn module_files_fingerprint(
+    module: &crate::model::ModuleCluster,
+    graph: &KnowledgeGraph,
+    root: &Path,
+) -> String {
+    let mut files: Vec<&str> = module
+        .node_ids
+        .iter()
+        .filter_map(|nid| graph.graph.node_weight(*nid))
+        .filter_map(|n| n.file_path.as_deref())
+        .collect();
+    files.sort_unstable();
+    files.dedup();
+    files
+        .iter()
+        .map(|f| {
+            crate::incremental::state::GenerationState::compute_file_fingerprint(&root.join(f))
+                .unwrap_or_else(|_| "missing".to_string())
+        })
+        .collect::<Vec<_>>()
+        .join("|")
 }
 
 /// 引用契约重试上限（P0-1）：生成后校验源码引用，无效时重试注入
@@ -83,6 +179,8 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
             call_count: AtomicUsize::new(0),
             failed: std::sync::Mutex::new(Vec::new()),
             semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(max)),
+            // 缓存懒加载：首次 describe_modules 调用时按需读盘
+            desc_cache: std::sync::Mutex::new(None),
         }
     }
 
@@ -276,7 +374,7 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
         config: &WikiConfig,
     ) -> Result<WikiDocument> {
         let language = &config.wiki.language;
-        let modules = self.describe_modules(graph, language).await;
+        let modules = self.describe_modules(graph, language, config).await;
         let messages =
             prompt::architecture_overview_prompt(&modules, graph, language);
         // LLM 调用计数在 complete_with_mermaid_guard 内部（含重试）
@@ -316,11 +414,28 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
     /// 无明确职责边界，描述会失真）；LLM 失败时保留空描述（降级不影响主流程）。
     /// 各模块描述**并行**生成（join_all 保留顺序）——串行在 10+ 模块仓库会
     /// 拖长架构概览/项目概览的生成（真实 LLM 实测超时 10min 的根因之一）。
+    ///
+    /// v31 C-02 缓存：内存 memo（同一生成器实例内架构页+概览页两次调用
+    /// 只对同一模块 LLM 一次）+ 落盘缓存（.state/module_descriptions.json，
+    /// 键=模块名@语言，值=描述+模块文件内容指纹）——增量更新时未变模块
+    /// 直接复用上次描述，不再重复消耗 LLM token。
     async fn describe_modules(
         &self,
         graph: &KnowledgeGraph,
         language: &str,
+        config: &WikiConfig,
     ) -> Vec<crate::model::ModuleCluster> {
+        // 缓存文件路径与 generation_state.json 同目录（.state/），
+        // 随输出目录隔离（不同仓库/不同输出互不污染）
+        let cache_path = config.output_dir().join(".state").join("module_descriptions.json");
+        // 懒加载：首次调用读盘（损坏→空缓存，回退 LLM 重新生成不阻断）
+        {
+            let mut guard = self.desc_cache.lock().unwrap_or_else(|e| e.into_inner());
+            if guard.is_none() {
+                *guard = Some(ModuleDescCache::load(&cache_path));
+            }
+        }
+        let root = config.output_dir().to_path_buf();
         // 并行生成所有需描述的模块描述（保留输入顺序）；Semaphore 限制
         // 并发（演进计划 T5.1）：0=不限时许可数巨大永不会阻塞。
         let semaphore = self.semaphore.clone();
@@ -329,10 +444,24 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
             .iter()
             .map(|module| {
                 let semaphore = semaphore.clone();
+                let cache_key = format!("{}@{}", module.name, language);
+                let fingerprint = module_files_fingerprint(module, graph, &root);
                 async move {
                     // 兜底模块(src)与空模块跳过：无职责边界可描述
                     if module.name == "src" || module.node_ids.is_empty() {
                         return module.clone();
+                    }
+                    // 缓存命中（指纹一致）：直接复用，不触发 LLM 调用
+                    {
+                        let guard = self.desc_cache.lock().unwrap_or_else(|e| e.into_inner());
+                        if let Some(cache) = guard.as_ref()
+                            && let Some(entry) = cache.entries.get(&cache_key)
+                            && entry.fingerprint == fingerprint
+                        {
+                            let mut enriched = module.clone();
+                            enriched.description = Some(entry.description.clone());
+                            return enriched;
+                        }
                     }
                     let _permit = match semaphore.acquire().await {
                         Ok(p) => p,
@@ -342,13 +471,36 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
                     if let Ok(text) = self.describe_module(module, graph, language).await
                         && !text.trim().is_empty()
                     {
-                        enriched.description = Some(text.trim().to_string());
+                        let description = text.trim().to_string();
+                        // 写回缓存（锁内短操作，不跨 await）——失败不缓存，
+                        // 下次调用重新尝试 LLM
+                        {
+                            let mut guard = self.desc_cache.lock().unwrap_or_else(|e| e.into_inner());
+                            if let Some(cache) = guard.as_mut() {
+                                cache.entries.insert(
+                                    cache_key,
+                                    CacheEntry {
+                                        fingerprint,
+                                        description: description.clone(),
+                                    },
+                                );
+                            }
+                        }
+                        enriched.description = Some(description);
                     }
                     enriched
                 }
             })
             .collect();
-        futures::future::join_all(futures).await
+        let modules = futures::future::join_all(futures).await;
+        // 整批完成后原子落盘（跨进程复用）；写盘失败仅告警不阻断
+        {
+            let guard = self.desc_cache.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(cache) = guard.as_ref() {
+                cache.save(&cache_path);
+            }
+        }
+        modules
     }
 
     /// 生成单个模块的一句话职责描述（LLM）
@@ -385,7 +537,7 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
         // 表达"模块负责什么"；再叠加卡片摘要（自底向上合成：父概览基于
         // 子模块的职责描述 + 卡片摘要生成，而非仅模块名/节点数/边计数）
         // LLM 调用计数在 complete_with_mermaid_guard 内部（含重试）
-        let modules = self.describe_modules(graph, &config.wiki.language).await;
+        let modules = self.describe_modules(graph, &config.wiki.language, config).await;
         let messages = vec![Message::user(overview_prompt(&modules, &output.cards, graph, config))];
         let content = self.complete_with_mermaid_guard(messages, "项目概览").await?;
         let now = chrono::Utc::now().to_rfc3339();
@@ -1205,11 +1357,127 @@ mod tests {
         };
         let provider = MockProvider::new();
         let generator = WikiGenerator::new(&provider, 0);
-        let enriched = generator.describe_modules(&kg, "zh").await;
+        // 输出目录指向临时目录，避免缓存文件污染工作区
+        let config = crate::config::schema::WikiConfig {
+            output_dir: Some(
+                std::env::temp_dir()
+                    .join(format!("rw_desc_cache_test_{}", std::process::id())),
+            ),
+            ..Default::default()
+        };
+        let enriched = generator.describe_modules(&kg, "zh", &config).await;
         assert_eq!(enriched.len(), 2);
         assert!(enriched[0].description.is_some(), "带实体的模块应获得描述");
         assert_eq!(enriched[1].name, "src");
         assert!(enriched[1].description.is_none(), "src 兜底模块不描述");
+    }
+
+    /// v31 C-02：同一生成器实例内第二次 describe_modules 命中缓存，
+    /// 不再触发 LLM 调用（内存 memo）
+    #[tokio::test]
+    async fn test_describe_modules_cache_hit_skips_llm() {
+        use crate::model::{CodeEdge, CodeNode, ModuleCluster, NodeId, NodeKind};
+        use petgraph::stable_graph::StableDiGraph;
+
+        let mut g = StableDiGraph::<CodeNode, CodeEdge>::new();
+        g.add_node(CodeNode {
+            id: NodeId::new(0),
+            kind: NodeKind::File,
+            name: "net.rs".into(),
+            file_path: Some("src/net.rs".into()),
+            line_range: None,
+            doc_comment: None,
+            signature: None,
+            visibility: None,
+            module_path: vec!["src".into(), "net".into()],
+        });
+        let kg = KnowledgeGraph {
+            graph: g,
+            modules: vec![
+                ModuleCluster {
+                    name: "src::net".into(),
+                    node_ids: vec![NodeId::new(0)],
+                    cohesion: 1.0,
+                    coupling: 0.0,
+                    description: None,
+                },
+            ],
+            features: Vec::new(),
+        };
+        let provider = MockProvider::new();
+        let generator = WikiGenerator::new(&provider, 0);
+        let config = crate::config::schema::WikiConfig {
+            output_dir: Some(
+                std::env::temp_dir()
+                    .join(format!("rw_desc_cache_hit_{}", std::process::id())),
+            ),
+            ..Default::default()
+        };
+        let first = generator.describe_modules(&kg, "zh", &config).await;
+        assert!(first[0].description.is_some(), "首次应走 LLM 获得描述");
+        let calls_after_first = generator.llm_call_count();
+        assert!(calls_after_first > 0, "首次必须真实调用 LLM");
+        let second = generator.describe_modules(&kg, "zh", &config).await;
+        assert_eq!(second[0].description, first[0].description, "缓存应返回相同描述");
+        assert_eq!(
+            generator.llm_call_count(),
+            calls_after_first,
+            "第二次调用必须命中缓存、不触发 LLM"
+        );
+    }
+
+    /// v31 C-02：模块源文件内容变化后指纹失效，缓存不命中、重新调用 LLM
+    #[tokio::test]
+    async fn test_describe_modules_cache_invalidated_by_file_change() {
+        use crate::model::{CodeEdge, CodeNode, ModuleCluster, NodeId, NodeKind};
+        use petgraph::stable_graph::StableDiGraph;
+
+        // 真实临时源文件（describe 指纹按文件内容计算）
+        let dir = std::env::temp_dir().join(format!("rw_desc_cache_chg_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/net.rs"), "pub fn connect() {}\n").unwrap();
+
+        let mut g = StableDiGraph::<CodeNode, CodeEdge>::new();
+        g.add_node(CodeNode {
+            id: NodeId::new(0),
+            kind: NodeKind::File,
+            name: "net.rs".into(),
+            file_path: Some("src/net.rs".into()),
+            line_range: None,
+            doc_comment: None,
+            signature: None,
+            visibility: None,
+            module_path: vec!["src".into(), "net".into()],
+        });
+        let kg = KnowledgeGraph {
+            graph: g,
+            modules: vec![ModuleCluster {
+                name: "src::net".into(),
+                node_ids: vec![NodeId::new(0)],
+                cohesion: 1.0,
+                coupling: 0.0,
+                description: None,
+            }],
+            features: Vec::new(),
+        };
+        let provider = MockProvider::new();
+        let generator = WikiGenerator::new(&provider, 0);
+        let config = crate::config::schema::WikiConfig {
+            output_dir: Some(dir.clone()),
+            ..Default::default()
+        };
+        generator.describe_modules(&kg, "zh", &config).await;
+        let calls_after_first = generator.llm_call_count();
+
+        // 修改源文件内容 → 指纹变化 → 缓存失效
+        std::fs::write(dir.join("src/net.rs"), "pub fn connect() {}\npub fn listen() {}\n").unwrap();
+        generator.describe_modules(&kg, "zh", &config).await;
+        assert!(
+            generator.llm_call_count() > calls_after_first,
+            "文件内容变化后必须重新调用 LLM"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 实体名额策略（t02 拍板）：行为型优先排序 + 排除字段级（variable）
