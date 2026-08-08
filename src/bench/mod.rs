@@ -2463,7 +2463,7 @@ mod tests {
 
         let config = WikiConfig {
             output_dir: Some((dir.join(".repo-wiki").to_string_lossy().into_owned()).into()),
-            wiki: WikiSection { language: "zh".into() },
+            wiki: WikiSection { language: "zh".into(), guide: Default::default() },
             llm: LlmSection { provider: LlmProviderType::Mock, ..Default::default() },
             ..Default::default()
         };
@@ -2533,7 +2533,7 @@ mod tests {
 
         let config = WikiConfig {
             output_dir: Some((dir.join(".repo-wiki").to_string_lossy().into_owned()).into()),
-            wiki: WikiSection { language: "zh".into() },
+            wiki: WikiSection { language: "zh".into(), guide: Default::default() },
             llm: LlmSection { provider: LlmProviderType::Mock, ..Default::default() },
             ..Default::default()
         };
@@ -2598,7 +2598,7 @@ mod tests {
 
         let config = WikiConfig {
             output_dir: Some((dir.join(".repo-wiki").to_string_lossy().into_owned()).into()),
-            wiki: WikiSection { language: "zh".into() },
+            wiki: WikiSection { language: "zh".into(), guide: Default::default() },
             llm: LlmSection { provider: LlmProviderType::Mock, ..Default::default() },
             ..Default::default()
         };
@@ -2650,7 +2650,7 @@ mod tests {
 
         let config = WikiConfig {
             output_dir: Some((dir.join(".repo-wiki").to_string_lossy().into_owned()).into()),
-            wiki: WikiSection { language: "zh".into() },
+            wiki: WikiSection { language: "zh".into(), guide: Default::default() },
             llm: LlmSection { provider: LlmProviderType::Mock, ..Default::default() },
             ..Default::default()
         };

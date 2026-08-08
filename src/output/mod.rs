@@ -564,6 +564,7 @@ mod tests {
         let config = WikiConfig {
             wiki: crate::config::schema::WikiSection {
                 language: "zh".into(),
+                guide: Default::default(),
             },
             ..Default::default()
         };

@@ -56,6 +56,28 @@ impl WikiConfig {
 pub struct WikiSection {
     #[serde(default = "default_language")]
     pub language: String,
+    /// v32 9.1：生成引导段（[wiki.guide]）——空=现行为零破坏。
+    /// 缺段或缺键时全部回退空 Vec，不报错（傻瓜式零配置原则）。
+    #[serde(default)]
+    pub guide: WikiGuideSection,
+}
+
+/// v32 9.1 生成引导（[wiki.guide]）：
+/// - `pages`：要生成的模块页路径前缀白名单（空=全部模块）。匹配按
+///   模块路径前缀（如 "src/net" 匹配 "src/net/tcp.rs" 模块页）；未匹配
+///   的模块不生成独立页，但仍保留 overview 汇总；全部为空匹配时报错。
+/// - `priority`：模块页确定性排序列表（优先在前的路径前缀），用于把
+///   核心模块排在文档前面；不在列表中的模块保持默认顺序。
+/// - `notes`：注入模块页生成 prompt 的引导说明（逐条列出），引导 LLM
+///   按项目约定撰写页面内容（如命名规范、必写小节、注意事项）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WikiGuideSection {
+    #[serde(default)]
+    pub pages: Vec<String>,
+    #[serde(default)]
+    pub priority: Vec<String>,
+    #[serde(default)]
+    pub notes: Vec<String>,
 }
 
 fn default_language() -> String {
@@ -66,6 +88,7 @@ impl Default for WikiSection {
     fn default() -> Self {
         Self {
             language: "zh".to_string(),
+            guide: WikiGuideSection::default(),
         }
     }
 }

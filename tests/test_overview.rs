@@ -15,6 +15,7 @@ fn make_config(dir: &std::path::Path) -> WikiConfig {
         output_dir: Some((dir.to_string_lossy().into_owned()).into()),
         wiki: WikiSection {
             language: "zh".into(),
+            guide: Default::default(),
         },
         ..Default::default()
     }

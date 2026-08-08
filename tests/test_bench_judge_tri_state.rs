@@ -214,7 +214,7 @@ fn bench_setup(tag: &str, base_url: &str, with_readme: bool, with_tqs: bool) -> 
     }
     let config = WikiConfig {
         output_dir: Some(dir.join(".repo-wiki").to_string_lossy().into_owned().into()),
-        wiki: WikiSection { language: "zh".into() },
+        wiki: WikiSection { language: "zh".into(), guide: Default::default() },
         llm: LlmSection {
             provider: LlmProviderType::OpenAiCompatible,
             model: "mock-model".into(),

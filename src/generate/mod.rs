@@ -840,7 +840,7 @@ mod tests {
 
         let config = WikiConfig {
             output_dir: Some(dir.clone()),
-            wiki: crate::config::schema::WikiSection { language: "en".into() },
+            wiki: crate::config::schema::WikiSection { language: "en".into(), guide: Default::default() },
             ..Default::default()
         };
 

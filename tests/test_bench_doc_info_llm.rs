@@ -125,7 +125,7 @@ fn bench_setup(tag: &str, llm: LlmSection) -> (ProjectRoot, WikiConfig) {
     std::fs::write(wiki_zh.join("a.md"), "# 模块 a\n\n文档内容。\n").unwrap();
     let config = WikiConfig {
         output_dir: Some(dir.join(".repo-wiki").to_string_lossy().into_owned().into()),
-        wiki: WikiSection { language: "zh".into() },
+        wiki: WikiSection { language: "zh".into(), guide: Default::default() },
         llm,
         ..Default::default()
     };
@@ -283,7 +283,7 @@ fn bench_setup_scripted(tag: &str, base_url: &str) -> (ProjectRoot, WikiConfig) 
     }
     let config = WikiConfig {
         output_dir: Some(dir.join(".repo-wiki").to_string_lossy().into_owned().into()),
-        wiki: WikiSection { language: "zh".into() },
+        wiki: WikiSection { language: "zh".into(), guide: Default::default() },
         llm: LlmSection {
             provider: LlmProviderType::OpenAiCompatible,
             model: "mock-model".into(),

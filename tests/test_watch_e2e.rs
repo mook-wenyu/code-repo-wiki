@@ -37,7 +37,7 @@ fn wait_until(mut cond: impl FnMut() -> bool, interval: Duration, what: &str) {
 fn watch_config(repo: &Path) -> WikiConfig {
     WikiConfig {
         output_dir: Some((repo.join(".repo-wiki").to_string_lossy().into_owned()).into()),
-        wiki: WikiSection { language: "zh".into() },
+        wiki: WikiSection { language: "zh".into(), guide: Default::default() },
         llm: LlmSection { provider: LlmProviderType::Mock, ..Default::default() },
         // v30：embed 默认真实阵营（百炼）且 EmbedSection 无 mock 通道——
         // 环境有 BAILIAN_API_KEY 时嵌入会真实触网拖慢全量。api_key_env=""
