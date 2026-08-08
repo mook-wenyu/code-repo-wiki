@@ -391,6 +391,9 @@ fn extract_body(source: &str, line_start: usize, line_end: usize) -> String {
 /// 唯一行为差异：原实现会在 `xfoo(` 中误把子串 `foo(` 当作候选（因
 /// 前字符 `x` 非边界而放弃）——若 `foo` 恰为实体名则漏连 xfoo 的调用
 /// 边；新实现按完整标识符匹配，此场景正确建立调用边（修复而非回归）。
+/// 另一差异（已知限制）：token 化只认 ASCII 标识符起始字节，含非 ASCII
+/// 字符的实体名（如 `fn 测试()`）不会建立 Calls 边——此类标识符在实际
+/// 代码库中极为罕见，且原实现对其边界判定本就不一致，故不为此扩展。
 fn build_call_edges(
     g: &mut petgraph::stable_graph::StableDiGraph<CodeNode, CodeEdge>,
     call_candidates: &[(Entity, NodeId, String)],
