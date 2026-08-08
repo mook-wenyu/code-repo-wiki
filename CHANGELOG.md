@@ -12,14 +12,32 @@
   （`embed_model_marker`/`read_embed_model`/`write_embed_model`/`embed_model_mismatch`，
   含单元测试）；
 - 测试残留清理脚本 `scripts/cleanup-test-residue.ps1`（预览/确认两段式，
-  清理 `%APPDATA%\code-repo-wiki\key-test-*` 与 `%TEMP%\repo_wiki*` 历史测试残留）；
+  清理 `%APPDATA%\code-repo-wiki\key-test-*` 与 `%TEMP%\repo_wiki*` /
+  `code_repo_wiki*` 历史测试残留；v37 起新旧命名双清）；
 - README 新增 watch 常驻进程托管模板（systemd 用户服务 / launchd
   LaunchAgent / Windows 任务计划程序，均含崩溃自愈配置）。
 
 ### Changed
+- **项目改名 Code Repo Wiki（v37）**：crate/二进制/命令名 `repo-wiki` → `code-repo-wiki`（代码/测试/文档/MCP 注册键/git hooks 字面量/AGENTS 注入块全链路同步）；产物目录 `.repo-wiki` → `.code-repo-wiki`；用户级配置目录 `%APPDATA%\repo-wiki` → `%APPDATA%\code-repo-wiki`（改名不迁移，删除重装并重新配置 key）；GitHub 仓库改名 `mook-wenyu/code-repo-wiki`
+- **CI 增强（v37）**：三 job 重构——check（clippy `-D warnings` + `cargo doc --no-deps` 门禁）、test（ubuntu + windows 矩阵，fail-fast:false）、lint-workflow（actionlint 校验 workflow）；新增 `rust-toolchain.toml`（stable + clippy）；concurrency cancel-in-progress
+- **跨平台测试修复（v37）**：bench manifest 本地路径名提取改双分隔符（ubuntu 上 Windows 盘符路径不再被当相对路径）；key 测试全局配置目录注入临时路径 + opencode config_dir 测试纯函数化（消除并行 env 竞态——ubuntu 无 APPDATA 兜底必现）
+- **文档重构（v37）**：docs/ 目录按 Diátaxis 组织（教程/CLI 参考/配置参考/FAQ/限制项/lint 检查项/架构说明/watch 托管/维护/术语表），README 瘦身为着陆页（原 22 节内容下沉 docs/）
 - 原子写补齐 fsync：`write_file_atomic` 在 rename 前显式
   flush + `sync_all`（写句柄，兼容 Windows FlushFileBuffers），
   消除「已 rename 但内容截断」的断电窗口（salt 9c18c27 实证）。
+- 检索改进（v36）：CJK 2-gram token 列（独立 `tokens` 列 + `PRAGMA user_version`
+  表重建迁移，增量路径检测旧 schema 自动回退全量文本重索引）；默认引擎改
+  `hybrid`（text/semantic/hybrid 三引擎共存，`--engine` 仍可指定）；调用链补全
+  检索侧只扩展 callees（CodeRAG 实证 callers 方向 -17% MRR，展示侧仍双向）；
+  图谱索引磁盘缓存（`.code-repo-wiki/.cache/call_index.json` + git HEAD/文件
+  统计指纹）；rerank 端点按 dashscope compatible-api 格式实现后因用户拍板整体移除
+- 运维改进（v36）：单实例运行锁（`.state/run.lock` 原子创建 + PID，并发启动
+  显式报错）；watch 崩溃自愈循环（5s 起倍增上限 60s 退避重试）；git hooks
+  失败可见性（stderr 落 `.code-repo-wiki/update-error.log` + 失败时提交输出
+  提示一行）；`--also-claude` 合并进 `--claude`；status 新增 LLM 状态行；
+  MCP 工具描述补「需先运行 generate」前置条件
+- 搜索完备性审计（v35）：代码库与 llms.txt 自身两份 Agent 索引的完整性/新鲜度
+  比对分析与差距清单（CJK 分词、rerank、错误路径一致性、评测覆盖等）
 - 安装集成合并（v33）：`install-wiki`/`uninstall-wiki`/`install-to-opencode`/
   `uninstall-from-opencode` 四子命令删除，全部并入 `install`/`uninstall`；
   MCP 注册默认写用户级全局 `opencode.json`（OpenCode 原生格式，多仓库共享），

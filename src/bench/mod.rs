@@ -91,7 +91,7 @@ pub struct DocInfoReport {
     pub pages: usize,
     /// 全部页面词数（空白分隔，去 markdown 围栏不影响统计口径）
     pub words: usize,
-    /// 交叉引用链接数（[文本](目标) 形态）
+    /// 交叉引用链接数（`文本(目标)` 形态）
     pub cross_references: usize,
     /// 代码块数（``` 围栏对）
     pub code_blocks: usize,

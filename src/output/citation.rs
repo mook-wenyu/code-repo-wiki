@@ -92,9 +92,9 @@ fn fence_ranges(content: &str) -> Vec<(usize, usize)> {
 /// - 路径不含 `//`（排除 URL）且不以 `/` 开头（排除绝对路径，统一相对根）
 /// - 冒号后必须紧跟数字；`-数字` 后缀视为区间结束
 /// - 行号非零
-/// - U04/D7：跳过代码围栏区间（``` 块内/示例代码里的 path:line 是代码
-///   不是引用——示例代码误报会触发引用契约重试耗尽整页 bail，降级后的
-///   ```text 块若含 path:line 又触发 bad-citation，双重盲区）
+/// - U04/D7：跳过代码围栏区间（markdown 反引号代码块内/示例代码里的
+///   path:line 是代码不是引用——示例代码误报会触发引用契约重试耗尽整页
+///   bail，降级后的 text 代码块若含 path:line 又触发 bad-citation，双重盲区）
 pub fn extract_citations(content: &str) -> Vec<Citation> {
     let fences = fence_ranges(content);
     let bytes = content.as_bytes();

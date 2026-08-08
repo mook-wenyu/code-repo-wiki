@@ -48,7 +48,7 @@ fn file_dir_key(graph: &KnowledgeGraph, nid: NodeId) -> String {
     }
 }
 
-/// 文件级社区检测：返回 File 节点的社区划分（每社区一个 Vec<NodeId>）
+/// 文件级社区检测：返回 File 节点的社区划分（每社区一个 `Vec<NodeId>`）
 ///
 /// 输出确定性：社区内按 file_path 字典序排序后作为分组键排序。
 pub fn detect_communities(graph: &KnowledgeGraph) -> Vec<Vec<NodeId>> {

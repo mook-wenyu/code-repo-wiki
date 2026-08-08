@@ -439,7 +439,7 @@ pub const WIKI_BLOCK_START: &str = "<!-- REPO-WIKI:START -->";
 /// wiki 引用块的结束标记
 pub const WIKI_BLOCK_END: &str = "<!-- REPO-WIKI:END -->";
 
-/// 渲染注入块模板（install-wiki 与 --also-claude 共用）
+/// 渲染注入块模板（install 的 AGENTS.md 注入与 CLAUDE.md 注入共用）
 ///
 /// 内容为中文 markdown 指针风格：只引产物路径与常用命令，不复制 wiki
 /// 正文（避免与 LLM 生成的产物内容双份漂移）。以换行结尾，保证追加/
@@ -501,7 +501,7 @@ fn wiki_block_state(content: &str) -> WikiBlockState {
     }
 }
 
-/// 将 wiki 引用块注入文档文本（纯函数，不含 I/O，install-wiki / --also-claude 共用）
+/// 将 wiki 引用块注入文档文本（纯函数，不含 I/O，install 的 AGENTS.md/CLAUDE.md 注入共用）
 ///
 /// 幂等策略：
 /// - 完整标记对 → 整块替换（只动标记之间内容，保留用户其他内容）；
@@ -581,7 +581,7 @@ fn remove_wiki_block_from_file(path: &Path) -> Result<bool> {
     }
 }
 
-/// install-wiki: 向项目根 AGENTS.md 注入 wiki 引用块（--also-claude 时同步写 CLAUDE.md）
+/// install: 向项目根 AGENTS.md 注入 wiki 引用块（--claude 时同步写 CLAUDE.md）
 ///
 /// 文件不存在则创建；已存在完整标记对则整块替换（只动标记之间内容）；
 /// 半标记报错（不修，理由见 `wiki_block_state`）。
@@ -613,7 +613,7 @@ pub fn install_wiki(root: &crate::project::ProjectRoot, also_claude: bool) -> Re
     Ok(())
 }
 
-/// uninstall-wiki: 移除 AGENTS.md 中的 wiki 引用块（含标记本身）
+/// uninstall: 移除 AGENTS.md 中的 wiki 引用块（含标记本身）
 ///
 /// - AGENTS.md 无标记 → 提示"未安装"，退出码 0（幂等，与卸载语义一致）；
 /// - 半标记 → 报错（不修）；

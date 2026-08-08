@@ -20,7 +20,7 @@ use crate::project::ProjectRoot;
 
 /// 生产入口：真实 stdin + 真实 TTY 检测
 ///
-/// stdin 交互与 TTY 判定抽为注入点（[`run_with_io`]）：`IsTerminal`
+/// stdin 交互与 TTY 判定抽为注入点（`run_with_io`）：`IsTerminal`
 /// 无法在测试中伪造，测试注入固定输入与 is_tty 值。
 pub fn run(env: bool, config_path: Option<&Path>, root: &ProjectRoot) -> Result<()> {
     run_with_io(

@@ -7,7 +7,7 @@
 
 /// 渲染交叉引用为 Markdown 链接
 ///
-/// 纯 Markdown 环境不使用 HTML <cite> 标签（会引起渲染问题），改为标准链接格式。
+/// 纯 Markdown 环境不使用 HTML `cite` 标签（会引起渲染问题），改为标准链接格式。
 pub fn render_cite_link(symbol: &str, target_path: &str) -> String {
     format!("[`{symbol}`]({target_path})")
 }

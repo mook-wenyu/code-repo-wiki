@@ -121,10 +121,21 @@ pub fn parse_manifest(path: &Path) -> Result<Vec<RepoEntry>> {
             } else {
                 name
             };
+            // 平台无关绝对路径判定：Windows 盘符路径（D:\x 或 D:/x）在非
+            // Windows 平台 is_absolute() 为 false，但清单语义上它就是绝对
+            // 路径——按盘符前缀识别，避免被 join 进清单文件所在目录
+            let is_win_drive = target.len() >= 3
+                && target.as_bytes()[1] == b':'
+                && (target.as_bytes()[2] == b'\\' || target.as_bytes()[2] == b'/')
+                && target.as_bytes()[0].is_ascii_alphabetic();
             // 相对路径基于清单文件所在目录解析（本地路径不校验存在性——
             // 执行期统一失败标注，便于批处理继续）
             let p = PathBuf::from(target);
-            let abs = if p.is_absolute() { p } else { manifest_dir.join(p) };
+            let abs = if p.is_absolute() || is_win_drive {
+                p
+            } else {
+                manifest_dir.join(p)
+            };
             RepoEntry { name, url: None, local: Some(abs), commit }
         };
         if entry.name.is_empty() {
@@ -385,6 +396,10 @@ mod tests {
         let base = std::env::temp_dir().join(format!("rw_manifest_checkout_{}", std::process::id()));
         std::fs::create_dir_all(&base).unwrap();
         let repo = Repository::init(&base).unwrap();
+        // 固定 autocrlf=false：GitHub Windows runner 的系统级 Git 配置
+        // （Git for Windows 默认 core.autocrlf=true）会被 libgit2 读取，
+        // checkout 时把内容转 CRLF 导致断言失败——测试内钉死行为，与平台无关
+        repo.config().unwrap().set_bool("core.autocrlf", false).unwrap();
         let sig = git2::Signature::now("t", "t@t").unwrap();
         let mut idx = repo.index().unwrap();
         std::fs::write(base.join("f.txt"), "v1\n").unwrap();

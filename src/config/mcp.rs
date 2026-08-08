@@ -5,7 +5,7 @@
 //! `.mcp.json`（Claude Code 格式 `mcpServers`），`--codex` 额外写用户级
 //! `~/.codex/config.toml` 的 `[mcp_servers.<name>]` 表。
 //!
-//! 三个 writer（[`OpencodeMcp`]/[`ClaudeMcp`]/[`CodexMcp`]）各自封装一种
+//! 三个 writer（`OpencodeMcp`/`ClaudeMcp`/`CodexMcp`）各自封装一种
 //! 格式，共同契约：
 //! - `install(server)`：条目已存在且命令一致 → 返回 `false`（跳过）；
 //!   存在但命令不同（升级，如二进制路径变化）→ 更新返回 `true`；
