@@ -8,7 +8,11 @@ pub const LLM_MAX_CONCURRENT: usize = 16;
 pub const EMBED_BATCH_SIZE: usize = 20;
 /// 索引目录，相对 output.dir
 pub const SEARCH_INDEX_DIR: &str = ".search";
-pub const SEARCH_DEFAULT_ENGINE: SearchEngineType = SearchEngineType::Text;
+/// 默认搜索引擎：v36 起为 Hybrid（BM25 召回 + 向量语义 + RRF 融合 + 调用链
+/// 补全 + 可选 rerank）。个人仓库场景下混合召回显著优于单一引擎，且
+/// 无 embed key 时 hybrid 自动降级纯 text（search 层已验证），默认值
+/// 不会让无 key 用户受损。
+pub const SEARCH_DEFAULT_ENGINE: SearchEngineType = SearchEngineType::Hybrid;
 pub const SEARCH_DEFAULT_TOP_K: usize = 10;
 /// RRF 融合常数 k（控制排序权重衰减）
 pub const SEARCH_RRF_K: f64 = 60.0;

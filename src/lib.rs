@@ -868,6 +868,74 @@ fn search_index_dir(config: &config::schema::WikiConfig) -> std::path::PathBuf {
     config.output_dir().join(config::schema::SEARCH_INDEX_DIR)
 }
 
+// ==================== 调用索引磁盘缓存（v36 C3）====================
+//
+// hybrid 自 v36 起为默认引擎，若每次搜索都重建知识图谱（实测约 1.2s）
+// 会让默认体验劣化。调用索引是「源码变化才变」的派生数据，可用指纹
+// 判失效后落盘复用。缓存语义刻意与「文档时代的图」对齐：缓存中保存的
+// 是上次文档生成时的调用图——未提交的源码改动不触发重建（文档未更新
+// 时展示与文档同代的补全，一致性优于每次现扫的现状）。
+
+/// 调用索引缓存指纹：git 仓库取 HEAD 提交；非 git 仓库取生成状态文件
+/// 的 (字节数, 修改时间)——generate/update 每次落盘状态文件，其变化即
+/// 代表文档生成状态变化，可保守判定调用图是否需要重建。
+fn call_index_fingerprint(config: &config::schema::WikiConfig) -> Option<String> {
+    let root = config.output_dir().parent()?;
+    // git 优先：HEAD 精确代表「源码版本」
+    if let Ok(repo) = git2::Repository::discover(root) {
+        if let Ok(head) = repo.head() {
+            if let Some(target) = head.target() {
+                return Some(format!("git:{}", target));
+            }
+        }
+    }
+    // 非 git：生成状态文件 (len, mtime) 作为粗指纹
+    let state_path = config.output_dir().join(".state").join("generation_state.json");
+    let meta = std::fs::metadata(&state_path).ok()?;
+    let mtime = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+    // 亚秒精度：文件系统 mtime 精度远高于秒（NTFS 100ns），
+    // 同一秒内的状态重写也必须判失效（generate/update 连续落盘场景）
+    Some(format!("state:{}:{}", meta.len(), mtime.as_millis()))
+}
+
+/// 加载调用索引缓存：指纹匹配且 JSON 可解析才命中，否则返回 None
+///（未命中/损坏/无法计算指纹均视为无缓存，调用方走重建路径）。
+fn load_call_index_cache(config: &config::schema::WikiConfig) -> Option<search::callgraph::CallIndex> {
+    let fp = call_index_fingerprint(config)?;
+    let state_dir = config.output_dir().join(".state");
+    let fp_file = std::fs::read_to_string(state_dir.join("call_index.fingerprint")).ok()?;
+    if fp_file.trim() != fp {
+        return None;
+    }
+    let data = std::fs::read_to_string(state_dir.join("call_index.json")).ok()?;
+    serde_json::from_str(&data).ok()
+}
+
+/// 写调用索引缓存（尽力而为：失败仅告警——搜索主功能不受影响，
+/// 下次搜索会走重建路径）。指纹与索引内容同写，保证原子判失效。
+fn save_call_index_cache(config: &config::schema::WikiConfig, index: &search::callgraph::CallIndex) {
+    let Some(fp) = call_index_fingerprint(config) else {
+        return;
+    };
+    let state_dir = config.output_dir().join(".state");
+    if let Err(e) = std::fs::create_dir_all(&state_dir) {
+        tracing::warn!("调用索引缓存目录创建失败: {}", e);
+        return;
+    }
+    match serde_json::to_string(index) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(state_dir.join("call_index.json"), json) {
+                tracing::warn!("调用索引缓存写入失败: {}", e);
+                return;
+            }
+            if let Err(e) = std::fs::write(state_dir.join("call_index.fingerprint"), fp) {
+                tracing::warn!("调用索引指纹写入失败: {}", e);
+            }
+        }
+        Err(e) => tracing::warn!("调用索引序列化失败: {}", e),
+    }
+}
+
 // ==================== 语义降级标记（v32 10.1）====================
 //
 // 语义索引是「附加能力」：embed 初始化/运行期失败时生成流程降级保留旧索引
@@ -1067,11 +1135,13 @@ fn update_search_index_incremental(
     let (mut text_engine, need_reindex) = search::text::TextEngine::open(&text_path)?;
 
     // 分支内统计量提升到外层：函数末尾的汇总日志需要（Rust 作用域）；
-    // source_map/items 同样提升：语义增量段（下方）需要引用
+    // source_map/items 同样提升：语义增量段（下方）需要引用。
+    // 延迟初始化（两个分支必赋值其一）：避免空值占位引发
+    // unused_assignments 误报，也杜绝「空 Vec 兜底」掩盖逻辑。
     let source_map = build_source_map(file_insights);
     let mut total_removed = 0;
-    let mut indexed_count = 0;
-    let mut items: Vec<(model::CodeNode, String)> = Vec::new();
+    let indexed_count;
+    let items: Vec<(model::CodeNode, String)>;
 
     if need_reindex {
         // v36 schema 迁移：旧版 text 索引（无 CJK tokens 列）被 open 时
@@ -1360,15 +1430,25 @@ pub fn execute_search(
                     }
                 } else { None };
             let mut agent = search::agent::SearchAgent::new(text_engine, semantic_engine, config::schema::SEARCH_RRF_K);
-            // 调用链补全：重建知识图谱以获得 Calls 边，构建调用索引注入 agent。
-            // CLI 场景单次搜索的重建开销可接受（实测本项目约 1.2s）；
-            // 失败时静默降级为无补全（索引缺失等，搜索主功能不受影响）。
-            if let Ok(scan) = ingest::scan_and_parse_at(root)
-                && let Ok(graph) = analysis::build_graph(&scan.insights)
-            {
-                let index = search::callgraph::CallGraph::new(&graph).build_call_index();
-                agent = agent.with_call_index(index);
-            }
+            // 调用链补全：优先加载磁盘缓存（v36：hybrid 为默认引擎，
+            // 缓存按源码指纹失效，命中时跳过整次图谱重建；重建成本仅
+            // 在指纹变化后付出一次）。缓存与重建失败均静默降级为无补全
+            //（索引缺失等，搜索主功能不受影响）。
+            let index = match load_call_index_cache(&config) {
+                Some(i) => i,
+                None => {
+                    if let Ok(scan) = ingest::scan_and_parse_at(root)
+                        && let Ok(graph) = analysis::build_graph(&scan.insights)
+                    {
+                        let index = search::callgraph::CallGraph::new(&graph).build_call_index();
+                        save_call_index_cache(&config, &index);
+                        index
+                    } else {
+                        HashMap::new()
+                    }
+                }
+            };
+            agent = agent.with_call_index(index);
             Ok(agent.search(query, top_k, true))
         }
     }
@@ -1781,6 +1861,93 @@ mod tests {
         let (protected, state) = load_protection(&config, false).unwrap();
         assert!(protected.is_empty());
         assert!(state.is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ==================== 调用索引磁盘缓存（v36 C3）====================
+
+    /// 非 git 且无生成状态文件时指纹为 None（保守：不缓存）
+    #[test]
+    fn test_call_index_fingerprint_none_without_state() {
+        let dir = std::env::temp_dir()
+            .join(format!("repo_wiki_test_fp_none_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let config = crate::config::schema::WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
+        assert!(call_index_fingerprint(&config).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 生成状态文件存在时指纹稳定（非 git 场景），内容变化后指纹变化
+    #[test]
+    fn test_call_index_fingerprint_state_stable() {
+        let dir = std::env::temp_dir()
+            .join(format!("repo_wiki_test_fp_state_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".state")).unwrap();
+        std::fs::write(dir.join(".state/generation_state.json"), "{}").unwrap();
+
+        let config = crate::config::schema::WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
+        let fp1 = call_index_fingerprint(&config).expect("有状态文件应有指纹");
+        let fp2 = call_index_fingerprint(&config).expect("有状态文件应有指纹");
+        assert_eq!(fp1, fp2, "指纹必须稳定（同状态两次调用相同）");
+
+        // 状态文件重写（generate/update 落盘）→ mtime 变化 → 指纹变化
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(dir.join(".state/generation_state.json"), "{}").unwrap();
+        let fp3 = call_index_fingerprint(&config).expect("有状态文件应有指纹");
+        assert_ne!(fp1, fp3, "状态文件重写后指纹必须变化");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 缓存往返：保存后可加载且内容一致；指纹不匹配时视为未命中
+    #[test]
+    fn test_call_index_cache_round_trip_and_invalidation() {
+        let dir = std::env::temp_dir()
+            .join(format!("repo_wiki_test_call_cache_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".state")).unwrap();
+        std::fs::write(dir.join(".state/generation_state.json"), "{}").unwrap();
+
+        let config = crate::config::schema::WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
+        let mut index = std::collections::HashMap::new();
+        index.insert("fn_a".to_string(), (vec!["fn_b".to_string()], vec!["fn_c".to_string()]));
+
+        // 保存前加载=未命中
+        assert!(load_call_index_cache(&config).is_none());
+
+        save_call_index_cache(&config, &index);
+        let loaded = load_call_index_cache(&config).expect("保存后应命中");
+        assert_eq!(loaded, index, "缓存往返内容必须一致");
+
+        // 指纹失效（状态文件重写）→ 未命中
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(dir.join(".state/generation_state.json"), "{}").unwrap();
+        assert!(load_call_index_cache(&config).is_none(), "指纹变化后必须失效");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 损坏的缓存 JSON 视为未命中（走重建路径，不 panic）
+    #[test]
+    fn test_call_index_cache_corrupt_is_miss() {
+        let dir = std::env::temp_dir()
+            .join(format!("repo_wiki_test_call_cache_corrupt_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".state")).unwrap();
+        std::fs::write(dir.join(".state/generation_state.json"), "{}").unwrap();
+
+        let config = crate::config::schema::WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
+        // 指纹匹配但 JSON 损坏
+        let fp = call_index_fingerprint(&config).unwrap();
+        std::fs::write(dir.join(".state/call_index.fingerprint"), &fp).unwrap();
+        std::fs::write(dir.join(".state/call_index.json"), "{ 半截").unwrap();
+
+        assert!(load_call_index_cache(&config).is_none(), "损坏缓存必须视为未命中");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

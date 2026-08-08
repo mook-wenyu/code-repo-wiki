@@ -7,6 +7,11 @@ pub struct CallGraph<'a> {
     graph: &'a KnowledgeGraph,
 }
 
+/// 符号名 → (调用者列表, 被调用者列表) 的预计算表。
+/// 独立类型别名：该表可被 serde_json 序列化落盘做磁盘缓存（见 lib.rs
+/// load_call_index_cache），是调用索引在进程外的唯一持久形态。
+pub type CallIndex = HashMap<String, (Vec<String>, Vec<String>)>;
+
 impl<'a> CallGraph<'a> {
     pub fn new(graph: &'a KnowledgeGraph) -> Self {
         Self { graph }
@@ -55,7 +60,7 @@ impl<'a> CallGraph<'a> {
 
     /// 构建符号名 → (调用者列表, 被调用者列表) 预计算表。
     /// 一次性遍历所有 Calls 边，避免查询时重复扫描全图。
-    pub fn build_call_index(&self) -> HashMap<String, (Vec<String>, Vec<String>)> {
+    pub fn build_call_index(&self) -> CallIndex {
         let mut index: HashMap<String, (Vec<String>, Vec<String>)> = HashMap::new();
         for (src, dst) in self.all_call_edges() {
             if let (Some(s), Some(d)) = (self.graph.graph.node_weight(src), self.graph.graph.node_weight(dst)) {
@@ -109,5 +114,21 @@ mod tests {
         let cg = CallGraph::new(&kg);
         let callers = cg.caller_of("callee");
         assert_eq!(callers.len(), 1);
+    }
+
+    #[test]
+    fn test_call_index_serde_round_trip() {
+        // 磁盘缓存契约：CallIndex 必须可 JSON 序列化往返且内容不变
+        //（lib.rs load_call_index_cache 依赖此格式）
+        let kg = make_test_graph();
+        let cg = CallGraph::new(&kg);
+        let index = cg.build_call_index();
+        let json = serde_json::to_string(&index).unwrap();
+        let back: CallIndex = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, index);
+        // caller 侧：callee 的调用者列表含 caller
+        assert_eq!(back.get("callee").unwrap().0, vec!["caller".to_string()]);
+        // callee 侧：caller 的被调用者列表含 callee
+        assert_eq!(back.get("caller").unwrap().1, vec!["callee".to_string()]);
     }
 }

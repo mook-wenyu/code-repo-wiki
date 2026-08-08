@@ -177,7 +177,7 @@ enum Commands {
         /// 以 JSON 格式输出
         #[arg(long)]
         json: bool,
-        /// 搜索引擎选择: text / semantic / hybrid（默认取配置文件中的 default_engine）
+        /// 搜索引擎选择: text / semantic / hybrid（默认 hybrid；hybrid 无嵌入 key 时自动降级纯 text）
         #[arg(short, long)]
         engine: Option<String>,
         /// 项目根目录（扫描根/git 定位基准，默认当前目录）
@@ -709,7 +709,8 @@ fn main() -> anyhow::Result<()> {
             repo_wiki::run_watch(config.as_deref(), &root)?;
         }
         Commands::Search { query, top_k, config, json, engine, root } => {
-            // 解析引擎类型：优先用 CLI 参数，否则取硬编码默认（SEARCH_DEFAULT_ENGINE）
+            // 解析引擎类型：优先用 CLI 参数，否则取默认常量 SEARCH_DEFAULT_ENGINE
+            //（v36 起为 Hybrid；hybrid 无 embed key 时自动降级纯 text）
             let root = resolve_root(root.as_deref())?;
             let engine_type = match engine.as_deref() {
                 Some("text") => repo_wiki::config::schema::SearchEngineType::Text,
