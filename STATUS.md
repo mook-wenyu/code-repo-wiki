@@ -676,3 +676,15 @@ knowing 全量 12 仓 mock 数据点齐（v29 9 + v30 3：rails 5239 实体/58 �
 - 验证：全量测试全绿（无 FAILED，含 config_dir 纯函数测试 3 断言+优先序断言）；clippy --all-targets 0 警告；cargo machete 仅剩 glob 冗余依赖警告（Cargo.toml 属 config zone 架构保护——architect 无权写，无计划任务可挂 coder——交付说明，用户可 `cargo remove glob` 或下轮计划处理）；rerank 实机验证（fn_entity 精排第 1）在移除前完成（证明功能本身正确，移除为产品决策非技术失败）
 - 提交：c247232（+40/-315）
 - 遗留/风险点：glob 依赖冗余（如上）；熔断记录：test_watch_e2e.rs:38 WikiConfig 构造缺 rerank 字段连续 3 次触发 NON-TRANSIENT CIRCUIT BREAKER（v36 B1 加字段漏更新构造点——移除 rerank 后该问题自然消失）
+
+## 六十九节 v37：项目改名 Code Repo Wiki + CI 增强 + 文档重构
+
+**改名**（提交 07d10bd）：crate/二进制/命令名 repo-wiki→code-repo-wiki 全链路（代码/测试/MCP 注册键/hook 字面量/AGENTS 注入块/插件 code-repo-wiki.ts）；产物目录 .repo-wiki→.code-repo-wiki；用户级配置目录 %APPDATA%/repo-wiki→code-repo-wiki（删除重装不迁移）；GitHub 仓库改名 mook-wenyu/code-repo-wiki（gh repo rename+remote set-url）
+
+**CI 增强**：三 job（check：clippy -D warnings + cargo doc 门禁；test：ubuntu+windows 矩阵 fail-fast:false；lint-workflow：actionlint）；rust-toolchain.toml（stable+clippy）；concurrency cancel-in-progress
+
+**跨平台真实修复**（提交 458cf24 + 本轮）：ubuntu manifest 本地路径 name 提取双分隔符 + Windows 盘符前缀平台无关判定（is_absolute 误判）；key 测试全局目录注入临时路径 + config_dir 测试纯函数化（env 竞态，ubuntu 无 APPDATA 兜底必现）；windows checkout 钉死测试固定 core.autocrlf=false（GitHub runner 系统级 autocrlf=true 转 CRLF）；doc 门禁 7 处修复（citation fence 字样/mcp 链接/HTML 转义——cargo doc -D warnings 零警告）
+
+**文档重构**：docs/ Diátaxis 11 页（tutorial/cli/config/faq/limitations/lint/architecture/watch/maintenance/glossary/index）；README 223 行→着陆页；CHANGELOG 补记 v37/v36/v35；AGENTS.md/.gitignore/scripts 改名核对；commands.rs 陈旧注释清理
+
+**验证**：全量测试绿（471+）+ clippy 0 + cargo doc 0 警告；CI run 31276550051/31276799380 已暴露并修复全部平台问题，push 待网络恢复后重试
