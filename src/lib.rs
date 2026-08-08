@@ -868,6 +868,38 @@ fn search_index_dir(config: &config::schema::WikiConfig) -> std::path::PathBuf {
     config.output_dir().join(config::schema::SEARCH_INDEX_DIR)
 }
 
+// ==================== 语义降级标记（v32 10.1）====================
+//
+// 语义索引是「附加能力」：embed 初始化/运行期失败时生成流程降级保留旧索引
+// （见 build_search_index）。降级只写日志会让用户误以为语义搜索可用——
+// 本标记把降级事实持久化（.search/semantic_degraded，内容=原因），
+// search/status 命令读取后输出显式提示行。每次生成重新求值：
+// 成功→清标记，降级→写标记；命令只读不写。
+
+/// 降级标记文件路径（.search/semantic_degraded，内容=降级原因）
+fn semantic_degraded_marker(config: &config::schema::WikiConfig) -> std::path::PathBuf {
+    search_index_dir(config).join("semantic_degraded")
+}
+
+/// 写入降级标记（尽力而为——标记失败不影响主流程，下次生成会重试）
+fn mark_semantic_degraded(config: &config::schema::WikiConfig, reason: &anyhow::Error) {
+    let marker = semantic_degraded_marker(config);
+    if let Err(e) = std::fs::write(&marker, reason.to_string()) {
+        tracing::warn!("写语义降级标记失败 {}: {}", marker.display(), e);
+    }
+}
+
+/// 清除降级标记（语义索引本次成功构建/更新后调用）
+fn clear_semantic_degraded(config: &config::schema::WikiConfig) {
+    let _ = std::fs::remove_file(semantic_degraded_marker(config));
+}
+
+/// 读取降级原因（无标记返回 None；命令层输出「语义索引：正常/已降级」）
+pub fn semantic_degraded_reason(config: &config::schema::WikiConfig) -> Option<String> {
+    let marker = semantic_degraded_marker(config);
+    std::fs::read_to_string(&marker).ok()
+}
+
 /// 实体级特征聚类接线（演进计划 T1.2b）
 ///
 /// 在 build_graph 之后调用：embed 未启用或 EmbeddingEngine 初始化失败时
@@ -935,24 +967,30 @@ fn build_search_index(
             // 运行期失败（key 缺失/网络不可达）同样降级保留旧索引，不得
             // `?` 中断主流程——与上方初始化失败的降级语义一致（v30 前
             // embed.enabled=false 时整段跳过，无此失败路径；恒启用后
-            // 必须把两类失败都按"附加能力"对待）
+            // 必须把两类失败都按"附加能力"对待）。
+            // v32 10.1：降级同时写标记（search/status 显式提示），
+            // 成功则清标记。
             match search::semantic::SemanticEngine::open(&semantic_path, embedder, get_global_runtime().clone()) {
                 Ok(mut semantic_engine) => match semantic_engine.index_batch(&items) {
                     Ok(()) => {
                         tracing::info!("语义索引构建完成: {} 个实体已向量化", items.len());
+                        clear_semantic_degraded(config);
                     }
                     Err(e) => {
                         tracing::warn!("语义索引构建失败（保留旧索引，搜索回退纯文本）: {}", e);
                         let _ = std::fs::remove_file(&semantic_path);
+                        mark_semantic_degraded(config, &e);
                     }
                 },
                 Err(e) => {
                     tracing::warn!("语义索引构建失败（保留旧索引，搜索回退纯文本）: {}", e);
+                    mark_semantic_degraded(config, &e);
                 }
             }
         }
         Err(e) => {
             tracing::warn!("语义索引构建跳过（Embedding 引擎初始化失败，保留旧索引）: {}", e);
+            mark_semantic_degraded(config, &e);
         }
     }
 
@@ -1066,14 +1104,20 @@ fn update_search_index_incremental(
                             }
                             semantic_engine.index_batch(&items)?;
                         }
+                        // v32 10.1：增量语义更新成功（含维度重建路径）→ 清降级标记
+                        clear_semantic_degraded(config);
                     }
                     Err(e) => {
                         tracing::warn!("语义索引打开失败，增量语义更新跳过（保留旧索引）: {}", e);
+                        // v32 10.1：降级标记（search/status 显式提示）
+                        mark_semantic_degraded(config, &e);
                     }
                 }
             }
             Err(e) => {
                 tracing::warn!("Embedding 引擎初始化失败，增量语义更新跳过（保留旧索引）: {}", e);
+                // v32 10.1：降级标记
+                mark_semantic_degraded(config, &e);
             }
         }
     }

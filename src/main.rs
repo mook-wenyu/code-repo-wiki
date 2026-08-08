@@ -528,6 +528,11 @@ fn main() -> anyhow::Result<()> {
                 println!("Wiki 状态: 就绪");
                 println!("配置文件: {}", cfg_path.display());
                 println!("页面: {} 张，卡片: {} 张", report.wiki_pages, report.cards);
+                // v32 10.1：语义索引状态显式行（读降级标记；有标记=已降级+原因）
+                match repo_wiki::semantic_degraded_reason(&cfg) {
+                    Some(reason) => println!("语义索引: 已降级（原因: {}）", reason.trim()),
+                    None => println!("语义索引: 正常"),
+                }
                 // lint 产物健康检查结果（与 lint 命令同格式，问题退出码非 0）
                 for issue in &report.issues {
                     println!("- [{}] {}: {}", issue.kind, issue.path, issue.message);
@@ -743,6 +748,15 @@ fn main() -> anyhow::Result<()> {
                         println!("{:<4} {:<30} {:<12} {:<8.2} {}",
                             i + 1, hit.node.name, hit.node.kind.as_str(), hit.score, file);
                     }
+                }
+                // v32 10.1：语义索引降级显式提示（文本模式）——降级标记由
+                // 最近一次 generate/update 写入（见 lib.rs 标记区）；有标记
+                // 时提示原因，避免用户误以为语义结果可用。load_config_rooted
+                // 失败（配置缺失/损坏）与无标记一样静默——搜索本身已成功，
+                // 提示只是附加信息，不让配置错误打断结果展示。
+                let cfg = repo_wiki::load_config_rooted(config.as_deref(), &root).ok();
+                if let Some(reason) = cfg.and_then(|c| repo_wiki::semantic_degraded_reason(&c)) {
+                    println!("语义索引已降级（原因: {}）", reason.trim());
                 }
             }
         }

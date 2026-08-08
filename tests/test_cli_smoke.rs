@@ -377,6 +377,46 @@ fn test_search_semantic_without_embed_errors() {
     let _ = std::fs::remove_dir_all(&work_dir);
 }
 
+/// v32 10.1：语义索引降级标记的可见性——mock embed（批量索引失败→降级标记写入）时，
+/// search 表格模式与 status 必须显式提示「已降级（原因）」，防止用户误以为语义结果可用
+/// （降级原因由 lib.rs build_search_index 的降级分支写入 .search/semantic_degraded）。
+#[test]
+fn test_search_and_status_show_semantic_degraded_hint() {
+    let work_dir = prepare_repo("sem_degraded_hint");
+
+    let out = run_bin(&work_dir, &["generate", "-c", "config.toml"]);
+    assert!(
+        out.status.success(),
+        "generate 应成功（mock embed 降级不中断主流程），stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // 降级标记应在 generate 后存在（mock embed 批量索引失败路径）
+    let marker = work_dir.join(".repo-wiki").join(".search").join("semantic_degraded");
+    assert!(
+        marker.exists(),
+        "mock embed 批量失败应写入降级标记: {}",
+        marker.display()
+    );
+
+    // search 表格模式（非 json）：结果后追加降级提示行
+    let out = run_bin(&work_dir, &["search", "-q", "authenticate", "-e", "text", "-c", "config.toml"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("语义索引已降级（原因: "),
+        "search 表格模式应提示语义索引降级并携带原因前缀，实际: {stdout}"
+    );
+
+    // status：语义索引状态行显式标注降级
+    let out = run_bin(&work_dir, &["status", "-c", "config.toml"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("语义索引: 已降级"),
+        "status 应标注语义索引降级，实际: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
+
 /// v17 t06：mock provider 生成的产物页带占位页脚标注（防误读为真实文档）
 #[test]
 fn test_mock_footer_marks_placeholder_pages() {
