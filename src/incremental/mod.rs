@@ -77,7 +77,7 @@ pub fn should_skip_noop(root: &ProjectRoot, config: &WikiConfig) -> anyhow::Resu
 /// 工作树是否有源码未提交变更（相对仓库根判断）
 ///
 /// v30+：扫描范围已硬编码为全量遍历，任何路径都算源码变更——
-/// 例外只有工具自身产物：产物目录（output_dir，含 .repo-wiki/.state/
+/// 例外只有工具自身产物：产物目录（output_dir，含 .code-repo-wiki/.state/
 /// .search）与仓库根 AGENTS.md（generate 自动写入的代理导航模板，
 /// 非源码、不参与生成）。产物若算作变更则每次生成后 no-op 判定恒为
 /// false（快速跳过永久失效）。被忽略目录（.gitignore 已忽略产物）
@@ -381,7 +381,7 @@ mod tests {
     /// 下游删除清理（cleanup_deleted_outputs）才能命中并清除旧输出
     #[test]
     fn test_deleted_files_in_changed_set() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_test_deleted_changed_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_deleted_changed_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let repo = git2::Repository::init(&dir).unwrap();
         let mut cfg = repo.config().unwrap();
@@ -445,7 +445,7 @@ mod tests {
     /// 清理旧输出——删除文件不在 insights 中，指纹比对永远捕获不到
     #[test]
     fn test_file_watch_deleted_path_in_changed_files() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_test_watch_deleted_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_watch_deleted_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let src = dir.join("src");
         std::fs::create_dir_all(&src).unwrap();
@@ -477,7 +477,7 @@ mod tests {
     /// （指纹覆盖 watch 事件丢失的变更，watch 覆盖指纹捕获不到的删除）
     #[test]
     fn test_file_watch_union_fingerprint_and_watch_paths() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_test_watch_union_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_watch_union_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let src = dir.join("src");
         std::fs::create_dir_all(&src).unwrap();
@@ -518,7 +518,7 @@ mod tests {
     /// 保护字段仍在（生成失败后下次运行保护不丢）。
     #[test]
     fn test_file_watch_midway_save_preserves_protection() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_test_watch_protect_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_watch_protect_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let src = dir.join("src");
         std::fs::create_dir_all(&src).unwrap();
@@ -552,7 +552,7 @@ mod tests {
     /// 空 diff 时应回退全量生成，避免首用产出空 wiki
     #[test]
     fn test_first_update_no_baseline_falls_back_full() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_test_first_update_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_first_update_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let repo = git2::Repository::init(&dir).unwrap();
         let mut cfg = repo.config().unwrap();
@@ -588,7 +588,7 @@ mod tests {
     /// A1 配套：有基线 + 无变更 → 正常跳过（不被回退全量误伤）
     #[test]
     fn test_with_baseline_no_change_skips() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_test_skip_nochange_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_skip_nochange_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let repo = git2::Repository::init(&dir).unwrap();
         let mut cfg = repo.config().unwrap();
@@ -630,7 +630,7 @@ mod tests {
     /// 且不静默（warn 由 tracing 输出，行为断言为回退全量）
     #[test]
     fn test_corrupt_state_falls_back_full() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_test_corrupt_state_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_corrupt_state_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let repo = git2::Repository::init(&dir).unwrap();
         let mut cfg = repo.config().unwrap();
@@ -674,7 +674,7 @@ mod tests {
     fn setup_noop_fixture() -> (PathBuf, String, WikiConfig) {
         static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "repo_wiki_test_noop_{}_{}",
+            "code_repo_wiki_test_noop_{}_{}",
             std::process::id(),
             SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
@@ -817,7 +817,7 @@ mod tests {
     #[test]
     fn test_incremental_merges_failed_modules_from_state() {
         let dir = std::env::temp_dir()
-            .join(format!("repo_wiki_test_failed_retry_{}", std::process::id()));
+            .join(format!("code_repo_wiki_test_failed_retry_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let root = ProjectRoot::new(dir.clone());
         std::fs::create_dir_all(dir.join("src").join("m20")).unwrap();

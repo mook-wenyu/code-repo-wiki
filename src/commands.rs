@@ -15,7 +15,7 @@ pub struct StatusReport {
     pub config_path: String,
 }
 
-/// 汇总产物状态：页面/卡片数量 + lint 健康检查（供 `repo-wiki status` 使用）
+/// 汇总产物状态：页面/卡片数量 + lint 健康检查（供 `code-repo-wiki status` 使用）
 ///
 /// 目录不存在时数量计 0、lint 无问题，不算缺陷（未生成也是合法状态）。
 pub fn status_report(config: &WikiConfig, root: &crate::project::ProjectRoot) -> StatusReport {
@@ -186,23 +186,23 @@ pub struct InstallOptions {
     pub codex: bool,
 }
 
-/// repo-wiki 安装（v33 合并版）：OpenCode 插件 + 多 Agent MCP + AGENTS.md + git hooks
+/// code-repo-wiki 安装（v33 合并版）：OpenCode 插件 + 多 Agent MCP + AGENTS.md + git hooks
 ///
 /// root 为项目根（U02：--root 注入，替代进程 cwd——插件/hook/config 全部
 /// 相对项目根解析，跨 cwd 运行不再错位）。
 ///
-/// 集成步骤（全部幂等，重复执行安全；非 repo-wiki 内容一律保留）：
-/// 1. OpenCode 插件：`{root}/.opencode/plugins/repo-wiki.ts`——模板注入
+/// 集成步骤（全部幂等，重复执行安全；非 code-repo-wiki 内容一律保留）：
+/// 1. OpenCode 插件：`{root}/.opencode/plugins/code-repo-wiki.ts`——模板注入
 ///    current_exe 绝对路径（t02 摆脱 PATH 依赖）；内容与模板不同即升级
-/// 2. OpenCode MCP：用户级全局 `opencode.json` 的 `mcp.repo-wiki` 条目
+/// 2. OpenCode MCP：用户级全局 `opencode.json` 的 `mcp.code-repo-wiki` 条目
 ///    （v33 拍板：一次注册所有仓库可用，server 以工作区为 cwd）
-/// 3. Claude MCP（--claude）：项目根 `.mcp.json` 的 `mcpServers.repo-wiki`
+/// 3. Claude MCP（--claude）：项目根 `.mcp.json` 的 `mcpServers.code-repo-wiki`
 /// 4. Codex MCP（--codex）：用户级 `~/.codex/config.toml` 的
-///    `[mcp_servers.repo-wiki]` 表
+///    `[mcp_servers.code-repo-wiki]` 表
 /// 5. AGENTS.md：wiki 引用块（标记对幂等替换；默认执行）
 /// 6. CLAUDE.md（随 --claude，v36 起）：Claude Code 不读 AGENTS.md，
 ///    注册 .mcp.json 时同步注入引用块
-/// 7. git hooks：post-commit/post-merge（含 repo-wiki 标记则升级覆盖；
+/// 7. git hooks：post-commit/post-merge（含 code-repo-wiki 标记则升级覆盖；
 ///    用户自定义 hook 保留并提示）
 ///
 /// 用户级默认配置的确保由调用方（main.rs）先行执行（v25 语义）。
@@ -229,7 +229,7 @@ pub fn install(root: &crate::project::ProjectRoot, opts: &InstallOptions) -> Res
     let opencode_mcp = crate::config::mcp::OpencodeMcp {
         config_path: crate::config::mcp::OpencodeMcp::global_path()?,
     };
-    if opencode_mcp.install("repo-wiki", &[exe_str.clone(), mcp_args[0].clone()])? {
+    if opencode_mcp.install("code-repo-wiki", &[exe_str.clone(), mcp_args[0].clone()])? {
         println!("✓ OpenCode MCP 已注册（用户级全局）");
     } else {
         println!("✓ OpenCode MCP 已是最新");
@@ -240,7 +240,7 @@ pub fn install(root: &crate::project::ProjectRoot, opts: &InstallOptions) -> Res
         let claude = crate::config::mcp::ClaudeMcp {
             path: crate::config::mcp::ClaudeMcp::project_path(root),
         };
-        if claude.install("repo-wiki", &exe_str, &mcp_args)? {
+        if claude.install("code-repo-wiki", &exe_str, &mcp_args)? {
             println!("✓ Claude Code MCP 已注册（.mcp.json）");
         } else {
             println!("✓ Claude Code MCP 已是最新（.mcp.json）");
@@ -252,7 +252,7 @@ pub fn install(root: &crate::project::ProjectRoot, opts: &InstallOptions) -> Res
         let codex = crate::config::mcp::CodexMcp {
             config_path: crate::config::mcp::CodexMcp::global_path()?,
         };
-        if codex.install("repo-wiki", &exe_str, &mcp_args)? {
+        if codex.install("code-repo-wiki", &exe_str, &mcp_args)? {
             println!("✓ Codex MCP 已注册（~/.codex/config.toml）");
         } else {
             println!("✓ Codex MCP 已是最新（~/.codex/config.toml）");
@@ -266,32 +266,32 @@ pub fn install(root: &crate::project::ProjectRoot, opts: &InstallOptions) -> Res
     // 7. git hooks（v33：标记升级，用户自定义保留）
     install_hooks(project_root)?;
 
-    println!("✓ repo-wiki 安装完成");
+    println!("✓ code-repo-wiki 安装完成");
     println!();
     println!("日常使用（傻瓜式全自动，无需记忆命令）：");
     println!("  1. git commit 后 wiki 自动增量更新（post-commit/post-merge hook 已装）");
-    println!("  2. 手动一条命令：repo-wiki update（首次自动全量生成，之后自动增量；");
+    println!("  2. 手动一条命令：code-repo-wiki update（首次自动全量生成，之后自动增量；");
     println!("     无变更秒回，失败模块自动补偿重试，尾部自动 lint 复核）");
-    println!("  3. 常驻实时模式：repo-wiki watch（代码保存即自动更新，Ctrl-C 退出）");
-    println!("  4. 健康检查：repo-wiki doctor / repo-wiki lint");
+    println!("  3. 常驻实时模式：code-repo-wiki watch（代码保存即自动更新，Ctrl-C 退出）");
+    println!("  4. 健康检查：code-repo-wiki doctor / code-repo-wiki lint");
     Ok(())
 }
 
-/// git hook 内容标记（升级判定与 uninstall 删除判定共用的「是否 repo-wiki
+/// git hook 内容标记（升级判定与 uninstall 删除判定共用的「是否 code-repo-wiki
 /// 所有」判据；用户自定义 hook 不含此标记，安装/卸载均不触碰）
-pub const HOOK_MARKER: &str = "# repo-wiki managed";
+pub const HOOK_MARKER: &str = "# code-repo-wiki managed";
 
 /// 生成 hook 脚本内容
 ///
 /// `#!/bin/sh` + LF：Windows 上由 Git for Windows 的 sh 执行（POSIX 语义，
 /// 绝非 PowerShell）；`cd` 到仓库顶层保证 --root 无关；`command -v` 探测
 /// 二进制存在性；update 失败不阻断 git 主流程（hook 是通知型），但
-/// 失败必须可见：stderr 落 .repo-wiki/update-error.log 并在提交输出中
+/// 失败必须可见：stderr 落 .code-repo-wiki/update-error.log 并在提交输出中
 /// 提示一行（v36 D2：此前 2>/dev/null || true 把失败完全吞掉，用户
 /// 永远不知道 wiki 已陈旧）。
 fn hook_content() -> String {
     format!(
-        "#!/bin/sh\n{0}: auto-update wiki on commit\ncd \"$(git rev-parse --show-toplevel)\"\ncommand -v repo-wiki >/dev/null 2>&1 || exit 0\nmkdir -p .repo-wiki\nrepo-wiki update 2>>.repo-wiki/update-error.log || echo \"repo-wiki: wiki 更新失败（详见 .repo-wiki/update-error.log）\" >&2\n",
+        "#!/bin/sh\n{0}: auto-update wiki on commit\ncd \"$(git rev-parse --show-toplevel)\"\ncommand -v code-repo-wiki >/dev/null 2>&1 || exit 0\nmkdir -p .code-repo-wiki\ncode-repo-wiki update 2>>.code-repo-wiki/update-error.log || echo \"code-repo-wiki: wiki 更新失败（详见 .code-repo-wiki/update-error.log）\" >&2\n",
         HOOK_MARKER
     )
 }
@@ -308,7 +308,7 @@ fn write_hook(path: &std::path::Path, content: &str) -> Result<()> {
 ///
 /// v33 升级语义：
 /// - 不存在 → 新建
-/// - 已存在且含 repo-wiki 标记（旧模板/本模板）→ 内容不同则升级覆盖，
+/// - 已存在且含 code-repo-wiki 标记（旧模板/本模板）→ 内容不同则升级覆盖，
 ///   相同则跳过（幂等）
 /// - 已存在且无标记（用户/第三方自定义 hook）→ 保留并提示，绝不覆盖
 /// - `.git/hooks` 不存在（非 git 仓库）→ 提示跳过（install 不因此失败）
@@ -323,7 +323,7 @@ fn install_hooks(project_root: &std::path::Path) -> Result<()> {
         let hook_path = hooks_dir.join(hook_name);
         if hook_path.exists() {
             let existing = std::fs::read_to_string(&hook_path)?;
-            if existing.contains("repo-wiki") {
+            if existing.contains("code-repo-wiki") {
                 if existing != content {
                     write_hook(&hook_path, &content)?;
                     println!("✓ git {hook_name} hook 已升级");
@@ -331,7 +331,7 @@ fn install_hooks(project_root: &std::path::Path) -> Result<()> {
                     println!("✓ git {hook_name} hook 已是最新");
                 }
             } else {
-                println!("? git {hook_name} hook 已存在且非 repo-wiki 内容，保留（未覆盖）");
+                println!("? git {hook_name} hook 已存在且非 code-repo-wiki 内容，保留（未覆盖）");
             }
         } else {
             write_hook(&hook_path, &content)?;
@@ -341,10 +341,10 @@ fn install_hooks(project_root: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-/// 移除 git hooks（仅 repo-wiki 标记的；用户自定义 hook 保留）
+/// 移除 git hooks（仅 code-repo-wiki 标记的；用户自定义 hook 保留）
 ///
-/// 与 install_hooks 的判定同源（内容含 "repo-wiki" 即视为本工具产物——
-/// 兼容 v33 前的旧模板：旧内容无 managed 标记但含 repo-wiki 调用）。
+/// 与 install_hooks 的判定同源（内容含 "code-repo-wiki" 即视为本工具产物——
+/// 兼容 v33 前的旧模板：旧内容无 managed 标记但含 code-repo-wiki 调用）。
 fn remove_hooks(project_root: &std::path::Path) -> Result<()> {
     let hooks_dir = project_root.join(".git").join("hooks");
     if !hooks_dir.exists() {
@@ -354,7 +354,7 @@ fn remove_hooks(project_root: &std::path::Path) -> Result<()> {
         let hook_path = hooks_dir.join(hook_name);
         if hook_path.exists() {
             let content = std::fs::read_to_string(&hook_path).unwrap_or_default();
-            if content.contains("repo-wiki") {
+            if content.contains("code-repo-wiki") {
                 std::fs::remove_file(&hook_path)?;
                 println!("✓ git {hook_name} hook 已移除");
             }
@@ -363,7 +363,7 @@ fn remove_hooks(project_root: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-/// repo-wiki 卸载（v33 合并版）：移除全部集成痕迹（--force 确认）
+/// code-repo-wiki 卸载（v33 合并版）：移除全部集成痕迹（--force 确认）
 ///
 /// root 为项目根（U02：--root 注入，与 install 对称）。
 ///
@@ -373,16 +373,16 @@ fn remove_hooks(project_root: &std::path::Path) -> Result<()> {
 /// 3. Claude MCP .mcp.json 条目（其他 server 保留；空则删文件）
 /// 4. Codex MCP 表（其他表/注释保留）
 /// 5. AGENTS.md / CLAUDE.md wiki 块（无标记则跳过）
-/// 6. git hooks（仅 repo-wiki 标记的删除；用户自定义 hook 保留）
+/// 6. git hooks（仅 code-repo-wiki 标记的删除；用户自定义 hook 保留）
 ///
 /// 保留（设计如此，配置与数据属用户资产）：用户级 config.toml、
-/// `.repo-wiki/` 产物数据。
+/// `.code-repo-wiki/` 产物数据。
 pub fn uninstall(force: bool, root: &crate::project::ProjectRoot) -> Result<()> {
     let project_root = root.path();
 
     if !force {
-        println!("警告: 卸载将移除 repo-wiki 集成配置（插件/MCP/hook/AGENTS.md 引用块）。");
-        println!("保留：用户级 config.toml 与产物数据 .repo-wiki/（使用 --force 跳过确认）。");
+        println!("警告: 卸载将移除 code-repo-wiki 集成配置（插件/MCP/hook/AGENTS.md 引用块）。");
+        println!("保留：用户级 config.toml 与产物数据 .code-repo-wiki/（使用 --force 跳过确认）。");
         anyhow::bail!("请添加 --force 参数确认卸载");
     }
 
@@ -390,7 +390,7 @@ pub fn uninstall(force: bool, root: &crate::project::ProjectRoot) -> Result<()> 
     let opencode_mcp = crate::config::mcp::OpencodeMcp {
         config_path: crate::config::mcp::OpencodeMcp::global_path()?,
     };
-    if opencode_mcp.remove("repo-wiki")? {
+    if opencode_mcp.remove("code-repo-wiki")? {
         println!("✓ OpenCode MCP 条目已移除（用户级全局——其他仓库如需继续使用请重新 install）");
     } else {
         println!("✓ OpenCode MCP 条目不存在，跳过");
@@ -407,7 +407,7 @@ pub fn uninstall(force: bool, root: &crate::project::ProjectRoot) -> Result<()> 
     let claude = crate::config::mcp::ClaudeMcp {
         path: crate::config::mcp::ClaudeMcp::project_path(root),
     };
-    if claude.remove("repo-wiki")? {
+    if claude.remove("code-repo-wiki")? {
         println!("✓ Claude Code MCP 条目已移除（.mcp.json）");
     } else {
         println!("✓ Claude Code MCP 条目不存在，跳过（.mcp.json）");
@@ -417,7 +417,7 @@ pub fn uninstall(force: bool, root: &crate::project::ProjectRoot) -> Result<()> 
     let codex = crate::config::mcp::CodexMcp {
         config_path: crate::config::mcp::CodexMcp::global_path()?,
     };
-    if codex.remove("repo-wiki")? {
+    if codex.remove("code-repo-wiki")? {
         println!("✓ Codex MCP 条目已移除（~/.codex/config.toml）");
     } else {
         println!("✓ Codex MCP 条目不存在，跳过（~/.codex/config.toml）");
@@ -429,7 +429,7 @@ pub fn uninstall(force: bool, root: &crate::project::ProjectRoot) -> Result<()> 
     // 6. git hooks
     remove_hooks(project_root)?;
 
-    println!("✓ repo-wiki 卸载完成 (数据保留: .repo-wiki/ 与用户级配置)");
+    println!("✓ code-repo-wiki 卸载完成 (数据保留: .code-repo-wiki/ 与用户级配置)");
     Ok(())
 }
 
@@ -447,12 +447,12 @@ pub const WIKI_BLOCK_END: &str = "<!-- REPO-WIKI:END -->";
 ///
 /// 产物路径按实际配置渲染（U02）：`output_dir` 与 `lang` 来自目标仓库的
 /// config.toml（output.dir / wiki.language）——此前模板硬编码 `wiki/` 与
-/// `zh`，默认配置（output.dir=.repo-wiki、language 可改）下注入指引失配。
+/// `zh`，默认配置（output.dir=.code-repo-wiki、language 可改）下注入指引失配。
 pub fn wiki_block_template(output_dir: &str, lang: &str) -> String {
     format!(
         "\
 <!-- REPO-WIKI:START -->
-本仓库使用 repo-wiki 维护可持续进化的项目 Wiki，产物位于 `{output_dir}/`。
+本仓库使用 code-repo-wiki 维护可持续进化的项目 Wiki，产物位于 `{output_dir}/`。
 
 ## AI 代理使用指引
 
@@ -460,10 +460,10 @@ pub fn wiki_block_template(output_dir: &str, lang: &str) -> String {
    `{output_dir}/wiki/{lang}/overview.md` 与 `{output_dir}/wiki/{lang}/architecture.md`
    建立全局认知，按需深入模块页；上下文预算充足时用 `{output_dir}/llms-full.txt`
    一次获得完整实体骨架。
-2. 查找实体（函数/结构体/类）用 `repo-wiki search -q \"<关键词>\"`（支持
+2. 查找实体（函数/结构体/类）用 `code-repo-wiki search -q \"<关键词>\"`（支持
    text/semantic/hybrid 三引擎，hybrid 含调用链补全）。
-3. 修改代码后运行 `repo-wiki update` 增量更新；`repo-wiki lint` 检查产物健康。
-4. 知识沉淀：`repo-wiki note \"<记录>\"` 追加到 `{output_dir}/wiki/{lang}/_log.md`。
+3. 修改代码后运行 `code-repo-wiki update` 增量更新；`code-repo-wiki lint` 检查产物健康。
+4. 知识沉淀：`code-repo-wiki note \"<记录>\"` 追加到 `{output_dir}/wiki/{lang}/_log.md`。
 <!-- REPO-WIKI:END -->
 "
     )
@@ -588,7 +588,7 @@ fn remove_wiki_block_from_file(path: &Path) -> Result<bool> {
 ///
 /// 注入块按目标仓库配置渲染（U02）：读 `root/config.toml` 取
 /// output.dir 与 wiki.language；配置缺失（首次运行/未 install）时回退默认值
-/// (".repo-wiki", "zh") 不报错——wiki 块缺失比注入失败更隐蔽。
+/// (".code-repo-wiki", "zh") 不报错——wiki 块缺失比注入失败更隐蔽。
 pub fn install_wiki(root: &crate::project::ProjectRoot, also_claude: bool) -> Result<()> {
     // 目标仓库配置路径（v25：项目级 config.toml，与产物目录分离）；
     // 缺失时回退默认——v30 起 load_config 原样加载无净化（用户拍板），
@@ -597,8 +597,8 @@ pub fn install_wiki(root: &crate::project::ProjectRoot, also_claude: bool) -> Re
     let (output_dir, lang) = match crate::config::load_config(&config_path) {
         Ok(c) => (c.output_dir().to_string_lossy().into_owned(), c.wiki.language),
         Err(e) => {
-            println!("提示: 未找到有效配置（{}），注入块按默认产物路径 (.repo-wiki / zh) 渲染", e);
-            (".repo-wiki".to_string(), "zh".to_string())
+            println!("提示: 未找到有效配置（{}），注入块按默认产物路径 (.code-repo-wiki / zh) 渲染", e);
+            (".code-repo-wiki".to_string(), "zh".to_string())
         }
     };
     let block = wiki_block_template(&output_dir, &lang);
@@ -639,14 +639,14 @@ mod tests {
 
     /// 注入测试用的模板块（默认产物路径形态，模板函数化后的断言锚点）
     fn test_template() -> String {
-        wiki_block_template(".repo-wiki", "zh")
+        wiki_block_template(".code-repo-wiki", "zh")
     }
 
     /// append_note 追加式日志：同一日期节内序号递增；两次调用不覆盖历史
     #[test]
     fn test_append_note_increments_sequence() {
         let dir = std::env::temp_dir().join(format!(
-            "repo_wiki_note_{}",
+            "code_repo_wiki_note_{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
@@ -672,7 +672,7 @@ mod tests {
     #[test]
     fn test_append_note_rejects_empty() {
         let dir = std::env::temp_dir().join(format!(
-            "repo_wiki_note_empty_{}",
+            "code_repo_wiki_note_empty_{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);

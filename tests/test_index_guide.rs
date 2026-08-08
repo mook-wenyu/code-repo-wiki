@@ -15,10 +15,10 @@ use common::copy_dir;
 
 use petgraph::stable_graph::{EdgeIndex, NodeIndex, StableDiGraph};
 
-use repo_wiki::config::schema::WikiConfig;
-use repo_wiki::generate::index::{fallback_index_guide, generate_index_guide};
-use repo_wiki::generate::llm::{LlmProvider, Message};
-use repo_wiki::model::{
+use code_repo_wiki::config::schema::WikiConfig;
+use code_repo_wiki::generate::index::{fallback_index_guide, generate_index_guide};
+use code_repo_wiki::generate::llm::{LlmProvider, Message};
+use code_repo_wiki::model::{
     CodeEdge, CodeNode, DocumentKind, EdgeKind, KnowledgeGraph, ModuleCluster, NodeId, NodeKind,
 };
 
@@ -200,12 +200,12 @@ fn test_index_guide_primary_language_only_and_links() {
         .join("fixtures")
         .join("sample-repo");
     let work_dir = std::env::temp_dir().join(format!(
-        "repo_wiki_test_index_guide_{}",
+        "code_repo_wiki_test_index_guide_{}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&work_dir);
     copy_dir(&fixture, &work_dir);
-    let root = repo_wiki::project::ProjectRoot::new(work_dir.clone());
+    let root = code_repo_wiki::project::ProjectRoot::new(work_dir.clone());
 
     // 本地 mock LLM server：返回固定内容（含模块链接，无 path:line 形态，
     // 不触发模块页引用校验），生成调用成功且零重试延迟
@@ -231,7 +231,7 @@ fn test_index_guide_primary_language_only_and_links() {
     });
 
     // 主语言 zh：index.md 只写 zh 目录（v30 后 expand_languages 键删除，
-    // 输出目录恒 .repo-wiki——原 out_dir 独立目录断言已随硬编码移除）
+    // 输出目录恒 .code-repo-wiki——原 out_dir 独立目录断言已随硬编码移除）
     let config = format!(
         r#"
 
@@ -250,21 +250,21 @@ max_concurrent = 1
     );
     std::fs::write(work_dir.join("mock-server.toml"), config).unwrap();
 
-    let result = repo_wiki::run_pipeline(
+    let result = code_repo_wiki::run_pipeline(
         Some(&work_dir.join("mock-server.toml")),
         None,
         true,
         &root,
-        &repo_wiki::GenerationMode::Full,
+        &code_repo_wiki::GenerationMode::Full,
     );
     assert!(result.is_ok(), "流水线应成功: {:?}", result.err());
 
-    let zh_index = work_dir.join(".repo-wiki").join("wiki").join("zh").join("index.md");
-    assert!(zh_index.exists(), "index.md 应写入主语言目录 .repo-wiki/wiki/zh/");
+    let zh_index = work_dir.join(".code-repo-wiki").join("wiki").join("zh").join("index.md");
+    assert!(zh_index.exists(), "index.md 应写入主语言目录 .code-repo-wiki/wiki/zh/");
     let content = std::fs::read_to_string(&zh_index).unwrap();
     assert!(content.contains("wiki/zh/"), "正常路径产物应含模块链接，实际: {content}");
     assert!(
-        !work_dir.join(".repo-wiki").join("wiki").join("en").join("index.md").exists(),
+        !work_dir.join(".code-repo-wiki").join("wiki").join("en").join("index.md").exists(),
         "index.md 只写主语言，其他语言目录不得出现"
     );
 
@@ -295,7 +295,7 @@ async fn test_index_guide_degrades_bad_mermaid() {
     assert!(!doc.content.contains("```mermaid"), "坏图不应以 mermaid 块出现");
     assert!(doc.content.contains("```text"), "坏块应降级为 text fence");
     assert!(
-        doc.content.contains("repo-wiki: mermaid parse failed"),
+        doc.content.contains("code-repo-wiki: mermaid parse failed"),
         "应含降级标记注释"
     );
     assert_eq!(provider.calls.load(Ordering::Relaxed), 1, "坏图不应触发重试（只降级）");

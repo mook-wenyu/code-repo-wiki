@@ -383,7 +383,7 @@ mod tests {
 
     fn test_config() -> WikiConfig {
         WikiConfig {
-            output_dir: Some(std::path::PathBuf::from(".repo-wiki")),
+            output_dir: Some(std::path::PathBuf::from(".code-repo-wiki")),
             ..Default::default()
         }
     }
@@ -488,7 +488,7 @@ mod tests {
 
     #[test]
     fn test_export_html_creates_files() -> Result<()> {
-        let dir = std::env::temp_dir().join("repo-wiki-test-html-export");
+        let dir = std::env::temp_dir().join("code-repo-wiki-test-html-export");
         let _ = std::fs::remove_dir_all(&dir);
 
         let mut config = test_config();

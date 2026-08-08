@@ -195,7 +195,7 @@ CREATE TABLE "quoted table" (
 
     #[tokio::test]
     async fn test_generate_schema_document_with_mock() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_test_schema_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_schema_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let sql_path = dir.join("001_init.sql");
@@ -217,7 +217,7 @@ CREATE TABLE "quoted table" (
 
     #[tokio::test]
     async fn test_generate_schema_document_skips_without_create_table() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_test_schema_empty_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_schema_empty_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let sql_path = dir.join("seed.sql");
@@ -253,7 +253,7 @@ CREATE TABLE "quoted table" (
             }
         }
 
-        let dir = std::env::temp_dir().join(format!("repo_wiki_test_schema_d1_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_schema_d1_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let sql_path = dir.join("001_init.sql");
@@ -268,7 +268,7 @@ CREATE TABLE "quoted table" (
         assert!(!doc.content.contains("```mermaid"), "坏图不应再以 mermaid 块出现");
         assert!(doc.content.contains("```text"), "坏块应降级为 text fence");
         assert!(
-            doc.content.contains("repo-wiki: mermaid parse failed"),
+            doc.content.contains("code-repo-wiki: mermaid parse failed"),
             "应含降级标记注释"
         );
         assert_eq!(
@@ -296,7 +296,7 @@ CREATE TABLE "quoted table" (
             }
         }
 
-        let dir = std::env::temp_dir().join(format!("repo_wiki_test_schema_good_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_schema_good_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let sql_path = dir.join("001_init.sql");

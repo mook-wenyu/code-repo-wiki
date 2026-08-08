@@ -1,6 +1,6 @@
 # Changelog
 
-本文件记录 repo-wiki 的重要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；
+本文件记录 code-repo-wiki 的重要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（SemVer）。
 
 ## [Unreleased]
@@ -12,7 +12,7 @@
   （`embed_model_marker`/`read_embed_model`/`write_embed_model`/`embed_model_mismatch`，
   含单元测试）；
 - 测试残留清理脚本 `scripts/cleanup-test-residue.ps1`（预览/确认两段式，
-  清理 `%APPDATA%\repo-wiki\key-test-*` 与 `%TEMP%\repo_wiki*` 历史测试残留）；
+  清理 `%APPDATA%\code-repo-wiki\key-test-*` 与 `%TEMP%\repo_wiki*` 历史测试残留）；
 - README 新增 watch 常驻进程托管模板（systemd 用户服务 / launchd
   LaunchAgent / Windows 任务计划程序，均含崩溃自愈配置）。
 
@@ -24,11 +24,11 @@
   `uninstall-from-opencode` 四子命令删除，全部并入 `install`/`uninstall`；
   MCP 注册默认写用户级全局 `opencode.json`（OpenCode 原生格式，多仓库共享），
   `--claude` 可选写项目根 `.mcp.json`（Claude Code/Cursor），`--codex` 可选写
-  `~/.codex/config.toml`（Codex）；已存在集成产物带 repo-wiki 标记则升级覆盖
+  `~/.codex/config.toml`（Codex）；已存在集成产物带 code-repo-wiki 标记则升级覆盖
   （插件文件内容比对、hooks 标记判定），无标记的人工产物保留并提示；
   `install` 默认注入 AGENTS.md 引导块（`--also-claude` 同步 CLAUDE.md）；
-  `uninstall` 无 flag 幂等清理全部 repo-wiki 集成痕迹
-- 傻瓜式自动化配置（v30）：`output.dir`（恒 `.repo-wiki`）、`embed.enabled`
+  `uninstall` 无 flag 幂等清理全部 code-repo-wiki 集成痕迹
+- 傻瓜式自动化配置（v30）：`output.dir`（恒 `.code-repo-wiki`）、`embed.enabled`
   （恒 true）、`search.enabled`（恒 true）、`incremental.enabled`/
   `incremental.strategy`（恒 FileWatch 监听模式）全部硬编码为代码常量，
   配置文件不再需要也不接受这些键；`expand_languages` 扩展语言删除（只输出
@@ -49,7 +49,7 @@
 - 实体摘要 LLM 调用删除（v31 C-01）：`Entity.summary` 字段与逐实体摘要
   生成整体移除（零消费者），生成 Token 显著下降
 - 模块职责描述缓存（v31 C-02）：同一模块描述仅调用一次 LLM（架构页/概览页
-  共享），并按模块文件指纹落盘缓存（`.repo-wiki/.state/module_descriptions.json`），
+  共享），并按模块文件指纹落盘缓存（`.code-repo-wiki/.state/module_descriptions.json`），
   增量轮零 Token 复用
 - watch 冷却窗口（v31 C-07）：连续编辑（IDE 自动保存/批量重构）期间合并事件，
   安静 2s 或首个事件后 5s 触发一次合并增量，避免 N 次保存触发 N 次全量管线
@@ -75,14 +75,14 @@
 ## [0.3.0] - 2026-08-05
 
 ### Changed
-- 配置链三合一（v25）：init/install-to-opencode 合并为 install（确保用户级默认配置 + 插件/MCP/hooks 注册）；项目级配置统一为 `config.toml`，字段级合并覆盖用户级 `config.toml`（数组整体覆盖）；旧文件名 `.repo-wiki.toml` 与旧全局 `config.toml` 停用
+- 配置链三合一（v25）：init/install-to-opencode 合并为 install（确保用户级默认配置 + 插件/MCP/hooks 注册）；项目级配置统一为 `config.toml`，字段级合并覆盖用户级 `config.toml`（数组整体覆盖）；旧文件名 `.code-repo-wiki.toml` 与旧全局 `config.toml` 停用
 - 净化边界收窄（v25）：provider/model 允许项目级覆盖（协议/模型无凭据泄露面，mock 是 CI 常态），base_url/api_key_env 仍净化（端点劫持/凭据泄露防护）
 - 默认配置模板协议统一（v25）：provider openai-compatible → openai（Responses 协议，DeepSeek 官方推荐）
 
 
 
 ### Changed
-- 配置分层重构（v24）：项目级配置迁移为独立文件 `.repo-wiki.toml`（与产物目录 `.repo-wiki/` 物理分离）；install 命令不再在项目级自动创建配置文件（自动创建只发生在用户级目录）；项目级配置执行敏感键净化（Codex DENYLIST 模式：`llm.provider/model/base_url/api_key_env`、`embed.model/base_url/api_key_env` 被忽略并告警，凭据/提供商/模型归属用户级配置或 `--config` 显式指定）
+- 配置分层重构（v24）：项目级配置迁移为独立文件 `.code-repo-wiki.toml`（与产物目录 `.code-repo-wiki/` 物理分离）；install 命令不再在项目级自动创建配置文件（自动创建只发生在用户级目录）；项目级配置执行敏感键净化（Codex DENYLIST 模式：`llm.provider/model/base_url/api_key_env`、`embed.model/base_url/api_key_env` 被忽略并告警，凭据/提供商/模型归属用户级配置或 `--config` 显式指定）
 
 ### Added
 - llms-full.txt 完整内容索引（v19 t05）：内联全部实体摘要，32K token 预算内四档裁剪（完整 → 去常量 → 去无定位 → 精简），头部含生成版本行
@@ -121,7 +121,7 @@
 - llms.txt 导出（v14 E 组）：Agent 站点地图（确定性生成，render_all 同步写）
 - watch Ctrl-C 优雅退出（v14 F 组）：stop_flag + 500ms 轮询，等当前增量生成完成后退出
 - 引用机械校验（v14 B 组）：区间重叠两级校验（文件级 + 实体区间覆盖），lint 新检查 bad-citation-overlap
-- 全局配置链（v13 E 组）：默认配置搜索链 项目级 → 全局（Windows %APPDATA%/repo-wiki，其他 ~/repo-wiki）→ 创建全局
+- 全局配置链（v13 E 组）：默认配置搜索链 项目级 → 全局（Windows %APPDATA%/code-repo-wiki，其他 ~/code-repo-wiki）→ 创建全局
 - 符号漂移检查（v13 D 组）：api.md 清单实体与当前源码 AST 对比（stale-entity）
 - LLM 生产路径统一流式（v13 A 组）：complete 默认实现委托 complete_stream，移除客户端总超时（SSE 60s 空闲超时保护）
 

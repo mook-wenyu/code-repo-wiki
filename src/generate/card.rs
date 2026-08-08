@@ -311,7 +311,7 @@ pub async fn generate_module_card(
         .into_iter()
         .find(|c| c.module_path.join("::") == module)
         .ok_or_else(|| anyhow::anyhow!(
-            "未找到模块 {module} 对应的代码分块，请检查模块名或先运行 `repo-wiki generate` 全量生成"
+            "未找到模块 {module} 对应的代码分块，请检查模块名或先运行 `code-repo-wiki generate` 全量生成"
         ))?;
 
     // 从旧卡片恢复人工修改记录（卡片不存在或尚无该节时为空）
@@ -338,7 +338,7 @@ pub async fn edit_card(
     mode: CardEditMode,
 ) -> Result<()> {
     let existing = read_card(config, module)?.ok_or_else(|| anyhow::anyhow!(
-        "模块 {module} 的卡片不存在（{}），请先运行 `repo-wiki generate` 或 `repo-wiki card generate <module>` 生成",
+        "模块 {module} 的卡片不存在（{}），请先运行 `code-repo-wiki generate` 或 `code-repo-wiki card generate <module>` 生成",
         card_path(config, module).display()
     ))?;
     let reference_block = read_references(references)?;
@@ -549,7 +549,7 @@ mod tests {
 
     /// 预置卡片并返回临时输出目录的配置（tag 用于区分同进程内的多个测试目录）
     fn card_fixture(tag: &str, module: &str, content: &str) -> (WikiConfig, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_card_{tag}_{}_{}", module.replace("::", "_"), std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_card_{tag}_{}_{}", module.replace("::", "_"), std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let config = WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
         std::fs::create_dir_all(config.output_dir().join("cards").join("zh")).unwrap();

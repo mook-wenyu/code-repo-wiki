@@ -28,40 +28,40 @@
 
 use std::path::{Path, PathBuf};
 
-use repo_wiki::bench::{
+use code_repo_wiki::bench::{
     render_markdown, run_rubrics_only, BenchReport, CompletenessReport, CoverageReport,
     DocInfoReport, LintReport, TimeReport, UpdateRecallReport,
 };
-use repo_wiki::config::schema::{
+use code_repo_wiki::config::schema::{
     LlmProviderType, LlmSection, WikiConfig, WikiSection, SEARCH_INDEX_DIR,
 };
-use repo_wiki::model::{CodeNode, NodeId, NodeKind};
-use repo_wiki::project::ProjectRoot;
-use repo_wiki::search::text::TextEngine;
+use code_repo_wiki::model::{CodeNode, NodeId, NodeKind};
+use code_repo_wiki::project::ProjectRoot;
+use code_repo_wiki::search::text::TextEngine;
 
 // ================= 工具 =================
 
 fn temp_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("repo_wiki_ck_{tag}_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("code_repo_wiki_ck_{tag}_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
 
-/// 构造被测仓库：dir/src/<rel> 写入源码，.repo-wiki/wiki/zh/<page>
+/// 构造被测仓库：dir/src/<rel> 写入源码，.code-repo-wiki/wiki/zh/<page>
 /// 写入手工产物页（确定性内容，不依赖生成流水线），LLM 恒为 Mock。
 /// 返回 (root, config)。
 fn repo_with_pages(dir: &Path, source_rel: &str, source: &str, pages: &[(&str, &str)]) -> (ProjectRoot, WikiConfig) {
     let file = dir.join(source_rel);
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(&file, source).unwrap();
-    let wiki_zh = dir.join(".repo-wiki").join("wiki").join("zh");
+    let wiki_zh = dir.join(".code-repo-wiki").join("wiki").join("zh");
     std::fs::create_dir_all(&wiki_zh).unwrap();
     for (name, content) in pages {
         std::fs::write(wiki_zh.join(name), content).unwrap();
     }
     let config = WikiConfig {
-        output_dir: Some(dir.join(".repo-wiki").to_string_lossy().into_owned().into()),
+        output_dir: Some(dir.join(".code-repo-wiki").to_string_lossy().into_owned().into()),
         wiki: WikiSection { language: "zh".into(), guide: Default::default() },
         llm: LlmSection { provider: LlmProviderType::Mock, ..Default::default() },
         ..Default::default()

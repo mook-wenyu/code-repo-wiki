@@ -41,7 +41,7 @@ fn test_export_skip_generate_after_generate() {
         "generate 应成功，stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let snapshot = work_dir.join(".repo-wiki").join(".state").join("export_snapshot.json");
+    let snapshot = work_dir.join(".code-repo-wiki").join(".state").join("export_snapshot.json");
     assert!(snapshot.exists(), "generate 应写导出快照 {}", snapshot.display());
 
     // 2. export --skip-generate：不重跑生成，直接从快照导出
@@ -52,7 +52,7 @@ fn test_export_skip_generate_after_generate() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        work_dir.join(".repo-wiki").join("index.html").exists(),
+        work_dir.join(".code-repo-wiki").join("index.html").exists(),
         "应导出 index.html（目录页）"
     );
 
@@ -93,7 +93,7 @@ fn test_export_skip_generate_stale_snapshot_errors() {
     assert!(out.status.success(), "generate 应成功: {}", String::from_utf8_lossy(&out.stderr));
 
     // 2. 人为让快照变旧：把 wiki 页 mtime 推到未来（快照早于产物）
-    let wiki_dir = work_dir.join(".repo-wiki").join("wiki").join("zh");
+    let wiki_dir = work_dir.join(".code-repo-wiki").join("wiki").join("zh");
     let mut page_mtimes: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
     for entry in std::fs::read_dir(&wiki_dir).unwrap() {
         let path = entry.unwrap().path();

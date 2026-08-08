@@ -16,13 +16,13 @@
 
 use std::path::PathBuf;
 
-use repo_wiki::bench::manifest::{run_manifest, RepoEntry};
-use repo_wiki::bench::{
+use code_repo_wiki::bench::manifest::{run_manifest, RepoEntry};
+use code_repo_wiki::bench::{
     render_markdown, run_rubrics_only, BenchReport, CompletenessReport, CoverageReport,
     DocInfoReport, LintReport, TimeReport, UpdateRecallReport,
 };
-use repo_wiki::config::schema::{LlmProviderType, LlmSection, WikiSection, WikiConfig};
-use repo_wiki::project::ProjectRoot;
+use code_repo_wiki::config::schema::{LlmProviderType, LlmSection, WikiSection, WikiConfig};
+use code_repo_wiki::project::ProjectRoot;
 
 // ============ 本地 mock OpenAI server（Chat 协议 SSE 流式） ============
 // 与 src/generate/llm.rs 及 tests/test_bench_judge_tri_state.rs 同模式：
@@ -108,7 +108,7 @@ fn sse_response(content: &str) -> String {
 
 /// 临时目录（复用既有集成测试的命名与清理模式）
 fn temp_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("repo_wiki_docinfo_{tag}_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("code_repo_wiki_docinfo_{tag}_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -120,11 +120,11 @@ fn bench_setup(tag: &str, llm: LlmSection) -> (ProjectRoot, WikiConfig) {
     let dir = temp_dir(tag);
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(dir.join("src").join("a.rs"), "pub fn alpha(x: u32) -> u32 { x + 1 }\n").unwrap();
-    let wiki_zh = dir.join(".repo-wiki").join("wiki").join("zh");
+    let wiki_zh = dir.join(".code-repo-wiki").join("wiki").join("zh");
     std::fs::create_dir_all(&wiki_zh).unwrap();
     std::fs::write(wiki_zh.join("a.md"), "# 模块 a\n\n文档内容。\n").unwrap();
     let config = WikiConfig {
-        output_dir: Some(dir.join(".repo-wiki").to_string_lossy().into_owned().into()),
+        output_dir: Some(dir.join(".code-repo-wiki").to_string_lossy().into_owned().into()),
         wiki: WikiSection { language: "zh".into(), guide: Default::default() },
         llm,
         ..Default::default()
@@ -276,13 +276,13 @@ fn bench_setup_scripted(tag: &str, base_url: &str) -> (ProjectRoot, WikiConfig) 
     let dir = temp_dir(tag);
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(dir.join("src").join("a.rs"), "pub fn alpha() {}\n").unwrap();
-    let wiki_zh = dir.join(".repo-wiki").join("wiki").join("zh");
+    let wiki_zh = dir.join(".code-repo-wiki").join("wiki").join("zh");
     std::fs::create_dir_all(&wiki_zh).unwrap();
     for name in ["a", "b", "c"] {
         std::fs::write(wiki_zh.join(format!("{name}.md")), format!("# 模块 {name}\n\n内容。\n")).unwrap();
     }
     let config = WikiConfig {
-        output_dir: Some(dir.join(".repo-wiki").to_string_lossy().into_owned().into()),
+        output_dir: Some(dir.join(".code-repo-wiki").to_string_lossy().into_owned().into()),
         wiki: WikiSection { language: "zh".into(), guide: Default::default() },
         llm: LlmSection {
             provider: LlmProviderType::OpenAiCompatible,

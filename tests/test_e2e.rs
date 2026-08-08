@@ -10,8 +10,8 @@
 
 use std::path::Path;
 
-use repo_wiki::config::schema::{LlmProviderType, LlmSection, WikiConfig};
-use repo_wiki::config::schema::{WikiSection};
+use code_repo_wiki::config::schema::{LlmProviderType, LlmSection, WikiConfig};
+use code_repo_wiki::config::schema::{WikiSection};
 
 /// 构造临时仓库（src/a.rs + src/b.rs + config.toml，provider=mock）
 fn build_fixture_repo(repo: &Path) -> anyhow::Result<()> {
@@ -41,9 +41,9 @@ pub fn beta() -> &'static str { "beta" }
 "#,
     )?;
 
-    // 配置：mock provider（无网络）、输出到仓库内 .repo-wiki
+    // 配置：mock provider（无网络）、输出到仓库内 .code-repo-wiki
     let config = WikiConfig {
-        output_dir: Some((repo.join(".repo-wiki").to_string_lossy().into_owned()).into()),
+        output_dir: Some((repo.join(".code-repo-wiki").to_string_lossy().into_owned()).into()),
         wiki: WikiSection {
             language: "zh".into(),
             guide: Default::default(),
@@ -63,7 +63,7 @@ pub fn beta() -> &'static str { "beta" }
 
 /// 列出现有 wiki 页面文件名集合（wiki/zh/*.md）
 fn list_wiki_pages(repo: &Path) -> Vec<String> {
-    let dir = repo.join(".repo-wiki").join("wiki").join("zh");
+    let dir = repo.join(".code-repo-wiki").join("wiki").join("zh");
     let mut names: Vec<String> = std::fs::read_dir(&dir)
         .map(|entries| {
             entries
@@ -80,24 +80,24 @@ fn list_wiki_pages(repo: &Path) -> Vec<String> {
 /// 端到端全流程：产物 → 增量 → 删除清理
 #[test]
 fn test_e2e_full_pipeline() {
-    let repo = std::env::temp_dir().join(format!("repo_wiki_e2e_{}", std::process::id()));
+    let repo = std::env::temp_dir().join(format!("code_repo_wiki_e2e_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&repo);
     std::fs::create_dir_all(&repo).expect("创建临时仓库失败");
     build_fixture_repo(&repo).expect("构造测试仓库失败");
 
     // root 显式注入替代进程级 cwd 切换
-    let root = repo_wiki::project::ProjectRoot::new(repo.clone());
+    let root = code_repo_wiki::project::ProjectRoot::new(repo.clone());
     let config_path = repo.join("config.toml");
 
     // ---- 1. 全量生成：断言产物完整 ----
-    let result = repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &repo_wiki::GenerationMode::Full).expect("全量生成失败");
+    let result = code_repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &code_repo_wiki::GenerationMode::Full).expect("全量生成失败");
     assert!(result.stats.files_scanned >= 2, "应扫描到至少 2 个文件");
     assert!(result.stats.total_entities >= 2, "应解析出至少 2 个实体");
     assert!(!result.documents.is_empty(), "应生成文档");
 
-    let wiki_dir = repo.join(".repo-wiki").join("wiki").join("zh");
-    let cards_dir = repo.join(".repo-wiki").join("cards").join("zh");
-    let assets_dir = repo.join(".repo-wiki").join("assets").join("diagrams");
+    let wiki_dir = repo.join(".code-repo-wiki").join("wiki").join("zh");
+    let cards_dir = repo.join(".code-repo-wiki").join("cards").join("zh");
+    let assets_dir = repo.join(".code-repo-wiki").join("assets").join("diagrams");
     for p in [&wiki_dir, &cards_dir, &assets_dir] {
         assert!(p.exists(), "产物目录应存在: {}", p.display());
     }
@@ -137,7 +137,7 @@ impl Alpha {
     )
     .expect("修改 a/mod.rs 失败");
 
-    let inc = repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
+    let inc = code_repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &code_repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
         .expect("增量更新失败");
     assert!(!inc.documents.is_empty(), "增量更新应重新生成文档");
 
@@ -153,21 +153,21 @@ impl Alpha {
     std::fs::remove_file(repo.join("src").join("a").join("mod.rs")).expect("删除 a/mod.rs 失败");
     let deleted_path = repo.join("src").join("a").join("mod.rs");
 
-    let del = repo_wiki::run_pipeline(
+    let del = code_repo_wiki::run_pipeline(
         Some(&config_path),
         None,
         false,
         &root,
-        &repo_wiki::GenerationMode::Incremental {
+        &code_repo_wiki::GenerationMode::Incremental {
             watch_paths: vec![deleted_path],
-            change_kind: Some(repo_wiki::incremental::watch::ChangeKind::Deleted),
+            change_kind: Some(code_repo_wiki::incremental::watch::ChangeKind::Deleted),
         },
     )
     .expect("删除增量更新失败");
 
     // a 文件被删除:增量重建后 src 模块(合并 a+b)内容不再包含模块 A 实体;
     // 删除清理路径不再依赖 exists() 推断,由 Deleted 事件显式驱动
-    let src_page = repo.join(".repo-wiki").join("wiki").join("zh").join("src.md");
+    let src_page = repo.join(".code-repo-wiki").join("wiki").join("zh").join("src.md");
     let src_content = std::fs::read_to_string(&src_page).unwrap_or_default();
     assert!(
         !src_content.contains("Alpha"),
@@ -191,33 +191,33 @@ impl Alpha {
 /// true），未覆盖此边界。
 #[test]
 fn test_e2e_delete_only_module_keeps_other_modules() {
-    let repo = std::env::temp_dir().join(format!("repo_wiki_e2e_delonly_{}", std::process::id()));
+    let repo = std::env::temp_dir().join(format!("code_repo_wiki_e2e_delonly_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&repo);
     std::fs::create_dir_all(&repo).expect("创建临时仓库失败");
     build_fixture_repo(&repo).expect("构造测试仓库失败");
 
-    let root = repo_wiki::project::ProjectRoot::new(repo.clone());
+    let root = code_repo_wiki::project::ProjectRoot::new(repo.clone());
     let config_path = repo.join("config.toml");
 
     // 1. 全量生成：a、b 两模块页面均落盘
-    repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &repo_wiki::GenerationMode::Full)
+    code_repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &code_repo_wiki::GenerationMode::Full)
         .expect("全量生成失败");
     let before = list_wiki_pages(&repo);
-    let b_page = repo.join(".repo-wiki").join("wiki").join("zh").join("src_b.md");
+    let b_page = repo.join(".code-repo-wiki").join("wiki").join("zh").join("src_b.md");
     assert!(b_page.exists(), "模块 b 页面应存在: {:?}", before);
 
     // 2. 删除模块 a 的唯一文件（b 无依赖不受影响）
     let a_file = repo.join("src").join("a").join("mod.rs");
     std::fs::remove_file(&a_file).expect("删除 a/mod.rs 失败");
 
-    repo_wiki::run_pipeline(
+    code_repo_wiki::run_pipeline(
         Some(&config_path),
         None,
         false,
         &root,
-        &repo_wiki::GenerationMode::Incremental {
+        &code_repo_wiki::GenerationMode::Incremental {
             watch_paths: vec![a_file],
-            change_kind: Some(repo_wiki::incremental::watch::ChangeKind::Deleted),
+            change_kind: Some(code_repo_wiki::incremental::watch::ChangeKind::Deleted),
         },
     )
     .expect("删除增量更新失败");

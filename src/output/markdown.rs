@@ -598,7 +598,7 @@ mod tests {
     fn test_write_document_roundtrip() {
         let doc = make_test_doc("TestModule");
 
-        let dir = std::env::temp_dir().join("repo-wiki-test-markdown");
+        let dir = std::env::temp_dir().join("code-repo-wiki-test-markdown");
         let _ = std::fs::remove_dir_all(&dir);
 
         write_document(&doc, &dir, "zh").unwrap();

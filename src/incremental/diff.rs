@@ -148,7 +148,7 @@ mod tests {
 
     #[test]
     fn test_analyze_git_diff_non_repo() {
-        let tmp = std::env::temp_dir().join("repo-wiki-test-diff-nonexistent");
+        let tmp = std::env::temp_dir().join("code-repo-wiki-test-diff-nonexistent");
         let result = analyze_git_diff(&tmp, None);
 
         // 非 Git 仓库应返回 Err
@@ -158,7 +158,7 @@ mod tests {
     /// 在临时仓库中做 2 次提交，验证 diff 行数统计正确
     #[test]
     fn test_diff_line_stats() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_test_diff_stats_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_diff_stats_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let repo = git2::Repository::init(&dir).unwrap();
         let mut cfg = repo.config().unwrap();

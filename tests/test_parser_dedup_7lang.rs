@@ -12,7 +12,7 @@
 
 use std::path::Path;
 
-use repo_wiki::ingest::parser::{Entity, ParserRegistry};
+use code_repo_wiki::ingest::parser::{Entity, ParserRegistry};
 
 /// 断言实体列表无重复（name + kind + 起始行 三元组唯一）
 fn assert_no_duplicates(entities: &[Entity]) {
@@ -28,7 +28,7 @@ fn assert_no_duplicates(entities: &[Entity]) {
 }
 
 /// 通过注册表解析源码并返回 FileInsight
-fn parse_src(language: &str, source: &str, path: &str) -> repo_wiki::ingest::parser::FileInsight {
+fn parse_src(language: &str, source: &str, path: &str) -> code_repo_wiki::ingest::parser::FileInsight {
     let registry = ParserRegistry::new();
     let processor = registry
         .get_for_file(Path::new(path))
@@ -157,7 +157,7 @@ fn test_typescript_broken_source_no_panic_no_dup() {
 
 #[test]
 fn test_mixed_repo_all_languages_have_entities() {
-    let dir = std::env::temp_dir().join(format!("repo_wiki_dedup_7lang_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("code_repo_wiki_dedup_7lang_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
 
     let files: [(&str, &str); 7] = [

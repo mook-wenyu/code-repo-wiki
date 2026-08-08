@@ -1,6 +1,6 @@
 //! 评测基准自动层（U10，对齐 RepoDocBench 协议的可落地子集）
 //!
-//! `repo-wiki bench` 对目标仓库跑五维自动评测，输出 Markdown/JSON 报告：
+//! `code-repo-wiki bench` 对目标仓库跑五维自动评测，输出 Markdown/JSON 报告：
 //!
 //! 1. **Coverage 实体提及率**：AST 提取实体清单（复用 ingest 解析），
 //!    统计每个实体在 Wiki 产物中的被提及数 → 提及/总数（RepoDoc 定义：
@@ -2414,14 +2414,14 @@ mod tests {
 
     /// 构造临时小仓库：src/a.rs + src/b.rs（含 git 仓库，供增量回放）
     fn bench_repo(tag: &str) -> (ProjectRoot, PathBuf, WikiConfig) {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_bench_{tag}_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_bench_{tag}_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(dir.join("src").join("a.rs"), "pub fn alpha(x: u32) -> u32 { x + 1 }\n").unwrap();
         std::fs::write(dir.join("src").join("b.rs"), "pub fn beta(x: u32) -> u32 { x + 2 }\n").unwrap();
 
         let config = WikiConfig {
-            output_dir: Some((dir.join(".repo-wiki").to_string_lossy().into_owned()).into()),
+            output_dir: Some((dir.join(".code-repo-wiki").to_string_lossy().into_owned()).into()),
             wiki: WikiSection { language: "zh".into(), guide: Default::default() },
             llm: LlmSection { provider: LlmProviderType::Mock, ..Default::default() },
             ..Default::default()
@@ -2481,7 +2481,7 @@ mod tests {
     #[test]
     fn test_completeness_hit_when_module_page_exists() {
         let dir = std::env::temp_dir()
-            .join(format!("repo_wiki_bench_ckhit_{}", std::process::id()));
+            .join(format!("code_repo_wiki_bench_ckhit_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src").join("net")).unwrap();
         std::fs::write(
@@ -2491,7 +2491,7 @@ mod tests {
         .unwrap();
 
         let config = WikiConfig {
-            output_dir: Some((dir.join(".repo-wiki").to_string_lossy().into_owned()).into()),
+            output_dir: Some((dir.join(".code-repo-wiki").to_string_lossy().into_owned()).into()),
             wiki: WikiSection { language: "zh".into(), guide: Default::default() },
             llm: LlmSection { provider: LlmProviderType::Mock, ..Default::default() },
             ..Default::default()
@@ -2528,7 +2528,7 @@ mod tests {
 
         let root = ProjectRoot::new(dir.clone());
         // 模块页 src_net.md（模块名 src::net 的页面，wiki_file_name 同规则）
-        let pages = vec![(dir.join(".repo-wiki/wiki/zh/src_net.md"), "content".to_string())];
+        let pages = vec![(dir.join(".code-repo-wiki/wiki/zh/src_net.md"), "content".to_string())];
         let rep = measure_completeness_at_k(&root, &config, &pages).unwrap();
         assert!(rep.judged, "索引存在应执行判定");
         assert_eq!(rep.total_entities, 1);
@@ -2546,7 +2546,7 @@ mod tests {
     #[test]
     fn test_completeness_miss_when_module_page_absent() {
         let dir = std::env::temp_dir()
-            .join(format!("repo_wiki_bench_ckmiss_{}", std::process::id()));
+            .join(format!("code_repo_wiki_bench_ckmiss_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(
@@ -2556,7 +2556,7 @@ mod tests {
         .unwrap();
 
         let config = WikiConfig {
-            output_dir: Some((dir.join(".repo-wiki").to_string_lossy().into_owned()).into()),
+            output_dir: Some((dir.join(".code-repo-wiki").to_string_lossy().into_owned()).into()),
             wiki: WikiSection { language: "zh".into(), guide: Default::default() },
             llm: LlmSection { provider: LlmProviderType::Mock, ..Default::default() },
             ..Default::default()
@@ -2598,7 +2598,7 @@ mod tests {
     #[test]
     fn test_completeness_degrades_without_index() {
         let dir = std::env::temp_dir()
-            .join(format!("repo_wiki_bench_ckdeg_{}", std::process::id()));
+            .join(format!("code_repo_wiki_bench_ckdeg_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(
@@ -2608,7 +2608,7 @@ mod tests {
         .unwrap();
 
         let config = WikiConfig {
-            output_dir: Some((dir.join(".repo-wiki").to_string_lossy().into_owned()).into()),
+            output_dir: Some((dir.join(".code-repo-wiki").to_string_lossy().into_owned()).into()),
             wiki: WikiSection { language: "zh".into(), guide: Default::default() },
             llm: LlmSection { provider: LlmProviderType::Mock, ..Default::default() },
             ..Default::default()
@@ -3161,7 +3161,7 @@ mod tests {
     /// 「# 检索到的页面正文」节；tempdir 模式与既有测试一致）
     #[test]
     fn test_build_evidence_includes_retrieved_pages() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_bench_retr_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_bench_retr_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let wiki_zh = dir.join("wiki").join("zh");
         std::fs::create_dir_all(&wiki_zh).unwrap();

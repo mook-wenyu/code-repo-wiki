@@ -16,11 +16,11 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use repo_wiki::config::schema::WikiConfig;
-use repo_wiki::generate::card::CardGenerator;
-use repo_wiki::generate::chunk::{chunk_by_file, Chunk};
-use repo_wiki::generate::llm::{LlmProvider, Message, MockProvider};
-use repo_wiki::ingest::parser::{Entity, FileInsight, ImportStmt};
+use code_repo_wiki::config::schema::WikiConfig;
+use code_repo_wiki::generate::card::CardGenerator;
+use code_repo_wiki::generate::chunk::{chunk_by_file, Chunk};
+use code_repo_wiki::generate::llm::{LlmProvider, Message, MockProvider};
+use code_repo_wiki::ingest::parser::{Entity, FileInsight, ImportStmt};
 
 /// 构造非空 chunk（module_path = ["src"]，与单测 make_test_chunk 同构）
 fn make_test_chunk() -> Chunk {
@@ -59,7 +59,7 @@ fn make_empty_chunk(module: &str) -> Chunk {
 
 fn temp_config(tag: &str) -> (WikiConfig, std::path::PathBuf) {
     let dir = std::env::temp_dir().join(format!(
-        "repo_wiki_it_v31_{tag}_{}",
+        "code_repo_wiki_it_v31_{tag}_{}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&dir);

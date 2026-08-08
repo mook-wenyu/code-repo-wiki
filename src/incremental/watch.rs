@@ -558,7 +558,7 @@ mod tests {
     /// 增量生成；本测试验证预置标记的退出语义与不崩溃）
     #[test]
     fn test_watch_loop_exits_on_pre_set_stop_flag() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_watch_stop_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_watch_stop_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         // 标记预置：循环第一次检查即退出（监听根不存在只告警不阻塞）

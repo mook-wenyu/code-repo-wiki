@@ -1,6 +1,6 @@
 //! AGENTS.md 注入/移除集成测试（G1：v33 起并入 install/uninstall 主命令）
 //!
-//! 通过 env!("CARGO_BIN_EXE_repo-wiki") 调用真实二进制，覆盖：
+//! 通过 env!("CARGO_BIN_EXE_code-repo-wiki") 调用真实二进制，覆盖：
 //! 1. install 默认注入 AGENTS.md 标记对（v33 拍板：默认执行）
 //! 2. 重复 install 幂等（用户内容保留）
 //! 3. uninstall --force 移除标记块、保留用户内容；未安装时退出码 0
@@ -52,7 +52,7 @@ fn test_install_wiki_creates_agents_md() {
     let content = std::fs::read_to_string(&path).unwrap();
     assert!(content.contains(START), "应含 START 标记，实际: {content}");
     assert!(content.contains(END), "应含 END 标记，实际: {content}");
-    assert!(content.contains("repo-wiki update"), "应含 repo-wiki update 指引，实际: {content}");
+    assert!(content.contains("code-repo-wiki update"), "应含 code-repo-wiki update 指引，实际: {content}");
 
     let _ = std::fs::remove_dir_all(&work_dir);
 }
@@ -166,7 +166,7 @@ fn test_half_marker_errors_and_preserves_file() {
 }
 
 /// U02 回归：注入块按目标仓库配置渲染产物路径（v30 后 output.dir 硬编码
-/// .repo-wiki，仅 wiki.language 参与渲染）
+/// .code-repo-wiki，仅 wiki.language 参与渲染）
 #[test]
 fn test_install_wiki_template_uses_config_paths() {
     let (work_dir, envs) = setup("template_config");
@@ -181,11 +181,11 @@ fn test_install_wiki_template_uses_config_paths() {
     );
     let content = std::fs::read_to_string(work_dir.join("AGENTS.md")).unwrap();
     assert!(
-        content.contains("`.repo-wiki/wiki/en/overview.md`"),
-        "应渲染 .repo-wiki/wiki/en/overview.md, 实际: {content}"
+        content.contains("`.code-repo-wiki/wiki/en/overview.md`"),
+        "应渲染 .code-repo-wiki/wiki/en/overview.md, 实际: {content}"
     );
     assert!(
-        !content.contains(".repo-wiki/wiki/zh"),
+        !content.contains(".code-repo-wiki/wiki/zh"),
         "不应残留默认 zh 路径, 实际: {content}"
     );
 
@@ -208,8 +208,8 @@ fn test_install_wiki_template_defaults_without_config() {
     assert!(combined.contains("默认"), "应提示按默认值渲染，实际: {combined}");
     let content = std::fs::read_to_string(work_dir.join("AGENTS.md")).unwrap();
     assert!(
-        content.contains("`.repo-wiki/wiki/zh/overview.md`"),
-        "默认应渲染 .repo-wiki/zh 路径，实际: {content}"
+        content.contains("`.code-repo-wiki/wiki/zh/overview.md`"),
+        "默认应渲染 .code-repo-wiki/zh 路径，实际: {content}"
     );
 
     let _ = std::fs::remove_dir_all(&work_dir);

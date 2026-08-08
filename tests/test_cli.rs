@@ -1,4 +1,4 @@
-//! CLI 集成测试：通过 env!("CARGO_BIN_EXE_repo-wiki") 调用真实二进制
+//! CLI 集成测试：通过 env!("CARGO_BIN_EXE_code-repo-wiki") 调用真实二进制
 //!
 //! 覆盖 §7 端到端验收中无测试覆盖的三项：
 //! 1. uninstall 无 --force 拒绝、有 --force 卸载
@@ -14,7 +14,7 @@ mod common;
 use common::{copy_dir, mock_llm_server, openai_compatible_config, run_bin_with_envs, unique_dir};
 use std::path::{Path, PathBuf};
 
-/// 最小可用配置：LLM 指向本地 mock server，输出硬编码 .repo-wiki
+/// 最小可用配置：LLM 指向本地 mock server，输出硬编码 .code-repo-wiki
 /// （v30：output/incremental/search 键已硬编码，配置仅 scope/llm/embed 三段）
 fn minimal_config(port: u16) -> String {
     openai_compatible_config(port)
@@ -130,7 +130,7 @@ fn test_progress_json_cli() {
     assert_eq!(events.last().unwrap().0, "done", "末个事件应为 done");
     assert_eq!(events.last().unwrap().1, 100, "末个事件 progress 应为 100");
     // 输出产物存在
-    assert!(work_dir.join(".repo-wiki").is_dir(), "应生成 wiki 输出目录");
+    assert!(work_dir.join(".code-repo-wiki").is_dir(), "应生成 wiki 输出目录");
 
     let _ = std::fs::remove_dir_all(&work_dir);
 }
@@ -195,7 +195,7 @@ fn test_card_cli_commands() {
         "generate 应成功，stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let cards_dir = work_dir.join(".repo-wiki").join("cards").join("zh");
+    let cards_dir = work_dir.join(".code-repo-wiki").join("cards").join("zh");
     let card_file = std::fs::read_dir(&cards_dir)
         .unwrap_or_else(|e| panic!("卡片目录应存在 {}: {}", cards_dir.display(), e))
         .filter_map(|e| e.ok())
@@ -247,7 +247,7 @@ fn test_card_reference_validation() {
         "generate 应成功，stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let cards_dir = work_dir.join(".repo-wiki").join("cards").join("zh");
+    let cards_dir = work_dir.join(".code-repo-wiki").join("cards").join("zh");
     let card_file = std::fs::read_dir(&cards_dir)
         .unwrap_or_else(|e| panic!("卡片目录应存在 {}: {}", cards_dir.display(), e))
         .filter_map(|e| e.ok())
@@ -347,7 +347,7 @@ fn test_export_produces_html_artifacts() {
     // 以实际落盘文件断言(不臆测路径,失败时列出目录内容)
     // html 产物:export_html 在 wiki/ 目录内写 {title}.html + 根 index.html
     // (与 .md 并存,不建独立 html/ 子目录)
-    let html_dir = work_dir.join(".repo-wiki");
+    let html_dir = work_dir.join(".code-repo-wiki");
     let html_files: Vec<_> = std::fs::read_dir(&html_dir)
         .unwrap()
         .filter_map(|e| e.ok())
@@ -364,7 +364,7 @@ fn test_export_produces_html_artifacts() {
         html_dir.display()
     );
     assert!(
-        work_dir.join(".repo-wiki").join("index.html").exists(),
+        work_dir.join(".code-repo-wiki").join("index.html").exists(),
         "wiki/index.html(目录页)应生成"
     );
     assert!(
@@ -450,11 +450,11 @@ fn test_lint_detects_issues_in_artifacts() {
     let _ = std::fs::remove_dir_all(&work_dir);
     // 构造"干净"产物:单个 wiki 页 + 目录页(链接指向 core → core 有入链非孤儿)。
     // 产物布局遵循 render_all 规则:config.output_dir() 下再建 wiki/{lang}/ 子目录
-    let wiki = work_dir.join(".repo-wiki").join("wiki").join("zh");
+    let wiki = work_dir.join(".code-repo-wiki").join("wiki").join("zh");
     std::fs::create_dir_all(&wiki).unwrap();
     std::fs::write(wiki.join("core.md"), "# Core\n\n模块页\n").unwrap();
     std::fs::write(
-        work_dir.join(".repo-wiki").join("_toc.md"),
+        work_dir.join(".code-repo-wiki").join("_toc.md"),
         "# 目录\n\n- [Core](wiki/zh/core.md)\n",
     )
     .unwrap();

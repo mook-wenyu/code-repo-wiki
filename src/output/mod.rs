@@ -464,7 +464,7 @@ pub fn render_all(
 /// - 单一基线不双发：只生成 AGENTS.md，不生成 CLAUDE.md（TomeVault 实测
 ///   双发仓 88.9% 两文件互不连接，"第二份文件几乎从未被读"）。
 pub fn generate_agents_md(output_dir: &Path) -> Result<bool> {
-    // AGENTS.md 写到产物目录的上级（项目根）：output_dir 通常是 .repo-wiki/ 或 wiki/，
+    // AGENTS.md 写到产物目录的上级（项目根）：output_dir 通常是 .code-repo-wiki/ 或 wiki/，
     // 其上级即仓库根。不用 cwd——测试的 cwd 是项目根而 output_dir 是临时目录，
     // 用 cwd 会把 AGENTS.md 写进被测仓库，污染工作树。
     let Some(root) = output_dir.parent() else {
@@ -477,15 +477,15 @@ pub fn generate_agents_md(output_dir: &Path) -> Result<bool> {
         // 提示补救路径（v33：install 命令默认注入 wiki 引用块，可把
         // 当前工具的指引合并进既有文件）。
         tracing::warn!(
-            "仓库已存在 AGENTS.md（{}），跳过注入以保护人工维护内容；如需 repo-wiki 指引可运行 `repo-wiki install`",
+            "仓库已存在 AGENTS.md（{}），跳过注入以保护人工维护内容；如需 code-repo-wiki 指引可运行 `code-repo-wiki install`",
             agents_path.display()
         );
         return Ok(false);
     }
     let content = format!(
-        r#"# AGENTS.md — AI 代理导航（由 repo-wiki 生成，可人工编辑）
+        r#"# AGENTS.md — AI 代理导航（由 code-repo-wiki 生成，可人工编辑）
 
-本仓库使用 repo-wiki 维护可持续进化的项目 Wiki，产物位于 `{output_dir}/`。
+本仓库使用 code-repo-wiki 维护可持续进化的项目 Wiki，产物位于 `{output_dir}/`。
 
 ## 产物布局
 
@@ -500,16 +500,16 @@ pub fn generate_agents_md(output_dir: &Path) -> Result<bool> {
 
 ## 常用命令
 
-- 查找实体（函数/结构体/类）：`repo-wiki search -q "<关键词>"`（text/semantic/hybrid 三引擎，hybrid 含调用链补全）。何时做：需要某实体的签名/定位/说明时；何时不做：不知道关键词时先读 llms.txt 定位页面，不要盲目搜索。
-- 更新产物：代码修改后运行 `repo-wiki update` 增量更新；`repo-wiki sync` 以 Git 内容合入；`repo-wiki lint` 检查产物健康（孤儿页/断链/过时）。何时做：每次代码变更后、以及发现产物与代码不一致时；何时不做：未改代码时不运行（no-op 无收益）。
-- 知识沉淀：`repo-wiki note "<记录>"` 追加到 `{output_dir}/wiki/{{lang}}/_log.md`。何时做：需要给后续会话留下可检索的决策或教训时。
+- 查找实体（函数/结构体/类）：`code-repo-wiki search -q "<关键词>"`（text/semantic/hybrid 三引擎，hybrid 含调用链补全）。何时做：需要某实体的签名/定位/说明时；何时不做：不知道关键词时先读 llms.txt 定位页面，不要盲目搜索。
+- 更新产物：代码修改后运行 `code-repo-wiki update` 增量更新；`code-repo-wiki sync` 以 Git 内容合入；`code-repo-wiki lint` 检查产物健康（孤儿页/断链/过时）。何时做：每次代码变更后、以及发现产物与代码不一致时；何时不做：未改代码时不运行（no-op 无收益）。
+- 知识沉淀：`code-repo-wiki note "<记录>"` 追加到 `{output_dir}/wiki/{{lang}}/_log.md`。何时做：需要给后续会话留下可检索的决策或教训时。
 
 ## 开发规范
 
 - 开始任务时：先读 `{output_dir}/wiki/{{lang}}/overview.md` 与 `{output_dir}/wiki/{{lang}}/architecture.md` 建立全局认知，再按需深入模块页；上下文预算充足时用 `llms-full.txt` 一次获得完整实体骨架。
-- 判断新鲜度：核对 `{output_dir}/llms.txt` 头部的生成时间戳与 git 基线——基线落后当前 HEAD 或时间戳距今超过 7 天时，先运行 `repo-wiki update` 再消费（过期产物会降低检索质量）。
+- 判断新鲜度：核对 `{output_dir}/llms.txt` 头部的生成时间戳与 git 基线——基线落后当前 HEAD 或时间戳距今超过 7 天时，先运行 `code-repo-wiki update` 再消费（过期产物会降低检索质量）。
 - 人工修改保护：产物页面被人工编辑后不会被自动覆盖（保护机制），修改会反向同步到卡片（pending_manual_edits 节）。
-- 何时不做：不直接编辑 `llms.txt` / `llms-full.txt`（确定性重生成会覆盖）；不在产物目录手工放置页面（`repo-wiki lint` 会判为孤儿页）。
+- 何时不做：不直接编辑 `llms.txt` / `llms-full.txt`（确定性重生成会覆盖）；不在产物目录手工放置页面（`code-repo-wiki lint` 会判为孤儿页）。
 "#,
         output_dir = output_dir.display(),
     );
@@ -612,7 +612,7 @@ mod tests {
     #[test]
     fn test_render_all_skips_protected_card() {
         let dir = std::env::temp_dir()
-            .join(format!("repo_wiki_test_protected_card_{}", std::process::id()));
+            .join(format!("code_repo_wiki_test_protected_card_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let config = WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
 
@@ -652,7 +652,7 @@ mod tests {
     #[test]
     fn test_render_all_writes_cards_without_documents() {
         let dir = std::env::temp_dir()
-            .join(format!("repo_wiki_test_cards_no_docs_{}", std::process::id()));
+            .join(format!("code_repo_wiki_test_cards_no_docs_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let config = WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
 
@@ -682,7 +682,7 @@ mod tests {
     #[test]
     fn test_generate_agents_md_template_aligned() {
         let dir = std::env::temp_dir()
-            .join(format!("repo_wiki_test_agents_md_{}", std::process::id()));
+            .join(format!("code_repo_wiki_test_agents_md_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let output_dir = dir.join("out");
         std::fs::create_dir_all(&output_dir).unwrap();
@@ -703,7 +703,7 @@ mod tests {
         // 保留既有功能：llms.txt / llms-full.txt 指引 + 搜索建议
         assert!(content.contains("llms.txt"), "应保留 llms.txt 指引: {content}");
         assert!(content.contains("llms-full.txt"), "应保留 llms-full.txt 指引: {content}");
-        assert!(content.contains("repo-wiki search"), "应保留搜索建议: {content}");
+        assert!(content.contains("code-repo-wiki search"), "应保留搜索建议: {content}");
         // 可证伪措辞：每节明确「何时做/何时不做」
         assert!(content.contains("何时"), "指令须可证伪（含何时）: {content}");
         // 单一基线不双发：不生成 CLAUDE.md

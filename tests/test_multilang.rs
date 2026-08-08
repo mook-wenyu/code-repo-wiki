@@ -3,7 +3,7 @@
 /// 验证默认主语言 zh（v30：多语言扩展已删除，恒只生成主语言）
 #[test]
 fn test_single_lang_default() {
-    let config = repo_wiki::config::schema::WikiConfig::default();
+    let config = code_repo_wiki::config::schema::WikiConfig::default();
     assert_eq!(config.wiki.language, "zh");
 }
 
@@ -18,7 +18,7 @@ expand_languages = ["en", "ja"]
 
 
 [output]
-dir = ".repo-wiki"
+dir = ".code-repo-wiki"
 format = "markdown"
 
 [llm]
@@ -27,7 +27,7 @@ model = "gpt-4o"
 api_key_env = "OPENAI_API_KEY"
 max_concurrent = 4
 "#;
-    let config: repo_wiki::config::schema::WikiConfig = toml::from_str(toml_str).unwrap();
+    let config: code_repo_wiki::config::schema::WikiConfig = toml::from_str(toml_str).unwrap();
     assert_eq!(config.wiki.language, "zh");
     // v30：expand_languages 已删除，多语言配置不再生效（恒主语言）
 }
@@ -35,7 +35,7 @@ max_concurrent = 4
 /// 验证 write_document 支持语言参数（独立写盘到对应语言目录）
 #[test]
 fn test_write_document_language_param() {
-    use repo_wiki::model::{WikiDocument, Reference, DocumentKind};
+    use code_repo_wiki::model::{WikiDocument, Reference, DocumentKind};
     let doc = WikiDocument {
         title: "Test".into(),
         kind: DocumentKind::WikiPage,
@@ -52,16 +52,16 @@ fn test_write_document_language_param() {
         fingerprint: None,
     };
 
-    let dir = std::env::temp_dir().join(format!("repo_wiki_test_multilang_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_multilang_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
 
     // 写入中文版
-    repo_wiki::output::markdown::write_document(&doc, &dir, "zh").unwrap();
+    code_repo_wiki::output::markdown::write_document(&doc, &dir, "zh").unwrap();
     assert!(dir.join("wiki").join("zh").join("crate_test.md").exists());
 
     // 写入英文版
-    repo_wiki::output::markdown::write_document(&doc, &dir, "en").unwrap();
+    code_repo_wiki::output::markdown::write_document(&doc, &dir, "en").unwrap();
     assert!(dir.join("wiki").join("en").join("crate_test.md").exists());
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -70,8 +70,8 @@ fn test_write_document_language_param() {
 /// 验证 render_all 按文档自身语言分组写入（多语言独立生成，不再按语言循环复制）
 #[test]
 fn test_render_all_multi_lang_dirs() {
-    use repo_wiki::model::*;
-    use repo_wiki::config::schema::*;
+    use code_repo_wiki::model::*;
+    use code_repo_wiki::config::schema::*;
 
     let config = WikiConfig {
         wiki: WikiSection {
@@ -93,7 +93,7 @@ fn test_render_all_multi_lang_dirs() {
         fingerprint: None,
     };
 
-    let dir = std::env::temp_dir().join(format!("repo_wiki_test_multilang_render_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_multilang_render_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
 
     // 模拟 output.dir
@@ -104,7 +104,7 @@ fn test_render_all_multi_lang_dirs() {
 
     // 中文版与英文版独立生成，各自写入自己的语言目录
     let docs = vec![make_doc("zh"), make_doc("en")];
-    repo_wiki::output::render_all(&docs, &[], &graph, &multi_config, &std::collections::HashSet::new()).unwrap();
+    code_repo_wiki::output::render_all(&docs, &[], &graph, &multi_config, &std::collections::HashSet::new()).unwrap();
     assert!(dir.join("wiki").join("zh").join("core.md").exists());
     assert!(dir.join("wiki").join("en").join("core.md").exists());
     // v22 起卡片只按配置语言（主语言）独立写盘——卡片不随页面语言复制

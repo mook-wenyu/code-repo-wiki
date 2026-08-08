@@ -39,20 +39,20 @@ fn build_cluster_repo(dir: &Path) {
 /// 同图两次检测结果逐项一致（模块名、node_ids 集合、特征划分）
 #[test]
 fn test_clustering_stable_across_runs() {
-    let dir = std::env::temp_dir().join(format!("repo_wiki_cluster_stab_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("code_repo_wiki_cluster_stab_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     build_cluster_repo(&dir);
 
-    let root = repo_wiki::project::ProjectRoot::new(dir.clone());
-    let insights = repo_wiki::ingest::scan_and_parse_at(&root).unwrap().insights;
-    let graph = repo_wiki::analysis::build_graph(&insights).unwrap();
+    let root = code_repo_wiki::project::ProjectRoot::new(dir.clone());
+    let insights = code_repo_wiki::ingest::scan_and_parse_at(&root).unwrap().insights;
+    let graph = code_repo_wiki::analysis::build_graph(&insights).unwrap();
 
     // 两次独立检测
-    let modules_1 = repo_wiki::analysis::detect_modules(&graph).unwrap();
-    let modules_2 = repo_wiki::analysis::detect_modules(&graph).unwrap();
-    let features_1 = repo_wiki::analysis::feature::detect_features(&graph, None).unwrap();
-    let features_2 = repo_wiki::analysis::feature::detect_features(&graph, None).unwrap();
+    let modules_1 = code_repo_wiki::analysis::detect_modules(&graph).unwrap();
+    let modules_2 = code_repo_wiki::analysis::detect_modules(&graph).unwrap();
+    let features_1 = code_repo_wiki::analysis::feature::detect_features(&graph, None).unwrap();
+    let features_2 = code_repo_wiki::analysis::feature::detect_features(&graph, None).unwrap();
 
     // 1. 模块数 + 名称排序一致
     let mut names_1: Vec<&str> = modules_1.iter().map(|m| m.name.as_str()).collect();

@@ -55,7 +55,7 @@ pub fn get_global_runtime() -> &'static Arc<Runtime> {
 
 /// 加载配置，并用 CLI 传入的 output 路径覆盖配置文件中的 output.dir
 ///
-/// output.dir 是相对路径（默认 .repo-wiki），覆盖后渲染、搜索索引、状态目录
+/// output.dir 是相对路径（默认 .code-repo-wiki），覆盖后渲染、搜索索引、状态目录
 /// 等所有下游引用自然指向新目录。
 /// 加载配置并统一注入输出目录（v30：output.dir 已硬编码，运行时注入
 /// `--output` 覆盖或 root 化绝对路径，见 schema::WikiConfig::output_dir）。
@@ -72,7 +72,7 @@ fn load_config_with_output(
         None => config::load_default_config(root)?.1,
     };
     // root 统一（v17 F 组，t09 实测发现）：输出目录默认相对路径
-    // （.repo-wiki）时必须解析到 root，否则 --root 场景（cwd ≠ root）
+    // （.code-repo-wiki）时必须解析到 root，否则 --root 场景（cwd ≠ root）
     // 产物写到进程 cwd 错位。--output 覆盖与 root 化都注入运行时字段，
     // 下游统一走 config.output_dir()（见 schema.rs 注释）。
     let output_dir = match output {
@@ -619,7 +619,7 @@ pub fn run_card_command(
         | generate::card::CardAction::Supplement { module, .. }
         | generate::card::CardAction::Rewrite { module, .. } => {
             if generate::card::read_card(&config, module)?.is_none() {
-                anyhow::bail!("模块 {module} 的卡片不存在，请先运行 `repo-wiki generate` 或 `repo-wiki card generate {module}` 生成");
+                anyhow::bail!("模块 {module} 的卡片不存在，请先运行 `code-repo-wiki generate` 或 `code-repo-wiki card generate {module}` 生成");
             }
         }
     }
@@ -1383,7 +1383,7 @@ pub fn execute_search(
     match engine_type {
         config::schema::SearchEngineType::Text => {
             if !text_path.exists() {
-                anyhow::bail!("搜索索引不存在，请先运行 `repo-wiki generate` 或 `repo-wiki update` 构建索引");
+                anyhow::bail!("搜索索引不存在，请先运行 `code-repo-wiki generate` 或 `code-repo-wiki update` 构建索引");
             }
             let (text_engine, _) = search::text::TextEngine::open(&text_path)?;
             let results = text_engine.search(query, top_k)?;
@@ -1393,7 +1393,7 @@ pub fn execute_search(
             // v30：embed 已硬编码恒启用——语义索引缺失即引导（无嵌入
             // key 时 generate 会告警跳过语义索引构建，见 build_search_index）
             if !semantic_path.exists() {
-                anyhow::bail!("语义索引不存在——未配置嵌入 key（embed.api_key_env）或索引未构建，请配置后重新运行 `repo-wiki generate`");
+                anyhow::bail!("语义索引不存在——未配置嵌入 key（embed.api_key_env）或索引未构建，请配置后重新运行 `code-repo-wiki generate`");
             }
             let embedder = generate::embed::EmbeddingEngine::new(&config.embed, get_global_runtime().handle().clone())?;
             let embedder = std::sync::Arc::new(embedder);
@@ -1405,7 +1405,7 @@ pub fn execute_search(
             // 与 Text/Semantic 分支一致：text 索引是混合检索的必需底座
             //（RRF 至少一路有效），缺失时明确报错而非打开空库。
             if !text_path.exists() {
-                anyhow::bail!("搜索索引不存在，请先运行 `repo-wiki generate` 或 `repo-wiki update` 构建索引");
+                anyhow::bail!("搜索索引不存在，请先运行 `code-repo-wiki generate` 或 `code-repo-wiki update` 构建索引");
             }
             let (text_engine, _) = search::text::TextEngine::open(&text_path)?;
             // hybrid 语义一路：语义引擎构建失败（embedding 配置缺失/key
@@ -1554,7 +1554,7 @@ mod tests {
     /// 全链路（增量触发重建）依赖真实 embed key，留待真实环境验证。
     #[test]
     fn test_embed_model_marker_roundtrip_and_mismatch() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_test_embed_marker_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_embed_marker_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(".search")).unwrap();
 
@@ -1626,7 +1626,7 @@ mod tests {
     #[test]
     fn test_cleanup_stale_outputs_removes_unrendered_across_languages() {
         let dir = std::env::temp_dir()
-            .join(format!("repo_wiki_test_stale_{}", std::process::id()));
+            .join(format!("code_repo_wiki_test_stale_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
         // 旧状态记录两个产物：src.md（双语言）与 lib.md（双语言）
@@ -1683,7 +1683,7 @@ mod tests {
     #[test]
     fn test_cleanup_stale_outputs_keeps_rendered_protected() {
         let dir = std::env::temp_dir()
-            .join(format!("repo_wiki_test_stale_protected_{}", std::process::id()));
+            .join(format!("code_repo_wiki_test_stale_protected_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
         let mut state = incremental::state::GenerationState {
@@ -1724,7 +1724,7 @@ mod tests {
     #[test]
     fn test_cleanup_stale_outputs_preserves_modules_still_in_scan() {
         let dir = std::env::temp_dir()
-            .join(format!("repo_wiki_test_stale_preserve_{}", std::process::id()));
+            .join(format!("code_repo_wiki_test_stale_preserve_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
         let mut state = incremental::state::GenerationState {
@@ -1773,7 +1773,7 @@ mod tests {
     #[test]
     fn test_cleanup_stale_outputs_noop_without_state() {
         let dir = std::env::temp_dir()
-            .join(format!("repo_wiki_test_stale_noop_{}", std::process::id()));
+            .join(format!("code_repo_wiki_test_stale_noop_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         cleanup_stale_outputs(None, &[], &std::collections::HashSet::new());
         let _ = std::fs::remove_dir_all(&dir);
@@ -1784,7 +1784,7 @@ mod tests {
     #[test]
     fn test_load_protection_force_clears_protection() {
         let dir = std::env::temp_dir()
-            .join(format!("repo_wiki_test_force_{}", std::process::id()));
+            .join(format!("code_repo_wiki_test_force_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
         let config = crate::config::schema::WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
@@ -1835,7 +1835,7 @@ mod tests {
     #[test]
     fn test_load_protection_corrupt_state_fails_loud() {
         let dir = std::env::temp_dir()
-            .join(format!("repo_wiki_test_corrupt_state_{}", std::process::id()));
+            .join(format!("code_repo_wiki_test_corrupt_state_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
         let config = crate::config::schema::WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
@@ -1859,7 +1859,7 @@ mod tests {
     #[test]
     fn test_load_protection_missing_state_is_ok() {
         let dir = std::env::temp_dir()
-            .join(format!("repo_wiki_test_missing_state_{}", std::process::id()));
+            .join(format!("code_repo_wiki_test_missing_state_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
         let config = crate::config::schema::WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
@@ -1877,7 +1877,7 @@ mod tests {
     #[test]
     fn test_call_index_fingerprint_none_without_state() {
         let dir = std::env::temp_dir()
-            .join(format!("repo_wiki_test_fp_none_{}", std::process::id()));
+            .join(format!("code_repo_wiki_test_fp_none_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -1891,7 +1891,7 @@ mod tests {
     #[test]
     fn test_call_index_fingerprint_state_stable() {
         let dir = std::env::temp_dir()
-            .join(format!("repo_wiki_test_fp_state_{}", std::process::id()));
+            .join(format!("code_repo_wiki_test_fp_state_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(".state")).unwrap();
         std::fs::write(dir.join(".state/generation_state.json"), "{}").unwrap();
@@ -1914,7 +1914,7 @@ mod tests {
     #[test]
     fn test_call_index_cache_round_trip_and_invalidation() {
         let dir = std::env::temp_dir()
-            .join(format!("repo_wiki_test_call_cache_{}", std::process::id()));
+            .join(format!("code_repo_wiki_test_call_cache_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(".state")).unwrap();
         std::fs::write(dir.join(".state/generation_state.json"), "{}").unwrap();
@@ -1942,7 +1942,7 @@ mod tests {
     #[test]
     fn test_call_index_cache_corrupt_is_miss() {
         let dir = std::env::temp_dir()
-            .join(format!("repo_wiki_test_call_cache_corrupt_{}", std::process::id()));
+            .join(format!("code_repo_wiki_test_call_cache_corrupt_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(".state")).unwrap();
         std::fs::write(dir.join(".state/generation_state.json"), "{}").unwrap();

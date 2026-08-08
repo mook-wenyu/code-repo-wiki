@@ -1,6 +1,6 @@
 //! Wiki 产物健康检查（lint）
 //!
-//! 对已生成的 wiki 产物目录做静态检查，供 `repo-wiki lint` 命令与 CI 使用。
+//! 对已生成的 wiki 产物目录做静态检查，供 `code-repo-wiki lint` 命令与 CI 使用。
 //! 对齐 LLM Wiki 最佳实践（Karpathy 的 lint 健康检查、Econowiz 的孤儿页 lint）：
 //!
 //! 1. **孤儿页**：没有任何其他页面链接指向的模块页（无人可达 = 可能过期/重复）
@@ -901,7 +901,7 @@ mod tests {
     /// 且 a 链接不存在的 c.md(断链)
     fn make_fixture(tag: &str) -> (std::path::PathBuf, Vec<PathBuf>) {
         let dir = std::env::temp_dir().join(format!(
-            "repo_wiki_lint_{}_{}",
+            "code_repo_wiki_lint_{}_{}",
             tag,
             std::process::id()
         ));
@@ -979,7 +979,7 @@ mod tests {
     #[test]
     fn test_lint_stale_detects_newer_source() {
         let dir = std::env::temp_dir().join(format!(
-            "repo_wiki_lint_stale_{}",
+            "code_repo_wiki_lint_stale_{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1019,7 +1019,7 @@ mod tests {
     #[test]
     fn test_lint_citation_overlap_survives_dot_slash_source_roots() {
         let dir = std::env::temp_dir().join(format!(
-            "repo_wiki_lint_dotslash_{}",
+            "code_repo_wiki_lint_dotslash_{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1032,7 +1032,7 @@ mod tests {
         // 则 3-3 属越界，会在 overlap 判定前被 bad-citation 拦截）
         std::fs::write(src_root.join("lib.rs"), "pub fn f() {}\npub fn g() {}\n\n").unwrap();
         // 引用写相对项目根（= output_dir.parent()）的路径。注意必须含父
-        // 目录前缀（如 repo_wiki_lint_dotslash_<pid>/src/lib.rs）——若只写
+        // 目录前缀（如 code_repo_wiki_lint_dotslash_<pid>/src/lib.rs）——若只写
         // src/lib.rs，resolve_source_path 的 cwd 相对兜底会命中本仓库自己
         // 的 src/lib.rs（cwd 恰好有同名文件），实体表键恒不命中
         let rel = format!(
@@ -1099,7 +1099,7 @@ mod tests {
 
     #[test]
     fn test_lint_empty_dir() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_lint_empty_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_lint_empty_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("wiki").join("zh")).unwrap();
         let issues = lint(&dir, &[]);
@@ -1110,7 +1110,7 @@ mod tests {
     /// 语言目录缺失时 lint 不 panic
     #[test]
     fn test_lint_no_wiki_dir() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_lint_nodir_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_lint_nodir_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let issues = lint(&dir, &[]);
         assert!(issues.is_empty());
@@ -1120,9 +1120,9 @@ mod tests {
     /// P1-4 引用存在性：产物中的 `path:line` 引用指向不存在的文件 → bad-citation
     #[test]
     fn test_lint_bad_citation_missing_file() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_lint_cite_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_lint_cite_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let out = dir.join(".repo-wiki"); // output_dir 的父目录 = 项目根
+        let out = dir.join(".code-repo-wiki"); // output_dir 的父目录 = 项目根
         let wiki = out.join("wiki").join("zh");
         std::fs::create_dir_all(&wiki).unwrap();
         // 页面引用不存在的文件
@@ -1145,9 +1145,9 @@ mod tests {
     /// P1-4 引用存在性：引用真实存在的文件且行号合法 → 无 bad-citation
     #[test]
     fn test_lint_bad_citation_valid_passes() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_lint_cite_ok_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_lint_cite_ok_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let out = dir.join(".repo-wiki");
+        let out = dir.join(".code-repo-wiki");
         let wiki = out.join("wiki").join("zh");
         std::fs::create_dir_all(&wiki).unwrap();
         std::fs::create_dir_all(dir.join("src")).unwrap();
@@ -1173,9 +1173,9 @@ mod tests {
     /// 无实体文件（README）→ 放行
     #[test]
     fn test_lint_bad_citation_overlap_detects_wrong_location() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_lint_overlap_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_lint_overlap_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let out = dir.join(".repo-wiki");
+        let out = dir.join(".code-repo-wiki");
         let wiki = out.join("wiki").join("zh");
         std::fs::create_dir_all(&wiki).unwrap();
         let src_root = dir.join("src");
@@ -1222,7 +1222,7 @@ mod tests {
     }
     #[test]
     fn test_lint_entity_coverage_detects_fake() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_lint_cov_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_lint_cov_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let wiki = dir.join("wiki").join("zh");
         std::fs::create_dir_all(&wiki).unwrap();
@@ -1253,7 +1253,7 @@ mod tests {
     /// 编造的实体名仍必须报（防幻觉语义不变）
     #[test]
     fn test_lint_entity_coverage_accepts_module_names() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_lint_cov_mod_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_lint_cov_mod_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let wiki = dir.join("wiki").join("zh");
         std::fs::create_dir_all(&wiki).unwrap();
@@ -1355,7 +1355,7 @@ mod tests {
     /// G2：产物中的 mermaid fence 语法错误 → bad-mermaid；合法图不报
     #[test]
     fn test_lint_bad_mermaid_detects_broken_diagram() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_lint_mermaid_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_lint_mermaid_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let wiki = dir.join("wiki").join("zh");
         std::fs::create_dir_all(&wiki).unwrap();
@@ -1384,7 +1384,7 @@ mod tests {
     /// 源码根为空（扫描失败/无源码）时跳过检查，不把"扫描失败"误报成"文档过期"
     #[test]
     fn test_lint_stale_entity_detects_deleted_symbol() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_lint_stale_entity_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_lint_stale_entity_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let wiki = dir.join("wiki").join("zh");
         std::fs::create_dir_all(&wiki).unwrap();
@@ -1422,9 +1422,9 @@ mod tests {
     /// 页面引用 `../x.rs` 即使文件存在也报 bad-citation（越根读取防护）
     #[test]
     fn test_lint_bad_citation_rejects_dotdot() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_lint_dotdot_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_lint_dotdot_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let out = dir.join(".repo-wiki");
+        let out = dir.join(".code-repo-wiki");
         let wiki = out.join("wiki").join("zh");
         std::fs::create_dir_all(&wiki).unwrap();
         // 项目根外确实存在该文件（证明"文件存在但路径越界"场景）
@@ -1453,9 +1453,9 @@ mod tests {
     /// 2cf24dba），防实现自身偏差（自洽计算无法发现"两侧同错"）。
     #[test]
     fn test_lint_vctx_valid_passes() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_lint_vctx_ok_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_lint_vctx_ok_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let out = dir.join(".repo-wiki");
+        let out = dir.join(".code-repo-wiki");
         let wiki = out.join("wiki").join("zh");
         std::fs::create_dir_all(&wiki).unwrap();
         std::fs::create_dir_all(dir.join("src")).unwrap();
@@ -1480,9 +1480,9 @@ mod tests {
     /// 写坏的标记必须可观测）
     #[test]
     fn test_lint_vctx_missing_file_and_malformed() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_lint_vctx_miss_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_lint_vctx_miss_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let out = dir.join(".repo-wiki");
+        let out = dir.join(".code-repo-wiki");
         let wiki = out.join("wiki").join("zh");
         std::fs::create_dir_all(&wiki).unwrap();
         std::fs::write(
@@ -1510,9 +1510,9 @@ mod tests {
     /// v28 t06：行区间越界（end > 文件总行数）→ bad-vctx
     #[test]
     fn test_lint_vctx_range_out_of_bounds() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_lint_vctx_range_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_lint_vctx_range_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let out = dir.join(".repo-wiki");
+        let out = dir.join(".code-repo-wiki");
         let wiki = out.join("wiki").join("zh");
         std::fs::create_dir_all(&wiki).unwrap();
         std::fs::create_dir_all(dir.join("src")).unwrap();
@@ -1534,9 +1534,9 @@ mod tests {
     /// 行号对、内容错也报警，补 bad-citation 结构校验之外的内容维度）
     #[test]
     fn test_lint_vctx_hash_mismatch() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_lint_vctx_hash_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_lint_vctx_hash_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let out = dir.join(".repo-wiki");
+        let out = dir.join(".code-repo-wiki");
         let wiki = out.join("wiki").join("zh");
         std::fs::create_dir_all(&wiki).unwrap();
         std::fs::create_dir_all(dir.join("src")).unwrap();

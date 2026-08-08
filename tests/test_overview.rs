@@ -2,13 +2,13 @@
 
 use std::collections::HashMap;
 
-use repo_wiki::config::schema::{WikiConfig, WikiSection};
-use repo_wiki::generate::llm::MockProvider;
-use repo_wiki::generate::wiki::WikiGenerator;
-use repo_wiki::generate::{GenerationOutput, GenerationStats};
-use repo_wiki::incremental::state::GenerationState;
-use repo_wiki::model::{DocumentKind, KnowledgeGraph, WikiDocument};
-use repo_wiki::output::render_all;
+use code_repo_wiki::config::schema::{WikiConfig, WikiSection};
+use code_repo_wiki::generate::llm::MockProvider;
+use code_repo_wiki::generate::wiki::WikiGenerator;
+use code_repo_wiki::generate::{GenerationOutput, GenerationStats};
+use code_repo_wiki::incremental::state::GenerationState;
+use code_repo_wiki::model::{DocumentKind, KnowledgeGraph, WikiDocument};
+use code_repo_wiki::output::render_all;
 
 fn make_config(dir: &std::path::Path) -> WikiConfig {
     WikiConfig {
@@ -48,8 +48,8 @@ fn generate_overview_doc(config: &WikiConfig) -> WikiDocument {
         timings: Default::default(),
     };
     // 临时根目录（产物输出目录由 config 控制，root 仅用于描述缓存指纹）
-    let root = repo_wiki::project::ProjectRoot::new(
-        std::env::temp_dir().join(format!("repo_wiki_test_overview_root_{}", std::process::id())),
+    let root = code_repo_wiki::project::ProjectRoot::new(
+        std::env::temp_dir().join(format!("code_repo_wiki_test_overview_root_{}", std::process::id())),
     );
     futures::executor::block_on(generator.generate_overview(&output, &graph, config, &root)).unwrap()
 }
@@ -57,7 +57,7 @@ fn generate_overview_doc(config: &WikiConfig) -> WikiDocument {
 /// overview 内容来自 overview prompt（mock LLM 输出）而非第一个模块页
 #[test]
 fn test_overview_independent() {
-    let dir = std::env::temp_dir().join(format!("repo_wiki_test_overview_indep_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_overview_indep_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let config = make_config(&dir);
 
@@ -93,7 +93,7 @@ fn test_overview_independent() {
 /// overview 受 doc_fingerprints 保护：人工修改后 update（带保护集重渲染）不覆盖
 #[test]
 fn test_overview_protected() {
-    let dir = std::env::temp_dir().join(format!("repo_wiki_test_overview_prot_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_overview_prot_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let config = make_config(&dir);
 
@@ -156,9 +156,9 @@ fn test_overview_protected() {
 /// 而写盘是 src_analysis.md,导致真实产物全部断链）
 #[test]
 fn test_overview_module_refs_match_write_path() {
-    use repo_wiki::model::KnowledgeCard;
+    use code_repo_wiki::model::KnowledgeCard;
 
-    let dir = std::env::temp_dir().join(format!("repo_wiki_test_overview_refs_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_overview_refs_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let config = make_config(&dir);
 
@@ -207,8 +207,8 @@ fn test_overview_module_refs_match_write_path() {
         &output,
         &graph,
         &config,
-        &repo_wiki::project::ProjectRoot::new(
-            std::env::temp_dir().join(format!("repo_wiki_test_overview_root2_{}", std::process::id())),
+        &code_repo_wiki::project::ProjectRoot::new(
+            std::env::temp_dir().join(format!("code_repo_wiki_test_overview_root2_{}", std::process::id())),
         ),
     ))
     .unwrap();

@@ -3,11 +3,11 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use repo_wiki::incremental::state::GenerationState;
+use code_repo_wiki::incremental::state::GenerationState;
 
 /// 构造带已落盘产物（wiki/zh/foo.md）的临时输出目录，返回 (目录, 产物路径字符串)
 fn fixture(tag: &str, content: &str) -> (std::path::PathBuf, String) {
-    let dir = std::env::temp_dir().join(format!("repo_wiki_sync_{tag}_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("code_repo_wiki_sync_{tag}_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let path = dir.join("wiki").join("zh").join("foo.md");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -47,7 +47,7 @@ fn test_sync_updates_fingerprint() {
     // 模拟 Git 目录中直接编辑产物
     std::fs::write(&path_str, "人工编辑后的内容").unwrap();
 
-    repo_wiki::commands::sync_from_git(&dir).unwrap();
+    code_repo_wiki::commands::sync_from_git(&dir).unwrap();
 
     let state = load_state(&dir);
     assert_eq!(
@@ -79,7 +79,7 @@ fn test_sync_skips_protected() {
     // 修改受保护页面后 sync
     std::fs::write(&path_str, "人工修改后的受保护内容").unwrap();
 
-    repo_wiki::commands::sync_from_git(&dir).unwrap();
+    code_repo_wiki::commands::sync_from_git(&dir).unwrap();
 
     let state = load_state(&dir);
     assert_eq!(
@@ -96,7 +96,7 @@ fn test_sync_skips_protected() {
 fn test_sync_without_state_records_new_fingerprints() {
     let (dir, path_str) = fixture("fresh", "全新内容");
 
-    repo_wiki::commands::sync_from_git(&dir).unwrap();
+    code_repo_wiki::commands::sync_from_git(&dir).unwrap();
 
     let state = load_state(&dir);
     assert_eq!(
@@ -117,7 +117,7 @@ fn test_sync_corrupted_state_errors_explicitly() {
     std::fs::create_dir_all(&state_dir).unwrap();
     std::fs::write(state_dir.join("generation_state.json"), "{ not valid json !").unwrap();
 
-    let err = repo_wiki::commands::sync_from_git(&dir).unwrap_err();
+    let err = code_repo_wiki::commands::sync_from_git(&dir).unwrap_err();
     assert!(
         err.to_string().contains("状态文件损坏"),
         "损坏状态应显式报错而非静默重置: {}",

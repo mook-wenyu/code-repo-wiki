@@ -23,27 +23,27 @@ fn gamma_scan() {
         eprintln!("gamma_scan: 未设置 GAMMA_REPO，跳过（目标仓库根目录）");
         return;
     };
-    let root = repo_wiki::project::ProjectRoot::new(Path::new(&repo).to_path_buf());
+    let root = code_repo_wiki::project::ProjectRoot::new(Path::new(&repo).to_path_buf());
     // v30+：扫描范围硬编码为全量+内置过滤（支持语言扩展名/噪音目录），
     // Unity 仓库的 .cs 自动覆盖，GAMMA_REPO_SCOPE 环境变量已删除
 
     let start = std::time::Instant::now();
-    let scan = repo_wiki::ingest::scan_and_parse_at(&root).expect("扫描失败");
+    let scan = code_repo_wiki::ingest::scan_and_parse_at(&root).expect("扫描失败");
     eprintln!(
         "扫描完成: {} 文件, {} 个解析失败, 耗时 {:.1}s",
         scan.insights.len(),
         scan.files_failed,
         start.elapsed().as_secs_f32()
     );
-    let graph = repo_wiki::analysis::build_graph(&scan.insights).expect("建图失败");
+    let graph = code_repo_wiki::analysis::build_graph(&scan.insights).expect("建图失败");
 
     // 基线：生产默认 γ=0.5 的当前行为（与 t08 结论对照）
-    let baseline = repo_wiki::analysis::community::detect_communities(&graph);
+    let baseline = code_repo_wiki::analysis::community::detect_communities(&graph);
     eprintln!("基线 γ=0.5（生产默认）: {} 个模块", baseline.len());
 
     for gamma in GAMMAS {
         let t = std::time::Instant::now();
-        let communities = repo_wiki::analysis::community::detect_communities_with_resolution(&graph, gamma);
+        let communities = code_repo_wiki::analysis::community::detect_communities_with_resolution(&graph, gamma);
         let total = communities.len();
         let single_file = communities.iter().filter(|c| c.len() == 1).count();
         let sizes: Vec<usize> = communities.iter().map(|c| c.len()).collect();

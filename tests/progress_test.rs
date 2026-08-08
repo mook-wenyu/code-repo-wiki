@@ -24,7 +24,7 @@ fn test_pipeline_progress_events_monotonic_and_done() {
     copy_dir(&fixture, &work_dir);
 
     // root 显式注入：流水线以 work_dir 为项目根（扫描根 + git 定位），不再依赖 cwd
-    let root = repo_wiki::project::ProjectRoot::new(work_dir.clone());
+    let root = code_repo_wiki::project::ProjectRoot::new(work_dir.clone());
 
     // 本地 mock LLM server：返回固定 JSON 响应，让生成调用成功且零重试延迟
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -53,13 +53,13 @@ fn test_pipeline_progress_events_monotonic_and_done() {
     let config = openai_compatible_config(port);
     std::fs::write(work_dir.join("mock-server.toml"), config).unwrap();
 
-    let events: Mutex<Vec<repo_wiki::ProgressEvent>> = Mutex::new(Vec::new());
-    let result = repo_wiki::run_pipeline_with_progress(
+    let events: Mutex<Vec<code_repo_wiki::ProgressEvent>> = Mutex::new(Vec::new());
+    let result = code_repo_wiki::run_pipeline_with_progress(
         Some(&work_dir.join("mock-server.toml")),
         None,
         true,
         &root,
-        &repo_wiki::GenerationMode::Full,
+        &code_repo_wiki::GenerationMode::Full,
         &|evt| events.lock().unwrap().push(evt),
     );
     assert!(result.is_ok(), "流水线应成功（LLM 失败被容错跳过）: {:?}", result.err());

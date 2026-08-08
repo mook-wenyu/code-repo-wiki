@@ -5,7 +5,7 @@
 
 #[cfg(test)]
 mod tests {
-    use repo_wiki::model::KnowledgeCard;
+    use code_repo_wiki::model::KnowledgeCard;
 
     #[test]
     fn test_knowledge_card_json_schema() {

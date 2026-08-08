@@ -10,7 +10,7 @@
 
 use std::path::Path;
 
-use repo_wiki::config::schema::{
+use code_repo_wiki::config::schema::{
     LlmProviderType, LlmSection, WikiConfig, WikiGuideSection, WikiSection,
 };
 
@@ -43,7 +43,7 @@ pub fn beta() -> &'static str { "beta" }
     )?;
 
     let config = WikiConfig {
-        output_dir: Some((repo.join(".repo-wiki").to_string_lossy().into_owned()).into()),
+        output_dir: Some((repo.join(".code-repo-wiki").to_string_lossy().into_owned()).into()),
         wiki: WikiSection {
             language: "zh".into(),
             guide,
@@ -60,7 +60,7 @@ pub fn beta() -> &'static str { "beta" }
 
 /// 列出现有 wiki 页面文件名集合（wiki/zh/*.md）
 fn list_wiki_pages(repo: &Path) -> Vec<String> {
-    let dir = repo.join(".repo-wiki").join("wiki").join("zh");
+    let dir = repo.join(".code-repo-wiki").join("wiki").join("zh");
     let mut names: Vec<String> = std::fs::read_dir(&dir)
         .map(|entries| {
             entries
@@ -75,13 +75,13 @@ fn list_wiki_pages(repo: &Path) -> Vec<String> {
 }
 
 /// 构造仓库 + 返回 ProjectRoot/config_path（每个测试独立临时目录）
-fn setup(guide: WikiGuideSection) -> (std::path::PathBuf, repo_wiki::project::ProjectRoot, std::path::PathBuf) {
+fn setup(guide: WikiGuideSection) -> (std::path::PathBuf, code_repo_wiki::project::ProjectRoot, std::path::PathBuf) {
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let repo = std::env::temp_dir().join(format!("repo_wiki_guide_{}_{}", std::process::id(), seq));
+    let repo = std::env::temp_dir().join(format!("code_repo_wiki_guide_{}_{}", std::process::id(), seq));
     let _ = std::fs::remove_dir_all(&repo);
     std::fs::create_dir_all(&repo).expect("创建临时仓库失败");
     build_fixture_repo(&repo, guide).expect("构造测试仓库失败");
-    let root = repo_wiki::project::ProjectRoot::new(repo.clone());
+    let root = code_repo_wiki::project::ProjectRoot::new(repo.clone());
     let config_path = repo.join("config.toml");
     (repo, root, config_path)
 }
@@ -96,12 +96,12 @@ fn test_guide_pages_filters_unmatched_modules() {
         notes: vec![],
     };
     let (repo, root, config_path) = setup(guide);
-    let result = repo_wiki::run_pipeline(
+    let result = code_repo_wiki::run_pipeline(
         Some(&config_path),
         None,
         false,
         &root,
-        &repo_wiki::GenerationMode::Full,
+        &code_repo_wiki::GenerationMode::Full,
     )
     .expect("全量生成失败");
 
@@ -141,12 +141,12 @@ fn test_guide_pages_empty_match_errors() {
         notes: vec![],
     };
     let (repo, root, config_path) = setup(guide);
-    let err = repo_wiki::run_pipeline(
+    let err = code_repo_wiki::run_pipeline(
         Some(&config_path),
         None,
         false,
         &root,
-        &repo_wiki::GenerationMode::Full,
+        &code_repo_wiki::GenerationMode::Full,
     )
     .err()
     .expect("空匹配应显式报错（结果应为 Err）");
@@ -168,12 +168,12 @@ fn test_guide_priority_orders_pages() {
         notes: vec![],
     };
     let (repo, root, config_path) = setup(guide);
-    let result = repo_wiki::run_pipeline(
+    let result = code_repo_wiki::run_pipeline(
         Some(&config_path),
         None,
         false,
         &root,
-        &repo_wiki::GenerationMode::Full,
+        &code_repo_wiki::GenerationMode::Full,
     )
     .expect("全量生成失败");
 
@@ -181,7 +181,7 @@ fn test_guide_priority_orders_pages() {
     let module_pages: Vec<Vec<String>> = result
         .documents
         .iter()
-        .filter(|d| d.kind == repo_wiki::model::DocumentKind::WikiPage)
+        .filter(|d| d.kind == code_repo_wiki::model::DocumentKind::WikiPage)
         .map(|d| d.module_path.clone())
         .collect();
     let pos_b = module_pages
@@ -207,12 +207,12 @@ fn test_guide_priority_orders_pages() {
 fn test_guide_pages_keeps_existing_unmatched_pages() {
     // 第一轮：无 guide（现行为基线）
     let (repo, root, config_path) = setup(WikiGuideSection::default());
-    repo_wiki::run_pipeline(
+    code_repo_wiki::run_pipeline(
         Some(&config_path),
         None,
         false,
         &root,
-        &repo_wiki::GenerationMode::Full,
+        &code_repo_wiki::GenerationMode::Full,
     )
     .expect("首轮全量生成失败");
     assert!(
@@ -222,7 +222,7 @@ fn test_guide_pages_keeps_existing_unmatched_pages() {
 
     // 第二轮：带 pages 白名单（只生成 src/a）——src_b.md 应保留
     let config2 = WikiConfig {
-        output_dir: Some((repo.join(".repo-wiki").to_string_lossy().into_owned()).into()),
+        output_dir: Some((repo.join(".code-repo-wiki").to_string_lossy().into_owned()).into()),
         wiki: WikiSection {
             language: "zh".into(),
             guide: WikiGuideSection {
@@ -239,12 +239,12 @@ fn test_guide_pages_keeps_existing_unmatched_pages() {
     };
     std::fs::write(repo.join("config2.toml"), toml::to_string_pretty(&config2).expect("序列化 config2 失败"))
         .expect("写 config2 失败");
-    repo_wiki::run_pipeline(
+    code_repo_wiki::run_pipeline(
         Some(&repo.join("config2.toml")),
         None,
         false,
         &root,
-        &repo_wiki::GenerationMode::Full,
+        &code_repo_wiki::GenerationMode::Full,
     )
     .expect("二轮全量生成失败");
 
@@ -268,12 +268,12 @@ fn test_guide_incremental_skips_unmatched_without_error() {
         notes: vec![],
     };
     let (repo, root, config_path) = setup(guide);
-    repo_wiki::run_pipeline(
+    code_repo_wiki::run_pipeline(
         Some(&config_path),
         None,
         false,
         &root,
-        &repo_wiki::GenerationMode::Full,
+        &code_repo_wiki::GenerationMode::Full,
     )
     .expect("全量生成失败");
 
@@ -287,12 +287,12 @@ pub fn beta() -> &'static str { "beta2" }
     )
     .expect("修改 b/mod.rs 失败");
 
-    let inc = repo_wiki::run_pipeline(
+    let inc = code_repo_wiki::run_pipeline(
         Some(&config_path),
         None,
         false,
         &root,
-        &repo_wiki::GenerationMode::Incremental {
+        &code_repo_wiki::GenerationMode::Incremental {
             watch_paths: vec![repo.join("src").join("b").join("mod.rs")],
             change_kind: None,
         },

@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use repo_wiki::config::{load_config, schema};
+use code_repo_wiki::config::{load_config, schema};
 
 const TEMPLATE: &str = include_str!("../config.toml");
 
@@ -33,7 +33,7 @@ fn test_template_no_dead_keys() {
 /// 模板经 load_config 必须能完整加载（含默认值填充与校验通过）
 #[test]
 fn test_template_loads_cleanly() {
-    let dir = std::env::temp_dir().join(format!("repo-wiki-template-test-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("code-repo-wiki-template-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path: PathBuf = dir.join("config.toml");
     std::fs::write(&path, TEMPLATE).unwrap();

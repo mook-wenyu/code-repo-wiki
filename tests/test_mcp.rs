@@ -1,6 +1,6 @@
 //! MCP server 冒烟测试（P1-3）：stdio 双通道进程级验证
 //!
-//! 启动真实 `repo-wiki mcp` 子进程，用 tokio 双工通道模拟 MCP 客户端，
+//! 启动真实 `code-repo-wiki mcp` 子进程，用 tokio 双工通道模拟 MCP 客户端，
 //! 走完整 JSON-RPC 协议：initialize 握手 → tools/list → tools/call。
 //! 验证 5 个工具全部注册、search 工具能返回 mock 索引结果、status 工具
 //! 能读取配置状态。
@@ -13,9 +13,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 mod common;
 use common::{mock_config, unique_dir};
 
-/// 启动 repo-wiki mcp 子进程，返回子进程句柄
+/// 启动 code-repo-wiki mcp 子进程，返回子进程句柄
 fn spawn_mcp(dir: &Path) -> tokio::process::Child {
-    tokio::process::Command::new(env!("CARGO_BIN_EXE_repo-wiki"))
+    tokio::process::Command::new(env!("CARGO_BIN_EXE_code-repo-wiki"))
         .args(["mcp", "--config", "mcp-test.toml", "--root", "."])
         .current_dir(dir)
         .env("RUST_LOG", "off")
@@ -25,7 +25,7 @@ fn spawn_mcp(dir: &Path) -> tokio::process::Child {
         .stderr(Stdio::null())
         .kill_on_drop(true)
         .spawn()
-        .expect("启动 repo-wiki mcp 失败")
+        .expect("启动 code-repo-wiki mcp 失败")
 }
 
 /// JSON-RPC 请求：向子进程写请求并读取单行响应
@@ -70,7 +70,7 @@ async fn rpc_call(stdin: &mut tokio::process::ChildStdin, stdout: &mut tokio::pr
 async fn test_mcp_initialize_lists_tools_and_calls() {
     let dir = unique_dir("server");
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(dir.join(".repo-wiki")).unwrap();
+    std::fs::create_dir_all(dir.join(".code-repo-wiki")).unwrap();
     let config = mock_config();
     std::fs::write(dir.join("mcp-test.toml"), &config).unwrap();
     // 建一个源文件供 search/ast_search 扫描
@@ -147,7 +147,7 @@ async fn test_mcp_initialize_lists_tools_and_calls() {
     )
     .await;
     let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
-    assert!(text.contains("repo-wiki generate"), "未生成时应有引导提示: {text}");
+    assert!(text.contains("code-repo-wiki generate"), "未生成时应有引导提示: {text}");
 
     // 7. tools/call search：索引不存在时给出可读错误（不崩溃）
     let resp = rpc_call(
@@ -175,7 +175,7 @@ async fn test_mcp_initialize_lists_tools_and_calls() {
 async fn test_mcp_lang_traversal_rejected() {
     let dir = unique_dir("traversal");
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(dir.join(".repo-wiki")).unwrap();
+    std::fs::create_dir_all(dir.join(".code-repo-wiki")).unwrap();
     let config = mock_config();
     std::fs::write(dir.join("mcp-test.toml"), &config).unwrap();
     std::fs::create_dir_all(dir.join("src")).unwrap();
@@ -184,9 +184,9 @@ async fn test_mcp_lang_traversal_rejected() {
     let secret = dir.parent().unwrap().join(format!("secret_{}.md", std::process::id()));
     std::fs::write(&secret, "SECRET-CONTENT").unwrap();
     // 合法产物：wiki/zh/architecture.md（穿越被拒后，合法 lang 应正常读取）
-    std::fs::create_dir_all(dir.join(".repo-wiki").join("wiki").join("zh")).unwrap();
+    std::fs::create_dir_all(dir.join(".code-repo-wiki").join("wiki").join("zh")).unwrap();
     std::fs::write(
-        dir.join(".repo-wiki").join("wiki").join("zh").join("architecture.md"),
+        dir.join(".code-repo-wiki").join("wiki").join("zh").join("architecture.md"),
         "ok-content",
     )
     .unwrap();

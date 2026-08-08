@@ -380,7 +380,7 @@ mod tests {
     fn test_dotdot_paths_rejected_in_validate() {
         // .. 段可逃逸项目根（../src/x.rs）或跳过目录层级（src/../lib.rs）：
         // 提取层保持完整路径不剔除，校验层一律拒绝，即使目标文件真实存在
-        let dir = std::env::temp_dir().join(format!("repo_wiki_dotdot_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_dotdot_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(dir.join("lib.rs"), "line1\n").unwrap();
@@ -402,7 +402,7 @@ mod tests {
 
     #[test]
     fn test_validate_ok_and_missing() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_cite_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_cite_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(dir.join("src").join("a.rs"), "line1\nline2\nline3\n").unwrap();
@@ -505,7 +505,7 @@ mod tests {
     /// 引用区间不覆盖任何实体 = 新捕获的缺陷类（行号对但内容错）
     #[test]
     fn test_validate_against_entities_overlap() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_cite_ovl_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_cite_ovl_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).unwrap();
         // 10 行文件：实体区间 (2,4) 与 (7,9)（如 fn a 在 2-4 行、fn b 在 7-9 行）

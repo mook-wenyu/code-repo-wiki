@@ -139,7 +139,7 @@ fn module_files_fingerprint(
         .map(|f| {
             // 指纹基准=项目根（与 incremental::state 的 file_fingerprints 同源：
             // state.rs 以 root.path().join(insight.path) 记录源文件指纹）——
-            // 源文件在根下，产物在根/.repo-wiki 下，二者必须区分
+            // 源文件在根下，产物在根/.code-repo-wiki 下，二者必须区分
             crate::incremental::state::GenerationState::compute_file_fingerprint(
                 &root.path().join(f),
             )
@@ -1049,7 +1049,7 @@ mod tests {
     #[tokio::test]
     async fn test_wiki_page_retries_on_invalid_citation() {
         // 临时目录放一个真实文件 src/server.rs（3 行），使有效引用通过校验
-        let dir = std::env::temp_dir().join(format!("repo_wiki_test_cite_retry_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_cite_retry_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let src = dir.join("src");
         std::fs::create_dir_all(&src).unwrap();
@@ -1075,7 +1075,7 @@ mod tests {
     /// 引用契约重试耗尽：超过 CITATION_RETRY_MAX 仍无效 → 报错
     #[tokio::test]
     async fn test_wiki_page_bails_when_citations_never_valid() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_test_cite_fail_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_cite_fail_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let root = crate::project::ProjectRoot::new(dir.clone());
 
@@ -1105,7 +1105,7 @@ mod tests {
     /// 引用契约放行：无引用的输出直接通过（契约只惩罚编造引用，不强制必须有）
     #[tokio::test]
     async fn test_wiki_page_without_citations_passes() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_test_cite_ok_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_cite_ok_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let root = crate::project::ProjectRoot::new(dir.clone());
 
@@ -1124,7 +1124,7 @@ mod tests {
     /// G2 Mermaid 契约重试：坏图 → 重试注入错误反馈 → 第二次输出好图则成功
     #[tokio::test]
     async fn test_wiki_page_retries_on_bad_mermaid() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_test_mermaid_retry_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_mermaid_retry_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let root = crate::project::ProjectRoot::new(dir.clone());
 
@@ -1148,7 +1148,7 @@ mod tests {
     /// （行号对但内容错）→ 校验失败 → 重试反馈注入 → 修正后成功
     #[tokio::test]
     async fn test_wiki_page_retries_on_overlap_citation() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_test_cite_overlap_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_cite_overlap_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let src = dir.join("src");
         std::fs::create_dir_all(&src).unwrap();
@@ -1188,7 +1188,7 @@ mod tests {
     /// 与文件级引用校验同一失败语义，Mermaid 才是唯一降级路径）
     #[tokio::test]
     async fn test_wiki_page_bails_when_overlap_never_valid() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_test_cite_overlap_fail_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_cite_overlap_fail_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let src = dir.join("src");
         std::fs::create_dir_all(&src).unwrap();
@@ -1224,7 +1224,7 @@ mod tests {
     /// 校验只对有实体的文件生效（引用配置/说明文件是合法行为）
     #[tokio::test]
     async fn test_wiki_page_passes_non_code_file_citation() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_test_cite_noncode_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_cite_noncode_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("README.md"), "docs\n").unwrap();
@@ -1254,7 +1254,7 @@ mod tests {
     /// （坏块替换为 text fence + 标记注释，页面照常产出）
     #[tokio::test]
     async fn test_wiki_page_degrades_when_mermaid_never_valid() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_test_mermaid_degrade_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_mermaid_degrade_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let root = crate::project::ProjectRoot::new(dir.clone());
 
@@ -1271,7 +1271,7 @@ mod tests {
         let doc = generator.generate_wiki_page(&chunk, "摘要", &config, &root, None).await.unwrap();
         assert!(!doc.content.contains("```mermaid"), "坏图不应再以 mermaid 块出现");
         assert!(doc.content.contains("```text"), "坏块应降级为 text fence");
-        assert!(doc.content.contains("repo-wiki: mermaid parse failed"), "应含降级标记注释");
+        assert!(doc.content.contains("code-repo-wiki: mermaid parse failed"), "应含降级标记注释");
         assert_eq!(
             provider.calls.load(std::sync::atomic::Ordering::Relaxed),
             MERMAID_RETRY_MAX + 1,
@@ -1308,7 +1308,7 @@ mod tests {
             .await
             .unwrap();
         assert!(!doc.content.contains("```mermaid"), "坏图不应再以 mermaid 块出现");
-        assert!(doc.content.contains("repo-wiki: mermaid parse failed"), "应含降级标记注释");
+        assert!(doc.content.contains("code-repo-wiki: mermaid parse failed"), "应含降级标记注释");
         let _ = std::fs::remove_dir_all(root.path());
     }
 
@@ -1526,9 +1526,9 @@ mod tests {
         };
         let provider = MockProvider::new();
         let generator = WikiGenerator::new(&provider, 0);
-        // 真实布局：root=dir（源文件在 root/src/ 下），产物在 root/.repo-wiki 下
+        // 真实布局：root=dir（源文件在 root/src/ 下），产物在 root/.code-repo-wiki 下
         let config = crate::config::schema::WikiConfig {
-            output_dir: Some(dir.join(".repo-wiki")),
+            output_dir: Some(dir.join(".code-repo-wiki")),
             ..Default::default()
         };
         let root = crate::project::ProjectRoot::new(dir.clone());
@@ -1554,9 +1554,9 @@ mod tests {
 
         let dir = std::env::temp_dir().join(format!("rw_desc_cache_corrupt_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join(".repo-wiki/.state")).unwrap();
+        std::fs::create_dir_all(dir.join(".code-repo-wiki/.state")).unwrap();
         // 写入损坏的缓存文件（非法 JSON）
-        std::fs::write(dir.join(".repo-wiki/.state/module_descriptions.json"), "{not-json").unwrap();
+        std::fs::write(dir.join(".code-repo-wiki/.state/module_descriptions.json"), "{not-json").unwrap();
 
         let mut g = StableDiGraph::<CodeNode, CodeEdge>::new();
         g.add_node(CodeNode {
@@ -1584,7 +1584,7 @@ mod tests {
         let provider = MockProvider::new();
         let generator = WikiGenerator::new(&provider, 0);
         let config = crate::config::schema::WikiConfig {
-            output_dir: Some(dir.join(".repo-wiki")),
+            output_dir: Some(dir.join(".code-repo-wiki")),
             ..Default::default()
         };
         let root = crate::project::ProjectRoot::new(dir.clone());

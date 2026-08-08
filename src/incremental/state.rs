@@ -1,5 +1,5 @@
 //! 生成状态持久化（单进程契约：本文件与 generation_state.json 无文件锁，
-//! 同一输出目录并发运行 repo-wiki 不被支持，最后写入者胜——见 README 限制项）
+//! 同一输出目录并发运行 code-repo-wiki 不被支持，最后写入者胜——见 README 限制项）
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
@@ -327,7 +327,7 @@ mod tests {
 
     #[test]
     fn test_state_save_load_roundtrip() {
-        let dir = std::env::temp_dir().join("repo-wiki-test-state");
+        let dir = std::env::temp_dir().join("code-repo-wiki-test-state");
         let _ = std::fs::remove_dir_all(&dir);
 
         let state = GenerationState {
@@ -364,7 +364,7 @@ mod tests {
 
     #[test]
     fn test_is_file_changed() {
-        let dir = std::env::temp_dir().join("repo-wiki-test-fingerprint");
+        let dir = std::env::temp_dir().join("code-repo-wiki-test-fingerprint");
         let _ = std::fs::create_dir_all(&dir);
         let file_path = dir.join("test.txt");
         std::fs::write(&file_path, "hello").unwrap();
@@ -420,7 +420,7 @@ mod tests {
     #[test]
     fn test_record_doc_fingerprints_includes_cards() {
         let dir = std::env::temp_dir()
-            .join(format!("repo_wiki_test_card_fp_{}", std::process::id()));
+            .join(format!("code_repo_wiki_test_card_fp_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
         // 预写 wiki 页与卡片（路径与 render_all 落盘一致）
@@ -571,7 +571,7 @@ mod tests {
     #[test]
     fn test_save_is_byte_deterministic() {
         let dir = std::env::temp_dir()
-            .join(format!("repo_wiki_test_state_deterministic_{}", std::process::id()));
+            .join(format!("code_repo_wiki_test_state_deterministic_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
         // 故意乱序插入，且键序跨越不同前缀，确保排序逻辑真正生效
@@ -627,7 +627,7 @@ mod tests {
         use std::os::windows::fs::OpenOptionsExt;
 
         let dir = std::env::temp_dir()
-            .join(format!("repo_wiki_test_detect_readfail_{}", std::process::id()));
+            .join(format!("code_repo_wiki_test_detect_readfail_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let locked = dir.join("locked.md");
@@ -668,7 +668,7 @@ mod tests {
     #[test]
     fn test_detect_manually_modified_regular_branches() {
         let dir = std::env::temp_dir()
-            .join(format!("repo_wiki_test_detect_regular_{}", std::process::id()));
+            .join(format!("code_repo_wiki_test_detect_regular_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 

@@ -8,7 +8,7 @@ use std::path::Path;
 
 use std::time::Instant;
 
-use repo_wiki::ingest::parser::FileInsight;
+use code_repo_wiki::ingest::parser::FileInsight;
 
 /// 在临时目录构造 200 文件仓库（rust/python/js/go 各 50）并解析
 ///
@@ -39,7 +39,7 @@ fn build_bench_repo(dir: &Path) -> Vec<FileInsight> {
         };
         std::fs::write(sub.join(name), content).unwrap();
     }
-    repo_wiki::ingest::scan_and_parse_at(&repo_wiki::project::ProjectRoot::new(dir.to_path_buf())).unwrap().insights
+    code_repo_wiki::ingest::scan_and_parse_at(&code_repo_wiki::project::ProjectRoot::new(dir.to_path_buf())).unwrap().insights
 }
 
 /// 500 条索引下 BM25 搜索平均耗时
@@ -54,11 +54,11 @@ fn bench_text_search() {
     let _ = std::fs::remove_file(&text_path);
 
     // 构建 500 条索引
-    let mut engine = repo_wiki::search::text::TextEngine::open(&text_path).unwrap().0;
+    let mut engine = code_repo_wiki::search::text::TextEngine::open(&text_path).unwrap().0;
     for i in 0..500 {
-        let node = repo_wiki::model::CodeNode {
-            id: repo_wiki::model::NodeId::new(i),
-            kind: repo_wiki::model::NodeKind::Function,
+        let node = code_repo_wiki::model::CodeNode {
+            id: code_repo_wiki::model::NodeId::new(i),
+            kind: code_repo_wiki::model::NodeKind::Function,
             name: format!("test_fn_{}", i),
             file_path: Some("src/lib.rs".into()),
             line_range: Some((i * 5, i * 5 + 10)),
@@ -86,16 +86,16 @@ fn bench_text_search() {
 /// chunk_by_module 分组性能
 #[test]
 fn bench_chunking() {
-    use repo_wiki::generate::chunk::Chunk;
+    use code_repo_wiki::generate::chunk::Chunk;
 
-    let graph = repo_wiki::model::KnowledgeGraph::default();
+    let graph = code_repo_wiki::model::KnowledgeGraph::default();
     let insights = vec![];
-    let _chunks: Vec<Chunk> = repo_wiki::generate::chunk::chunk_by_module(&insights, &graph.modules, &graph);
+    let _chunks: Vec<Chunk> = code_repo_wiki::generate::chunk::chunk_by_module(&insights, &graph.modules, &graph);
 
     let start = Instant::now();
     let iterations = 1000;
     for _ in 0..iterations {
-        let _chunks: Vec<Chunk> = repo_wiki::generate::chunk::chunk_by_module(&insights, &graph.modules, &graph);
+        let _chunks: Vec<Chunk> = code_repo_wiki::generate::chunk::chunk_by_module(&insights, &graph.modules, &graph);
     }
     let avg = start.elapsed() / iterations;
     eprintln!("bench_chunking: {iterations} runs, avg {avg:?} per run (empty graph)");
@@ -138,8 +138,8 @@ fn bench_graph_build() {
     let insights = build_bench_repo(&dir);
 
     let start = Instant::now();
-    let graph = repo_wiki::analysis::build_graph(&insights).unwrap();
-    let modules = repo_wiki::analysis::detect_modules(&graph).unwrap();
+    let graph = code_repo_wiki::analysis::build_graph(&insights).unwrap();
+    let modules = code_repo_wiki::analysis::detect_modules(&graph).unwrap();
     let elapsed = start.elapsed();
 
     // 200 个同构文件可能聚出任意数量模块，只断言图构建成功
@@ -158,13 +158,13 @@ fn bench_index_batch() {
 
     let text_path = std::env::temp_dir().join(format!("bench_index_{}.db", std::process::id()));
     let _ = std::fs::remove_file(&text_path);
-    let mut engine = repo_wiki::search::text::TextEngine::open(&text_path).unwrap().0;
+    let mut engine = code_repo_wiki::search::text::TextEngine::open(&text_path).unwrap().0;
 
-    let items: Vec<(repo_wiki::model::CodeNode, String)> = (0..1000)
+    let items: Vec<(code_repo_wiki::model::CodeNode, String)> = (0..1000)
         .map(|i| {
-            let node = repo_wiki::model::CodeNode {
-                id: repo_wiki::model::NodeId::new(i),
-                kind: repo_wiki::model::NodeKind::Function,
+            let node = code_repo_wiki::model::CodeNode {
+                id: code_repo_wiki::model::NodeId::new(i),
+                kind: code_repo_wiki::model::NodeKind::Function,
                 name: format!("bench_fn_{}", i),
                 file_path: Some("src/lib.rs".into()),
                 line_range: Some((i * 5, i * 5 + 10)),
@@ -232,7 +232,7 @@ fn bench_clustering_detection() {
         }
     }
 
-    let insights = repo_wiki::ingest::scan_and_parse_at(&repo_wiki::project::ProjectRoot::new(dir.clone())).unwrap().insights;
+    let insights = code_repo_wiki::ingest::scan_and_parse_at(&code_repo_wiki::project::ProjectRoot::new(dir.clone())).unwrap().insights;
     eprintln!(
         "debug: insights={} first_entities={:?} first_source={:?}",
         insights.len(),
@@ -244,7 +244,7 @@ fn bench_clustering_detection() {
 
     // 图构建 + 模块检测
     let start = Instant::now();
-    let graph = repo_wiki::analysis::build_graph(&insights).unwrap();
+    let graph = code_repo_wiki::analysis::build_graph(&insights).unwrap();
     let call_edges = {
         use petgraph::visit::{EdgeRef, IntoEdgeReferences};
         graph
@@ -254,7 +254,7 @@ fn bench_clustering_detection() {
                 graph
                     .graph
                     .edge_weight(e.id())
-                    .map(|w| w.kind == repo_wiki::model::EdgeKind::Calls)
+                    .map(|w| w.kind == code_repo_wiki::model::EdgeKind::Calls)
                     .unwrap_or(false)
             })
             .count()
@@ -266,7 +266,7 @@ fn bench_clustering_detection() {
         call_edges,
         graph.modules.len()
     );
-    let modules = repo_wiki::analysis::detect_modules(&graph).unwrap();
+    let modules = code_repo_wiki::analysis::detect_modules(&graph).unwrap();
     let detect_ms = start.elapsed().as_millis();
 
     // 正确性：20 簇跨簇边仅 20 条（弱连接），社区检测应还原接近 20 个模块；
@@ -283,7 +283,7 @@ fn bench_clustering_detection() {
 
     // 特征聚类（纯结构，无 embedding）
     let start = Instant::now();
-    let features = repo_wiki::analysis::feature::detect_features(&graph, None).unwrap();
+    let features = code_repo_wiki::analysis::feature::detect_features(&graph, None).unwrap();
     let feature_ms = start.elapsed().as_millis();
     // 每个跨簇调用边对应一个特征（至少 20 条跨簇调用应产生特征）
     assert!(

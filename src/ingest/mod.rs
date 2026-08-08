@@ -43,7 +43,7 @@ pub fn scan_and_parse_cached_at(
     // 扫描产出绝对路径；转换为相对扫描根的路径——
     // 模块名派生（graph/chunk 的 Normal 组件提取）、搜索索引、指纹记录
     // 全部以相对路径为基准，杜绝绝对路径污染模块名（此前产出
-    // RustProjects_repo-wiki_src 这类含机器路径的模块名）。
+    // RustProjects_code-repo-wiki_src 这类含机器路径的模块名）。
     let files = scanner
         .scan()?
         .into_iter()
@@ -188,7 +188,7 @@ mod tests {
 
     /// 构造临时项目根：src/a.rs + src/b.rs
     fn temp_project(tag: &str) -> ProjectRoot {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_cache_{}_{}", tag, std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_cache_{}_{}", tag, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(dir.join("src").join("a.rs"), "pub fn alpha() {}\n").unwrap();
@@ -284,7 +284,7 @@ mod tests {
     /// files_failed 应准确计数（此前失败仅日志可见，统计无法反映）
     #[test]
     fn test_scan_counts_failed_files() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_failed_cnt_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_failed_cnt_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).unwrap();
         // 正常文件

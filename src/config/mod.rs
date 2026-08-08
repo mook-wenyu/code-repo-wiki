@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use crate::project::ProjectRoot;
 
 /// 项目级配置文件（v25 拍板：项目根 `config.toml`，字段级合并覆盖
-/// 用户级配置；v24 的 `.repo-wiki.toml` 与 v25 用户级默认文件更名，旧名不再读取）
+/// 用户级配置；v24 的 `.code-repo-wiki.toml` 与 v25 用户级默认文件更名，旧名不再读取）
 pub const PROJECT_CONFIG_FILE: &str = "config.toml";
 
 /// 用户级全局配置文件（v25 拍板：`config.toml`，与内置模板
@@ -26,7 +26,7 @@ pub fn load_config(path: &Path) -> Result<schema::WikiConfig> {
         // t05（v21）：显式 --config 缺失时给出一键引导——裸报"文件不存在"
         // 会让外部 Agent 无从下手；init 命令是创建默认配置的官方入口。
         anyhow::bail!(
-            "配置文件不存在: {}（可运行 `repo-wiki install` 确保用户级默认配置，或使用 --config 显式指定）",
+            "配置文件不存在: {}（可运行 `code-repo-wiki install` 确保用户级默认配置，或使用 --config 显式指定）",
             path.display()
         );
     }
@@ -51,19 +51,19 @@ pub fn create_default_config(path: &Path) -> Result<schema::WikiConfig> {
 /// 全局（用户级）配置目录的纯路径组装（可测试，不读环境变量）
 ///
 /// 平台语义（用户拍板，v13 E 组）：
-/// - Windows：`%APPDATA%/repo-wiki`（Roaming AppData 是 Windows 用户级
+/// - Windows：`%APPDATA%/code-repo-wiki`（Roaming AppData 是 Windows 用户级
 ///   应用数据的标准位置，随用户漫游）
-/// - 其他平台：`$HOME/repo-wiki`（无 XDG 前缀，用户指定）
-/// - APPDATA 缺失（非常见环境）时退化 `$HOME/repo-wiki`；
+/// - 其他平台：`$HOME/code-repo-wiki`（无 XDG 前缀，用户指定）
+/// - APPDATA 缺失（非常见环境）时退化 `$HOME/code-repo-wiki`；
 ///   APPDATA 与 HOME 都缺失时返回 Err——无法确定用户级目录时显式报错，
 ///   不静默写当前目录（写错位置比报错更隐蔽）。
 pub fn global_config_dir_from(appdata: Option<&Path>, home: Option<&Path>) -> Result<PathBuf> {
     match appdata {
-        Some(p) if !p.as_os_str().is_empty() => Ok(p.join("repo-wiki")),
+        Some(p) if !p.as_os_str().is_empty() => Ok(p.join("code-repo-wiki")),
         _ => home
             .filter(|h| !h.as_os_str().is_empty())
             .ok_or_else(|| anyhow::anyhow!("无法确定用户级配置目录（APPDATA 与 HOME 均未设置）"))
-            .map(|h| h.join("repo-wiki")),
+            .map(|h| h.join("code-repo-wiki")),
     }
 }
 
@@ -245,19 +245,19 @@ mod tests {
 
     // ============ E 组：全局配置链 ============
 
-    /// 全局目录路径组装：APPDATA 提供时拼 %APPDATA%/repo-wiki
+    /// 全局目录路径组装：APPDATA 提供时拼 %APPDATA%/code-repo-wiki
     #[test]
     fn test_global_config_dir_from_appdata() {
         let dir = global_config_dir_from(Some(Path::new("C:/Users/wenyu/AppData/Roaming")), Some(Path::new("C:/Users/wenyu")))
             .unwrap();
-        assert_eq!(dir, PathBuf::from("C:/Users/wenyu/AppData/Roaming/repo-wiki"));
+        assert_eq!(dir, PathBuf::from("C:/Users/wenyu/AppData/Roaming/code-repo-wiki"));
     }
 
-    /// 全局目录路径组装：APPDATA 缺失（非 Windows）时退化 $HOME/repo-wiki
+    /// 全局目录路径组装：APPDATA 缺失（非 Windows）时退化 $HOME/code-repo-wiki
     #[test]
     fn test_global_config_dir_from_home_fallback() {
         let dir = global_config_dir_from(None, Some(Path::new("/home/wenyu"))).unwrap();
-        assert_eq!(dir, PathBuf::from("/home/wenyu/repo-wiki"));
+        assert_eq!(dir, PathBuf::from("/home/wenyu/code-repo-wiki"));
     }
 
     /// APPDATA 与 HOME 都缺失：显式报错（不静默写当前目录）
@@ -271,7 +271,7 @@ mod tests {
     /// 独立文件 `config.toml`，不再混入产物目录）
     #[test]
     fn test_resolve_prefers_project_config() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_e_project_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_e_project_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(PROJECT_CONFIG_FILE), "dummy").unwrap();
@@ -290,7 +290,7 @@ mod tests {
     /// v30：项目级 llm/embed 键（base_url/api_key_env）完整覆盖用户级值
     #[test]
     fn test_load_default_config_project_overrides_user() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_merge_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_merge_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -329,7 +329,7 @@ model = "claude-test"
     /// 用户级缺失时创建（模板），绝不自动创建项目级文件。
     #[test]
     fn test_load_default_config_user_only_or_creates() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_useronly_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_useronly_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -362,7 +362,7 @@ model = "claude-test"
     /// 配置即写即用）；缺失字段由 schema serde 默认兜底
     #[test]
     fn test_load_project_config_keeps_sensitive_keys() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_projcfg_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_projcfg_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(PROJECT_CONFIG_FILE);
@@ -399,7 +399,7 @@ api_key_env = "HACKED_KEY"
     /// base_url/api_key_env 等字段仍可加载（使用默认可用阵营）
     #[test]
     fn test_load_project_config_defaults_for_missing_keys() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_projcfg_defaults_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_projcfg_defaults_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(PROJECT_CONFIG_FILE);
@@ -426,7 +426,7 @@ provider = "mock"
     /// 文件名不再有语义差异）；缺失字段同样由 schema serde 默认兜底
     #[test]
     fn test_load_explicit_config_keeps_sensitive_keys() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_anyname_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_anyname_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("my.toml");
@@ -450,7 +450,7 @@ api_key_env = "ANTHROPIC_API_KEY"
     }
     #[test]
     fn test_resolve_falls_back_to_global() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_e_global_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_e_global_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let global_dir = dir.join("global");
@@ -466,7 +466,7 @@ api_key_env = "ANTHROPIC_API_KEY"
     /// E 组搜索链：项目级与全局都缺失 → 创建全局目录 + 默认配置，返回全局路径
     #[test]
     fn test_resolve_creates_global_config_when_missing() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_e_create_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_e_create_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let global_dir = dir.join("global");
@@ -487,7 +487,7 @@ api_key_env = "ANTHROPIC_API_KEY"
     /// resolve_config_path：显式指定原样返回（不触发创建）
     #[test]
     fn test_resolve_config_path_explicit_wins() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_e_explicit_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_e_explicit_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 

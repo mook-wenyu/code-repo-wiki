@@ -40,7 +40,7 @@ fn is_noise_dir(name: &str) -> bool {
 
 /// 文件系统遍历器：全量遍历 + 内置过滤（v30+：无 include/exclude 配置，
 /// 扫描范围由「可解析语言 + 噪音目录 + 二进制 + 文件数上限」四个内置边界决定——
-/// 不同项目目录结构不同，路径模式无法通用，语言才是 repo-wiki 的能力边界）
+/// 不同项目目录结构不同，路径模式无法通用，语言才是 code-repo-wiki 的能力边界）
 pub struct Scanner {
     root: PathBuf,
 }
@@ -124,7 +124,7 @@ mod tests {
 
     fn scratch(_name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "repo_wiki_test_scanner_{}_{}",
+            "code_repo_wiki_test_scanner_{}_{}",
             std::process::id(),
             DIR_SEQ.fetch_add(1, Ordering::SeqCst)
         ));

@@ -5,10 +5,10 @@
 
 use std::path::Path;
 
-use repo_wiki::config::schema::WikiConfig;
-use repo_wiki::ingest::parser::ParserRegistry;
-use repo_wiki::ingest::scanner::Scanner;
-use repo_wiki::search::text::TextEngine;
+use code_repo_wiki::config::schema::WikiConfig;
+use code_repo_wiki::ingest::parser::ParserRegistry;
+use code_repo_wiki::ingest::scanner::Scanner;
+use code_repo_wiki::search::text::TextEngine;
 
 /// fixture 仓库的 src 目录路径
 fn fixture_src() -> std::path::PathBuf {
@@ -20,7 +20,7 @@ fn fixture_src() -> std::path::PathBuf {
 }
 
 /// 扫描并解析 fixture 仓库，返回 FileInsight 列表
-fn scan_fixture() -> Vec<repo_wiki::ingest::parser::FileInsight> {
+fn scan_fixture() -> Vec<code_repo_wiki::ingest::parser::FileInsight> {
     let root = fixture_src();
     let scanner = Scanner::new(&root);
     let files = scanner.scan().expect("扫描 fixture 目录失败");
@@ -70,7 +70,7 @@ fn test_scan_and_parse_fixture() {
 #[test]
 fn test_build_graph_fixture() {
     let insights = scan_fixture();
-    let graph = repo_wiki::analysis::build_graph(&insights).expect("构建图失败");
+    let graph = code_repo_wiki::analysis::build_graph(&insights).expect("构建图失败");
 
     // 图应包含节点（文件节点 + 实体节点）
     assert!(
@@ -90,24 +90,24 @@ fn test_build_graph_fixture() {
 #[test]
 fn test_search_index_build_and_query() {
     let insights = scan_fixture();
-    let graph = repo_wiki::analysis::build_graph(&insights).expect("构建图失败");
+    let graph = code_repo_wiki::analysis::build_graph(&insights).expect("构建图失败");
 
     // 在临时目录中构建索引
-    let tmp_dir = std::env::temp_dir().join(format!("repo_wiki_test_{}", std::process::id()));
+    let tmp_dir = std::env::temp_dir().join(format!("code_repo_wiki_test_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp_dir);
     std::fs::create_dir_all(&tmp_dir).expect("创建临时目录失败");
     let index_path = tmp_dir.join("text_index.bin");
 
-    let items: Vec<(repo_wiki::model::CodeNode, String)> = graph
+    let items: Vec<(code_repo_wiki::model::CodeNode, String)> = graph
         .graph
         .node_indices()
         .filter_map(|idx| {
             let node = graph.graph.node_weight(idx)?;
             if matches!(
                 node.kind,
-                repo_wiki::model::NodeKind::Project
-                    | repo_wiki::model::NodeKind::Module
-                    | repo_wiki::model::NodeKind::File
+                code_repo_wiki::model::NodeKind::Project
+                    | code_repo_wiki::model::NodeKind::Module
+                    | code_repo_wiki::model::NodeKind::File
             ) {
                 return None;
             }
@@ -146,7 +146,7 @@ fn test_search_index_build_and_query() {
 
 #[test]
 fn test_incremental_remove_by_file() {
-    let tmp_dir = std::env::temp_dir().join(format!("repo_wiki_incr_test_{}", std::process::id()));
+    let tmp_dir = std::env::temp_dir().join(format!("code_repo_wiki_incr_test_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp_dir);
     std::fs::create_dir_all(&tmp_dir).expect("创建临时目录失败");
     let index_path = tmp_dir.join("text_index.bin");
@@ -154,9 +154,9 @@ fn test_incremental_remove_by_file() {
     let (mut engine, _) = TextEngine::open(&index_path).expect("打开索引失败");
 
     // 索引两个不同文件的实体（使用完全不同的名称避免 token 重叠）
-    let node_a = repo_wiki::model::CodeNode {
-        id: repo_wiki::model::NodeId::new(0),
-        kind: repo_wiki::model::NodeKind::Function,
+    let node_a = code_repo_wiki::model::CodeNode {
+        id: code_repo_wiki::model::NodeId::new(0),
+        kind: code_repo_wiki::model::NodeKind::Function,
         name: "alpha_handler".into(),
         file_path: Some("src/alpha.rs".into()),
         line_range: Some((1, 5)),
@@ -164,9 +164,9 @@ fn test_incremental_remove_by_file() {
         signature: Some("fn alpha_handler()".into()), visibility: None,
         module_path: vec![],
     };
-    let node_b = repo_wiki::model::CodeNode {
-        id: repo_wiki::model::NodeId::new(1),
-        kind: repo_wiki::model::NodeKind::Function,
+    let node_b = code_repo_wiki::model::CodeNode {
+        id: code_repo_wiki::model::NodeId::new(1),
+        kind: code_repo_wiki::model::NodeKind::Function,
         name: "beta_processor".into(),
         file_path: Some("src/beta.rs".into()),
         line_range: Some((1, 3)),
@@ -207,6 +207,6 @@ fn test_config_roundtrip() {
     assert_eq!(parsed.llm.model, "deepseek-v4-flash");
     assert_eq!(parsed.llm.api_key_env, "OPENCODEGO2_API_KEY");
     assert_eq!(parsed.wiki.language, "zh");
-    assert_eq!(parsed.output_dir(), std::path::Path::new(".repo-wiki"));
+    assert_eq!(parsed.output_dir(), std::path::Path::new(".code-repo-wiki"));
         assert!(!parsed.embed.model.is_empty());
 }

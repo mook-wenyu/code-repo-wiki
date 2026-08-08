@@ -83,12 +83,12 @@ pub fn render_llms_txt(
 ) -> String {
     let mut out = String::new();
     out.push_str(&format!("# {repo_name} Wiki\n\n"));
-    out.push_str("> repo-wiki 生成的代码仓库 Wiki 文档索引。\n");
+    out.push_str("> code-repo-wiki 生成的代码仓库 Wiki 文档索引。\n");
     // v19 t01：版本自检载体——Agent 读取到该行可判断产物由哪个工具版本
     // 生成（与 doctor 版本检查同源 env!("CARGO_PKG_VERSION")）；产物与
     // 工具版本相关时提示重跑 generate
     out.push_str(&format!(
-        "> 由 repo-wiki v{} 生成；发现索引与工具版本不匹配时，请重新运行 generate。\n\n",
+        "> 由 code-repo-wiki v{} 生成；发现索引与工具版本不匹配时，请重新运行 generate。\n\n",
         env!("CARGO_PKG_VERSION")
     ));
 
@@ -288,7 +288,7 @@ pub fn render_llms_full_txt(
         "> 模块卡片目录: cards/{primary_lang}/（实体详情以卡片为准）。\n"
     ));
     out.push_str(&format!(
-        "> 由 repo-wiki v{} 生成；发现索引与工具版本不匹配时，请重新运行 generate。\n\n",
+        "> 由 code-repo-wiki v{} 生成；发现索引与工具版本不匹配时，请重新运行 generate。\n\n",
         env!("CARGO_PKG_VERSION")
     ));
 
@@ -461,7 +461,7 @@ mod tests {
 
         assert!(first.contains("# demo Wiki"), "应含仓库名标题");
         assert!(
-            first.contains(&format!("repo-wiki v{}", env!("CARGO_PKG_VERSION"))),
+            first.contains(&format!("code-repo-wiki v{}", env!("CARGO_PKG_VERSION"))),
             "应含工具版本行（版本自检载体）"
         );
         assert!(first.contains("## Modules"), "应含模块页节");
@@ -531,7 +531,7 @@ mod tests {
 
         assert!(first.contains("# demo Wiki"), "应含仓库名标题");
         assert!(
-            first.contains(&format!("repo-wiki v{}", env!("CARGO_PKG_VERSION"))),
+            first.contains(&format!("code-repo-wiki v{}", env!("CARGO_PKG_VERSION"))),
             "应含工具版本行"
         );
         assert!(first.contains("## src::alpha"), "模块节标题");
@@ -646,7 +646,7 @@ mod tests {
     #[test]
     fn test_write_llms_txt_smoke_deterministic_content() {
         let dir = std::env::temp_dir()
-            .join(format!("repo_wiki_test_llms_mtime_{}", std::process::id()));
+            .join(format!("code_repo_wiki_test_llms_mtime_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let config = WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };

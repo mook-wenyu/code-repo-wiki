@@ -1,11 +1,11 @@
-﻿# repo-wiki 测试残留清理脚本
+﻿# code-repo-wiki 测试残留清理脚本
 #
 # 背景（v33 生产审计 ①）：历史测试（key 命令注入隔离修复前）在真实
 # 用户目录留下三类残留，均为无害但不卫生的目录：
-#   1. %APPDATA%\repo-wiki\key-test-*        —— key 命令测试夹具目录
+#   1. %APPDATA%\code-repo-wiki\key-test-*   —— key 命令测试夹具目录
 #      （每目录仅一个假 config.toml，无真实密钥）
-#   2. %TEMP%\repo_wiki*                      —— 各测试的临时仓库目录
-#      （为空目录，≈0B 占用）
+#   2. %TEMP%\repo_wiki* / code_repo_wiki*   —— 各测试的临时仓库目录
+#      （为空目录，≈0B 占用；repo_wiki* 为 v37 改名前的历史命名）
 #   3. %TEMP%\rw_desc_*                       —— generate/wiki.rs 描述缓存测试残留
 #
 # 用法：
@@ -40,26 +40,30 @@ function Preview-Deletes {
     }
 }
 
-# ---- 1. APPDATA 下的 key 测试夹具 ----
-$appData = Join-Path $env:APPDATA 'repo-wiki'
+# ---- 1. APPDATA 下的 key 测试夹具（新名 code-repo-wiki 与历史旧名 repo-wiki 双清） ----
 $keyResidue = [System.Collections.Generic.List[string]]::new()
-if (Test-Path -LiteralPath $appData) {
-    Get-ChildItem -LiteralPath $appData -Directory -Filter 'key-test-*' -ErrorAction SilentlyContinue |
-        ForEach-Object { $keyResidue.Add($_.FullName) }
+foreach ($appName in @('code-repo-wiki', 'repo-wiki')) {
+    $appData = Join-Path $env:APPDATA $appName
+    if (Test-Path -LiteralPath $appData) {
+        Get-ChildItem -LiteralPath $appData -Directory -Filter 'key-test-*' -ErrorAction SilentlyContinue |
+            ForEach-Object { $keyResidue.Add($_.FullName) }
+    }
 }
 
-# ---- 2. TEMP 下的测试仓库目录 ----
+# ---- 2. TEMP 下的测试仓库目录（新旧命名双清） ----
 $tempResidue = [System.Collections.Generic.List[string]]::new()
-Get-ChildItem -LiteralPath $env:TEMP -Directory -Filter 'repo_wiki*' -ErrorAction SilentlyContinue |
-    ForEach-Object { $tempResidue.Add($_.FullName) }
+foreach ($filter in @('repo_wiki*', 'code_repo_wiki*')) {
+    Get-ChildItem -LiteralPath $env:TEMP -Directory -Filter $filter -ErrorAction SilentlyContinue |
+        ForEach-Object { $tempResidue.Add($_.FullName) }
+}
 
 # ---- 3. TEMP 下的描述缓存测试残留（generate/wiki.rs） ----
 Get-ChildItem -LiteralPath $env:TEMP -Directory -Filter 'rw_desc_*' -ErrorAction SilentlyContinue |
     ForEach-Object { $tempResidue.Add($_.FullName) }
 
-Write-Host 'repo-wiki 测试残留扫描结果：'
+Write-Host 'code-repo-wiki 测试残留扫描结果：'
 Preview-Deletes 'key-test-* 残留' $keyResidue
-Preview-Deletes 'repo_wiki*/rw_desc_* 临时目录' $tempResidue
+Preview-Deletes 'repo_wiki*/code_repo_wiki*/rw_desc_* 临时目录' $tempResidue
 
 if (-not $Apply) {
     Write-Host ''

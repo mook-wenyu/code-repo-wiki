@@ -1,8 +1,8 @@
 [package]
-name = "repo-wiki"
+name = "code-repo-wiki"
 version = "0.3.0"
 edition = "2024"
-description = "自动分析代码仓库结构，通过 LLM 生成结构化项目文档"
+description = "自动分析代码仓库结构，通过 LLM 生成结构化项目文档（Code Repo Wiki）"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

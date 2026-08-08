@@ -1,6 +1,6 @@
 //! MCP (Model Context Protocol) server（P1-3）
 //!
-//! 通过 stdio 暴露 repo-wiki 能力给任意 MCP 客户端（Claude Code、Cline、
+//! 通过 stdio 暴露 code-repo-wiki 能力给任意 MCP 客户端（Claude Code、Cline、
 //! 自研 Agent 等）：代码搜索、AST 符号查找、Wiki 页面/卡片读取、状态查询。
 //! 实现基于官方 Rust MCP SDK（rmcp 3.x，crates.io 维护）。
 //!
@@ -85,7 +85,7 @@ struct ReadCardRequest {
 #[tool_router(router = tool_router)]
 impl RepoWikiMcp {
     /// 搜索代码实体：按关键词返回匹配的函数/结构体/类及文件位置（text/semantic/hybrid 引擎）
-    #[tool(description = "搜索代码实体：按关键词返回匹配的函数/结构体/类及文件位置（text/semantic/hybrid 引擎，与 CLI repo-wiki search 等价；需先运行 repo-wiki generate 构建搜索索引）")]
+    #[tool(description = "搜索代码实体：按关键词返回匹配的函数/结构体/类及文件位置（text/semantic/hybrid 引擎，与 CLI code-repo-wiki search 等价；需先运行 code-repo-wiki generate 构建搜索索引）")]
     async fn search(&self, Parameters(SearchRequest { query, top_k, engine }): Parameters<SearchRequest>) -> String {
         // 配置完整性检查：搜索前确认配置可加载（错误早暴露）；v22 起
         // 引擎/条数默认值硬编码，配置内容不再被本函数使用
@@ -121,7 +121,7 @@ impl RepoWikiMcp {
     }
 
     /// AST 精确符号查找：扫描源文件定位 函数/结构体/类 定义的 文件+行号+签名（不依赖搜索索引）
-    #[tool(description = "AST 精确符号查找：扫描源文件定位函数/结构体/类定义的 文件+行号+签名（与 CLI repo-wiki ast-search 等价）")]
+    #[tool(description = "AST 精确符号查找：扫描源文件定位函数/结构体/类定义的 文件+行号+签名（与 CLI code-repo-wiki ast-search 等价）")]
     async fn ast_search(&self, Parameters(AstSearchRequest { symbol, language }): Parameters<AstSearchRequest>) -> String {
         match crate::execute_ast_search(self.config_path.as_deref(), &self.root, &symbol, language.as_deref()) {
             Ok(hits) if hits.is_empty() => format!("未找到符号 \"{symbol}\" 的定义"),
@@ -143,7 +143,7 @@ impl RepoWikiMcp {
     }
 
     /// 读取已生成的 Wiki 页面内容（模块页/架构概览/项目概览/api）
-    #[tool(description = "读取已生成的 Wiki 页面内容（wiki/{lang}/{page}.md，如 src_config、architecture、overview、api；需先运行 repo-wiki generate，未生成的页面报错）")]
+    #[tool(description = "读取已生成的 Wiki 页面内容（wiki/{lang}/{page}.md，如 src_config、architecture、overview、api；需先运行 code-repo-wiki generate，未生成的页面报错）")]
     async fn read_wiki_page(&self, Parameters(ReadPageRequest { page, lang }): Parameters<ReadPageRequest>) -> String {
         let config = match crate::config::resolve_mcp_config(self.config_path.as_deref(), &self.root) {
             Ok(c) => c,
@@ -170,14 +170,14 @@ impl RepoWikiMcp {
         match std::fs::read_to_string(&path) {
             Ok(content) => format!("{}\n\n{content}", path.display()),
             Err(e) => format!(
-                "页面不存在或不可读（可先运行 repo-wiki generate 生成）: {}: {e}",
+                "页面不存在或不可读（可先运行 code-repo-wiki generate 生成）: {}: {e}",
                 path.display()
             ),
         }
     }
 
     /// 读取已生成的 Knowledge Card（AI 代理的结构化模块摘要）
-    #[tool(description = "读取已生成的 Knowledge Card 内容（cards/{lang}/{card}.md；需先运行 repo-wiki generate，未生成的卡片报错）")]
+    #[tool(description = "读取已生成的 Knowledge Card 内容（cards/{lang}/{card}.md；需先运行 code-repo-wiki generate，未生成的卡片报错）")]
     async fn read_card(&self, Parameters(ReadCardRequest { card, lang }): Parameters<ReadCardRequest>) -> String {
         let config = match crate::config::resolve_mcp_config(self.config_path.as_deref(), &self.root) {
             Ok(c) => c,
@@ -200,7 +200,7 @@ impl RepoWikiMcp {
         match std::fs::read_to_string(&path) {
             Ok(content) => format!("{}\n\n{content}", path.display()),
             Err(e) => format!(
-                "卡片不存在或不可读（可先运行 repo-wiki generate 生成）: {}: {e}",
+                "卡片不存在或不可读（可先运行 code-repo-wiki generate 生成）: {}: {e}",
                 path.display()
             ),
         }
@@ -222,7 +222,7 @@ impl RepoWikiMcp {
         };
         let report = crate::commands::status_report(&config, &root);
         if !report.ready {
-            return "Wiki 未生成（运行 repo-wiki generate 生成后可用）".to_string();
+            return "Wiki 未生成（运行 code-repo-wiki generate 生成后可用）".to_string();
         }
         let mut out = format!("Wiki 就绪: {} 张页面, {} 张卡片\n", report.wiki_pages, report.cards);
         if report.issues.is_empty() {
@@ -248,7 +248,7 @@ impl ServerHandler for RepoWikiMcp {
 ///
 /// 客户端配置示例（opencode.json / claude_desktop_config.json）：
 /// ```json
-/// { "command": "repo-wiki", "args": ["mcp", "--root", "."] }
+/// { "command": "code-repo-wiki", "args": ["mcp", "--root", "."] }
 /// ```
 pub async fn serve_stdio(config_path: Option<&Path>, root: ProjectRoot) -> Result<QuitReason> {
     let server = RepoWikiMcp::new(config_path.map(|p| p.to_path_buf()), root);

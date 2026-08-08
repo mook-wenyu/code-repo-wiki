@@ -20,7 +20,7 @@ pub const SEARCH_RRF_K: f64 = 60.0;
 pub const IMPACT_MAX_DEPTH: usize = 3;
 /// v30 硬编码常量：傻瓜式全自动（用户拍板「彻底硬编码删字段」）——
 /// 以下配置项从配置文件移除、以代码常量固定，用户零配置开箱即用。
-pub const OUTPUT_DIR: &str = ".repo-wiki";
+pub const OUTPUT_DIR: &str = ".code-repo-wiki";
 
 /// 全局配置
 ///
@@ -38,7 +38,7 @@ pub struct WikiConfig {
     /// 运行时输出目录（serde(skip)：配置文件中不可写，由
     /// load_config_with_output 注入——CLI --output 覆盖或 root 化后的
     /// 绝对路径；None 时由 output_dir() 方法兜底硬编码常量）。
-    /// 使用场景：bench 跑分把产物写到隔离目录，不污染真实 .repo-wiki。
+    /// 使用场景：bench 跑分把产物写到隔离目录，不污染真实 .code-repo-wiki。
     #[serde(skip)]
     pub output_dir: Option<std::path::PathBuf>,
 }

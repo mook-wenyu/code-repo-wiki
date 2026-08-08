@@ -1,14 +1,14 @@
 /target
 
-# 生成产物（mock 误操作曾提交 31 个文件，见 .scratch/repo-wiki-hardening/issues/03）
-.repo-wiki/
+# 生成产物（mock 误操作曾提交 31 个文件，见 .scratch/code-repo-wiki-hardening/issues/03）
+.code-repo-wiki/
 
 # 本地轨迹/计划（本地 issue tracker 约定）
 .scratch/
 .swarm/evidence/
 
 # 仓库根 wiki/ 是 mock 测试泄漏产物（真实产物按 config output.dir 生成，
-# 本仓库为 .repo-wiki/）；整体不入库，防全量测试产物再次混入提交
+# 本仓库为 .code-repo-wiki/）；整体不入库，防全量测试产物再次混入提交
 wiki/
 
 # bench 输出目录（--config 指向外部输出时若落在仓库根）

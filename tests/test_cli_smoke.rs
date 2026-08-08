@@ -1,6 +1,6 @@
 //! CLI 未覆盖子命令冒烟测试（演进计划 T4.2）
 //!
-//! 通过 env!("CARGO_BIN_EXE_repo-wiki") 调用真实二进制，覆盖：
+//! 通过 env!("CARGO_BIN_EXE_code-repo-wiki") 调用真实二进制，覆盖：
 //! 1. status：就绪状态输出
 //! 2. note：Karpathy log 追加式知识记录（日期节 + 序号递增）
 //! 3. install：合并 init——确保用户级默认配置就绪（项目级绝不自动创建）
@@ -15,7 +15,7 @@
 //! 比复制 test_cli.rs 的 mock HTTP server 更轻，产物内容与之一致）。
 //!
 //! sample-repo 自带 config.toml 为 provider="mock"（A13 已消除触网隐患）；
-//! prepare_repo 仍统一改写为 mock provider + output.dir 指向仓库内 .repo-wiki。
+//! prepare_repo 仍统一改写为 mock provider + output.dir 指向仓库内 .code-repo-wiki。
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -32,7 +32,7 @@ fn prepare_repo(tag: &str) -> PathBuf {
     let work_dir = unique_dir(tag);
     let _ = std::fs::remove_dir_all(&work_dir);
     copy_dir(&fixture, &work_dir);
-    // v30：输出目录硬编码 .repo-wiki（配置不再含 output 段）
+    // v30：输出目录硬编码 .code-repo-wiki（配置不再含 output 段）
     std::fs::write(work_dir.join("config.toml"), mock_config()).unwrap();
     work_dir
 }
@@ -105,7 +105,7 @@ fn test_note_appends_karpathy_log() {
         "note 应成功，stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let log_path = work_dir.join(".repo-wiki").join("wiki").join("zh").join("_log.md");
+    let log_path = work_dir.join(".code-repo-wiki").join("wiki").join("zh").join("_log.md");
     let log = std::fs::read_to_string(&log_path)
         .unwrap_or_else(|e| panic!("_log.md 应存在 {}: {}", log_path.display(), e));
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
@@ -173,7 +173,7 @@ fn test_install_ensures_user_default_config() {
     );
 
     // 用户级默认配置被创建（v30：硬编码段不再写入模板，仅 wiki/scope/llm/embed 四段）
-    let cfg_path = home.join("repo-wiki").join("config.toml");
+    let cfg_path = home.join("code-repo-wiki").join("config.toml");
     let content = std::fs::read_to_string(&cfg_path)
         .unwrap_or_else(|e| panic!("用户级配置应存在 {}: {}", cfg_path.display(), e));
     for section in ["[wiki]", "[llm]", "[embed]"] {
@@ -185,12 +185,12 @@ fn test_install_ensures_user_default_config() {
     assert!(!content.contains("[plan]"), "默认配置不应含 [plan]（已删除），实际:\n{content}");
 
     // 项目级配置不被自动创建（v24 用户要求的边界；v25 项目级文件名=config.toml，
-    // 旧名 .repo-wiki.toml 已停用）
+    // 旧名 .code-repo-wiki.toml 已停用）
     assert!(
         !work_dir.join("config.toml").exists(),
         "install 不得在项目级自动创建 config.toml"
     );
-    assert!(!work_dir.join(".repo-wiki.toml").exists(), "旧文件名已停用");
+    assert!(!work_dir.join(".code-repo-wiki.toml").exists(), "旧文件名已停用");
 
     let _ = std::fs::remove_dir_all(&work_dir);
     let _ = std::fs::remove_dir_all(&home);
@@ -208,7 +208,7 @@ fn test_sync_merges_manual_edit_into_state() {
     );
 
     // 2. 选一个 wiki 页手工修改（取 wiki/zh 下任一 .md，动态选取避免对模块名耦合）
-    let wiki_zh = work_dir.join(".repo-wiki").join("wiki").join("zh");
+    let wiki_zh = work_dir.join(".code-repo-wiki").join("wiki").join("zh");
     let page = std::fs::read_dir(&wiki_zh)
         .unwrap_or_else(|e| panic!("wiki/zh 目录应存在 {}: {}", wiki_zh.display(), e))
         .filter_map(|e| e.ok())
@@ -216,7 +216,7 @@ fn test_sync_merges_manual_edit_into_state() {
         .filter(|p| p.extension().is_some_and(|x| x == "md"))
         .min()
         .expect("generate 后 wiki/zh 下应有页面文件");
-    let state_path = work_dir.join(".repo-wiki").join(".state").join("generation_state.json");
+    let state_path = work_dir.join(".code-repo-wiki").join(".state").join("generation_state.json");
     let state_before = std::fs::read_to_string(&state_path)
         .unwrap_or_else(|e| panic!("generate 应写状态文件 {}: {}", state_path.display(), e));
     let before: serde_json::Value = serde_json::from_str(&state_before).unwrap();
@@ -248,7 +248,7 @@ fn test_sync_merges_manual_edit_into_state() {
     let fp_after = after["doc_fingerprints"][&key].as_str()
         .unwrap_or_else(|| panic!("sync 后状态应含文档指纹 {key}: {state_after}"));
     assert_ne!(fp_before, fp_after, "sync 应更新 {key} 的指纹（工作区内容为准）");
-    let expected = repo_wiki::incremental::state::GenerationState::compute_file_fingerprint(&page).unwrap();
+    let expected = code_repo_wiki::incremental::state::GenerationState::compute_file_fingerprint(&page).unwrap();
     assert_eq!(fp_after, expected, "指纹应等于修改后文件内容 SHA256");
 
     let _ = std::fs::remove_dir_all(&work_dir);
@@ -267,7 +267,7 @@ fn test_search_text_engine_json() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        work_dir.join(".repo-wiki").join(".search").join("text_index.db").exists(),
+        work_dir.join(".code-repo-wiki").join(".search").join("text_index.db").exists(),
         "文本索引应生成"
     );
 
@@ -353,7 +353,7 @@ fn test_search_semantic_without_embed_errors() {
     );
 
     // 删除语义索引，模拟 embedding 端点不可用/索引未构建
-    let semantic_index = work_dir.join(".repo-wiki").join(".search").join("semantic_index.db");
+    let semantic_index = work_dir.join(".code-repo-wiki").join(".search").join("semantic_index.db");
     let _ = std::fs::remove_file(&semantic_index);
 
     let out = run_bin(
@@ -392,7 +392,7 @@ fn test_search_and_status_show_semantic_degraded_hint() {
     );
 
     // 降级标记应在 generate 后存在（mock embed 批量索引失败路径）
-    let marker = work_dir.join(".repo-wiki").join(".search").join("semantic_degraded");
+    let marker = work_dir.join(".code-repo-wiki").join(".search").join("semantic_degraded");
     assert!(
         marker.exists(),
         "mock embed 批量失败应写入降级标记: {}",
@@ -429,7 +429,7 @@ fn test_mock_footer_marks_placeholder_pages() {
     );
 
     // 遍历产物 wiki 页面，断言页脚标注存在
-    let wiki_dir = work_dir.join(".repo-wiki").join("wiki").join("zh");
+    let wiki_dir = work_dir.join(".code-repo-wiki").join("wiki").join("zh");
     let mut found = 0;
     for entry in std::fs::read_dir(&wiki_dir).unwrap() {
         let entry = entry.unwrap();
@@ -469,7 +469,7 @@ fn test_lint_three_state_exit_codes() {
     assert_eq!(out.status.code(), Some(0), "干净产物应为 0: {}", String::from_utf8_lossy(&out.stdout));
 
     // 态 2：写入孤儿页 → 发现问题 → 1
-    let orphan = work_dir.join(".repo-wiki").join("wiki").join("zh").join("orphan.md");
+    let orphan = work_dir.join(".code-repo-wiki").join("wiki").join("zh").join("orphan.md");
     std::fs::create_dir_all(orphan.parent().unwrap()).unwrap();
     std::fs::write(&orphan, "# 孤儿页\n").unwrap();
     let out = run_bin(&work_dir, &["lint", "-c", "config.toml"]);
@@ -503,7 +503,7 @@ fn test_update_dry_run_lists_changes_without_generating() {
     let work_dir = prepare_repo("dry_run");
     let out = run_bin(&work_dir, &["generate", "-c", "config.toml"]);
     assert!(out.status.success(), "generate 应成功");
-    let wiki_dir = work_dir.join(".repo-wiki").join("wiki").join("zh");
+    let wiki_dir = work_dir.join(".code-repo-wiki").join("wiki").join("zh");
     let snapshot: Vec<(String, String)> = std::fs::read_dir(&wiki_dir)
         .unwrap()
         .filter_map(|e| e.ok())
@@ -598,12 +598,12 @@ fn test_watch_command_detects_change() {
     let out = run_bin(&work_dir, &["generate", "-c", "config.toml"]);
     assert!(out.status.success(), "generate 应成功");
     assert!(
-        work_dir.join(".repo-wiki").join("wiki").join("zh").join("api.md").exists(),
+        work_dir.join(".code-repo-wiki").join("wiki").join("zh").join("api.md").exists(),
         "基线产物应存在"
     );
 
     // 启动 watch（阻塞监听）
-    let mut child = Command::new(env!("CARGO_BIN_EXE_repo-wiki"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_code-repo-wiki"))
         .args(["watch", "-c", "config.toml"])
         .current_dir(&work_dir)
         .env("RUST_LOG", "off")
@@ -631,7 +631,7 @@ fn test_watch_command_detects_change() {
     // 等待 watch 完成启动（首次全量 + 监听注册）后写入变更。
     // 就绪信号不能用 stderr 日志（本测试 RUST_LOG=off 会过滤掉"开始监听"）：
     // 以状态文件 mtime 变化（全量完成时写盘）为信号，再留 300ms 给监听注册。
-    let state_file = work_dir.join(".repo-wiki").join(".state").join("generation_state.json");
+    let state_file = work_dir.join(".code-repo-wiki").join(".state").join("generation_state.json");
     let baseline_state_mtime = std::fs::metadata(&state_file).and_then(|m| m.modified()).ok();
     let ready_deadline = Instant::now() + Duration::from_secs(30);
     let mut state_updated = false;
@@ -649,7 +649,7 @@ fn test_watch_command_detects_change() {
     std::fs::write(&extra, "pub fn extra() -> u32 { 9 }\n").unwrap();
 
     // 轮询：变更应触发增量更新（产物 mtime 更新；以 api.md 的修改时间变化为信号）
-    let before = std::fs::metadata(work_dir.join(".repo-wiki").join("wiki").join("zh").join("api.md"))
+    let before = std::fs::metadata(work_dir.join(".code-repo-wiki").join("wiki").join("zh").join("api.md"))
         .and_then(|m| m.modified())
         .ok();
     let deadline = Instant::now() + Duration::from_secs(8);
@@ -657,7 +657,7 @@ fn test_watch_command_detects_change() {
     while Instant::now() < deadline {
         // 每轮排空 stderr 管道（防止缓冲填满阻塞子进程）
         std::thread::sleep(Duration::from_millis(100));
-        if let Ok(m) = std::fs::metadata(work_dir.join(".repo-wiki").join("wiki").join("zh").join("api.md"))
+        if let Ok(m) = std::fs::metadata(work_dir.join(".code-repo-wiki").join("wiki").join("zh").join("api.md"))
             .and_then(|m| m.modified())
             && before.map(|b| m > b + Duration::from_millis(500)).unwrap_or(false)
         {
@@ -699,7 +699,7 @@ fn test_root_missing_dir_errors() {
 // ==================== E 组：默认配置链（v13） ====================
 
 /// E 组：无 --config 时默认配置链取项目级 config.toml（项目级优先；
-/// v25 起为独立文件，不再混入产物目录 .repo-wiki/）。
+/// v25 起为独立文件，不再混入产物目录 .code-repo-wiki/）。
 /// 项目级存在时不触达全局目录（resolve 先查项目级），测试无需隔离 APPDATA。
 #[test]
 fn test_default_config_chain_prefers_project_config() {
@@ -776,7 +776,7 @@ fn test_incremental_update_keeps_unaffected_module_pages() {
 
 /// 收集产物 wiki 页面的文件 stem 集合（wiki/zh/*.md，不含合成页）
 fn collect_page_stems(work_dir: &Path) -> std::collections::HashSet<String> {
-    std::fs::read_dir(work_dir.join(".repo-wiki").join("wiki").join("zh"))
+    std::fs::read_dir(work_dir.join(".code-repo-wiki").join("wiki").join("zh"))
         .unwrap()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().unwrap().is_file())
@@ -869,7 +869,7 @@ fn test_generate_warns_when_agents_md_exists() {
         "已存在 AGENTS.md 时必须 warn 提示: {stderr:?}"
     );
     assert!(
-        stderr.contains("repo-wiki install"),
+        stderr.contains("code-repo-wiki install"),
         "warn 必须给出补救路径: {stderr:?}"
     );
     // 人工内容不得被覆盖

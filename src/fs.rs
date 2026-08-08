@@ -84,12 +84,12 @@ pub fn acquire_run_lock(config: &crate::config::schema::WikiConfig) -> Result<Ru
             use std::io::Write;
             // 写入 PID 供「锁是谁留下的」排查；失败仅告警（锁本身已建立）
             if let Err(e) = writeln!(f, "{}", std::process::id()) {
-                eprintln!("repo-wiki: 运行锁 PID 写入失败（不影响锁）: {e}");
+                eprintln!("code-repo-wiki: 运行锁 PID 写入失败（不影响锁）: {e}");
             }
             Ok(RunLock { path })
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => anyhow::bail!(
-            "另一 repo-wiki 实例正在运行（锁文件: {}）。确认无残留实例后可删除该文件重试",
+            "另一 code-repo-wiki 实例正在运行（锁文件: {}）。确认无残留实例后可删除该文件重试",
             path.display()
         ),
         Err(e) => Err(e).with_context(|| format!("获取运行锁失败: {}", path.display())),
@@ -101,7 +101,7 @@ mod tests {
     use super::*;
 
     fn temp_path(tag: &str, name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_fs_{}_{}", tag, std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_fs_{}_{}", tag, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.join(name)
@@ -166,7 +166,7 @@ mod tests {
     /// 父目录不存在时自动创建
     #[test]
     fn test_creates_parent_dir() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_fs_nested_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_fs_nested_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("deep").join("nested").join("c.json");
         write_file_atomic(&path, "x").unwrap();

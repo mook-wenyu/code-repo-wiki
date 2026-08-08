@@ -82,7 +82,7 @@ pub fn detect_communities_with_resolution(graph: &KnowledgeGraph, resolution: f6
     // （页面名=目录路径，新增/删除文件不改变划分，零随机参数）；
     // 中小仓库仍走实体级 Leiden（γ=0.5 已实测调优，粒度/成本最优）。
     // 阈值 24 的论证（实机数据，v28 t10 复核）：Unity 仓库 52 目录、
-    // repo-wiki 自身 15 目录（src+tests）属"大仓库"（目录页粒度合适）；
+    // code-repo-wiki 自身 15 目录（src+tests）属"大仓库"（目录页粒度合适）；
     // 150 文件测试 fixture（15 模块 × 10 文件 = 15 目录）以下走实体级
     // Leiden。24 落在两档之间：≥24 时目录页规模可接受且免超节点图失真
     // （v26 D 实测：密集调用仓库在目录超节点图上全部并入一个社区），

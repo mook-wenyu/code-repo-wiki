@@ -1,34 +1,56 @@
-# CI：构建 + 测试 + lint 门禁（v19 t02 模板）
-#
-# Linux 上构建需要 OpenSSL 与 zlib 开发库（reqwest native-tls / git2
-# libgit2-sys 动态链接，见 README「前置依赖」）；LLM 调用不在此门禁内
-# （需真实 Key，由下游验证轮 t09 人工执行）。
-# 注意：项目未采用 rustfmt 风格（手写排版），故无 cargo fmt 步骤。
-
 name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [master]
   pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
+  # 静态门禁：clippy -D warnings + rustdoc -Dwarnings（Microsoft RustTraining 三段式 check 阶段）
+  check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
       - uses: Swatinem/rust-cache@v2
-      - name: 安装系统依赖（OpenSSL/zlib）
+      - name: Install system deps (git2/openssl)
         run: sudo apt-get update && sudo apt-get install -y libssl-dev zlib1g-dev
-      - name: 构建（--locked 锁定 Cargo.lock）
-        run: cargo build --locked
-      - name: 单元测试
-        run: cargo test --locked
-      - name: Clippy 门禁（-D warnings）
+      - name: Clippy (all targets, warnings as errors)
         run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Docs (warnings as errors)
+        run: RUSTDOCFLAGS='-Dwarnings' cargo doc --no-deps --locked
+
+  # 测试矩阵：跨平台声明（Windows 本地开发 + Unix 路径差异回归）
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install system deps (git2/openssl)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev zlib1g-dev
+      - name: Test
+        run: cargo test --locked
+
+  # workflow 本身校验（actionlint 惯例——语法/语义/注入检查）
+  lint-workflow:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: raven-actions/actionlint@v2

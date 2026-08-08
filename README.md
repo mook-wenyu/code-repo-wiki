@@ -1,4 +1,4 @@
-# repo-wiki
+# code-repo-wiki
 
 自动为代码仓库生成**持续更新**的 Wiki 文档：模块页、API 参考、知识卡片，供人和 AI 助手阅读。
 
@@ -8,13 +8,13 @@
 
 ## 它能做什么（30 秒了解）
 
-输入一个代码仓库，`repo-wiki generate` 产出 `.repo-wiki/` 目录：
+输入一个代码仓库，`code-repo-wiki generate` 产出 `.code-repo-wiki/` 目录：
 
 - 分析源码结构（tree-sitter AST + 知识图谱 + 社区检测自动划分模块）
 - 让 LLM 为每个模块生成知识卡片与文档页（API 参考含**真实文件与行号**）
 - 之后每次 `git commit` 自动增量更新（只重写受影响的模块页）
 
-真实产物示例（本项目自己生成的 `.repo-wiki/wiki/zh/api.md`）：
+真实产物示例（本项目自己生成的 `.code-repo-wiki/wiki/zh/api.md`）：
 
 ```markdown
 ## analysis
@@ -29,18 +29,18 @@
 > 前置条件：需要 Rust 工具链（含 `cargo`）；目标仓库可以是**任何语言**的项目（解析器见[限制项](#限制项)），不要求是 Rust 仓库，也不要求是 git 仓库。
 
 ```bash
-# 1. 安装（源码构建；发布 crates.io 后可直接 cargo install repo-wiki）
+# 1. 安装（源码构建；发布 crates.io 后可直接 cargo install code-repo-wiki）
 cargo install --path . --locked
 
 # 2. 配置 LLM API key（不配也能跑：自动降级为本地模拟内容）
 export OPENCODEGO2_API_KEY="sk-..."
 
-# 3. 在目标仓库里生成 Wiki（零参数全自动，产物在 .repo-wiki/wiki/zh/）
+# 3. 在目标仓库里生成 Wiki（零参数全自动，产物在 .code-repo-wiki/wiki/zh/）
 cd /path/to/your/repo
-repo-wiki generate
+code-repo-wiki generate
 ```
 
-**一键全自动（推荐）**：`repo-wiki install` 注册 git `post-commit`/`post-merge` hook——之后**每次 commit 后 Wiki 自动增量更新**，无需再手动执行任何命令。常驻实时模式用 `repo-wiki watch`（代码保存即更新）。卸载用 `repo-wiki uninstall --force`。
+**一键全自动（推荐）**：`code-repo-wiki install` 注册 git `post-commit`/`post-merge` hook——之后**每次 commit 后 Wiki 自动增量更新**，无需再手动执行任何命令。常驻实时模式用 `code-repo-wiki watch`（代码保存即更新）。卸载用 `code-repo-wiki uninstall --force`。
 
 ## 核心功能
 
@@ -57,7 +57,7 @@ repo-wiki generate
 
 ## 配置：默认零配置，需要时只写要覆盖的键
 
-v30 起绝大多数选项已硬编码为合理默认（输出目录恒 `.repo-wiki`、增量恒监听模式、embed/search 恒开启、无 Key 自动降级），**空配置文件即可运行**。项目级 `{root}/config.toml` 按字段级合并覆盖用户级配置（Windows `%APPDATA%\repo-wiki\config.toml`），未写出的键继承默认。下面是全部可配键的注释式完整示例（与默认值一致，按需取消注释修改）：
+v30 起绝大多数选项已硬编码为合理默认（输出目录恒 `.code-repo-wiki`、增量恒监听模式、embed/search 恒开启、无 Key 自动降级），**空配置文件即可运行**。项目级 `{root}/config.toml` 按字段级合并覆盖用户级配置（Windows `%APPDATA%\code-repo-wiki\config.toml`），未写出的键继承默认。下面是全部可配键的注释式完整示例（与默认值一致，按需取消注释修改）：
 
 ```toml
 [wiki]
@@ -127,9 +127,9 @@ api_key_env = "BAILIAN_API_KEY"
 | 问题 | 回答 |
 |---|---|
 | 没有 API key 能跑吗？ | 能。无 key 时 LLM 降级为本地模拟、语义搜索降级为纯文本，全流程不中断 |
-| 产物在哪里？ | `.repo-wiki/`：`wiki/{lang}/` 文档页、`cards/` 知识卡片、`llms.txt` Agent 索引 |
+| 产物在哪里？ | `.code-repo-wiki/`：`wiki/{lang}/` 文档页、`cards/` 知识卡片、`llms.txt` Agent 索引 |
 | 手动改过文档会被覆盖吗？ | 不会。人工修改过的页面自动加入保护集（SHA256 指纹），后续更新跳过；`generate --force` 清空保护集 |
-| 文档过时了？ | `repo-wiki lint` 检查断链/过时/引用错位；`doctor` 检测二进制与产物版本漂移 |
+| 文档过时了？ | `code-repo-wiki lint` 检查断链/过时/引用错位；`doctor` 检测二进制与产物版本漂移 |
 | 大仓库跑得动吗？ | 单项目上限 10 万个源文件；单次变更超 1 万行自动回退全量生成；16 路并发 LLM 调用（详见[限制项](#限制项)） |
 | 会泄露我的代码/密钥吗？ | 只把模块内实体清单/文件路径发给 LLM（不发全文件）；API key 只从环境变量或用户级配置读取，项目级配置写 `api_key_env` 变量名而非明文 |
 
@@ -156,41 +156,41 @@ Source Files → ingest (tree-sitter AST 解析) → analysis (知识图谱 + �
 
 `watch` 进程崩溃后不会自动重启——需要「常驻 + 崩溃自愈」时按平台托管（watch 启动时先全量生成再监听，重启后自动收敛，不会损坏产物）：
 
-- **Linux（systemd 用户服务）**：`~/.config/systemd/user/repo-wiki-watch.service`
+- **Linux（systemd 用户服务）**：`~/.config/systemd/user/code-repo-wiki-watch.service`
   ```ini
   [Unit]
-  Description=repo-wiki watch daemon
+  Description=code-repo-wiki watch daemon
   [Service]
-  ExecStart=/absolute/path/to/repo-wiki watch
+  ExecStart=/absolute/path/to/code-repo-wiki watch
   WorkingDirectory=/absolute/path/to/project
   Restart=on-failure
   RestartSec=5
   [Install]
   WantedBy=default.target
   ```
-  `systemctl --user enable --now repo-wiki-watch`
-- **macOS（launchd LaunchAgent）**：`~/Library/LaunchAgents/com.repo-wiki.watch.plist`
+  `systemctl --user enable --now code-repo-wiki-watch`
+- **macOS（launchd LaunchAgent）**：`~/Library/LaunchAgents/com.code-repo-wiki.watch.plist`
   ```xml
   <plist version="1.0"><dict>
-    <key>Label</key><string>com.repo-wiki.watch</string>
+    <key>Label</key><string>com.code-repo-wiki.watch</string>
     <key>ProgramArguments</key>
-    <array><string>/absolute/path/to/repo-wiki</string><string>watch</string></array>
+    <array><string>/absolute/path/to/code-repo-wiki</string><string>watch</string></array>
     <key>WorkingDirectory</key><string>/absolute/path/to/project</string>
     <key>KeepAlive</key><true/>
   </dict></plist>
   ```
-  `launchctl load ~/Library/LaunchAgents/com.repo-wiki.watch.plist`
+  `launchctl load ~/Library/LaunchAgents/com.code-repo-wiki.watch.plist`
 - **Windows（任务计划程序）**：登录触发 + 失败重启（`RestartCount` 与 `RestartInterval` 需同时设置）
   ```powershell
-  $action  = New-ScheduledTaskAction -Execute 'D:\path\to\repo-wiki.exe' -Argument 'watch' -WorkingDirectory 'D:\path\to\project'
+  $action  = New-ScheduledTaskAction -Execute 'D:\path\to\code-repo-wiki.exe' -Argument 'watch' -WorkingDirectory 'D:\path\to\project'
   $trigger = New-ScheduledTaskTrigger -AtLogOn
   $settings = New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
-  Register-ScheduledTask -TaskName 'repo-wiki-watch' -Action $action -Trigger $trigger -Settings $settings
+  Register-ScheduledTask -TaskName 'code-repo-wiki-watch' -Action $action -Trigger $trigger -Settings $settings
   ```
 
 ### 测试残留清理
 
-历史测试可能遗留无意义的临时目录（`%APPDATA%\repo-wiki\key-test-*` 与 `%TEMP%\repo_wiki*`，≈0B 占用、无敏感数据）。需要清理时：
+历史测试可能遗留无意义的临时目录（`%APPDATA%\code-repo-wiki\key-test-*` 与 `%TEMP%\repo_wiki*`，≈0B 占用、无敏感数据）。需要清理时：
 
 ```powershell
 powershell -File scripts/cleanup-test-residue.ps1          # 先预览
@@ -199,7 +199,7 @@ powershell -File scripts/cleanup-test-residue.ps1 -Apply   # 确认后删除
 
 ## lint 检查项
 
-`repo-wiki lint` 对磁盘上的产物做静态健康检查（对齐 LLM Wiki 最佳实践：Karpathy 的 lint 健康检查、Econowiz 的孤儿页 lint）。退出码：`0` 干净 / `1` 有问题 / `2` 配置或环境错误（CI 可用）。
+`code-repo-wiki lint` 对磁盘上的产物做静态健康检查（对齐 LLM Wiki 最佳实践：Karpathy 的 lint 健康检查、Econowiz 的孤儿页 lint）。退出码：`0` 干净 / `1` 有问题 / `2` 配置或环境错误（CI 可用）。
 
 | kind | 含义 | 发射点 |
 |---|---|---|
@@ -217,7 +217,7 @@ powershell -File scripts/cleanup-test-residue.ps1 -Apply   # 确认后删除
 
 ## 维护者
 
-- **搜索**：`repo-wiki search --query "k" --engine hybrid --top-k 10`；语义索引无 Key 自动降级
+- **搜索**：`code-repo-wiki search --query "k" --engine hybrid --top-k 10`；语义索引无 Key 自动降级
 - **AI Agent 入口**：`llms.txt`（站点地图）+ `llms-full.txt`（含实体签名的内联索引），随生成确定性重写
-- **发布**：SemVer 更新 `Cargo.toml` → `cargo test`/`clippy`/`machete` 全绿 → `cargo publish` + `git tag vX` → 干净环境 `cargo install repo-wiki` + `doctor` 六查
-- **评测**：`repo-wiki bench --root <repo> [--judge]` 自动评测（Coverage/文档信息/Completeness@K/lint/Update Recall/耗时 + LLM-as-judge 打分）；`bench --repodoc` 输出 RepoDocBench 对齐五维聚合报告（Coverage/Doc Info/Completeness@K/TQS/Update Recall，LLM 不可用等降级显式标注）；`bench-manifest` 清单批量跑分
+- **发布**：SemVer 更新 `Cargo.toml` → `cargo test`/`clippy`/`machete` 全绿 → `cargo publish` + `git tag vX` → 干净环境 `cargo install code-repo-wiki` + `doctor` 六查
+- **评测**：`code-repo-wiki bench --root <repo> [--judge]` 自动评测（Coverage/文档信息/Completeness@K/lint/Update Recall/耗时 + LLM-as-judge 打分）；`bench --repodoc` 输出 RepoDocBench 对齐五维聚合报告（Coverage/Doc Info/Completeness@K/TQS/Update Recall，LLM 不可用等降级显式标注）；`bench-manifest` 清单批量跑分

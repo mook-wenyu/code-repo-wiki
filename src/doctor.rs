@@ -226,7 +226,7 @@ mod tests {
 
     /// 构造临时目录内的最小 mock 配置（可追加覆盖段）
     fn temp_config(tag: &str, extra: &str) -> (PathBuf, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_doctor_{}_{}", tag, std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_doctor_{}_{}", tag, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let config = dir.join("doctor-test.toml");
@@ -260,7 +260,7 @@ max_concurrent = 1
 
     #[test]
     fn test_doctor_config_missing_fails_first_check_only() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_doctor_missing_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_doctor_missing_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let root = ProjectRoot::new(dir.clone());
@@ -326,9 +326,9 @@ max_concurrent = 1
         );
 
         // 写入旧版本状态（tool_version=0.0.0）→ 提示漂移
-        std::fs::create_dir_all(dir.join(".repo-wiki/.state")).unwrap();
+        std::fs::create_dir_all(dir.join(".code-repo-wiki/.state")).unwrap();
         std::fs::write(
-            dir.join(".repo-wiki/.state/generation_state.json"),
+            dir.join(".code-repo-wiki/.state/generation_state.json"),
             r#"{"last_commit_hash":null,"file_fingerprints":{},"generated_at":"2025-01-01T00:00:00Z","tool_version":"0.0.0"}"#,
         )
         .unwrap();
@@ -342,7 +342,7 @@ max_concurrent = 1
         // 写入当前版本状态 → 一致通过
         let current = env!("CARGO_PKG_VERSION");
         std::fs::write(
-            dir.join(".repo-wiki/.state/generation_state.json"),
+            dir.join(".code-repo-wiki/.state/generation_state.json"),
             format!(
                 r#"{{"last_commit_hash":null,"file_fingerprints":{{}},"generated_at":"2025-01-01T00:00:00Z","tool_version":"{current}"}}"#
             ),

@@ -15,9 +15,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use repo_wiki::config::schema::{LlmProviderType, LlmSection, WikiConfig, WikiSection};
-use repo_wiki::ingest::parser::{Entity, FileInsight};
-use repo_wiki::incremental::state::GenerationState;
+use code_repo_wiki::config::schema::{LlmProviderType, LlmSection, WikiConfig, WikiSection};
+use code_repo_wiki::ingest::parser::{Entity, FileInsight};
+use code_repo_wiki::incremental::state::GenerationState;
 
 /// 轮询等待条件成立，30s 上限，超时 panic（watch 防抖 300ms，轮询间隔按场景 250~500ms）
 fn wait_until(mut cond: impl FnMut() -> bool, interval: Duration, what: &str) {
@@ -36,14 +36,14 @@ fn wait_until(mut cond: impl FnMut() -> bool, interval: Duration, what: &str) {
 /// v30+：监听根恒为仓库根（全量监听，事件按支持语言扩展名过滤）。
 fn watch_config(repo: &Path) -> WikiConfig {
     WikiConfig {
-        output_dir: Some((repo.join(".repo-wiki").to_string_lossy().into_owned()).into()),
+        output_dir: Some((repo.join(".code-repo-wiki").to_string_lossy().into_owned()).into()),
         wiki: WikiSection { language: "zh".into(), guide: Default::default() },
         llm: LlmSection { provider: LlmProviderType::Mock, ..Default::default() },
         // v30：embed 默认真实阵营（百炼）且 EmbedSection 无 mock 通道——
         // 环境有 BAILIAN_API_KEY 时嵌入会真实触网拖慢全量。api_key_env=""
         // 让 resolve_api_key 立即失败（不做网络重试）→语义索引/特征聚类
         // 降级跳过，测试保持全离线（与 smoke watch 回归同因）。
-        embed: repo_wiki::config::schema::EmbedSection {
+        embed: code_repo_wiki::config::schema::EmbedSection {
             api_key_env: String::new(),
             ..Default::default()
         },
@@ -81,7 +81,7 @@ fn read_opt(path: &Path) -> Option<String> {
 ///   短路不在本测试覆盖内（不影响本测试断言的有效性：产物确实随事件更新）。
 #[test]
 fn watch_e2e_file_change_triggers_incremental() {
-    let repo = std::env::temp_dir().join(format!("repo_wiki_watch_e2e_{}", std::process::id()));
+    let repo = std::env::temp_dir().join(format!("code_repo_wiki_watch_e2e_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&repo);
     std::fs::create_dir_all(repo.join("src")).expect("创建临时仓库失败");
     std::fs::write(repo.join("src").join("alpha.rs"), "pub fn alpha_fn(x: u32) -> u32 { x + 1 }\n")
@@ -94,26 +94,26 @@ fn watch_e2e_file_change_triggers_incremental() {
         .expect("写入 config.toml 失败");
 
     let config_path = repo.join("config.toml");
-    let root = repo_wiki::project::ProjectRoot::new(repo.clone());
+    let root = code_repo_wiki::project::ProjectRoot::new(repo.clone());
 
     // run_watch 是同步阻塞函数；tokio 运行时由 get_global_runtime 惰性创建，
     // 在非 runtime 线程调用 block_on 合法（watch 回调同样如此）。
     let thread_root = root.clone();
     let thread_config_path = config_path.clone();
     let handle = std::thread::spawn(move || {
-        repo_wiki::run_watch(Some(&thread_config_path), &thread_root).expect("run_watch 启动失败");
+        code_repo_wiki::run_watch(Some(&thread_config_path), &thread_root).expect("run_watch 启动失败");
     });
     // 设计说明：不 join（见上方诚实边界——测试进程无法注入 SIGINT；
     // stop_flag 退出语义由模块级单测覆盖）。drop JoinHandle = detach。
     drop(handle);
 
-    let api_path = repo.join(".repo-wiki").join("wiki").join("zh").join("api.md");
+    let api_path = repo.join(".code-repo-wiki").join("wiki").join("zh").join("api.md");
 
     // 第一步：等待初始全量生成完成（产物存在且含基线实体）
     wait_until(
         || read_opt(&api_path).is_some_and(|s| s.contains("alpha_fn")),
         Duration::from_millis(250),
-        "初始全量生成产物（.repo-wiki/wiki/zh/api.md 含 alpha_fn）",
+        "初始全量生成产物（.code-repo-wiki/wiki/zh/api.md 含 alpha_fn）",
     );
 
     // 第二步：修改 src/alpha.rs，追加新函数（新增实体 → api.md 变化）。
@@ -153,7 +153,7 @@ fn watch_e2e_file_change_triggers_incremental() {
 /// 跑全量解析过慢。
 #[test]
 fn insights_cache_size_reports() {
-    let dir = std::env::temp_dir().join(format!("repo_wiki_cache_size_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("code_repo_wiki_cache_size_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("创建临时目录失败");
 
@@ -162,12 +162,12 @@ fn insights_cache_size_reports() {
         std::fs::write(dir.join(format!("m{i}.rs")), content).expect("写入源文件失败");
     }
 
-    let root = repo_wiki::project::ProjectRoot::new(dir.clone());
-    let cache_path = dir.join(".repo-wiki").join(".state").join("insights_cache.json");
+    let root = code_repo_wiki::project::ProjectRoot::new(dir.clone());
+    let cache_path = dir.join(".code-repo-wiki").join(".state").join("insights_cache.json");
     let empty_changed = std::collections::HashSet::new();
 
     // 第一次：写缓存
-    let first = repo_wiki::ingest::scan_and_parse_cached_at(
+    let first = code_repo_wiki::ingest::scan_and_parse_cached_at(
         &root,
         &Some(cache_path.clone()),
         &empty_changed,
@@ -177,7 +177,7 @@ fn insights_cache_size_reports() {
     assert_eq!(first.len(), 10, "应解析出 10 个文件");
 
     // 第二次：缓存复用路径（不崩溃、结果一致）
-    let second = repo_wiki::ingest::scan_and_parse_cached_at(
+    let second = code_repo_wiki::ingest::scan_and_parse_cached_at(
         &root,
         &Some(cache_path.clone()),
         &empty_changed,
@@ -220,7 +220,7 @@ fn insights_cache_size_reports() {
 /// 即当前行为无功能损失，但存在路径形态隐患。
 #[test]
 fn watch_path_dot_slash_prefix_boundary() {
-    let repo = std::env::temp_dir().join(format!("repo_wiki_dot_prefix_{}", std::process::id()));
+    let repo = std::env::temp_dir().join(format!("code_repo_wiki_dot_prefix_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&repo);
     std::fs::create_dir_all(repo.join("src")).expect("创建临时仓库失败");
     let src_file = repo.join("src").join("foo.rs");
@@ -267,7 +267,7 @@ fn watch_path_dot_slash_prefix_boundary() {
         doc_comments: Vec::new(),
         source: std::fs::read_to_string(&src_file).unwrap(),
     };
-    let graph = repo_wiki::analysis::build_graph(std::slice::from_ref(&insight)).expect("构建 graph 失败");
+    let graph = code_repo_wiki::analysis::build_graph(std::slice::from_ref(&insight)).expect("构建 graph 失败");
     let config = watch_config(&repo);
     let state_dir = config.output_dir().join(".state");
 
@@ -286,10 +286,10 @@ fn watch_path_dot_slash_prefix_boundary() {
     };
     state.save(&state_dir).expect("保存状态失败");
 
-    let root = repo_wiki::project::ProjectRoot::new(repo.clone());
+    let root = code_repo_wiki::project::ProjectRoot::new(repo.clone());
 
     // 实验组：./ 前缀路径 → 原样透传 + 传播不命中（当前行为记录）
-    let dot_result = repo_wiki::incremental::run_incremental_update_at(
+    let dot_result = code_repo_wiki::incremental::run_incremental_update_at(
         &root,
         std::slice::from_ref(&insight),
         &graph,
@@ -309,7 +309,7 @@ fn watch_path_dot_slash_prefix_boundary() {
     );
 
     // 对照组：相对化成功形态（lib.rs 相对化后的结果）→ 传播命中
-    let ok_result = repo_wiki::incremental::run_incremental_update_at(
+    let ok_result = code_repo_wiki::incremental::run_incremental_update_at(
         &root,
         &[insight],
         &graph,

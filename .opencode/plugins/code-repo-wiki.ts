@@ -3,14 +3,14 @@ import { tool } from "@opencode-ai/plugin";
 import { execa } from "execa";
 
 /**
- * repo-wiki OpenCode 插件
+ * code-repo-wiki OpenCode 插件
  *
  * 提供：
  * - 16 个 Agent 工具：5 个查询工具（ast_search/wiki_search/wiki_query/wiki_generate/module_info）
  *   + 4 个知识卡片工具（card_generate/card_modify/card_supplement/card_rewrite）
  *   + 7 个 Wiki 管理工具（wiki_update/wiki_sync/wiki_status/wiki_export/wiki_note/wiki_lint/wiki_init）
  * - 自动调用 Rust CLI 核心引擎（execa）
- * - 从 .repo-wiki/ 读取现有卡片和 Wiki 数据
+ * - 从 .code-repo-wiki/ 读取现有卡片和 Wiki 数据
  *
  * 形状约束（opencode 1.18.10，务必保持）：
  * - 本模块必须**命名导出函数**（插件加载器要求模块导出函数或含 server() 的对象，
@@ -24,10 +24,10 @@ import { execa } from "execa";
  */
 
 export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
-    /** 调用 repo-wiki CLI 并返回结构化输出（stderr/非零退出不抛错，交由调用方处理） */
+    /** 调用 code-repo-wiki CLI 并返回结构化输出（stderr/非零退出不抛错，交由调用方处理） */
     async function runCli(args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
         try {
-            const { stdout, stderr, exitCode } = await execa("repo-wiki", args, {
+            const { stdout, stderr, exitCode } = await execa("code-repo-wiki", args, {
                 cwd: directory,
                 maxBuffer: 10 * 1024 * 1024,
                 reject: false,
@@ -42,26 +42,26 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
         }
     }
 
-    /** --config 值：root 是项目根目录（拼 root/.repo-wiki/config.toml），缺省用 cwd 相对路径 */
+    /** --config 值：root 是项目根目录（拼 root/.code-repo-wiki/config.toml），缺省用 cwd 相对路径 */
     function configPath(root?: string): string {
-        return root ? `${root}/.repo-wiki/config.toml` : ".repo-wiki/config.toml";
+        return root ? `${root}/.code-repo-wiki/config.toml` : ".code-repo-wiki/config.toml";
     }
 
     /**
      * --root 参数（A7）：所有支持 root 的工具必须显式传入。
      * config 里 output.dir/scope 等路径相对 cwd 解析，插件运行时 cwd 可能
      * 不是项目根——只传 --config 不传 --root 会让 status/lint/sync/note 等
-     * 以 cwd 解析产物目录而错位（找不到 .repo-wiki/.state 等）。
+     * 以 cwd 解析产物目录而错位（找不到 .code-repo-wiki/.state 等）。
      */
     function rootArg(root?: string): string[] {
         return root ? ["--root", root] : [];
     }
 
-    /** 从 .repo-wiki/cards/{lang}/ 读取 Knowledge Card（目录不存在时返回空列表） */
+    /** 从 .code-repo-wiki/cards/{lang}/ 读取 Knowledge Card（目录不存在时返回空列表） */
     async function readExistingCards(root?: string): Promise<Array<{ name: string; content: string }>> {
         const { readFileSync, existsSync, readdirSync } = await import("fs");
         const { join } = await import("path");
-        const cardsDir = join(root ?? directory, ".repo-wiki", "cards");
+        const cardsDir = join(root ?? directory, ".code-repo-wiki", "cards");
         if (!existsSync(cardsDir)) return [];
 
         try {
@@ -95,7 +95,7 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
         }
     }
 
-    /** 执行 `repo-wiki search` 并格式化为 Markdown 命中列表 */
+    /** 执行 `code-repo-wiki search` 并格式化为 Markdown 命中列表 */
     async function searchEntities(query: string, topK: number, engine: string | undefined, root?: string): Promise<string> {
         const cliArgs = [
             // N18：query 原样传参（execa 无 shell 直接 argv 传递，JSON.stringify
@@ -142,7 +142,7 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
                 reference: tool.schema.array(tool.schema.string()).optional()
                     .describe("参考文件路径列表（@ 引用的文件或显式路径）"),
                 root: tool.schema.string().optional()
-                    .describe("项目根目录（默认当前工作目录；提供时从 root/.repo-wiki/ 读写产物）"),
+                    .describe("项目根目录（默认当前工作目录；提供时从 root/.code-repo-wiki/ 读写产物）"),
             },
             execute: async (args) => {
                 const cliArgs = [
@@ -168,13 +168,13 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
             description,
             args: {
                 root: tool.schema.string().optional()
-                    .describe("项目根目录（默认当前工作目录；提供时从 root/.repo-wiki/ 读写产物）"),
+                    .describe("项目根目录（默认当前工作目录；提供时从 root/.code-repo-wiki/ 读写产物）"),
             },
             execute: async (args) => {
                 const result = await runCli([name, "--config", configPath(args.root), ...rootArg(args.root), ...extraArgs]);
                 return result.code === 0
-                    ? (result.stdout || `repo-wiki ${name} 完成`)
-                    : `repo-wiki ${name} 失败: ${result.stderr}`;
+                    ? (result.stdout || `code-repo-wiki ${name} 完成`)
+                    : `code-repo-wiki ${name} 失败: ${result.stderr}`;
             },
         });
     }
@@ -188,7 +188,7 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
                     symbol: tool.schema.string().describe("要查找的符号名（函数/结构体/trait/类等）"),
                     language: tool.schema.string().optional().describe("源语言（rust/python/go/...，省略时按扩展名推断）"),
                     root: tool.schema.string().optional()
-                        .describe("项目根目录（默认当前工作目录；提供时从 root/.repo-wiki/ 读写产物）"),
+                        .describe("项目根目录（默认当前工作目录；提供时从 root/.code-repo-wiki/ 读写产物）"),
                 },
                 execute: async (args) => {
                     if (!args.symbol) return "请提供要查找的符号名";
@@ -208,7 +208,7 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
                     engine: tool.schema.string().optional()
                         .describe("搜索引擎: text/semantic/hybrid（默认取配置文件 default_engine）"),
                     root: tool.schema.string().optional()
-                        .describe("项目根目录（默认当前工作目录；提供时从 root/.repo-wiki/ 读写产物）"),
+                        .describe("项目根目录（默认当前工作目录；提供时从 root/.code-repo-wiki/ 读写产物）"),
                 },
                 execute: async (args) => {
                     if (!args.query) return "请提供搜索关键词";
@@ -221,7 +221,7 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
                 args: {
                     query: tool.schema.string().describe("搜索关键词或模块名称"),
                     root: tool.schema.string().optional()
-                        .describe("项目根目录（默认当前工作目录；提供时从 root/.repo-wiki/ 读写产物）"),
+                        .describe("项目根目录（默认当前工作目录；提供时从 root/.code-repo-wiki/ 读写产物）"),
                 },
                 execute: async (args) => {
                     if (!args.query) return "请提供搜索关键词";
@@ -243,11 +243,11 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
             wiki_generate: tool({
                 description: "全量生成或更新项目 Wiki 文档（所有模块）",
                 args: {
-                    output: tool.schema.string().optional().describe("输出目录（默认 .repo-wiki）"),
+                    output: tool.schema.string().optional().describe("输出目录（默认 .code-repo-wiki）"),
                     force: tool.schema.boolean().optional()
                         .describe("清空人工修改保护集，强制覆盖所有文档"),
                     root: tool.schema.string().optional()
-                        .describe("项目根目录（默认当前工作目录；提供时从 root/.repo-wiki/ 读写产物）"),
+                        .describe("项目根目录（默认当前工作目录；提供时从 root/.code-repo-wiki/ 读写产物）"),
                 },
                 execute: async (args) => {
                     const cliArgs = ["generate", "--config", configPath(args.root), ...rootArg(args.root)];
@@ -265,7 +265,7 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
                 args: {
                     module: tool.schema.string().describe("模块路径"),
                     root: tool.schema.string().optional()
-                        .describe("项目根目录（默认当前工作目录；提供时从 root/.repo-wiki/ 读写产物）"),
+                        .describe("项目根目录（默认当前工作目录；提供时从 root/.code-repo-wiki/ 读写产物）"),
                 },
                 execute: async (args) => {
                     const cards = await readExistingCards(args.root);
@@ -281,7 +281,7 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
                 args: {
                     module: tool.schema.string().describe("模块名（如 crate::config）"),
                     root: tool.schema.string().optional()
-                        .describe("项目根目录（默认当前工作目录；提供时从 root/.repo-wiki/ 读写产物）"),
+                        .describe("项目根目录（默认当前工作目录；提供时从 root/.code-repo-wiki/ 读写产物）"),
                 },
                 execute: async (args) => {
                     const result = await runCli([
@@ -311,7 +311,7 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
                 args: {
                     text: tool.schema.string().describe("记录内容"),
                     root: tool.schema.string().optional()
-                        .describe("项目根目录（默认当前工作目录；提供时从 root/.repo-wiki/ 读写产物）"),
+                        .describe("项目根目录（默认当前工作目录；提供时从 root/.code-repo-wiki/ 读写产物）"),
                 },
                 execute: async (args) => {
                     if (!args.text || !args.text.trim()) return "请提供记录内容";
@@ -330,7 +330,7 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
                 description: "检查 Wiki 产物健康：孤儿页/断链/过时文档（发现问题时退出码非 0）",
                 args: {
                     root: tool.schema.string().optional()
-                        .describe("项目根目录（默认当前工作目录；提供时从 root/.repo-wiki/ 读写产物）"),
+                        .describe("项目根目录（默认当前工作目录；提供时从 root/.code-repo-wiki/ 读写产物）"),
                 },
                 execute: async (args) => {
                     const result = await runCli([
@@ -344,15 +344,15 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
             }),
             // init：引导缺失 config 场景（生成 schema 对齐的默认配置，供后续 generate/search 使用）
             wiki_init: tool({
-                description: "初始化 .repo-wiki/config.toml 默认配置文件（缺失 config 时的引导入口）",
+                description: "初始化 .code-repo-wiki/config.toml 默认配置文件（缺失 config 时的引导入口）",
                 args: {
                     root: tool.schema.string().optional()
-                        .describe("项目根目录（默认当前工作目录；提供时在 root/.repo-wiki/config.toml 处初始化）"),
+                        .describe("项目根目录（默认当前工作目录；提供时在 root/.code-repo-wiki/config.toml 处初始化）"),
                 },
                 execute: async (args) => {
                     // init 的子命令参数是配置文件路径（positional，无 --config）；
-                    // 指定 root 时在 root/.repo-wiki/config.toml 处初始化，否则用 CLI 默认路径
-                    const cliArgs = args.root ? ["init", `${args.root}/.repo-wiki/config.toml`] : ["init"];
+                    // 指定 root 时在 root/.code-repo-wiki/config.toml 处初始化，否则用 CLI 默认路径
+                    const cliArgs = args.root ? ["init", `${args.root}/.code-repo-wiki/config.toml`] : ["init"];
                     const result = await runCli(cliArgs);
                     return result.code === 0
                         ? (result.stdout || "默认配置文件已创建")

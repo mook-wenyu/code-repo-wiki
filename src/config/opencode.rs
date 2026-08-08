@@ -1,6 +1,6 @@
 //! OpenCode 配置读写模块
 //!
-//! 管理 repo-wiki 插件在 opencode.json 中的注册状态。
+//! 管理 code-repo-wiki 插件在 opencode.json 中的注册状态。
 //! 搜索顺序：项目根 .opencode.json → ~/.config/opencode/opencode.json
 //!
 //! 使用 serde_json::Value 操作 JSON，不依赖 OpenCode 的 schema 类型，
@@ -56,7 +56,7 @@ impl OpenCodeConfig {
         })
     }
 
-    /// 安装 repo-wiki 插件
+    /// 安装 code-repo-wiki 插件
     ///
     /// 插件目录自动加载，无需配置条目；本方法仅**幂等清理**配置中
     /// 历史遗留的无效 `plugins` 键（opencode 1.18.10 解析会报
@@ -99,14 +99,14 @@ impl OpenCodeConfig {
         std::fs::write(&self.config_path, &output)
             .with_context(|| format!("写入配置文件失败: {}", self.config_path.display()))?;
 
-        tracing::info!("repo-wiki 插件已就绪（目录自动加载，无需配置条目）");
+        tracing::info!("code-repo-wiki 插件已就绪（目录自动加载，无需配置条目）");
         Ok(())
     }
 
-    /// 从 opencode.json 卸载 repo-wiki 插件（清理无效 plugins 键）
+    /// 从 opencode.json 卸载 code-repo-wiki 插件（清理无效 plugins 键）
     ///
     /// opencode 对插件是目录自动加载，卸载插件的实际动作是删除
-    /// `.opencode/plugins/repo-wiki.ts` 文件（由用户决定，不在此处执行）；
+    /// `.opencode/plugins/code-repo-wiki.ts` 文件（由用户决定，不在此处执行）；
     /// 本方法仅保证配置不含历史遗留的无效键。
     pub fn uninstall_plugin(&mut self) -> Result<()> {
         if !self.config_path.exists() {
@@ -136,11 +136,11 @@ impl OpenCodeConfig {
                 .with_context(|| format!("写入配置文件失败: {}", self.config_path.display()))?;
         }
 
-        tracing::info!("repo-wiki 插件配置已清理: {}", self.config_path.display());
+        tracing::info!("code-repo-wiki 插件配置已清理: {}", self.config_path.display());
         Ok(())
     }
 
-    /// 检查插件是否已安装（插件文件 `.opencode/plugins/repo-wiki.ts` 是否存在）
+    /// 检查插件是否已安装（插件文件 `.opencode/plugins/code-repo-wiki.ts` 是否存在）
     ///
     /// 以文件存在性为准：opencode 目录自动加载，配置文件不再承载注册信息。
     /// N10：官方加载器 glob 为 `{plugin,plugins}/*.{ts,js}`——单复数目录
@@ -151,7 +151,7 @@ impl OpenCodeConfig {
                 .project_root
                 .join(".opencode")
                 .join(dir)
-                .join("repo-wiki.ts");
+                .join("code-repo-wiki.ts");
             if plugin_file.exists() {
                 return Ok(true);
             }
@@ -159,9 +159,9 @@ impl OpenCodeConfig {
         Ok(false)
     }
 
-    /// 将插件模板写入 `{project_root}/.opencode/plugins/repo-wiki.ts`
+    /// 将插件模板写入 `{project_root}/.opencode/plugins/code-repo-wiki.ts`
     ///
-    /// v33 升级语义（用户拍板「带标记则升级」）：插件文件是 repo-wiki
+    /// v33 升级语义（用户拍板「带标记则升级」）：插件文件是 code-repo-wiki
     /// 专属产物（文件名即标记），内容与最新模板（注入当前 exe 绝对路径）
     /// 不同即覆盖升级（旧版本模板/二进制路径变化）；相同则跳过。
     /// 返回是否实际写入。模板经 include_str 内嵌编译（见下方实现注释：
@@ -171,9 +171,9 @@ impl OpenCodeConfig {
             .project_root
             .join(".opencode")
             .join("plugins")
-            .join("repo-wiki.ts");
+            .join("code-repo-wiki.ts");
         // t02（v16）：PATH 硬依赖根治——把模板中 execa 的二进制名替换为
-        // 当前进程的绝对路径。插件经 execa("repo-wiki", ...) 调 CLI，二进制
+        // 当前进程的绝对路径。插件经 execa("code-repo-wiki", ...) 调 CLI，二进制
         // 不在 PATH 时（cargo install 目标目录未入 PATH、便携部署等）16 个
         // 工具全部 ENOENT 失效。install 时注入 current_exe() 绝对路径，
         // 插件不再依赖 PATH。只替换 execa 首参（模板中该字面量唯一）；
@@ -184,15 +184,15 @@ impl OpenCodeConfig {
             serde_json::to_string(&exe_path.to_string_lossy().to_string())
                 .with_context(|| "序列化可执行文件路径失败")?;
         let template = {
-            // 模板内嵌编译（include_str）：插件模板只含 execa("repo-wiki")
+            // 模板内嵌编译（include_str）：插件模板只含 execa("code-repo-wiki")
             // 占位（下方注入 current_exe 绝对路径），不含任何编译期路径，
             // 因此发布安装/仓库移动/uninstall 删除安装产物后仍可生成。
-            // （v33 修复：旧实现运行时读仓库内 .opencode/plugins/repo-wiki.ts
+            // （v33 修复：旧实现运行时读仓库内 .opencode/plugins/code-repo-wiki.ts
             // 作为模板源——uninstall 删除该安装产物后模板源同时丢失，
             // 再次 install 直接失败；模板与安装目标同路径是自举缺陷）
-            let raw = include_str!("../../.opencode/plugins/repo-wiki.ts");
+            let raw = include_str!("../../.opencode/plugins/code-repo-wiki.ts");
             raw.replace(
-                "execa(\"repo-wiki\"",
+                "execa(\"code-repo-wiki\"",
                 &format!("execa({exe_json}"),
             )
         };
@@ -213,7 +213,7 @@ impl OpenCodeConfig {
         Ok(true)
     }
 
-    /// 删除插件文件 `.opencode/plugins/repo-wiki.ts`
+    /// 删除插件文件 `.opencode/plugins/code-repo-wiki.ts`
     ///
     /// 文件不存在时静默成功（幂等，与 uninstall_plugin 语义一致）。
     pub fn uninstall_plugin_file(&mut self) -> Result<()> {
@@ -221,7 +221,7 @@ impl OpenCodeConfig {
             .project_root
             .join(".opencode")
             .join("plugins")
-            .join("repo-wiki.ts");
+            .join("code-repo-wiki.ts");
         match std::fs::remove_file(&plugin_path) {
             Ok(()) => {
                 tracing::info!("插件文件已删除: {}", plugin_path.display());
@@ -272,7 +272,7 @@ mod tests {
     /// 在临时目录中创建模拟的 opencode.json（每个测试独立目录，防并行冲突）
     fn setup_temp_config(initial: Option<&str>) -> (PathBuf, PathBuf) {
         let id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("repo-wiki-opencode-test-{}-{}", std::process::id(), id));
+        let dir = std::env::temp_dir().join(format!("code-repo-wiki-opencode-test-{}-{}", std::process::id(), id));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("创建临时目录失败");
         let path = dir.join("opencode.json");
@@ -284,11 +284,11 @@ mod tests {
         (dir, path)
     }
 
-    /// 在临时目录创建插件文件（.opencode/plugins/repo-wiki.ts），返回 (目录, 文件路径)
+    /// 在临时目录创建插件文件（.opencode/plugins/code-repo-wiki.ts），返回 (目录, 文件路径)
     fn setup_plugin_file(dir: &Path) -> PathBuf {
         let plugin_dir = dir.join(".opencode").join("plugins");
         std::fs::create_dir_all(&plugin_dir).expect("创建插件目录失败");
-        let path = plugin_dir.join("repo-wiki.ts");
+        let path = plugin_dir.join("code-repo-wiki.ts");
         std::fs::write(&path, "export const RepoWikiPlugin = () => ({});").expect("写入插件文件失败");
         path
     }
@@ -296,7 +296,7 @@ mod tests {
     /// install 应幂等清理历史遗留的无效 plugins 键（旧版本错误写入的复数对象数组）
     #[test]
     fn test_install_plugin_removes_invalid_plugins_key() {
-        let initial = r#"{"plugins":[{"name":"repo-wiki","path":".opencode/plugins/repo-wiki.ts","enabled":true}]}"#;
+        let initial = r#"{"plugins":[{"name":"code-repo-wiki","path":".opencode/plugins/code-repo-wiki.ts","enabled":true}]}"#;
         let (dir, path) = setup_temp_config(Some(initial));
         let mut config = OpenCodeConfig { config_path: path.clone(), project_root: dir.clone() };
 
@@ -343,7 +343,7 @@ mod tests {
     /// uninstall 清理无效 plugins 键且保留其他合法键
     #[test]
     fn test_uninstall_plugin_removes_invalid_key_preserves_others() {
-        let initial = r#"{"plugins":[{"name":"repo-wiki","enabled":true}],"theme":"dark"}"#;
+        let initial = r#"{"plugins":[{"name":"code-repo-wiki","enabled":true}],"theme":"dark"}"#;
         let (dir, path) = setup_temp_config(Some(initial));
         let mut config = OpenCodeConfig { config_path: path.clone(), project_root: dir.clone() };
 
@@ -386,7 +386,7 @@ mod tests {
     #[test]
     fn test_is_installed_when_plugin_file_missing() {
         let (dir, _) = setup_temp_config(None);
-        // 临时目录没有 .opencode/plugins/repo-wiki.ts
+        // 临时目录没有 .opencode/plugins/code-repo-wiki.ts
         let config = OpenCodeConfig {
             config_path: dir.join("opencode.json"),
             project_root: dir.clone(),
@@ -402,7 +402,7 @@ mod tests {
         let (dir, _) = setup_temp_config(None);
         let plugin_dir = dir.join(".opencode").join("plugin");
         std::fs::create_dir_all(&plugin_dir).unwrap();
-        std::fs::write(plugin_dir.join("repo-wiki.ts"), "export const RepoWikiPlugin = () => ({});").unwrap();
+        std::fs::write(plugin_dir.join("code-repo-wiki.ts"), "export const RepoWikiPlugin = () => ({});").unwrap();
         let config = OpenCodeConfig {
             config_path: dir.join("opencode.json"),
             project_root: dir.clone(),
@@ -460,7 +460,7 @@ mod tests {
     }
 
     /// t02（v16）：install_plugin_file 注入当前可执行文件绝对路径——
-    /// 插件不再依赖 PATH（exec 目标为注入路径而非 "repo-wiki" 字面量）
+    /// 插件不再依赖 PATH（exec 目标为注入路径而非 "code-repo-wiki" 字面量）
     #[test]
     fn test_install_plugin_file_injects_absolute_exe_path() {
         let (dir, _) = setup_temp_config(None);
@@ -469,7 +469,7 @@ mod tests {
         let wrote = config.install_plugin_file().unwrap();
         assert!(wrote, "首次安装应实际写入插件文件");
 
-        let plugin_path = dir.join(".opencode").join("plugins").join("repo-wiki.ts");
+        let plugin_path = dir.join(".opencode").join("plugins").join("code-repo-wiki.ts");
         let content = std::fs::read_to_string(&plugin_path).unwrap();
 
         // 注入的路径 = 测试进程可执行文件（current_exe 语义），JSON 转义后嵌入
@@ -482,7 +482,7 @@ mod tests {
             content.chars().take(400).collect::<String>()
         );
         assert!(
-            !content.contains("execa(\"repo-wiki\""),
+            !content.contains("execa(\"code-repo-wiki\""),
             "PATH 字面量版本不应残留"
         );
 

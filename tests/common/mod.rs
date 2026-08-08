@@ -30,7 +30,7 @@ static DIR_SEQ: AtomicUsize = AtomicUsize::new(0);
 /// 不同测试二进制进程 pid 不同）。与原各文件实现形态一致。
 pub fn unique_dir(name: &str) -> PathBuf {
     let seq = DIR_SEQ.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("repo_wiki_{}_{}_{}", name, std::process::id(), seq))
+    std::env::temp_dir().join(format!("code_repo_wiki_{}_{}_{}", name, std::process::id(), seq))
 }
 
 /// 递归复制目录（fixture 复制用）
@@ -47,7 +47,7 @@ pub fn copy_dir(src: &Path, dst: &Path) {
     }
 }
 
-/// 在指定目录下执行 repo-wiki 二进制，返回完整输出
+/// 在指定目录下执行 code-repo-wiki 二进制，返回完整输出
 ///
 /// 固定行为：关闭 tracing 日志（保证 stdout 只有业务输出）、
 /// 移除宿主机 OPENAI_API_KEY（避免真实 Key 被误用）。
@@ -57,7 +57,7 @@ pub fn run_bin(dir: &Path, args: &[&str]) -> Output {
 
 /// 带环境变量注入的二进制执行（隔离宿主环境用，如 HOME/USERPROFILE）
 pub fn run_bin_with_envs(dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_repo-wiki"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_code-repo-wiki"));
     cmd.args(args)
         .current_dir(dir)
         .env("RUST_LOG", "off") // 关闭 tracing 日志，保证 stdout 只有业务输出
@@ -65,12 +65,12 @@ pub fn run_bin_with_envs(dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> Ou
     for (k, v) in envs {
         cmd.env(k, v);
     }
-    cmd.output().expect("执行 repo-wiki 二进制失败")
+    cmd.output().expect("执行 code-repo-wiki 二进制失败")
 }
 
 /// mock provider 配置模板（v19 t04：output.dir 强制绝对路径）
 ///
-/// 调用方必须传临时目录的绝对路径（如 `unique_dir("x").join(".repo-wiki")`
+/// 调用方必须传临时目录的绝对路径（如 `unique_dir("x").join(".code-repo-wiki")`
 /// 的字符串形式）。相对路径依赖进程 cwd——watch 常驻、CI 目录漂移或
 /// 并行测试时可能解析到仓库根，把产物泄漏进工作区（v13 C2 曾清理过
 /// 仓库根 wiki/ 泄漏）。mock provider 不触网，无需 mock server。

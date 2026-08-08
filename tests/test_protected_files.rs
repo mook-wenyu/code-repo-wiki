@@ -5,7 +5,7 @@ use std::collections::HashMap;
 /// 验证 doc_fingerprints 与 protected_docs 默认空
 #[test]
 fn test_doc_fingerprints_default_empty() {
-    use repo_wiki::incremental::state::GenerationState;
+    use code_repo_wiki::incremental::state::GenerationState;
     let state = GenerationState {
         last_commit_hash: None,
         file_fingerprints: HashMap::new(),
@@ -23,10 +23,10 @@ fn test_doc_fingerprints_default_empty() {
 /// 验证 record_doc_fingerprints 能正确记录文件指纹
 #[test]
 fn test_record_doc_fingerprints() {
-    use repo_wiki::model::{WikiDocument, Reference, DocumentKind};
-    use repo_wiki::incremental::state::GenerationState;
+    use code_repo_wiki::model::{WikiDocument, Reference, DocumentKind};
+    use code_repo_wiki::incremental::state::GenerationState;
 
-    let dir = std::env::temp_dir().join(format!("repo_wiki_test_doc_fp_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_doc_fp_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("wiki").join("zh")).unwrap();
 
@@ -60,9 +60,9 @@ fn test_record_doc_fingerprints() {
 /// 验证手动修改文档后被检测到
 #[test]
 fn test_detect_manual_edit() {
-    use repo_wiki::incremental::state::GenerationState;
+    use code_repo_wiki::incremental::state::GenerationState;
 
-    let dir = std::env::temp_dir().join(format!("repo_wiki_test_manual_edit_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_manual_edit_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
 
@@ -86,14 +86,14 @@ fn test_detect_manual_edit() {
 
     // 未修改 —— 不应标记为变更
     let is_changed = state
-        .is_file_changed(&repo_wiki::project::ProjectRoot::new(dir.clone()), &file_path)
+        .is_file_changed(&code_repo_wiki::project::ProjectRoot::new(dir.clone()), &file_path)
         .unwrap();
     assert!(!is_changed);
 
     // 手动修改
     std::fs::write(&file_path, "modified by user").unwrap();
     let is_changed = state
-        .is_file_changed(&repo_wiki::project::ProjectRoot::new(dir.clone()), &file_path)
+        .is_file_changed(&code_repo_wiki::project::ProjectRoot::new(dir.clone()), &file_path)
         .unwrap();
     assert!(is_changed);
 
@@ -103,9 +103,9 @@ fn test_detect_manual_edit() {
 /// detect_manually_modified：指纹匹配 → 空；内容被改 → 命中
 #[test]
 fn test_detect_manually_modified() {
-    use repo_wiki::incremental::state::GenerationState;
+    use code_repo_wiki::incremental::state::GenerationState;
 
-    let dir = std::env::temp_dir().join(format!("repo_wiki_test_detect_modified_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_detect_modified_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
 
@@ -146,10 +146,10 @@ fn test_detect_manually_modified() {
 /// render_all 传保护集：被保护文档不写盘，其余文档正常写盘
 #[test]
 fn test_render_all_protected_skips() {
-    use repo_wiki::config::schema::{WikiConfig, WikiSection};
-    use repo_wiki::model::{WikiDocument, DocumentKind, KnowledgeGraph};
+    use code_repo_wiki::config::schema::{WikiConfig, WikiSection};
+    use code_repo_wiki::model::{WikiDocument, DocumentKind, KnowledgeGraph};
 
-    let dir = std::env::temp_dir().join(format!("repo_wiki_test_render_protected_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_render_protected_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
 
     let doc = WikiDocument {
@@ -173,7 +173,7 @@ fn test_render_all_protected_skips() {
     let protected_path = dir.join("wiki").join("zh").join("foo.md").to_string_lossy().to_string();
     let protected: std::collections::HashSet<String> = [protected_path].into_iter().collect();
 
-    repo_wiki::output::render_all(&[doc], &[], &KnowledgeGraph::default(), &config, &protected).unwrap();
+    code_repo_wiki::output::render_all(&[doc], &[], &KnowledgeGraph::default(), &config, &protected).unwrap();
 
     // 被保护文档不写盘
     assert!(!dir.join("wiki").join("zh").join("foo.md").exists());
@@ -187,10 +187,10 @@ fn test_render_all_protected_skips() {
 /// 保护只跳过页面写盘，不连带跳过卡片的 pending_manual_edits 写入
 #[test]
 fn test_render_all_protected_page_still_writes_card() {
-    use repo_wiki::config::schema::{WikiConfig, WikiSection};
-    use repo_wiki::model::{WikiDocument, DocumentKind, KnowledgeCard, KnowledgeGraph};
+    use code_repo_wiki::config::schema::{WikiConfig, WikiSection};
+    use code_repo_wiki::model::{WikiDocument, DocumentKind, KnowledgeCard, KnowledgeGraph};
 
-    let dir = std::env::temp_dir().join(format!("repo_wiki_test_protected_card_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_protected_card_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
 
     let doc = WikiDocument {
@@ -229,7 +229,7 @@ fn test_render_all_protected_page_still_writes_card() {
     let protected_path = dir.join("wiki").join("zh").join("foo.md").to_string_lossy().to_string();
     let protected: std::collections::HashSet<String> = [protected_path].into_iter().collect();
 
-    repo_wiki::output::render_all(&[doc], &[card], &KnowledgeGraph::default(), &config, &protected).unwrap();
+    code_repo_wiki::output::render_all(&[doc], &[card], &KnowledgeGraph::default(), &config, &protected).unwrap();
 
     // 页面被保护不写盘
     assert!(!dir.join("wiki").join("zh").join("foo.md").exists());
@@ -244,11 +244,11 @@ fn test_render_all_protected_page_still_writes_card() {
 /// schema 文档（title 含 / 与 :，module_path 为空）的指纹路径与 render_all 写盘路径一致
 #[test]
 fn test_schema_doc_fingerprint_path_matches_render_all() {
-    use repo_wiki::config::schema::{WikiConfig, WikiSection};
-    use repo_wiki::incremental::state::GenerationState;
-    use repo_wiki::model::{WikiDocument, DocumentKind, KnowledgeGraph};
+    use code_repo_wiki::config::schema::{WikiConfig, WikiSection};
+    use code_repo_wiki::incremental::state::GenerationState;
+    use code_repo_wiki::model::{WikiDocument, DocumentKind, KnowledgeGraph};
 
-    let dir = std::env::temp_dir().join(format!("repo_wiki_test_fp_schema_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_fp_schema_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
 
     let doc = WikiDocument {
@@ -270,7 +270,7 @@ fn test_schema_doc_fingerprint_path_matches_render_all() {
     };
 
     // 先渲染写盘，再记录指纹
-    repo_wiki::output::render_all(std::slice::from_ref(&doc), &[], &KnowledgeGraph::default(), &config, &std::collections::HashSet::new()).unwrap();
+    code_repo_wiki::output::render_all(std::slice::from_ref(&doc), &[], &KnowledgeGraph::default(), &config, &std::collections::HashSet::new()).unwrap();
 
     // 写盘路径：title 中 / 与 : 替换为 -（与 wiki_file_name 一致）
     let written = dir.join("wiki").join("zh").join("Database Schema- src-db.rs.md");
@@ -290,11 +290,11 @@ fn test_schema_doc_fingerprint_path_matches_render_all() {
 }
 #[test]
 fn test_doc_fingerprint_path_matches_render_all() {
-    use repo_wiki::config::schema::{WikiConfig, WikiSection};
-    use repo_wiki::incremental::state::GenerationState;
-    use repo_wiki::model::{WikiDocument, DocumentKind, KnowledgeGraph};
+    use code_repo_wiki::config::schema::{WikiConfig, WikiSection};
+    use code_repo_wiki::incremental::state::GenerationState;
+    use code_repo_wiki::model::{WikiDocument, DocumentKind, KnowledgeGraph};
 
-    let dir = std::env::temp_dir().join(format!("repo_wiki_test_fp_path_match_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_fp_path_match_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
 
     let doc = WikiDocument {
@@ -316,7 +316,7 @@ fn test_doc_fingerprint_path_matches_render_all() {
     };
 
     // 先渲染写盘，再记录指纹
-    repo_wiki::output::render_all(std::slice::from_ref(&doc), &[], &KnowledgeGraph::default(), &config, &std::collections::HashSet::new()).unwrap();
+    code_repo_wiki::output::render_all(std::slice::from_ref(&doc), &[], &KnowledgeGraph::default(), &config, &std::collections::HashSet::new()).unwrap();
 
     let languages = vec!["zh".to_string()];
     let (fps, _modules) = GenerationState::record_doc_fingerprints(&[doc], &[], &dir, &languages).unwrap();
@@ -338,11 +338,11 @@ fn test_doc_fingerprint_path_matches_render_all() {
 /// （doc_modules）→ collect_manual_edits 组装记录 → 生成前注入卡片。
 #[test]
 fn test_manual_edit_recorded_in_card() {
-    use repo_wiki::incremental::state::GenerationState;
-    use repo_wiki::model::KnowledgeCard;
+    use code_repo_wiki::incremental::state::GenerationState;
+    use code_repo_wiki::model::KnowledgeCard;
 
     let dir = std::env::temp_dir()
-        .join(format!("repo_wiki_test_manual_card_{}", std::process::id()));
+        .join(format!("code_repo_wiki_test_manual_card_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("wiki").join("zh")).unwrap();
 
@@ -367,7 +367,7 @@ fn test_manual_edit_recorded_in_card() {
 
 
     // 注入前：无记录时卡片渲染不含该节（避免空节）
-    let before = repo_wiki::output::markdown::render_knowledge_card(&card);
+    let before = code_repo_wiki::output::markdown::render_knowledge_card(&card);
     assert!(!before.contains("人工修改待同步"), "注入前不应渲染人工修改待同步节");
 
     // 构造旧状态：页面指纹与磁盘不一致（人工修改）+ 模块归属映射
@@ -392,7 +392,7 @@ fn test_manual_edit_recorded_in_card() {
     };
 
     // 增量管道：检测到的人工修改组装为模块级记录（精确匹配模块名）
-    let edits = repo_wiki::collect_manual_edits(Some(&state));
+    let edits = code_repo_wiki::collect_manual_edits(Some(&state));
     let notes = edits.get("src::testmodule").expect("应命中 src::testmodule 的记录");
     assert_eq!(notes.len(), 1, "对应模块应出现一条人工修改记录");
     assert!(notes[0].contains("src_testmodule.md"), "记录应含修改页路径: {}", notes[0]);
@@ -402,7 +402,7 @@ fn test_manual_edit_recorded_in_card() {
     card.pending_manual_edits = notes.clone();
 
     // 渲染层：注入后的卡片 markdown 包含"人工修改待同步"节与记录
-    let rendered = repo_wiki::output::markdown::render_knowledge_card(&card);
+    let rendered = code_repo_wiki::output::markdown::render_knowledge_card(&card);
     assert!(rendered.contains("## 人工修改待同步"), "卡片渲染应包含人工修改待同步节");
     assert!(rendered.contains("src_testmodule.md"), "卡片渲染应包含修改页路径");
     assert!(rendered.contains("人工修改后的内容"), "卡片渲染应包含内容摘要");
@@ -414,10 +414,10 @@ fn test_manual_edit_recorded_in_card() {
 /// （生成路径与磁盘直写路径两条腿，保证任意更新形态下反向同步不丢）
 #[test]
 fn test_manual_edit_synced_to_card_without_code_change() {
-    use repo_wiki::incremental::state::GenerationState;
+    use code_repo_wiki::incremental::state::GenerationState;
 
     let dir = std::env::temp_dir()
-        .join(format!("repo_wiki_test_manual_sync_{}", std::process::id()));
+        .join(format!("code_repo_wiki_test_manual_sync_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("cards").join("zh")).unwrap();
     std::fs::create_dir_all(dir.join("wiki").join("zh")).unwrap();
@@ -450,9 +450,9 @@ fn test_manual_edit_synced_to_card_without_code_change() {
     };
 
     // 配置：卡片写盘路径（主语言 zh）与产物目录一致
-    let config = repo_wiki::config::schema::WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
+    let config = code_repo_wiki::config::schema::WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
 
-    let synced = repo_wiki::sync_manual_edits_to_cards(&config, &state).unwrap();
+    let synced = code_repo_wiki::sync_manual_edits_to_cards(&config, &state).unwrap();
     assert_eq!(synced, 1, "应同步一张卡片");
 
     // 卡片文件出现"人工修改待同步"节与记录
@@ -462,7 +462,7 @@ fn test_manual_edit_synced_to_card_without_code_change() {
     assert!(content.contains("人工修改后的内容"), "卡片应包含内容摘要");
 
     // 幂等：再次同步不重复追加
-    let synced2 = repo_wiki::sync_manual_edits_to_cards(&config, &state).unwrap();
+    let synced2 = code_repo_wiki::sync_manual_edits_to_cards(&config, &state).unwrap();
     assert_eq!(synced2, 0, "记录已存在时不应重复同步");
     let content2 = std::fs::read_to_string(&card_path).unwrap();
     assert_eq!(content2, content, "幂等同步不应改变卡片内容");
@@ -475,10 +475,10 @@ fn test_manual_edit_synced_to_card_without_code_change() {
 /// 会把被删卡片"复活"成只含人工修改节的残片）
 #[test]
 fn test_manual_edit_sync_skips_missing_card() {
-    use repo_wiki::incremental::state::GenerationState;
+    use code_repo_wiki::incremental::state::GenerationState;
 
     let dir = std::env::temp_dir()
-        .join(format!("repo_wiki_test_manual_sync_missing_{}", std::process::id()));
+        .join(format!("code_repo_wiki_test_manual_sync_missing_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("wiki").join("zh")).unwrap();
 
@@ -506,9 +506,9 @@ fn test_manual_edit_sync_skips_missing_card() {
         failed_modules: vec![],
     };
 
-    let config = repo_wiki::config::schema::WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
+    let config = code_repo_wiki::config::schema::WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
 
-    let synced = repo_wiki::sync_manual_edits_to_cards(&config, &state).unwrap();
+    let synced = code_repo_wiki::sync_manual_edits_to_cards(&config, &state).unwrap();
     assert_eq!(synced, 0, "卡片缺失时应跳过，不得凭空创建");
 
     let card_path = dir.join("cards").join("zh").join("src_testmodule.md");

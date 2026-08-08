@@ -16,9 +16,9 @@
 //!
 //! 纯函数级测试：直接构造 FileInsight 内存对象，无文件 IO、无网络、无 mock。
 
-use repo_wiki::analysis::graph::build;
-use repo_wiki::ingest::parser::{Entity, FileInsight, ImportStmt};
-use repo_wiki::model::{EdgeKind, KnowledgeGraph, NodeKind, NodeId};
+use code_repo_wiki::analysis::graph::build;
+use code_repo_wiki::ingest::parser::{Entity, FileInsight, ImportStmt};
+use code_repo_wiki::model::{EdgeKind, KnowledgeGraph, NodeKind, NodeId};
 use std::path::PathBuf;
 
 // petgraph 的 EdgeRef trait 提供 EdgeReference::target()/source() 方法，

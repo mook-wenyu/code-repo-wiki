@@ -1,12 +1,12 @@
 //! install/uninstall 插件与 MCP 闭环测试（票 05 + v33 合并版）
 //!
-//! 通过 env!("CARGO_BIN_EXE_repo-wiki") 调用真实二进制，覆盖：
-//! 1. install 写入 .opencode/plugins/repo-wiki.ts（含 RepoWikiPlugin 实现，
+//! 通过 env!("CARGO_BIN_EXE_code-repo-wiki") 调用真实二进制，覆盖：
+//! 1. install 写入 .opencode/plugins/code-repo-wiki.ts（含 RepoWikiPlugin 实现，
 //!    重复 install 幂等：内容一致不重写（mtime/内容不变））
 //! 2. install 注册 OpenCode MCP 到用户级全局 opencode.json（v33 拍板：
 //!    用户级 mcp 块，type=local + command=当前 exe 绝对路径）
 //! 3. install 不在项目级自动创建配置文件（v24：配置属非项目内容）
-//! 4. uninstall --force 删除插件文件 + 移除 MCP 条目，但保留 .repo-wiki/ 数据
+//! 4. uninstall --force 删除插件文件 + 移除 MCP 条目，但保留 .code-repo-wiki/ 数据
 //! 5. v33 升级语义：旧版本插件模板内容被 install 覆盖升级（不再保留跳过）
 //!
 //! install/uninstall 会读写 opencode 全局配置，一律隔离 HOME/USERPROFILE
@@ -39,7 +39,7 @@ fn setup(tag: &str) -> (PathBuf, PathBuf, Vec<(&'static str, String)>) {
 
 /// 插件文件路径（相对工作目录）
 fn plugin_file(work_dir: &Path) -> PathBuf {
-    work_dir.join(".opencode").join("plugins").join("repo-wiki.ts")
+    work_dir.join(".opencode").join("plugins").join("code-repo-wiki.ts")
 }
 
 /// 用户级 opencode.json 路径（隔离 HOME 下）
@@ -82,9 +82,9 @@ fn test_install_writes_plugin_file_and_registers_mcp() {
     let oc_content = std::fs::read_to_string(&oc_path)
         .unwrap_or_else(|e| panic!("用户级 opencode.json 应写入 {}: {}", oc_path.display(), e));
     let oc: serde_json::Value = serde_json::from_str(&oc_content).expect("opencode.json 应为合法 JSON");
-    let entry = &oc["mcp"]["repo-wiki"];
+    let entry = &oc["mcp"]["code-repo-wiki"];
     assert_eq!(entry["type"], "local", "MCP 条目应为 local 类型");
-    assert_eq!(entry["command"][0], env!("CARGO_BIN_EXE_repo-wiki"), "command 应为当前可执行文件绝对路径");
+    assert_eq!(entry["command"][0], env!("CARGO_BIN_EXE_code-repo-wiki"), "command 应为当前可执行文件绝对路径");
     assert_eq!(entry["command"][1], "mcp");
     assert_eq!(entry["enabled"], true);
 
@@ -124,9 +124,9 @@ fn test_install_does_not_create_project_config() {
         config_path.display()
     );
     assert!(
-        !work_dir.join(".repo-wiki").exists(),
+        !work_dir.join(".code-repo-wiki").exists(),
         "install 不得创建产物/配置目录: {}",
-        work_dir.join(".repo-wiki").display()
+        work_dir.join(".code-repo-wiki").display()
     );
     // 用户级配置确保（v25 语义）在隔离 HOME 下创建
     assert!(
@@ -138,7 +138,7 @@ fn test_install_does_not_create_project_config() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// uninstall --force 删除插件文件并移除 MCP 条目，但保留 .repo-wiki/ 数据目录
+/// uninstall --force 删除插件文件并移除 MCP 条目，但保留 .code-repo-wiki/ 数据目录
 /// （v24：install 不再创建项目级配置/产物，此处预置数据目录模拟已有产物）
 #[test]
 fn test_uninstall_removes_plugin_file_and_mcp() {
@@ -150,8 +150,8 @@ fn test_uninstall_removes_plugin_file_and_mcp() {
     assert!(plugin_file(&work_dir).exists(), "install 后插件文件应存在");
 
     // 预置产物数据目录（模拟用户已有 wiki 产物——uninstall 不得触碰）
-    std::fs::create_dir_all(work_dir.join(".repo-wiki").join("wiki")).unwrap();
-    std::fs::write(work_dir.join(".repo-wiki").join("wiki").join("sentinel.md"), "data").unwrap();
+    std::fs::create_dir_all(work_dir.join(".code-repo-wiki").join("wiki")).unwrap();
+    std::fs::write(work_dir.join(".code-repo-wiki").join("wiki").join("sentinel.md"), "data").unwrap();
 
     let out = run_bin_with_envs(&work_dir, &["uninstall", "--force"], &envs_ref);
     assert!(
@@ -167,12 +167,12 @@ fn test_uninstall_removes_plugin_file_and_mcp() {
     let oc_content = std::fs::read_to_string(opencode_config(&home)).unwrap();
     let oc: serde_json::Value = serde_json::from_str(&oc_content).expect("opencode.json 应为合法 JSON");
     assert!(
-        oc.get("mcp").and_then(|m| m.get("repo-wiki")).is_none(),
+        oc.get("mcp").and_then(|m| m.get("code-repo-wiki")).is_none(),
         "uninstall 后 MCP 条目应移除"
     );
     assert!(
-        work_dir.join(".repo-wiki").join("wiki").join("sentinel.md").exists(),
-        "uninstall 应保留 .repo-wiki/ 数据目录"
+        work_dir.join(".code-repo-wiki").join("wiki").join("sentinel.md").exists(),
+        "uninstall 应保留 .code-repo-wiki/ 数据目录"
     );
 
     let _ = std::fs::remove_dir_all(&work_dir);
@@ -180,19 +180,19 @@ fn test_uninstall_removes_plugin_file_and_mcp() {
 }
 
 /// v33 升级语义：已存在的旧版本插件模板被 install 覆盖升级
-/// （内容比对——旧模板含 execa("repo-wiki") 字面量，升级后为绝对路径注入；
+/// （内容比对——旧模板含 execa("code-repo-wiki") 字面量，升级后为绝对路径注入；
 ///  与 v32 及以前的「已存在不覆盖」语义相反，用户拍板「带标记则升级」）
 #[test]
 fn test_install_upgrades_legacy_plugin_file() {
     let (work_dir, home, envs) = setup("upgrade_legacy");
     let envs_ref = as_env_refs(&envs);
 
-    // 预置旧版本插件文件（PATH 依赖版：execa("repo-wiki" 未注入绝对路径）
+    // 预置旧版本插件文件（PATH 依赖版：execa("code-repo-wiki" 未注入绝对路径）
     let path = plugin_file(&work_dir);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(
         &path,
-        "import { execa } from 'execa';\nconst runCli = (directory) => execa(\"repo-wiki\", [\"status\"], { cwd: directory });\nexport const RepoWikiPlugin = () => ({ tool: {} });\n",
+        "import { execa } from 'execa';\nconst runCli = (directory) => execa(\"code-repo-wiki\", [\"status\"], { cwd: directory });\nexport const RepoWikiPlugin = () => ({ tool: {} });\n",
     )
     .unwrap();
 
@@ -204,8 +204,8 @@ fn test_install_upgrades_legacy_plugin_file() {
     );
     let upgraded = std::fs::read_to_string(&path).unwrap();
     assert!(
-        !upgraded.contains("execa(\"repo-wiki\""),
-        "升级后不应再含 PATH 字面量 execa(\"repo-wiki\""
+        !upgraded.contains("execa(\"code-repo-wiki\""),
+        "升级后不应再含 PATH 字面量 execa(\"code-repo-wiki\""
     );
     assert!(
         upgraded.contains("execa(\""),

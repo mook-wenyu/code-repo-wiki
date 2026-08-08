@@ -4,7 +4,7 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "repo-wiki", about = "代码仓库 Wiki 自动生成系统", version)]
+#[command(name = "code-repo-wiki", about = "代码仓库 Wiki 自动生成系统", version)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -131,23 +131,23 @@ enum Commands {
         #[arg(long)]
         root: Option<PathBuf>,
     },
-    /// 安装 repo-wiki 集成（v33 合并版：OpenCode 插件 + 多 Agent MCP + AGENTS.md + git hooks）
+    /// 安装 code-repo-wiki 集成（v33 合并版：OpenCode 插件 + 多 Agent MCP + AGENTS.md + git hooks）
     ///
     /// 默认执行：① 确保用户级默认配置（config.toml）存在，缺失时自动创建
     /// （v25 起 init 并入 install，配置链=项目级 config.toml 覆盖用户级）；
-    /// ② 注册 OpenCode 插件（项目级 .opencode/plugins/repo-wiki.ts）；
+    /// ② 注册 OpenCode 插件（项目级 .opencode/plugins/code-repo-wiki.ts）；
     /// ③ 注册 OpenCode MCP（用户级全局 opencode.json 的 mcp 块）；
     /// ④ 注入 AGENTS.md wiki 引用块；⑤ 安装 git post-commit/post-merge hooks。
     /// --claude 额外注册 Claude Code MCP（.mcp.json）并同步注入 CLAUDE.md
     /// （v36 起 --also-claude 并入——Claude Code 不读 AGENTS.md，注册 MCP
     /// 时必然需要文档指引，两个开关分离无意义）；--codex 额外注册 Codex
     /// CLI MCP（用户级 ~/.codex/config.toml）。
-    /// 全部幂等；已存在的非 repo-wiki 内容（用户自定义 hook/其他 MCP server）保留。
+    /// 全部幂等；已存在的非 code-repo-wiki 内容（用户自定义 hook/其他 MCP server）保留。
     Install {
         /// 额外注册 Claude Code MCP（项目根 .mcp.json）并同步注入 CLAUDE.md
         #[arg(long)]
         claude: bool,
-        /// 额外注册 Codex CLI MCP（用户级 ~/.codex/config.toml，[mcp_servers.repo-wiki]）
+        /// 额外注册 Codex CLI MCP（用户级 ~/.codex/config.toml，[mcp_servers.code-repo-wiki]）
         #[arg(long)]
         codex: bool,
         /// 项目根目录：插件/hook 安装基准，默认当前目录
@@ -209,11 +209,11 @@ enum Commands {
         #[arg(long)]
         root: Option<PathBuf>,
     },
-    /// 卸载 repo-wiki 集成（v33 合并版：OpenCode MCP + 插件 + AGENTS.md + hooks
+    /// 卸载 code-repo-wiki 集成（v33 合并版：OpenCode MCP + 插件 + AGENTS.md + hooks
     /// + Claude/Codex MCP 条目；--force 确认）
     ///
     /// 清理 install 写入的全部集成痕迹（幂等，缺省即跳过）；保留用户级
-    /// config.toml 与产物数据 .repo-wiki/。原 install-wiki/uninstall-wiki/
+    /// config.toml 与产物数据 .code-repo-wiki/。原 install-wiki/uninstall-wiki/
     /// install-to-opencode/uninstall-from-opencode 四命令合并于此。
     Uninstall {
         /// 跳过确认（卸载将移除集成配置）
@@ -351,7 +351,7 @@ enum CardAction {
 /// ProjectRoot 是扫描根/git 定位/watch 根的注入载体（票 15）；
 /// output.dir 等产物路径仍按配置原样解析（相对 cwd），--root 只管
 /// "代码从哪扫"而非"产物写哪"。
-fn resolve_root(root: Option<&Path>) -> anyhow::Result<repo_wiki::project::ProjectRoot> {
+fn resolve_root(root: Option<&Path>) -> anyhow::Result<code_repo_wiki::project::ProjectRoot> {
     match root {
         // N7 修复：--root 指定的目录不存在时显式报错——此前静默通过，
         // 扫描产出空集，流水线报"未找到任何源文件"（方向误导）或产物
@@ -359,8 +359,8 @@ fn resolve_root(root: Option<&Path>) -> anyhow::Result<repo_wiki::project::Proje
         Some(p) if !p.is_dir() => {
             anyhow::bail!("--root 指定的目录不存在: {}", p.display())
         }
-        Some(p) => Ok(repo_wiki::project::ProjectRoot::new(p.to_path_buf())),
-        None => repo_wiki::project::ProjectRoot::from_cwd(),
+        Some(p) => Ok(code_repo_wiki::project::ProjectRoot::new(p.to_path_buf())),
+        None => code_repo_wiki::project::ProjectRoot::from_cwd(),
     }
 }
 fn main() -> anyhow::Result<()> {
@@ -384,17 +384,17 @@ fn main() -> anyhow::Result<()> {
             let root = resolve_root(root.as_deref())?;
             let result = if progress_json {
                 // JSONL 进度输出：插件 wiki_generate 流式解析
-                repo_wiki::run_pipeline_with_progress(
+                code_repo_wiki::run_pipeline_with_progress(
                     config.as_deref(), output.as_deref(), force, &root,
-                    &repo_wiki::GenerationMode::Full,
+                    &code_repo_wiki::GenerationMode::Full,
                     &|evt| {
                         println!(r#"{{"stage":"{}","progress":{}}}"#, evt.stage, evt.percent);
                     },
                 )?
             } else {
-                repo_wiki::run_pipeline(
+                code_repo_wiki::run_pipeline(
                     config.as_deref(), output.as_deref(), force, &root,
-                    &repo_wiki::GenerationMode::Full,
+                    &code_repo_wiki::GenerationMode::Full,
                 )?
             };
             tracing::info!(
@@ -410,11 +410,11 @@ fn main() -> anyhow::Result<()> {
             // 与 run_pipeline 的差异：跳过 LLM 与渲染，只输出将更新的文件/
             // 模块清单——用户可先预览再决定是否真正执行。
             if dry_run {
-                let cfg = repo_wiki::load_config_rooted(config.as_deref(), &root)?;
+                let cfg = code_repo_wiki::load_config_rooted(config.as_deref(), &root)?;
                 // scan_and_parse_at 返回 ScanOutput（v13 B5），取 insights 喂下游
-                let scan = repo_wiki::ingest::scan_and_parse_at(&root)?;
-                let graph = repo_wiki::analysis::build_graph(&scan.insights)?;
-                let inc = repo_wiki::incremental::run_incremental_update_at(
+                let scan = code_repo_wiki::ingest::scan_and_parse_at(&root)?;
+                let graph = code_repo_wiki::analysis::build_graph(&scan.insights)?;
+                let inc = code_repo_wiki::incremental::run_incremental_update_at(
                     &root, &scan.insights, &graph, &cfg, &[],
                 )?;
                 println!(
@@ -432,9 +432,9 @@ fn main() -> anyhow::Result<()> {
             }
             let result = if progress_json {
                 // JSONL 进度输出：与 generate --progress-json 同构，供插件流式解析
-                repo_wiki::run_pipeline_with_progress(
+                code_repo_wiki::run_pipeline_with_progress(
                     config.as_deref(), output.as_deref(), force, &root,
-                    &repo_wiki::GenerationMode::Incremental {
+                    &code_repo_wiki::GenerationMode::Incremental {
                         watch_paths: Vec::new(),
                         change_kind: None,
                     },
@@ -443,9 +443,9 @@ fn main() -> anyhow::Result<()> {
                     },
                 )?
             } else {
-                repo_wiki::run_pipeline(
+                code_repo_wiki::run_pipeline(
                     config.as_deref(), output.as_deref(), force, &root,
-                    &repo_wiki::GenerationMode::Incremental {
+                    &code_repo_wiki::GenerationMode::Incremental {
                         watch_paths: Vec::new(),
                         change_kind: None,
                     },
@@ -472,14 +472,14 @@ fn main() -> anyhow::Result<()> {
             // 跨页一致性问题（断链/引用漂移/符号漂移等）可能残留，此处让
             // 用户立即可见；只告警不改变退出码（"失败只告警"策略——产物
             // 缺陷由 lint 门禁兜底拦截，update 主流程语义不受影响）。
-            let cfg = repo_wiki::load_config_rooted(config.as_deref(), &root)?;
+            let cfg = code_repo_wiki::load_config_rooted(config.as_deref(), &root)?;
             let output_dir = cfg.output_dir();
-            let source_roots = repo_wiki::commands::source_roots(&root);
-            let issues = repo_wiki::output::lint::lint(output_dir, &source_roots);
+            let source_roots = code_repo_wiki::commands::source_roots(&root);
+            let issues = code_repo_wiki::output::lint::lint(output_dir, &source_roots);
             // v14 D 组（t05 拍板）：语义一致性检查（LLM 跨页矛盾，变更驱动——
             // 只查本次 update 生成的受影响页；LLM 不可用/失败时"只告警"跳过，
             // 语义检查是增强项，静态 lint 已覆盖机械问题）
-            if let Err(e) = repo_wiki::output::semantic_lint::check_semantic_consistency(
+            if let Err(e) = code_repo_wiki::output::semantic_lint::check_semantic_consistency(
                 &cfg,
                 &result.documents,
             )
@@ -492,7 +492,7 @@ fn main() -> anyhow::Result<()> {
             }
             if !issues.is_empty() {
                 tracing::warn!(
-                    "update 完成后产物检查发现 {} 个问题（不阻断本次更新，详情可用 `repo-wiki lint` 查看）:",
+                    "update 完成后产物检查发现 {} 个问题（不阻断本次更新，详情可用 `code-repo-wiki lint` 查看）:",
                     issues.len()
                 );
                 for issue in &issues {
@@ -508,37 +508,37 @@ fn main() -> anyhow::Result<()> {
             // 解析到 root（v17 F 组）——指纹键形态必须与生成状态键一致，否则
             // 人工修改保护检测失效（旧实现 sync 相对 cwd 解析，root 化后错位）。
             let root = resolve_root(root.as_deref())?;
-            let cfg = repo_wiki::load_config_rooted(config.as_deref(), &root)?;
-            repo_wiki::commands::sync_from_git(cfg.output_dir())?;
+            let cfg = code_repo_wiki::load_config_rooted(config.as_deref(), &root)?;
+            code_repo_wiki::commands::sync_from_git(cfg.output_dir())?;
             tracing::info!("同步完成 (--config {})", config.as_deref().map(|p| p.display().to_string()).unwrap_or_else(|| "默认链".into()));
         }
         Commands::Status { config, root } => {
             // --root 提供时以 root 为产物目录基准（跨 cwd 运行 status 能定位正确产物；
             // 缺省 root=cwd 行为不变）
             let root = resolve_root(root.as_deref())?;
-            let cfg = repo_wiki::load_config_rooted(config.as_deref(), &root)?;
+            let cfg = code_repo_wiki::load_config_rooted(config.as_deref(), &root)?;
             // 实际生效的配置文件路径：显式指定即其本身；缺省走三链
             // （项目级 config.toml → 用户级 config.toml → 创建用户级）
             let cfg_path = match config.as_deref() {
                 Some(p) => p.to_path_buf(),
-                None => repo_wiki::config::load_default_config(&root)?.0,
+                None => code_repo_wiki::config::load_default_config(&root)?.0,
             };
             tracing::info!("配置加载成功: {}", cfg_path.display());
-            let report = repo_wiki::commands::status_report(&cfg, &root);
+            let report = code_repo_wiki::commands::status_report(&cfg, &root);
             // ready 才报告页面统计与 lint 结果；未生成时引导运行 generate
             if report.ready {
                 println!("Wiki 状态: 就绪");
                 println!("配置文件: {}", cfg_path.display());
                 println!("页面: {} 张，卡片: {} 张", report.wiki_pages, report.cards);
                 // v32 10.1：语义索引状态显式行（读降级标记；有标记=已降级+原因）
-                match repo_wiki::semantic_degraded_reason(&cfg) {
+                match code_repo_wiki::semantic_degraded_reason(&cfg) {
                     Some(reason) => println!("语义索引: 已降级（原因: {}）", reason.trim()),
                     None => println!("语义索引: 正常"),
                 }
                 // v36 D3：LLM 状态显式行——provider=mock 意味着未配置真实
                 // LLM Key，页面内容由模板生成（无 AI 润色）；显式提示防
                 // 止用户误以为已接入真实模型（静默降级是「不操心」的反面）
-                if cfg.llm.provider == repo_wiki::config::schema::LlmProviderType::Mock {
+                if cfg.llm.provider == code_repo_wiki::config::schema::LlmProviderType::Mock {
                     println!("LLM: 已降级（mock 模拟——未配置真实 LLM Key，页面由模板生成）");
                 } else {
                     println!("LLM: 正常");
@@ -551,7 +551,7 @@ fn main() -> anyhow::Result<()> {
                     anyhow::bail!("status: 发现 {} 个问题", report.issues.len());
                 }
             } else {
-                println!("Wiki 状态: 未生成（运行 repo-wiki generate）");
+                println!("Wiki 状态: 未生成（运行 code-repo-wiki generate）");
                 println!("配置文件: {}", cfg_path.display());
             }
         }
@@ -567,7 +567,7 @@ fn main() -> anyhow::Result<()> {
                     std::process::exit(2);
                 }
              };
-             let cfg = match repo_wiki::load_config_rooted(config.as_deref(), &root) {
+             let cfg = match code_repo_wiki::load_config_rooted(config.as_deref(), &root) {
                  Ok(c) => c,
                  Err(e) => {
                      eprintln!("lint: 工具问题（配置加载失败）: {}", e);
@@ -576,8 +576,8 @@ fn main() -> anyhow::Result<()> {
              };
             let output_dir = cfg.output_dir();
             // v30+：源码根恒为仓库根（扫描范围已硬编码为全量遍历+内置过滤）
-            let source_roots = repo_wiki::commands::source_roots(&root);
-            let issues = repo_wiki::output::lint::lint(output_dir, &source_roots);
+            let source_roots = code_repo_wiki::commands::source_roots(&root);
+            let issues = code_repo_wiki::output::lint::lint(output_dir, &source_roots);
             if issues.is_empty() {
                 println!("lint: 通过，无孤儿页/断链/过时问题");
             } else {
@@ -591,7 +591,7 @@ fn main() -> anyhow::Result<()> {
             // 六查诊断（配置/产物可写/输出状态/Key/网络/版本漂移），逐项输出；
             // 任一失败退出码 1（与 lint 三态同族，供脚本门禁）
             let root = resolve_root(root.as_deref())?;
-            let checks = repo_wiki::doctor::run(config.as_deref(), &root)?;
+            let checks = code_repo_wiki::doctor::run(config.as_deref(), &root)?;
             for c in &checks {
                 println!("[{}] {}", if c.ok { "✓" } else { "✗" }, c.name);
                 if let Some(detail) = &c.detail {
@@ -609,12 +609,12 @@ fn main() -> anyhow::Result<()> {
             // config.toml（随 Git 共享）。--config 仅用于读取 provider
             // 判定（如项目级 provider=mock 时提示无需 key）。
             let root = resolve_root(root.as_deref())?;
-            repo_wiki::key::run(env, config.as_deref(), &root)?;
+            code_repo_wiki::key::run(env, config.as_deref(), &root)?;
         }
         Commands::AstSearch { symbol, language, config, json, root } => {
             // AST 精确符号查找：不依赖搜索索引，直接扫描源文件解析 AST 定位定义
             let root = resolve_root(root.as_deref())?;
-            let results = repo_wiki::execute_ast_search(config.as_deref(), &root, &symbol, language.as_deref())?;
+            let results = code_repo_wiki::execute_ast_search(config.as_deref(), &root, &symbol, language.as_deref())?;
             if json {
                 let json_results: Vec<serde_json::Value> = results.iter().map(|hit| {
                     serde_json::json!({
@@ -644,58 +644,58 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Export { config, output, skip_generate, root } => {
             let root = resolve_root(root.as_deref())?;
-            let cfg = repo_wiki::load_config_rooted(config.as_deref(), &root)?;
+            let cfg = code_repo_wiki::load_config_rooted(config.as_deref(), &root)?;
             if skip_generate {
                 // 从导出快照恢复导出（票 06）：不重跑生成流水线。
                 // render_all 每次写盘后同步写 .state/export_snapshot.json，
                 // 快照缺失时明确报错（不静默回退重生成——回退会掩盖
                 // 快照契约被破坏的事实）。
                 let snapshot_path =
-                    repo_wiki::output::export_snapshot_path(cfg.output_dir());
+                    code_repo_wiki::output::export_snapshot_path(cfg.output_dir());
                 // 票 04 陈旧检测：快照 mtime 早于任一 wiki 页 mtime = 产物在
                 // 快照之后被更新（快照写入失败/被外部改动/产物被手动编辑），
                 // 继续导出会静默输出过期内容——显式报错引导重新生成。
                 if let (Ok(snapshot_mtime), Some(latest_page)) = (
                     std::fs::metadata(&snapshot_path).and_then(|m| m.modified()),
-                    repo_wiki::output::latest_wiki_page_mtime(cfg.output_dir()),
+                    code_repo_wiki::output::latest_wiki_page_mtime(cfg.output_dir()),
                 ) && snapshot_mtime < latest_page
                 {
                     anyhow::bail!(
-                        "导出快照过期（快照写入时间早于最新 wiki 页），请重新运行 `repo-wiki generate` 或 `repo-wiki update` 后再导出"
+                        "导出快照过期（快照写入时间早于最新 wiki 页），请重新运行 `code-repo-wiki generate` 或 `code-repo-wiki update` 后再导出"
                     );
                 }
                 let content = std::fs::read_to_string(&snapshot_path).with_context(|| {
                     format!(
-                        "导出快照不存在，请先运行 `repo-wiki generate` 或 `repo-wiki update`: {}",
+                        "导出快照不存在，请先运行 `code-repo-wiki generate` 或 `code-repo-wiki update`: {}",
                         snapshot_path.display()
                     )
                 })?;
-                let snapshot: repo_wiki::output::ExportSnapshot =
+                let snapshot: code_repo_wiki::output::ExportSnapshot =
                     serde_json::from_str(&content).with_context(|| "解析导出快照失败")?;
                 // 票 10：快照版本契约校验——未来格式演进时旧版本可被
                 // 显式拒绝（当前仅版本 1；缺失字段的旧文件会被 serde
                 // 默认值补齐后误读，故版本不符必须硬性报错而非容错）
                 if snapshot.version != 1 {
                     anyhow::bail!(
-                        "导出快照版本 {} 不受支持（当前支持: 1），请重新运行 `repo-wiki generate` 或 `repo-wiki update`",
+                        "导出快照版本 {} 不受支持（当前支持: 1），请重新运行 `code-repo-wiki generate` 或 `code-repo-wiki update`",
                         snapshot.version
                     );
                 }
-                repo_wiki::output::html::export_html(
+                code_repo_wiki::output::html::export_html(
                     &snapshot.documents,
                     &snapshot.cards,
                     &snapshot.modules,
                     &cfg,
                 )?;
             } else {
-                let result = repo_wiki::run_pipeline(
+                let result = code_repo_wiki::run_pipeline(
                     config.as_deref(), output.as_deref(), false, &root,
-                    &repo_wiki::GenerationMode::Full,
+                    &code_repo_wiki::GenerationMode::Full,
                 )?;
-                repo_wiki::output::html::export_html(
+                code_repo_wiki::output::html::export_html(
                     &result.documents,
                     &result.cards,
-                    &repo_wiki::output::export_modules(&result.graph, &result.cards),
+                    &code_repo_wiki::output::export_modules(&result.graph, &result.cards),
                     &cfg,
                 )?;
             }
@@ -704,8 +704,8 @@ fn main() -> anyhow::Result<()> {
         Commands::Note { text, config, root } => {
             // --root 提供时以 root 为产物目录基准（同 status/lint）
             let root = resolve_root(root.as_deref())?;
-            let cfg = repo_wiki::load_config_rooted(config.as_deref(), &root)?;
-            repo_wiki::commands::append_note(
+            let cfg = code_repo_wiki::load_config_rooted(config.as_deref(), &root)?;
+            code_repo_wiki::commands::append_note(
                 cfg.output_dir(),
                 &cfg.wiki.language,
                 &text,
@@ -721,12 +721,12 @@ fn main() -> anyhow::Result<()> {
             // 从此停更（无人知道）——自愈循环兜住这个缺口。
             let mut delay = std::time::Duration::from_secs(5);
             loop {
-                match repo_wiki::run_watch(config.as_deref(), &root) {
+                match code_repo_wiki::run_watch(config.as_deref(), &root) {
                     Ok(()) => break,
                     Err(e) => {
-                        eprintln!("repo-wiki: watch 监听循环异常退出: {e}");
+                        eprintln!("code-repo-wiki: watch 监听循环异常退出: {e}");
                         eprintln!(
-                            "repo-wiki: {} 秒后自动重启监听（Ctrl-C 退出）",
+                            "code-repo-wiki: {} 秒后自动重启监听（Ctrl-C 退出）",
                             delay.as_secs()
                         );
                         std::thread::sleep(delay);
@@ -740,16 +740,16 @@ fn main() -> anyhow::Result<()> {
             //（v36 起为 Hybrid；hybrid 无 embed key 时自动降级纯 text）
             let root = resolve_root(root.as_deref())?;
             let engine_type = match engine.as_deref() {
-                Some("text") => repo_wiki::config::schema::SearchEngineType::Text,
-                Some("semantic") => repo_wiki::config::schema::SearchEngineType::Semantic,
-                Some("hybrid") => repo_wiki::config::schema::SearchEngineType::Hybrid,
+                Some("text") => code_repo_wiki::config::schema::SearchEngineType::Text,
+                Some("semantic") => code_repo_wiki::config::schema::SearchEngineType::Semantic,
+                Some("hybrid") => code_repo_wiki::config::schema::SearchEngineType::Hybrid,
                 Some(other) => anyhow::bail!("不支持的搜索引擎: {other}（可选: text/semantic/hybrid）"),
-                None => repo_wiki::config::schema::SEARCH_DEFAULT_ENGINE,
+                None => code_repo_wiki::config::schema::SEARCH_DEFAULT_ENGINE,
             };
             // CLI 显式 -k 优先，未传时回退硬编码默认 SEARCH_DEFAULT_TOP_K
             // N17：top_k 下限收敛到 1（top_k=0 的搜索调用无意义，返回空结果）
-            let top_k = top_k.unwrap_or(repo_wiki::config::schema::SEARCH_DEFAULT_TOP_K).max(1);
-            let results = repo_wiki::execute_search(config.as_deref(), &root, &query, top_k, &engine_type)?;
+            let top_k = top_k.unwrap_or(code_repo_wiki::config::schema::SEARCH_DEFAULT_TOP_K).max(1);
+            let results = code_repo_wiki::execute_search(config.as_deref(), &root, &query, top_k, &engine_type)?;
             if json {
                 // JSON 格式输出（供 OpenCode 插件解析）
                 let json_results: Vec<serde_json::Value> = results.iter().map(|hit| {
@@ -784,8 +784,8 @@ fn main() -> anyhow::Result<()> {
                 // 时提示原因，避免用户误以为语义结果可用。load_config_rooted
                 // 失败（配置缺失/损坏）与无标记一样静默——搜索本身已成功，
                 // 提示只是附加信息，不让配置错误打断结果展示。
-                let cfg = repo_wiki::load_config_rooted(config.as_deref(), &root).ok();
-                if let Some(reason) = cfg.and_then(|c| repo_wiki::semantic_degraded_reason(&c)) {
+                let cfg = code_repo_wiki::load_config_rooted(config.as_deref(), &root).ok();
+                if let Some(reason) = cfg.and_then(|c| code_repo_wiki::semantic_degraded_reason(&c)) {
                     println!("语义索引已降级（原因: {}）", reason.trim());
                 }
             }
@@ -796,26 +796,26 @@ fn main() -> anyhow::Result<()> {
             // 再执行集成安装（v33 合并版：OpenCode 插件 + 多 Agent MCP
             // + AGENTS.md + git hooks；--claude/--codex 扩展）。
             let root = resolve_root(root.as_deref())?;
-            let (source, _config) = repo_wiki::config::load_default_config(&root)?;
+            let (source, _config) = code_repo_wiki::config::load_default_config(&root)?;
             // 配置链解析完成（来源可能是用户级或项目级 config.toml——
             // 项目级存在时优先，用户级缺失不自动创建，见 load_default_config）
             tracing::info!("配置链就绪（来源: {}）", source.display());
-            let opts = repo_wiki::commands::InstallOptions { claude, codex };
-            repo_wiki::commands::install(&root, &opts)?;
+            let opts = code_repo_wiki::commands::InstallOptions { claude, codex };
+            code_repo_wiki::commands::install(&root, &opts)?;
         }
         Commands::Uninstall { force, root } => {
             let root = resolve_root(root.as_deref())?;
-            repo_wiki::commands::uninstall(force, &root)?;
+            code_repo_wiki::commands::uninstall(force, &root)?;
         }
         Commands::Mcp { config, root } => {
             // MCP stdio server：阻塞直到客户端断开。异步运行时由库内
             // get_global_runtime 提供（与流水线共用，避免二次初始化）。
             let root = resolve_root(root.as_deref())?;
-            let rt = repo_wiki::get_global_runtime();
-            rt.block_on(repo_wiki::mcp::serve_stdio(config.as_deref(), root))?;
+            let rt = code_repo_wiki::get_global_runtime();
+            rt.block_on(code_repo_wiki::mcp::serve_stdio(config.as_deref(), root))?;
         }
         Commands::Card { action, root } => {
-            use repo_wiki::generate::card as card_cmd;
+            use code_repo_wiki::generate::card as card_cmd;
             // CLI 枚举转业务枚举（config 路径在匹配时提取，供 run_card_command 使用）
             let (config, action) = match action {
                 CardAction::Generate { module, config } => {
@@ -835,7 +835,7 @@ fn main() -> anyhow::Result<()> {
                 ),
             };
             let root = resolve_root(root.as_deref())?;
-            repo_wiki::run_card_command(config.as_deref(), &root, &action)?;
+            code_repo_wiki::run_card_command(config.as_deref(), &root, &action)?;
         }
         Commands::Bench { root, repo_name, config, json, judge, rubrics_only, repodoc } => {
             // 评测基准（U10）：五维自动评测。root 必填（评测对象仓库根），
@@ -848,8 +848,8 @@ fn main() -> anyhow::Result<()> {
             // 评测成本控制（clap conflicts_with 已保证与 --judge 互斥）。
             // --repodoc（v32 6.4 FR-101）：RepoDocBench 对齐五维报告，
             // 强制 LLM 裁判（judge 提升）并在文本模式前置五维摘要。
-            let root = repo_wiki::project::ProjectRoot::new(root);
-            let cfg = repo_wiki::load_config_rooted(config.as_deref(), &root)?;
+            let root = code_repo_wiki::project::ProjectRoot::new(root);
+            let cfg = code_repo_wiki::load_config_rooted(config.as_deref(), &root)?;
             let repo_name = repo_name.unwrap_or_else(|| {
                 root.path()
                     .file_name()
@@ -859,18 +859,18 @@ fn main() -> anyhow::Result<()> {
             // v32（6.4）：--repodoc 隐含 judge=true（五维含 TQS LLM 裁判）
             let judge = judge || repodoc;
             let report = if rubrics_only {
-                repo_wiki::bench::run_rubrics_only(&root, &cfg, &repo_name)?
+                code_repo_wiki::bench::run_rubrics_only(&root, &cfg, &repo_name)?
             } else {
-                repo_wiki::bench::run_bench(config.as_deref(), &root, &cfg, &repo_name, judge)?
+                code_repo_wiki::bench::run_bench(config.as_deref(), &root, &cfg, &repo_name, judge)?
             };
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
                 // v32（6.4）：--repodoc 文本模式前置五维聚合摘要
                 if repodoc {
-                    print!("{}", repo_wiki::bench::render_repodoc(&report));
+                    print!("{}", code_repo_wiki::bench::render_repodoc(&report));
                 }
-                println!("{}", repo_wiki::bench::render_markdown(&report));
+                println!("{}", code_repo_wiki::bench::render_markdown(&report));
             }
         }
         Commands::BenchManifest { manifest, config, json, work_dir } => {
@@ -878,22 +878,22 @@ fn main() -> anyhow::Result<()> {
             // 语义字段，产物目录按仓库覆盖为 work_dir/<name>-out/。
             // work_dir 缺省系统临时目录（远程 clone 落地）。
             let work_dir = work_dir.unwrap_or_else(|| {
-                std::env::temp_dir().join("repo-wiki-bench-manifest")
+                std::env::temp_dir().join("code-repo-wiki-bench-manifest")
             });
             let cfg = match config {
-                Some(path) => repo_wiki::load_config_rooted(Some(&path), &repo_wiki::project::ProjectRoot::new(std::env::current_dir()?))?,
+                Some(path) => code_repo_wiki::load_config_rooted(Some(&path), &code_repo_wiki::project::ProjectRoot::new(std::env::current_dir()?))?,
                 None => {
                     // 缺省走默认加载链（项目级 → 用户级 → 创建用户级）
-                    let root = repo_wiki::project::ProjectRoot::new(std::env::current_dir()?);
-                    repo_wiki::load_config_rooted(None, &root)?
+                    let root = code_repo_wiki::project::ProjectRoot::new(std::env::current_dir()?);
+                    code_repo_wiki::load_config_rooted(None, &root)?
                 }
             };
-            let entries = repo_wiki::bench::manifest::parse_manifest(&manifest)?;
-            let report = repo_wiki::bench::manifest::run_manifest(&entries, &cfg, &work_dir)?;
+            let entries = code_repo_wiki::bench::manifest::parse_manifest(&manifest)?;
+            let report = code_repo_wiki::bench::manifest::run_manifest(&entries, &cfg, &work_dir)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
-                println!("{}", repo_wiki::bench::manifest::render_manifest_markdown(&report));
+                println!("{}", code_repo_wiki::bench::manifest::render_manifest_markdown(&report));
             }
         }
     }

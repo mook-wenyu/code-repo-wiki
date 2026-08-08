@@ -27,9 +27,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use repo_wiki::bench::run_rubrics_only;
-use repo_wiki::config::schema::{LlmProviderType, LlmSection, WikiSection, WikiConfig};
-use repo_wiki::project::ProjectRoot;
+use code_repo_wiki::bench::run_rubrics_only;
+use code_repo_wiki::config::schema::{LlmProviderType, LlmSection, WikiSection, WikiConfig};
+use code_repo_wiki::project::ProjectRoot;
 
 // ================= 本地 mock OpenAI server（Chat 协议 SSE 流式） =================
 // 与 src/generate/llm.rs 测试区同模式：std TcpListener + 线程，
@@ -167,7 +167,7 @@ fn spawn_scripted(responses: Vec<String>) -> (Arc<AtomicUsize>, Arc<Mutex<Vec<St
 // ================= 临时仓库 =================
 
 fn temp_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("repo_wiki_judge_{tag}_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("code_repo_wiki_judge_{tag}_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -187,10 +187,10 @@ fn bench_setup(tag: &str, base_url: &str, with_readme: bool, with_tqs: bool) -> 
         std::fs::write(dir.join("README.md"), "# 示例仓库\n\n需要认证与授权。\n").unwrap();
     }
     if with_tqs {
-        let wiki_zh = dir.join(".repo-wiki").join("wiki").join("zh");
+        let wiki_zh = dir.join(".code-repo-wiki").join("wiki").join("zh");
         std::fs::create_dir_all(&wiki_zh).unwrap();
         std::fs::write(wiki_zh.join("mod_a.md"), "# 模块 mod_a\n\n新文档内容。\n").unwrap();
-        let state = dir.join(".repo-wiki").join(".state");
+        let state = dir.join(".code-repo-wiki").join(".state");
         std::fs::create_dir_all(&state).unwrap();
         let snapshot = serde_json::json!({
             "version": 1,
@@ -210,10 +210,10 @@ fn bench_setup(tag: &str, base_url: &str, with_readme: bool, with_tqs: bool) -> 
         std::fs::write(state.join("export_snapshot.json"), snapshot.to_string()).unwrap();
     } else {
         // 空产物目录（lint 对空目录无检查项，比缺失目录更稳妥）
-        std::fs::create_dir_all(dir.join(".repo-wiki").join("wiki").join("zh")).unwrap();
+        std::fs::create_dir_all(dir.join(".code-repo-wiki").join("wiki").join("zh")).unwrap();
     }
     let config = WikiConfig {
-        output_dir: Some(dir.join(".repo-wiki").to_string_lossy().into_owned().into()),
+        output_dir: Some(dir.join(".code-repo-wiki").to_string_lossy().into_owned().into()),
         wiki: WikiSection { language: "zh".into(), guide: Default::default() },
         llm: LlmSection {
             provider: LlmProviderType::OpenAiCompatible,

@@ -11,8 +11,8 @@
 
 use std::path::Path;
 
-use repo_wiki::analysis;
-use repo_wiki::ingest;
+use code_repo_wiki::analysis;
+use code_repo_wiki::ingest;
 
 /// 构造临时仓库：
 /// - src/a/ 内两个文件通过跨文件调用协作（lib.rs 调用 helper.rs 的函数）
@@ -54,20 +54,20 @@ pub fn beta() -> &'static str { "beta" }
 #[test]
 fn test_community_detection_and_features() {
     let tmp = std::env::temp_dir().join(format!(
-        "repo_wiki_clustering_test_{}",
+        "code_repo_wiki_clustering_test_{}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&tmp);
     build_fixture_repo(&tmp).expect("构造测试仓库失败");
 
-    let root = repo_wiki::project::ProjectRoot::new(tmp.clone());
+    let root = code_repo_wiki::project::ProjectRoot::new(tmp.clone());
     let result = (|| -> anyhow::Result<()> {
         let insights = ingest::scan_and_parse_at(&root)?.insights;
         assert!(!insights.is_empty(), "应扫描到源文件");
         let mut graph = analysis::build_graph(&insights)?;
         // features 由 lib 层 attach_features 填充（lib 私有函数），
         // 集成测试直接调用 analysis 层公开入口验证聚类本身
-        graph.features = repo_wiki::analysis::feature::detect_features(&graph, None)?;
+        graph.features = code_repo_wiki::analysis::feature::detect_features(&graph, None)?;
 
         // 1. 模块检测：社区检测生效，模块名唯一且不含文件名
         assert!(

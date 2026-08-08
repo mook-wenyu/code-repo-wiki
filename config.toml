@@ -8,7 +8,7 @@
 language = "zh"
 
 [llm]
-provider = "openai-compatible"
+provider = "openai"
 model = "deepseek-v4-flash"
 # base_url 与模型配套（模板默认阵营=v29 实测可用组合）：provider=openai
 # 缺省端点=OpenAI 官方（llm.rs OpenAiProvider 兜底），不写 base_url 会把

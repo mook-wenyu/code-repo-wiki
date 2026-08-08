@@ -140,7 +140,7 @@ pub fn mermaid_retry_feedback(issues: &[MermaidIssue]) -> String {
 ///
 /// - 坏块内容保留（信息不丢失），但语言标记改为 `text`——渲染器不解析，
 ///   lint 的 bad-mermaid 检查不再命中；
-/// - 上方插入 HTML 注释 `<!-- repo-wiki: mermaid parse failed: ... -->`，
+/// - 上方插入 HTML 注释 `<!-- code-repo-wiki: mermaid parse failed: ... -->`，
 ///   错误消息单行化（换行/回车替换为空格，防注释语法逃逸），
 ///   供人工与下次 LLM 生成时参考修复。
 /// - 好块原样保留。
@@ -159,7 +159,7 @@ pub fn degrade_mermaid_blocks(content: &str, issues: &[MermaidIssue]) -> String 
             // 块体首行：先输出降级注释（含错误消息），再输出 text 围栏；
             // 该行即坏块内容的第一行，原样保留（信息不丢失）
             out.push_str(&format!(
-                "<!-- repo-wiki: mermaid parse failed: {} -->\n```text\n{}\n",
+                "<!-- code-repo-wiki: mermaid parse failed: {} -->\n```text\n{}\n",
                 sanitize_message(&msg),
                 line
             ));
@@ -191,7 +191,7 @@ pub fn degrade_mermaid_blocks(content: &str, issues: &[MermaidIssue]) -> String 
     if text_fence_open || pending_degrade.is_some() {
         if let Some(msg) = pending_degrade {
             out.push_str(&format!(
-                "<!-- repo-wiki: mermaid parse failed: {} -->\n```text\n",
+                "<!-- code-repo-wiki: mermaid parse failed: {} -->\n```text\n",
                 sanitize_message(&msg)
             ));
         }
@@ -271,7 +271,7 @@ mod tests {
         let degraded = degrade_mermaid_blocks(content, &issues);
         // 坏块被降级为 text + 注释
         assert!(degraded.contains("```text"), "坏块应降级为 text fence");
-        assert!(degraded.contains("repo-wiki: mermaid parse failed"), "应含降级注释");
+        assert!(degraded.contains("code-repo-wiki: mermaid parse failed"), "应含降级注释");
         assert!(degraded.contains("Unterminated"), "注释应含错误消息");
         // 好块保留原样
         assert!(degraded.contains("```mermaid\nflowchart LR\nA[OK] --> B\n```"), "好块应保留");
@@ -312,7 +312,7 @@ mod tests {
         assert_eq!(issues.len(), 1, "未闭合围栏应作为坏块报出");
         let degraded = degrade_mermaid_blocks(content, &issues);
         assert!(degraded.contains("```text"), "应降级为 text fence");
-        assert!(degraded.contains("repo-wiki: mermaid parse failed"), "应含降级注释");
+        assert!(degraded.contains("code-repo-wiki: mermaid parse failed"), "应含降级注释");
         // 围栏闭合性：恰好 1 对围栏（开+闭），且以闭合围栏结尾
         let fence_count = degraded.matches("```").count();
         assert_eq!(fence_count, 2, "应恰好 1 对围栏（开+闭），实际: {degraded}");

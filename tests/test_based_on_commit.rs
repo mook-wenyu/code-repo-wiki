@@ -42,7 +42,7 @@ fn test_wiki_page_includes_based_on_commit_in_git_repo() {
         "generate 失败: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let page = fs::read_to_string(dir.join(".repo-wiki/wiki/zh/src.md")).unwrap();
+    let page = fs::read_to_string(dir.join(".code-repo-wiki/wiki/zh/src.md")).unwrap();
     let lines: Vec<&str> = page.lines().filter(|l| l.contains("基于提交")).collect();
     assert_eq!(lines.len(), 1, "git 仓库页面应恰好一行基线: {page}");
     let hash = lines[0].trim().trim_start_matches("> 基于提交: ").trim();
@@ -68,7 +68,7 @@ fn test_wiki_page_omits_based_on_commit_without_git() {
         "generate 失败: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let page = fs::read_to_string(dir.join(".repo-wiki/wiki/zh/src.md")).unwrap();
+    let page = fs::read_to_string(dir.join(".code-repo-wiki/wiki/zh/src.md")).unwrap();
     assert!(
         !page.contains("基于提交"),
         "非 git 仓库不应有基线行: {page}"

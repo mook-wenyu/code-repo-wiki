@@ -1,7 +1,7 @@
 //! key：LLM API key 交互式配置命令
 //!
 //! 安全边界（用户拍板）：明文 api_key 只写入**用户级**配置
-//! `config.toml`（`%APPDATA%/repo-wiki/` 或 `$HOME/repo-wiki/`，
+//! `config.toml`（`%APPDATA%/code-repo-wiki/` 或 `$HOME/code-repo-wiki/`，
 //! 见 [`crate::config::global_config_dir`]），**绝不写项目级** `config.toml`
 //! ——项目级随 Git 共享，明文凭据写入即泄露。`--env` 模式不落明文，
 //! 改写入建议的环境变量名引用（`api_key_env` 是既有机制，见
@@ -129,8 +129,8 @@ fn suggested_env_name(provider: &LlmProviderType) -> &'static str {
 pub(crate) fn guidance_text() -> String {
     [
         "当前环境非交互式终端（管道/CI/外部 Agent），无法读取键盘输入。可用方式：",
-        "  1. 在交互式终端运行 `repo-wiki key` 直接输入明文 API key（写入用户级 config.toml，不随 Git 共享）",
-        "  2. 运行 `repo-wiki key --env` 改用环境变量引用（不落明文，key 由 shell 环境提供）",
+        "  1. 在交互式终端运行 `code-repo-wiki key` 直接输入明文 API key（写入用户级 config.toml，不随 Git 共享）",
+        "  2. 运行 `code-repo-wiki key --env` 改用环境变量引用（不落明文，key 由 shell 环境提供）",
     ]
     .join("\n")
 }
@@ -263,7 +263,7 @@ mod tests {
     /// 命名（pid）用完即删，不触碰真实配置文件本体。
     fn temp_global(tag: &str, provider: &str) -> (PathBuf, PathBuf) {
         let dir = std::env::temp_dir().join(format!(
-            "repo_wiki_key_{}_{}",
+            "code_repo_wiki_key_{}_{}",
             tag,
             std::process::id()
         ));
@@ -275,11 +275,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&global_dir);
         std::fs::create_dir_all(&global_dir).unwrap();
         let user_text = include_str!("../config.toml")
-            .replace("provider = \"openai-compatible\"", &format!("provider = \"{provider}\""))
-            .replace(
-                "api_key_env = \"OPENCODEGO2_API_KEY\"",
-                "api_key_env = \"REPO_WIKI_TEST_ENV_NONE\"",
-            );
+            .lines()
+            .map(|l| {
+                if l.starts_with("provider = ") {
+                    format!("provider = \"{provider}\"")
+                } else if l.contains("api_key_env = \"OPENCODEGO2_API_KEY\"") {
+                    "api_key_env = \"REPO_WIKI_TEST_ENV_NONE\"".to_string()
+                } else {
+                    l.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         std::fs::write(global_dir.join(USER_CONFIG_FILE), &user_text).unwrap();
         (dir, global_dir)
     }

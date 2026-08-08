@@ -816,7 +816,7 @@ mod tests {
     /// 本次已生成文档重复（同一类型只保留一个）
     #[test]
     fn test_backfill_global_docs_from_snapshot() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_test_backfill_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_backfill_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(".state")).unwrap();
 
@@ -873,7 +873,7 @@ mod tests {
     /// P1-2：快照缺失 → 回填失败（调用方据此回退生成）
     #[test]
     fn test_backfill_global_docs_missing_snapshot() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_test_backfill_miss_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_backfill_miss_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -890,7 +890,7 @@ mod tests {
     /// 调用方回退到新语言的 LLM 生成（旧语言内容写盘目录错位会丢页）
     #[test]
     fn test_backfill_global_docs_skips_on_language_mismatch() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_test_backfill_lang_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_backfill_lang_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -960,7 +960,7 @@ mod tests {
     /// cleanup 差集随后误删磁盘上的其余 schema 页。
     #[test]
     fn test_backfill_global_docs_dedup_by_title_not_kind() {
-        let dir = std::env::temp_dir().join(format!("repo_wiki_test_backfill_schema_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_backfill_schema_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
