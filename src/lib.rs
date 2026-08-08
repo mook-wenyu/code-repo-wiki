@@ -284,6 +284,10 @@ pub fn run_pipeline_with_progress(
     on_progress: &dyn Fn(ProgressEvent),
 ) -> anyhow::Result<AnalysisResult> {
     let config = load_config_with_output(config_path, output, root)?;
+    // v36 D4：单实例运行锁——并发 generate/update/watch 会把状态/索引/
+    // 产物互相覆盖（最后写入者胜）。锁作用域=本次生成全程（Drop 释放），
+    // 崩溃残留由报错指引人工删除（不自动清，见 fs.rs acquire_run_lock）。
+    let _run_lock = crate::fs::acquire_run_lock(&config)?;
     let _span = tracing::info_span!("pipeline", config = %config_path.map(|p| p.display().to_string()).unwrap_or_else(|| "默认链".into()));
     let _enter = _span.enter();
     let start = std::time::Instant::now();

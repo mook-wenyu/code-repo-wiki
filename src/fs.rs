@@ -18,7 +18,6 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-
 /// 原子写入：内容写入 `path` 同目录的临时文件后 rename 覆盖
 ///
 /// - 父目录不存在时自动创建（与各调用点现有一致）
@@ -48,6 +47,55 @@ pub fn write_file_atomic(path: &Path, content: &str) -> Result<()> {
     Ok(())
 }
 
+// ==================== 单实例运行锁（v36 D4）====================
+//
+// 并发 generate/update/watch 会把状态/索引/产物互相覆盖（最后写入者
+// 胜）。生成是「进程内串行、进程间互斥」的操作：本锁在
+// run_pipeline_with_progress 入口以 create_new 原子获取，作用域=单次
+// 生成全程，Drop 时释放（正常退出/错误传播都会走 Drop）。
+//
+// 崩溃残留（进程被杀，锁文件遗留）：报错信息明确指引人工删除——
+// 不自动清理：自动清会把「另一实例正在生成中」误判为残留，反而引入
+// 真并发窗口。
+
+/// 运行锁：持有期间其他实例的生成入口被拒绝；Drop 释放
+#[derive(Debug)]
+pub struct RunLock {
+    path: std::path::PathBuf,
+}
+
+impl Drop for RunLock {
+    fn drop(&mut self) {
+        // 释放失败可忽略：锁文件残留会由下一次获取报错指引人工删除，
+        // 此处报错无调用方（Drop 语义），静默符合预期
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// 原子获取运行锁：.state/run.lock 不存在则创建（写入当前进程 PID 供
+/// 排查），存在则报错——报错信息包含锁路径与处理指引。
+pub fn acquire_run_lock(config: &crate::config::schema::WikiConfig) -> Result<RunLock> {
+    let state_dir = config.output_dir().join(".state");
+    std::fs::create_dir_all(&state_dir)
+        .with_context(|| format!("创建状态目录失败: {}", state_dir.display()))?;
+    let path = state_dir.join("run.lock");
+    match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+        Ok(mut f) => {
+            use std::io::Write;
+            // 写入 PID 供「锁是谁留下的」排查；失败仅告警（锁本身已建立）
+            if let Err(e) = writeln!(f, "{}", std::process::id()) {
+                eprintln!("repo-wiki: 运行锁 PID 写入失败（不影响锁）: {e}");
+            }
+            Ok(RunLock { path })
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => anyhow::bail!(
+            "另一 repo-wiki 实例正在运行（锁文件: {}）。确认无残留实例后可删除该文件重试",
+            path.display()
+        ),
+        Err(e) => Err(e).with_context(|| format!("获取运行锁失败: {}", path.display())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,6 +105,41 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.join(name)
+    }
+
+    fn lock_config(dir: &std::path::Path) -> crate::config::schema::WikiConfig {
+        crate::config::schema::WikiConfig {
+            output_dir: Some(dir.to_path_buf()),
+            ..Default::default()
+        }
+    }
+
+    /// 锁可获取；Drop 后释放（可再次获取）
+    #[test]
+    fn test_run_lock_acquire_and_release() {
+        let dir = temp_path("lock_roundtrip", "");
+        let config = lock_config(&dir);
+        let lock = acquire_run_lock(&config).unwrap();
+        assert!(dir.join(".state/run.lock").exists());
+        drop(lock);
+        assert!(!dir.join(".state/run.lock").exists(), "Drop 应释放锁");
+        // 释放后可再次获取（幂等循环）
+        let lock2 = acquire_run_lock(&config).unwrap();
+        drop(lock2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 锁已存在时拒绝第二次获取，报错含路径与指引
+    #[test]
+    fn test_run_lock_rejects_second() {
+        let dir = temp_path("lock_reject", "");
+        let config = lock_config(&dir);
+        let _lock = acquire_run_lock(&config).unwrap();
+        let err = acquire_run_lock(&config).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("正在运行"), "应报并发错误: {msg}");
+        assert!(msg.contains("run.lock"), "报错应含锁路径: {msg}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 新文件写入成功且内容正确

@@ -85,7 +85,7 @@ struct ReadCardRequest {
 #[tool_router(router = tool_router)]
 impl RepoWikiMcp {
     /// 搜索代码实体：按关键词返回匹配的函数/结构体/类及文件位置（text/semantic/hybrid 引擎）
-    #[tool(description = "搜索代码实体：按关键词返回匹配的函数/结构体/类及文件位置（text/semantic/hybrid 引擎，与 CLI repo-wiki search 等价）")]
+    #[tool(description = "搜索代码实体：按关键词返回匹配的函数/结构体/类及文件位置（text/semantic/hybrid 引擎，与 CLI repo-wiki search 等价；需先运行 repo-wiki generate 构建搜索索引）")]
     async fn search(&self, Parameters(SearchRequest { query, top_k, engine }): Parameters<SearchRequest>) -> String {
         // 配置完整性检查：搜索前确认配置可加载（错误早暴露）；v22 起
         // 引擎/条数默认值硬编码，配置内容不再被本函数使用
@@ -143,7 +143,7 @@ impl RepoWikiMcp {
     }
 
     /// 读取已生成的 Wiki 页面内容（模块页/架构概览/项目概览/api）
-    #[tool(description = "读取已生成的 Wiki 页面内容（wiki/{lang}/{page}.md，如 src_config、architecture、overview、api）")]
+    #[tool(description = "读取已生成的 Wiki 页面内容（wiki/{lang}/{page}.md，如 src_config、architecture、overview、api；需先运行 repo-wiki generate，未生成的页面报错）")]
     async fn read_wiki_page(&self, Parameters(ReadPageRequest { page, lang }): Parameters<ReadPageRequest>) -> String {
         let config = match crate::config::resolve_mcp_config(self.config_path.as_deref(), &self.root) {
             Ok(c) => c,
@@ -177,7 +177,7 @@ impl RepoWikiMcp {
     }
 
     /// 读取已生成的 Knowledge Card（AI 代理的结构化模块摘要）
-    #[tool(description = "读取已生成的 Knowledge Card 内容（cards/{lang}/{card}.md）")]
+    #[tool(description = "读取已生成的 Knowledge Card 内容（cards/{lang}/{card}.md；需先运行 repo-wiki generate，未生成的卡片报错）")]
     async fn read_card(&self, Parameters(ReadCardRequest { card, lang }): Parameters<ReadCardRequest>) -> String {
         let config = match crate::config::resolve_mcp_config(self.config_path.as_deref(), &self.root) {
             Ok(c) => c,

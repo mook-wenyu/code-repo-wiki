@@ -106,19 +106,21 @@ fn test_uninstall_wiki_removes_block() {
     let _ = std::fs::remove_dir_all(&work_dir);
 }
 
-/// --also-claude：AGENTS.md 与 CLAUDE.md 都写入标记对；uninstall 同时清理
+/// --claude（v36 起合并 --also-claude）：AGENTS.md 与 CLAUDE.md 都写入
+/// 标记对（同时注册 .mcp.json）；uninstall 同时清理
 #[test]
 fn test_install_wiki_also_claude_writes_both() {
     let (work_dir, envs) = setup("also_claude");
     let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
-    let out = run_bin_with_envs(&work_dir, &["install", "--also-claude"], &envs_ref);
-    assert!(out.status.success(), "install --also-claude 应成功");
+    let out = run_bin_with_envs(&work_dir, &["install", "--claude"], &envs_ref);
+    assert!(out.status.success(), "install --claude 应成功");
     let agents = std::fs::read_to_string(work_dir.join("AGENTS.md")).unwrap();
     let claude = std::fs::read_to_string(work_dir.join("CLAUDE.md")).unwrap();
     assert!(agents.contains(START) && agents.contains(END), "AGENTS.md 应含标记对");
     assert!(claude.contains(START) && claude.contains(END), "CLAUDE.md 应含标记对");
     assert_eq!(agents, claude, "CLAUDE.md 应原样写入与 AGENTS.md 相同的注入块");
+    assert!(work_dir.join(".mcp.json").exists(), "--claude 应同时注册 .mcp.json");
 
     let out2 = run_bin_with_envs(&work_dir, &["uninstall", "--force"], &envs_ref);
     assert!(out2.status.success(), "uninstall 应成功");

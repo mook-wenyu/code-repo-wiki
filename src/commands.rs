@@ -178,13 +178,12 @@ fn collect_md_files(dir: &Path) -> Vec<PathBuf> {
 /// + git hooks；以下 flag 扩展集成面。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct InstallOptions {
-    /// 额外写 Claude Code 项目级 `.mcp.json`（--claude）
+    /// 额外写 Claude Code 项目级 `.mcp.json`（--claude）；v36 起同时
+    /// 同步注入 CLAUDE.md（Claude Code 不读 AGENTS.md，注册 MCP 时
+    /// 必然需要文档指引——原 --also-claude 开关合并于此）
     pub claude: bool,
     /// 额外写 Codex CLI 用户级配置 `~/.codex/config.toml`（--codex）
     pub codex: bool,
-    /// 同步写 CLAUDE.md（--also-claude；Claude Code 不读 AGENTS.md，
-    /// 需要独立的 CLAUDE.md 引用块）
-    pub also_claude: bool,
 }
 
 /// repo-wiki 安装（v33 合并版）：OpenCode 插件 + 多 Agent MCP + AGENTS.md + git hooks
@@ -201,7 +200,8 @@ pub struct InstallOptions {
 /// 4. Codex MCP（--codex）：用户级 `~/.codex/config.toml` 的
 ///    `[mcp_servers.repo-wiki]` 表
 /// 5. AGENTS.md：wiki 引用块（标记对幂等替换；默认执行）
-/// 6. CLAUDE.md（--also-claude）：同步写
+/// 6. CLAUDE.md（随 --claude，v36 起）：Claude Code 不读 AGENTS.md，
+///    注册 .mcp.json 时同步注入引用块
 /// 7. git hooks：post-commit/post-merge（含 repo-wiki 标记则升级覆盖；
 ///    用户自定义 hook 保留并提示）
 ///
@@ -259,8 +259,9 @@ pub fn install(root: &crate::project::ProjectRoot, opts: &InstallOptions) -> Res
         }
     }
 
-    // 5/6. AGENTS.md（默认）与 CLAUDE.md（--also-claude）
-    install_wiki(root, opts.also_claude)?;
+    // 5/6. AGENTS.md（默认）与 CLAUDE.md（v36 起随 --claude 同步——
+    // Claude Code 不读 AGENTS.md，注册 MCP 时文档指引随之注入）
+    install_wiki(root, opts.claude)?;
 
     // 7. git hooks（v33：标记升级，用户自定义保留）
     install_hooks(project_root)?;
@@ -284,11 +285,13 @@ pub const HOOK_MARKER: &str = "# repo-wiki managed";
 ///
 /// `#!/bin/sh` + LF：Windows 上由 Git for Windows 的 sh 执行（POSIX 语义，
 /// 绝非 PowerShell）；`cd` 到仓库顶层保证 --root 无关；`command -v` 探测
-/// 二进制存在性；update 失败静默（hook 是通知型，不让 wiki 更新失败
-/// 阻断 git 主流程）。
+/// 二进制存在性；update 失败不阻断 git 主流程（hook 是通知型），但
+/// 失败必须可见：stderr 落 .repo-wiki/update-error.log 并在提交输出中
+/// 提示一行（v36 D2：此前 2>/dev/null || true 把失败完全吞掉，用户
+/// 永远不知道 wiki 已陈旧）。
 fn hook_content() -> String {
     format!(
-        "#!/bin/sh\n{0}: auto-update wiki on commit\ncd \"$(git rev-parse --show-toplevel)\"\ncommand -v repo-wiki >/dev/null 2>&1 || exit 0\nrepo-wiki update 2>/dev/null || true\n",
+        "#!/bin/sh\n{0}: auto-update wiki on commit\ncd \"$(git rev-parse --show-toplevel)\"\ncommand -v repo-wiki >/dev/null 2>&1 || exit 0\nmkdir -p .repo-wiki\nrepo-wiki update 2>>.repo-wiki/update-error.log || echo \"repo-wiki: wiki 更新失败（详见 .repo-wiki/update-error.log）\" >&2\n",
         HOOK_MARKER
     )
 }

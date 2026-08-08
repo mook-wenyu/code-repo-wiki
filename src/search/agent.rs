@@ -73,6 +73,15 @@ impl SearchAgent {
     }
 
     /// 调用链补全：按命中符号名查 call_index，填充 callers/callees；无索引时直接跳过
+    ///
+    /// v36 C2 语义约定：**展示双向、扩展单向**——
+    /// - 展示：callers/callees 双向填充（用户在结果里看到调用者与被
+    ///   调用者，理解符号上下文）
+    /// - 扩展：本函数不做候选扩展（结果集不变）；若未来引入「调用链
+    ///   候选扩展」（把被调用者追加进检索候选），**只允许使用 callees
+    ///   方向**——CodeRAG 实证（callee 扩展 +15% MRR，callers 扩展
+    ///   -17%）：调用者是「谁在用我」，对查询相关性是噪声；被调用者
+    ///   「我调用谁」携带实现细节，与代码检索意图同向。
     fn enrich_call_chain(&self, hits: &mut [SearchHit]) {
         let Some(index) = &self.call_index else { return };
         for hit in hits.iter_mut() {

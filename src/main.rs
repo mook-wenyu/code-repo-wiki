@@ -138,18 +138,18 @@ enum Commands {
     /// ② 注册 OpenCode 插件（项目级 .opencode/plugins/repo-wiki.ts）；
     /// ③ 注册 OpenCode MCP（用户级全局 opencode.json 的 mcp 块）；
     /// ④ 注入 AGENTS.md wiki 引用块；⑤ 安装 git post-commit/post-merge hooks。
-    /// --claude/--codex 额外注册对应 Agent 的 MCP；--also-claude 同步写 CLAUDE.md。
+    /// --claude 额外注册 Claude Code MCP（.mcp.json）并同步注入 CLAUDE.md
+    /// （v36 起 --also-claude 并入——Claude Code 不读 AGENTS.md，注册 MCP
+    /// 时必然需要文档指引，两个开关分离无意义）；--codex 额外注册 Codex
+    /// CLI MCP（用户级 ~/.codex/config.toml）。
     /// 全部幂等；已存在的非 repo-wiki 内容（用户自定义 hook/其他 MCP server）保留。
     Install {
-        /// 额外注册 Claude Code MCP（项目根 .mcp.json，mcpServers.repo-wiki）
+        /// 额外注册 Claude Code MCP（项目根 .mcp.json）并同步注入 CLAUDE.md
         #[arg(long)]
         claude: bool,
         /// 额外注册 Codex CLI MCP（用户级 ~/.codex/config.toml，[mcp_servers.repo-wiki]）
         #[arg(long)]
         codex: bool,
-        /// 同步向 CLAUDE.md 注入 wiki 引用块（Claude Code 不读 AGENTS.md）
-        #[arg(long)]
-        also_claude: bool,
         /// 项目根目录：插件/hook 安装基准，默认当前目录
         #[arg(long)]
         root: Option<PathBuf>,
@@ -535,6 +535,14 @@ fn main() -> anyhow::Result<()> {
                     Some(reason) => println!("语义索引: 已降级（原因: {}）", reason.trim()),
                     None => println!("语义索引: 正常"),
                 }
+                // v36 D3：LLM 状态显式行——provider=mock 意味着未配置真实
+                // LLM Key，页面内容由模板生成（无 AI 润色）；显式提示防
+                // 止用户误以为已接入真实模型（静默降级是「不操心」的反面）
+                if cfg.llm.provider == repo_wiki::config::schema::LlmProviderType::Mock {
+                    println!("LLM: 已降级（mock 模拟——未配置真实 LLM Key，页面由模板生成）");
+                } else {
+                    println!("LLM: 正常");
+                }
                 // lint 产物健康检查结果（与 lint 命令同格式，问题退出码非 0）
                 for issue in &report.issues {
                     println!("- [{}] {}: {}", issue.kind, issue.path, issue.message);
@@ -706,7 +714,26 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Watch { config, root } => {
             let root = resolve_root(root.as_deref())?;
-            repo_wiki::run_watch(config.as_deref(), &root)?;
+            // v36 D5：watch 常驻自愈——监听循环崩溃（notify 初始化失败/
+            // 事件循环错误）时指数退避自动重启（5s 起、上限 60s）；
+            // Ctrl-C 优雅退出（run_watch 返回 Ok）直接结束。
+            // watch 是「自动维护」的最后一环：崩溃后静默消失会让 wiki
+            // 从此停更（无人知道）——自愈循环兜住这个缺口。
+            let mut delay = std::time::Duration::from_secs(5);
+            loop {
+                match repo_wiki::run_watch(config.as_deref(), &root) {
+                    Ok(()) => break,
+                    Err(e) => {
+                        eprintln!("repo-wiki: watch 监听循环异常退出: {e}");
+                        eprintln!(
+                            "repo-wiki: {} 秒后自动重启监听（Ctrl-C 退出）",
+                            delay.as_secs()
+                        );
+                        std::thread::sleep(delay);
+                        delay = std::time::Duration::from_secs((delay.as_secs() * 2).min(60));
+                    }
+                }
+            }
         }
         Commands::Search { query, top_k, config, json, engine, root } => {
             // 解析引擎类型：优先用 CLI 参数，否则取默认常量 SEARCH_DEFAULT_ENGINE
@@ -763,26 +790,17 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Commands::Install {
-            claude,
-            codex,
-            also_claude,
-            root,
-        } => {
+        Commands::Install { claude, codex, root } => {
             // v25 起 init 并入 install：先确保用户级默认配置就绪
             // （缺失自动创建，含项目级 config.toml 覆盖链语义），
             // 再执行集成安装（v33 合并版：OpenCode 插件 + 多 Agent MCP
-            // + AGENTS.md + git hooks；--claude/--codex/--also-claude 扩展）。
+            // + AGENTS.md + git hooks；--claude/--codex 扩展）。
             let root = resolve_root(root.as_deref())?;
             let (source, _config) = repo_wiki::config::load_default_config(&root)?;
             // 配置链解析完成（来源可能是用户级或项目级 config.toml——
             // 项目级存在时优先，用户级缺失不自动创建，见 load_default_config）
             tracing::info!("配置链就绪（来源: {}）", source.display());
-            let opts = repo_wiki::commands::InstallOptions {
-                claude,
-                codex,
-                also_claude,
-            };
+            let opts = repo_wiki::commands::InstallOptions { claude, codex };
             repo_wiki::commands::install(&root, &opts)?;
         }
         Commands::Uninstall { force, root } => {
