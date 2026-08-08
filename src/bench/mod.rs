@@ -438,8 +438,9 @@ fn module_of(path: &std::path::Path) -> String {
 /// 维度 3：Completeness@K（FR-104）
 ///
 /// 判定：实体名检索 text 索引（FTS5 BM25）top-K 条目中，任一条目
-/// module_path 所属模块与实体所属模块相同（module_of 同规则），且该
-/// 模块页存在于产物（{module.join("_")}.md，与 wiki_file_name 同规则）。
+/// 所属模块与实体所属模块相同（两侧均经 module_of 从文件路径派生，
+/// 同一规则保证相等性自洽），且该模块页存在于产物
+/// （{module.join("_")}.md，与 wiki_file_name 同规则）。
 ///
 /// 降级语义（FR-101）：text 索引缺失（未 generate 或索引不可用）时
 /// judged=false 并返回，报告显式标注「未执行」；单实体检索失败（FTS5
@@ -467,9 +468,26 @@ fn measure_completeness_at_k(
     entities.dedup();
     let total = entities.len();
 
-    // text 索引打开：缺失/不可用 → 降级跳过（judged=false 显式标注）
+    // text 索引缺失（未构建/被清理）→ 降级跳过（judged=false 显式标注）。
+    // 判据用索引文件是否存在而非打开失败：rusqlite 在父目录存在时会
+    // 自动创建空索引文件，只有文件真的缺失才代表「从未构建」，
+    // 否则会误报 judged=true 但恒 0 命中的空索引（v32 6.3 审查修正）。
     let index_dir = crate::search_index_dir(config);
-    let engine = match crate::search::text::TextEngine::open(index_dir.join("text_index.db")) {
+    let index_path = index_dir.join("text_index.db");
+    if !index_path.exists() {
+        tracing::warn!(
+            "bench: Completeness@K 降级跳过（text 索引不存在: {}）",
+            index_path.display()
+        );
+        return Ok(CompletenessReport {
+            total_entities: total,
+            hit_entities: 0,
+            k: K,
+            ratio: if total == 0 { 1.0 } else { 0.0 },
+            judged: false,
+        });
+    }
+    let engine = match crate::search::text::TextEngine::open(&index_path) {
         Ok(e) => e,
         Err(e) => {
             tracing::warn!("bench: Completeness@K 降级跳过（text 索引不可用: {e}）");
@@ -501,7 +519,18 @@ fn measure_completeness_at_k(
             continue;
         };
         let found = hits.iter().any(|(node, _)| {
-            let node_module = node.module_path.join("::");
+            // 索引条目与实体两侧必须用同一 module_of 规则派生模块名：
+            // 索引条目的 file_path 是 insight.path 的字符串（graph::build
+            // 记录实体时原样保留），经 module_of 与实体侧
+            // module_of(insight.path) 完全同构，相等性自洽。
+            // 不能用 node.module_path 直接比较——它包含文件 stem
+            // （graph.rs:82-85 构造 dir_segments + file_stem），与实体侧
+            // 父目录规则不一致，会比较恒假（v32 6.3 审查修复）。
+            let node_module = node
+                .file_path
+                .as_deref()
+                .map(|fp| module_of(std::path::Path::new(fp)))
+                .unwrap_or_default();
             node_module == *module && module_page_names.contains(&module_page)
         });
         if found {
@@ -2420,12 +2449,21 @@ mod tests {
                     id: crate::model::NodeId::new(0),
                     kind: crate::model::NodeKind::Function,
                     name: "tcp_fn".into(),
-                    file_path: Some("src/net/tcp.rs".into()),
+                    // 刻意指向同模块目录下的「另一个文件」（src/net/tcp2.rs 并不
+                    // 真实存在，仅索引条目）：目录级模块判定（module_of 派生）
+                    // 必须命中；若实现退化为文件级精确匹配此处为 0（v32 6.3
+                    // 审查：同模块不同文件断言）。
+                    file_path: Some("src/net/tcp2.rs".into()),
                     line_range: None,
                     doc_comment: None,
                     signature: Some("pub fn tcp_fn(x: u32) -> u32".into()),
                     visibility: None,
-                    module_path: vec!["src".into(), "net".into()],
+                    // 镜像 graph::build 的真实构造：父目录 + 文件 stem
+                    // （graph.rs:82-85）。判定按 file_path 派生模块，
+                    // 与 module_path 字段无关——此处刻意保持生产形态，
+                    // 防止未来实现改回 module_path 比较时夹具静默放行
+                    // （测试/生产分叉教训）。
+                    module_path: vec!["src".into(), "net".into(), "tcp2".into()],
                 },
                 "pub fn tcp_fn(x: u32) -> u32 { x }".to_string(),
             )])
@@ -2437,7 +2475,10 @@ mod tests {
         let rep = measure_completeness_at_k(&root, &config, &pages).unwrap();
         assert!(rep.judged, "索引存在应执行判定");
         assert_eq!(rep.total_entities, 1);
-        assert_eq!(rep.hit_entities, 1, "同模块且模块页存在应命中");
+        assert_eq!(
+            rep.hit_entities, 1,
+            "目录级模块判定：索引条目文件与实体文件不同（tcp2.rs vs tcp.rs）仍命中；若实现退化为文件级精确匹配此处为 0"
+        );
         assert_eq!(rep.k, 10, "FR-104 固定 top-K=10");
         assert!((rep.ratio - 1.0).abs() < 1e-9);
 
@@ -2478,7 +2519,8 @@ mod tests {
                     doc_comment: None,
                     signature: Some("pub fn alpha(x: u32) -> u32".into()),
                     visibility: None,
-                    module_path: vec!["src".into()],
+                    // 镜像 graph::build 真实构造（父目录 + 文件 stem）
+                    module_path: vec!["src".into(), "a".into()],
                 },
                 "pub fn alpha(x: u32) -> u32 { x }".to_string(),
             )])
