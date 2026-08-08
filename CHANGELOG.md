@@ -40,14 +40,14 @@
 ### Added
 - RepoDocBench 对齐五维评测（v32 6.4）：`bench --repodoc` 输出五维聚合报告
   （Coverage/Doc Info/Completeness@K/TQS/Update Recall，对齐 RepoDoc 论文
-  评测维度）；各维 LLM 不可用/索引缺失等场景显式降级标注（FR-102 不静默）
+  评测维度）；各维 LLM 不可用/索引缺失等场景显式降级标注（FR-101 不静默）
 - Completeness@K 可检索性维度（v32 6.3）：实体名检索 text 索引 top-10，命中
   判定按「实体模块 == 索引条目模块（均按文件父目录派生）且模块页存在」，
   修正评审发现的实体侧与索引侧模块派生不一致（生产路径恒 0 命中）
 - judge 三态协议（v32 6.1）：rubric 判定新增 `uncertain`（证据不足弃权），
   重试一次仍不确定记 abstain；TQS 平局率（tie_rate）超过 0.30 触发升级为
   更多裁判轮次
-- Doc Info LLM 判定（v32 6.2）：按页 0-10 信息性评分（`--judge` 时），
+- Doc Info LLM 判定（v32 6.2）：按页 0-10 信息性评分（LLM 可用时），
   证据不足 uncertain 弃权，LLM 不可用降级为纯文本统计
 
 ## [0.3.0] - 2026-08-05
