@@ -48,6 +48,7 @@ fn test_write_document_language_param() {
             relation: "depends_on".into(),
         }],
         last_updated: "2025-01-01T00:00:00Z".into(),
+        based_on_commit: None,
         fingerprint: None,
     };
 
@@ -88,6 +89,7 @@ fn test_render_all_multi_lang_dirs() {
         module_path: vec!["core".into()],
         references: vec![],
         last_updated: "2025-01-01T00:00:00Z".into(),
+        based_on_commit: None,
         fingerprint: None,
     };
 

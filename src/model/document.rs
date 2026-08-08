@@ -36,6 +36,15 @@ pub struct WikiDocument {
     pub references: Vec<Reference>,
     /// 最后更新时间（ISO 8601）
     pub last_updated: String,
+    /// 基于的 git 提交短哈希（v32 10.2 基线行）
+    ///
+    /// 取值 = 生成时 HEAD 提交短哈希（前 8 位）；非 git 仓库或无 HEAD
+    /// 时为 None（渲染端省略「基于提交」行）。HEAD 是**非易变信号**——
+    /// 同一提交下多次生成值不变，不破坏 test_determinism 的内容级哈希；
+    /// 与 llms_txt.rs「内容禁止注入易变时间戳/基线」契约的取舍：时间戳
+    /// 每次生成都变（必须归一化），提交哈希只在代码变更时变（恰是页面
+    /// 内容应当变化的时刻）。仅供人工核对产物对应的源码版本。
+    pub based_on_commit: Option<String>,
     /// 源文件指纹（用于增量更新检测）
     pub fingerprint: Option<String>,
 }

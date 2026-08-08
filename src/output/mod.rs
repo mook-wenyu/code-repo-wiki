@@ -531,6 +531,7 @@ mod tests {
             module_path: vec!["src".into(), "testmodule".into()],
             references: vec![],
             last_updated: "2025-01-01T00:00:00Z".into(),
+            based_on_commit: None,
             fingerprint: None,
         }
     }

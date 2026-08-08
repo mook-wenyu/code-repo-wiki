@@ -807,6 +807,7 @@ mod tests {
             module_path: vec![],
             references: vec![],
             last_updated: String::new(),
+            based_on_commit: None,
             fingerprint: None,
         }
     }
@@ -827,6 +828,7 @@ mod tests {
             module_path: vec![],
             references: vec![],
             last_updated: "2025-01-01T00:00:00Z".into(),
+            based_on_commit: None,
             fingerprint: None,
         };
         let overview = WikiDocument {
@@ -837,6 +839,7 @@ mod tests {
             module_path: vec![],
             references: vec![],
             last_updated: "2025-01-01T00:00:00Z".into(),
+            based_on_commit: None,
             fingerprint: None,
         };
         let snapshot = crate::output::ExportSnapshot {
@@ -969,6 +972,7 @@ mod tests {
             module_path: vec![],
             references: vec![],
             last_updated: "2025-01-01T00:00:00Z".into(),
+            based_on_commit: None,
             fingerprint: None,
         };
         let schema_b = WikiDocument {
@@ -979,6 +983,7 @@ mod tests {
             module_path: vec![],
             references: vec![],
             last_updated: "2025-01-01T00:00:00Z".into(),
+            based_on_commit: None,
             fingerprint: None,
         };
         let snapshot = crate::output::ExportSnapshot {

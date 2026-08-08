@@ -15,6 +15,13 @@ pub fn render_wiki_page(doc: &WikiDocument) -> String {
     // 元信息
     output.push_str(&format!("> 最后更新: {}\n\n", doc.last_updated));
 
+    // v32 10.2：git 基线行（仅 git 仓库有 HEAD 时输出；非 git 仓库省略，
+    // 页面仍只有「最后更新」时间戳）。HEAD 非易变信号——同一提交下多次
+    // 生成值不变，与 test_determinism 内容级哈希兼容（时间戳才需归一化）。
+    if let Some(commit) = &doc.based_on_commit {
+        output.push_str(&format!("> 基于提交: {}\n\n", commit));
+    }
+
     // 内容（LLM 生成的主体部分）
     output.push_str(&doc.content);
 
@@ -101,6 +108,8 @@ pub fn render_api_reference(graph: &KnowledgeGraph) -> WikiDocument {
         module_path: vec![],
         references: vec![],
         last_updated: chrono::Utc::now().to_rfc3339(),
+        // API 参考页由代码图渲染（非 LLM 页），不带 git 基线行
+        based_on_commit: None,
         fingerprint: None,
     }
 }
@@ -359,6 +368,7 @@ mod tests {
                 relation: "depends_on".into(),
             }],
             last_updated: "2025-01-01T00:00:00Z".into(),
+            based_on_commit: None,
             fingerprint: None,
         }
     }
@@ -455,6 +465,7 @@ mod tests {
             module_path: vec![],
             references: vec![],
             last_updated: "2025-01-01T00:00:00Z".into(),
+            based_on_commit: None,
             fingerprint: None,
         });
         let output = render_table_of_contents(&docs);
@@ -481,6 +492,7 @@ mod tests {
             module_path: vec![],
             references: vec![],
             last_updated: "2025-01-01T00:00:00Z".into(),
+            based_on_commit: None,
             fingerprint: None,
         });
         let output = render_table_of_contents(&docs);

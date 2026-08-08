@@ -136,6 +136,8 @@ async fn generate_schema_document<P: LlmProvider>(
         module_path: vec![],
         references: vec![],
         last_updated: chrono::Utc::now().to_rfc3339(),
+        // Schema 文档由 SQL 渲染（非 LLM 页），不带 git 基线行
+        based_on_commit: None,
         fingerprint: None,
     }))
 }

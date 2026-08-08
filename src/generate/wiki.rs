@@ -29,6 +29,18 @@ pub struct WikiGenerator<'a, P: LlmProvider> {
     /// 触发）不再对未变模块重复调用 LLM。锁内只做短同步操作
     /// （查/写 HashMap），绝不在持有锁时 await。
     desc_cache: std::sync::Mutex<Option<ModuleDescCache>>,
+    /// HEAD 短哈希缓存（v32 10.2）：每轮生成只开一次 git 仓库。
+    /// None 也可能被缓存（非 git 仓库——生成期间不会变成 git 仓库）。
+    head_short: std::sync::OnceLock<Option<String>>,
+}
+
+impl<P: LlmProvider> WikiGenerator<'_, P> {
+    /// HEAD 短哈希（每轮生成首次调用计算一次，此后复用）
+    fn head_short_for(&self, root: &crate::project::ProjectRoot) -> Option<String> {
+        self.head_short
+            .get_or_init(|| git_head_short(root))
+            .clone()
+    }
 }
 
 /// 模块职责描述缓存条目
@@ -41,14 +53,27 @@ struct CacheEntry {
     description: String,
 }
 
-/// 模块职责描述缓存（v31 C-02）
-///
-/// 落盘位置 `{output_dir}/.state/module_descriptions.json`（与
-/// generation_state.json 同目录）。加载损坏/缺失时返回空缓存并告警——
-/// 描述按需回退 LLM 重新生成，缓存故障绝不阻断主流程。
-struct ModuleDescCache {
-    entries: std::collections::HashMap<String, CacheEntry>,
-}
+    /// 模块职责描述缓存（v31 C-02）
+    ///
+    /// 落盘位置 `{output_dir}/.state/module_descriptions.json`（与
+    /// generation_state.json 同目录）。加载损坏/缺失时返回空缓存并告警——
+    /// 描述按需回退 LLM 重新生成，缓存故障绝不阻断主流程。
+    struct ModuleDescCache {
+        entries: std::collections::HashMap<String, CacheEntry>,
+    }
+
+    /// 读取仓库 HEAD 短哈希（v32 10.2 页面基线行）
+    ///
+    /// git2 打开失败（非 git 仓库/无 HEAD/权限）一律返回 None——基线行
+    /// 是附加信息，任何 git 读取问题都不应中断生成。短哈希取前 8 位，
+    /// 与 `git log --oneline` 的默认缩写一致，足够人工核对版本。
+    fn git_head_short(root: &crate::project::ProjectRoot) -> Option<String> {
+        let repo = git2::Repository::open(root.path()).ok()?;
+        let head = repo.head().ok()?;
+        let commit = head.peel_to_commit().ok()?;
+        let id = commit.id().to_string();
+        Some(id[..id.len().min(8)].to_string())
+    }
 
 impl ModuleDescCache {
     fn new() -> Self {
@@ -186,6 +211,8 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
             semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(max)),
             // 缓存懒加载：首次 describe_modules 调用时按需读盘
             desc_cache: std::sync::Mutex::new(None),
+            // HEAD 短哈希懒加载：首次页面构造时计算（非 git 仓库缓存 None）
+            head_short: std::sync::OnceLock::new(),
         }
     }
 
@@ -331,6 +358,9 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
         }
 
         let now = chrono::Utc::now().to_rfc3339();
+        // v32 10.2：页面基线行——HEAD 短哈希（非 git 仓库为 None 省略）。
+        // 每轮生成只计算一次（OnceCell 缓存），模块页循环内不重复开仓库。
+        let based_on_commit = self.head_short_for(root);
 
         Ok(WikiDocument {
             // 标题 = 完整模块路径（"src::generate"）：crossref 校验与概览/架构
@@ -343,6 +373,7 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
             module_path: chunk.module_path.clone(),
             references: build_references(chunk, &config.wiki.language),
             last_updated: now,
+            based_on_commit,
             fingerprint: None,
         })
     }
@@ -386,6 +417,8 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
         // LLM 调用计数在 complete_with_mermaid_guard 内部（含重试）
         let content = self.complete_with_mermaid_guard(messages, "架构概览").await?;
         let now = chrono::Utc::now().to_rfc3339();
+        // v32 10.2：架构页也带基线行（与模块页一致；OnceCell 复用同值）
+        let based_on_commit = self.head_short_for(root);
 
         Ok(WikiDocument {
             title: "架构概览".into(),
@@ -409,6 +442,7 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
                 })
                 .collect(),
             last_updated: now,
+            based_on_commit,
             fingerprint: None,
         })
     }
@@ -548,6 +582,8 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
         let messages = vec![Message::user(overview_prompt(&modules, &output.cards, graph, config))];
         let content = self.complete_with_mermaid_guard(messages, "项目概览").await?;
         let now = chrono::Utc::now().to_rfc3339();
+        // v32 10.2：概览页也带基线行（与模块页一致；OnceCell 复用同值）
+        let based_on_commit = self.head_short_for(root);
 
         Ok(WikiDocument {
             title: "项目概览".into(),
@@ -571,6 +607,7 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
                 })
                 .collect(),
             last_updated: now,
+            based_on_commit,
             fingerprint: None,
         })
     }
@@ -873,6 +910,8 @@ pub fn fallback_architecture_doc(
         module_path: vec![],
         references: refs,
         last_updated: chrono::Utc::now().to_rfc3339(),
+        // 测试辅助构造：基于提交行由调用方显式指定（默认无）
+        based_on_commit: None,
         fingerprint: None,
     }
 }

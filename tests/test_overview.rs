@@ -31,6 +31,7 @@ fn make_module_doc() -> WikiDocument {
         module_path: vec!["first".into()],
         references: vec![],
         last_updated: "2025-01-01T00:00:00Z".into(),
+        based_on_commit: None,
         fingerprint: None,
     }
 }

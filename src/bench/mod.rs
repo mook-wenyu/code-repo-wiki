@@ -1127,6 +1127,7 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
                 module_path: Vec::new(),
                 references: Vec::new(),
                 last_updated: String::new(),
+                based_on_commit: None,
                 fingerprint: None,
             },
         );

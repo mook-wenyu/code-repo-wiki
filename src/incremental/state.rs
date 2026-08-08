@@ -439,6 +439,7 @@ mod tests {
             module_path: vec!["src".into(), "testmodule".into()],
             references: vec![],
             last_updated: String::new(),
+            based_on_commit: None,
             fingerprint: None,
         };
         let card = crate::model::KnowledgeCard {

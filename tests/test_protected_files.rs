@@ -45,6 +45,7 @@ fn test_record_doc_fingerprints() {
             relation: "depends_on".into(),
         }],
         last_updated: "2025-01-01T00:00:00Z".into(),
+        based_on_commit: None,
         fingerprint: None,
     };
 
@@ -159,6 +160,7 @@ fn test_render_all_protected_skips() {
         module_path: vec!["foo".into()],
         references: vec![],
         last_updated: "2025-01-01T00:00:00Z".into(),
+        based_on_commit: None,
         fingerprint: None,
     };
 
@@ -199,6 +201,7 @@ fn test_render_all_protected_page_still_writes_card() {
         module_path: vec!["foo".into()],
         references: vec![],
         last_updated: "2025-01-01T00:00:00Z".into(),
+        based_on_commit: None,
         fingerprint: None,
     };
     let card = KnowledgeCard {
@@ -256,6 +259,7 @@ fn test_schema_doc_fingerprint_path_matches_render_all() {
         module_path: vec![],
         references: vec![],
         last_updated: "2025-01-01T00:00:00Z".into(),
+        based_on_commit: None,
         fingerprint: None,
     };
 
@@ -301,6 +305,7 @@ fn test_doc_fingerprint_path_matches_render_all() {
         module_path: vec!["bar".into()],
         references: vec![],
         last_updated: "2025-01-01T00:00:00Z".into(),
+        based_on_commit: None,
         fingerprint: None,
     };
 
