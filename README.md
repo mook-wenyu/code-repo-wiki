@@ -118,7 +118,7 @@ Source Files → ingest (tree-sitter AST 解析) → analysis (知识图谱 + �
 - **搜索**：`repo-wiki search --query "k" --engine hybrid --top-k 10`；语义索引无 Key 自动降级
 - **AI Agent 入口**：`llms.txt`（站点地图）+ `llms-full.txt`（含实体签名的内联索引），随生成确定性重写
 - **发布**：SemVer 更新 `Cargo.toml` → `cargo test`/`clippy`/`machete` 全绿 → `cargo publish` + `git tag vX` → 干净环境 `cargo install repo-wiki` + `doctor` 六查
-- **评测**：`repo-wiki bench --root <repo> [--judge]` 五维自动评测（Coverage/文档信息/lint/Update Recall/耗时 + LLM-as-judge 打分）；`bench-manifest` 清单批量跑分
+- **评测**：`repo-wiki bench --root <repo> [--judge]` 自动评测（Coverage/文档信息/Completeness@K/lint/Update Recall/耗时 + LLM-as-judge 打分）；`bench --repodoc` 输出 RepoDocBench 对齐五维聚合报告（Coverage/Doc Info/Completeness@K/TQS/Update Recall，LLM 不可用等降级显式标注）；`bench-manifest` 清单批量跑分
 
 ## 命令参考
 
