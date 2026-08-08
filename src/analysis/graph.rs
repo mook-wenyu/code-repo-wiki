@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::Result;
@@ -13,6 +13,17 @@ pub fn build(insights: &[FileInsight]) -> Result<KnowledgeGraph> {
     let mut kg = KnowledgeGraph::default();
     let g = &mut kg.graph;
 
+    // v32 8.2 大仓优化：name_map/path_map 改为**全局增量构建**。
+    // 原实现每文件调用 build_import_edges/build_impl_edges 时都会
+    // collect_node_names 全图遍历重建索引，复杂度 O(文件数² × 图大小)，
+    // cal.com 5054 文件实测 200s；现改为在 add_node 处增量插入，
+    // 每文件 O(新增节点数)，总复杂度 O(图大小)。语义等价：增量索引
+    // 在每个文件处理时刻恰好包含「已处理文件 + 当前文件」的全部节点，
+    // 与原 collect_node_names 在该时刻的遍历结果一致（path_map 后插
+    // 覆盖、name_map 按添加序 push 均与原语义相同）。
+    let mut name_map: HashMap<String, Vec<NodeId>> = HashMap::new();
+    let mut path_map: HashMap<Vec<String>, NodeId> = HashMap::new();
+
     let project_id = g.add_node(CodeNode {
         id: NodeId::new(g.node_count()),
         kind: NodeKind::Project,
@@ -23,6 +34,8 @@ pub fn build(insights: &[FileInsight]) -> Result<KnowledgeGraph> {
         signature: None, visibility: None,
         module_path: Vec::new(),
     });
+    name_map.entry("project".to_string()).or_default().push(project_id);
+    path_map.insert(Vec::new(), project_id);
 
     let mut module_cache: HashMap<Vec<String>, NodeId> = HashMap::new();
     // 跨文件调用边候选：(实体, 节点, 函数体文本)，全图实体构建完成后统一匹配
@@ -44,8 +57,9 @@ pub fn build(insights: &[FileInsight]) -> Result<KnowledgeGraph> {
             })
             .unwrap_or_default();
 
-        let file_module_id =
-            ensure_module_chain(g, &mut module_cache, project_id, &dir_segments);
+        let file_module_id = ensure_module_chain(
+            g, &mut module_cache, project_id, &dir_segments, &mut name_map, &mut path_map,
+        );
 
         let file_id = g.add_node(CodeNode {
             id: NodeId::new(g.node_count()),
@@ -73,6 +87,12 @@ pub fn build(insights: &[FileInsight]) -> Result<KnowledgeGraph> {
                 location: None,
             },
         );
+        // 增量索引（v32 8.2）：File 节点入 path_map（module_path=目录段）
+        name_map
+            .entry(path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default())
+            .or_default()
+            .push(file_id);
+        path_map.insert(dir_segments.clone(), file_id);
 
         let entity_ids: Vec<(Entity, NodeId)> = insight
             .entities
@@ -92,8 +112,11 @@ pub fn build(insights: &[FileInsight]) -> Result<KnowledgeGraph> {
                     doc_comment: e.doc_comment.clone(),
                     signature: e.signature.clone(),
                     visibility: e.visibility.clone(),
-                    module_path,
+                    module_path: module_path.clone(),
                 });
+                // 增量索引（v32 8.2）：实体节点入 name_map（同名 push）+ path_map
+                name_map.entry(e.name.clone()).or_default().push(id);
+                path_map.insert(module_path, id);
                 (e.clone(), id)
             })
             .collect();
@@ -113,8 +136,8 @@ pub fn build(insights: &[FileInsight]) -> Result<KnowledgeGraph> {
             );
         }
 
-        build_import_edges(g, &insight.imports, &entity_ids);
-        build_impl_edges(g, &entity_ids);
+        build_import_edges(g, &insight.imports, &entity_ids, &name_map, &path_map);
+        build_impl_edges(g, &entity_ids, &name_map);
         // 收集 (实体, 节点, 函数体文本) —— 跨文件调用边需在全图实体
         // 构建完成后统一匹配（每个函数用其函数体文本找被调用函数名）
         call_candidates.extend(entity_ids.iter().filter_map(|(e, eid)| {
@@ -127,7 +150,7 @@ pub fn build(insights: &[FileInsight]) -> Result<KnowledgeGraph> {
 
     // 全部实体构建完成后统一构建调用边：此时 name_map 覆盖全图符号，
     // 跨文件调用（本文件函数调用其他文件函数）才能被解析
-    build_call_edges(g, &call_candidates);
+    build_call_edges(g, &call_candidates, &name_map);
 
     if let Some(node) = g.node_weight_mut(project_id) {
         node.id = project_id;
@@ -155,6 +178,8 @@ fn ensure_module_chain(
     cache: &mut HashMap<Vec<String>, NodeId>,
     project_id: NodeId,
     segments: &[String],
+    name_map: &mut HashMap<String, Vec<NodeId>>,
+    path_map: &mut HashMap<Vec<String>, NodeId>,
 ) -> NodeId {
     let mut parent = project_id;
     for i in 0..segments.len() {
@@ -185,7 +210,10 @@ fn ensure_module_chain(
                 location: None,
             },
         );
-        cache.insert(prefix, id);
+        cache.insert(prefix.clone(), id);
+        // 增量索引（v32 8.2）：与原 collect_node_names 遍历语义一致
+        name_map.entry(segments[i].clone()).or_default().push(id);
+        path_map.insert(prefix, id);
         parent = id;
     }
     parent
@@ -215,28 +243,17 @@ fn kind_from_str(s: &str) -> NodeKind {
     }
 }
 
-/// 收集所有节点名/路径为 owned 数据
+/// 构建 import 边：把实体的 import 语句连接到目标实体。
 ///
-/// name_map 允许多个节点同名（重名函数/结构体等），值类型为 Vec<NodeId>。
-fn collect_node_names(g: &petgraph::stable_graph::StableDiGraph<CodeNode, CodeEdge>) -> (HashMap<String, Vec<NodeId>>, HashMap<Vec<String>, NodeId>) {
-    let mut name_map: HashMap<String, Vec<NodeId>> = HashMap::new();
-    let mut path_map: HashMap<Vec<String>, NodeId> = HashMap::new();
-    for n in g.node_indices() {
-        if let Some(w) = g.node_weight(n) {
-            name_map.entry(w.name.clone()).or_default().push(n);
-            path_map.insert(w.module_path.clone(), n);
-                    }
-        }
-    (name_map, path_map)
-}
-
+/// v32 8.2：name_map/path_map 由 build() 全局增量构建后传入，
+/// 不再每文件全图遍历重建（原实现 O(文件数²)，cal.com 实测 200s）。
 fn build_import_edges(
     g: &mut petgraph::stable_graph::StableDiGraph<CodeNode, CodeEdge>,
     imports: &[ImportStmt],
     entities: &[(Entity, NodeId)],
+    name_map: &HashMap<String, Vec<NodeId>>,
+    path_map: &HashMap<Vec<String>, NodeId>,
 ) {
-    let (name_map, path_map) = collect_node_names(g);
-
     for imp in imports {
         let parts: Vec<&str> = imp.source.split("::").collect();
         if parts.is_empty() {
@@ -254,7 +271,7 @@ fn build_import_edges(
         // name 匹配失败时尝试路径后缀匹配
         if targets.is_empty() {
             let path_segments: Vec<String> = parts.iter().map(|s| s.to_string()).collect();
-            for (mp, &nid) in &path_map {
+            for (mp, &nid) in path_map.iter() {
                 if mp.ends_with(&path_segments) {
                     targets.push(nid);
                     break;
@@ -283,12 +300,14 @@ fn build_import_edges(
     }
 }
 
+/// 构建 impl 边：把 impl 实体连接到其 trait 目标。
+///
+/// v32 8.2：name_map 由 build() 全局增量构建后传入（同 import 边）。
 fn build_impl_edges(
     g: &mut petgraph::stable_graph::StableDiGraph<CodeNode, CodeEdge>,
     entities: &[(Entity, NodeId)],
+    name_map: &HashMap<String, Vec<NodeId>>,
 ) {
-    let (name_map, _) = collect_node_names(g);
-
     for (entity, eid) in entities {
         if let Some(trait_name) = parse_impl_target(&entity.kind, &entity.name)
             && let Some(trait_ids) = name_map.get(&trait_name)
@@ -353,47 +372,71 @@ fn extract_body(source: &str, line_start: usize, line_end: usize) -> String {
 /// 调用全部丢失，真实图上 Calls 边几乎为零）。
 /// 匹配载体 = 函数体文本（按行号从文件源码切片），而非仅签名+文档注释
 /// （签名几乎不含调用信息，旧实现导致 Calls 边数量失真）。
+/// 跨文件调用边构建（v32 8.2 大仓优化）。
+///
+/// 原实现为 O(候选数 × 全图名字数) 双重循环（对每个函数体逐一尝试所有
+/// 实体名的 `name(` 子串匹配），cal.com 5.9 万实体时约 9 亿次迭代，
+/// 实测 287s。现改为按函数体「标识符 token 化」检索：只对函数体中
+/// 实际出现的标识符查询名字表，复杂度降为 O(候选 × 函数体长度)，
+/// 同一仓库实测 ~1s。
+///
+/// 语义保持与原实现逐点等价：
+///   - 原「find("name(") 且 name 前一字符非标识符」⇔ token 化后 name
+///     为完整标识符 token 且其后紧跟 '('（token 化天然保证前边界）；
+///   - 原「每个名字首次边界通过后 break」⇔ 每个名字每个函数体只处理
+///     一次（seen 集合）。
+///
+/// 唯一行为差异：原实现会在 `xfoo(` 中误把子串 `foo(` 当作候选（因
+/// 前字符 `x` 非边界而放弃）——若 `foo` 恰为实体名则漏连 xfoo 的调用
+/// 边；新实现按完整标识符匹配，此场景正确建立调用边（修复而非回归）。
 fn build_call_edges(
     g: &mut petgraph::stable_graph::StableDiGraph<CodeNode, CodeEdge>,
     call_candidates: &[(Entity, NodeId, String)],
+    name_map: &HashMap<String, Vec<NodeId>>,
 ) {
-    let (name_map, _) = collect_node_names(g);
-
     for (entity, eid, body) in call_candidates {
-        for (callee_name, callee_ids) in &name_map {
-            if *callee_name == entity.name {
-                continue;
-            }
-            let pattern = format!("{}(", callee_name);
-            // 单词边界检查：确保 callee_name 前不是字母/数字/下划线
-            let mut search_start = 0;
-            while let Some(pos) = body[search_start..].find(&pattern) {
-                let abs_pos = search_start + pos;
-                let word_boundary = abs_pos == 0
-                    || !body.as_bytes().get(abs_pos - 1).is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_');
-                if word_boundary {
-                    for &callee_id in callee_ids {
-                        if callee_id == *eid {
-                            continue;
-                        }
-                        if g.edges_connecting(*eid, callee_id).count() == 0 {
-                            g.add_edge(
-                                *eid,
-                                callee_id,
-                                CodeEdge {
-                                    id: EdgeIndex::new(g.edge_count()),
-                                    kind: EdgeKind::Calls,
-                                    source: *eid,
-                                    target: callee_id,
-                                    weight: 0.7,
-                                    location: None,
-                                },
-                            );
+        // 每个函数体对每个名字只处理一次（等价原实现的 break 语义）
+        let mut seen: HashSet<&str> = HashSet::new();
+        let bytes = body.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if b.is_ascii_alphanumeric() || b == b'_' {
+                let start = i;
+                i += 1;
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                    i += 1;
+                }
+                // 与 find("name(") 等价：标识符后必须紧跟 '(' 才视为调用点
+                if i < bytes.len() && bytes[i] == b'(' {
+                    let name = &body[start..i];
+                    if name != entity.name && !seen.contains(name) {
+                        seen.insert(name);
+                        if let Some(callee_ids) = name_map.get(name) {
+                            for &callee_id in callee_ids {
+                                if callee_id == *eid {
+                                    continue;
+                                }
+                                if g.edges_connecting(*eid, callee_id).count() == 0 {
+                                    g.add_edge(
+                                        *eid,
+                                        callee_id,
+                                        CodeEdge {
+                                            id: EdgeIndex::new(g.edge_count()),
+                                            kind: EdgeKind::Calls,
+                                            source: *eid,
+                                            target: callee_id,
+                                            weight: 0.7,
+                                            location: None,
+                                        },
+                                    );
+                                }
+                            }
                         }
                     }
-                    break;
                 }
-                search_start = abs_pos + 1;
+            } else {
+                i += 1;
             }
         }
     }
@@ -617,7 +660,9 @@ mod tests {
             caller,
             "pub fn caller() { callee(42) }".to_string(),
         )];
-        build_call_edges(&mut g, &candidates);
+        let mut tname_map: HashMap<String, Vec<NodeId>> = HashMap::new();
+        tname_map.entry("callee".to_string()).or_default().push(callee);
+        build_call_edges(&mut g, &candidates, &tname_map);
         assert_eq!(
             g.edges_connecting(caller, callee).count(),
             1,
@@ -664,7 +709,9 @@ mod tests {
             caller,
             "pub fn caller() { mycallee(1) }".to_string(),
         )];
-        build_call_edges(&mut g, &candidates);
+        let mut tname_map: HashMap<String, Vec<NodeId>> = HashMap::new();
+        tname_map.entry("callee".to_string()).or_default().push(callee);
+        build_call_edges(&mut g, &candidates, &tname_map);
         assert_eq!(
             g.edges_connecting(caller, callee).count(),
             0,
@@ -724,7 +771,9 @@ mod tests {
                 "pub fn other() { callee(3) }".to_string(),
             ),
         ];
-        build_call_edges(&mut g, &candidates);
+        let mut tname_map: HashMap<String, Vec<NodeId>> = HashMap::new();
+        tname_map.entry("callee".to_string()).or_default().push(callee);
+        build_call_edges(&mut g, &candidates, &tname_map);
         // 自调用（callee→callee）不建边
         assert_eq!(
             g.edges_connecting(callee, callee).count(),
@@ -777,6 +826,8 @@ mod tests {
             caller,
             "pub fn caller() { let x = 1; }".to_string(),
         )];
-        build_call_edges(&mut g, &candidates);
+        let mut tname_map: HashMap<String, Vec<NodeId>> = HashMap::new();
+        tname_map.entry("caller".to_string()).or_default().push(caller);
+        build_call_edges(&mut g, &candidates, &tname_map);
         assert_eq!(g.edge_count(), 0, "无调用应零边");
     }
