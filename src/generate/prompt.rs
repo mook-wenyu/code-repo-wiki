@@ -347,7 +347,10 @@ fn entity_signature_line(e: &crate::ingest::parser::Entity) -> String {
         return String::new();
     }
     let line_count = trimmed.lines().count();
-    let mut flat = trimmed.replace('\n', " ");
+    // lines() 会剥行尾 \r（CRLF 源文件签名实测含 \r\n，parser 原始节点文本
+    // 不做归一化——ingest/mod.rs read_to_string 亦不归一化），用 join 压平
+    // 同时保证行数与压平一致（reviewer LOW 修复）。
+    let mut flat = trimmed.lines().collect::<Vec<_>>().join(" ");
     if line_count > 8 || flat.chars().count() > 160 {
         flat = flat.chars().take(160).collect();
         flat.push('…');
@@ -574,6 +577,38 @@ mod tests {
         assert!(out.starts_with("，签名: "));
         assert!(out.ends_with('…'), "超限签名必须截断加 …: {out}");
         assert!(out.chars().count() <= 167, "截断后不超过 160+签名前缀: {out}");
+        // 单行超 160 字符（>8 行分支之外的另一截断触发）：截断加 …
+        let wide = "w".repeat(200);
+        let e_wide = crate::ingest::parser::Entity {
+            name: "wide_fn".into(),
+            kind: "fn".into(),
+            line_start: 1,
+            line_end: 2,
+            doc_comment: None,
+            signature: Some(wide),
+            visibility: None,
+        };
+        let out_wide = entity_signature_line(&e_wide);
+        assert!(out_wide.ends_with('…'), "160 字符截断分支: {out_wide}");
+        assert_eq!(out_wide.chars().count(), 166, "160 截断+前缀5+…1");
+        // CRLF 源文件（\r\n 换行）：压平后不得残留 \r（reviewer LOW）
+        let crlf = "pub fn a(\r\n    x: u32,\r\n) -> u32".to_string();
+        let e_crlf = crate::ingest::parser::Entity {
+            name: "crlf_fn".into(),
+            kind: "fn".into(),
+            line_start: 1,
+            line_end: 4,
+            doc_comment: None,
+            signature: Some(crlf),
+            visibility: None,
+        };
+        let out_crlf = entity_signature_line(&e_crlf);
+        assert!(!out_crlf.contains('\r'), "CRLF 残留 \r: {out_crlf}");
+        // 压平只把换行变成空格，行内缩进原样保留
+        assert!(
+            out_crlf.contains("pub fn a(     x: u32, ) -> u32"),
+            "CRLF 压平: {out_crlf}"
+        );
         // 签名缺失 / 空白：空串（不输出占位）
         let e3 = crate::ingest::parser::Entity {
             name: "no_sig".into(),
