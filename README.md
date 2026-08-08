@@ -112,6 +112,10 @@ Source Files → ingest (tree-sitter AST 解析) → analysis (知识图谱 + �
 
 - 同一输出目录并发运行不被支持（状态/快照/缓存无锁，最后写入者胜；CI/编辑器集成请串行调用）
 - 每种语言都独立生成会线性放大 LLM 成本——当前只输出主语言（`wiki.language`，默认 `zh`）
+- **大仓边界**：单项目上限 10 万个源文件（超出显式报错）；单次变更超过 1 万行自动回退全量生成。实测（mock LLM，v30）：cal.com（5048 文件/5.9 万实体）全量约 6.2 分钟；图构建在万级实体仓库是主要耗时（v32 增量索引优化后 287s→20s）；真实 LLM 成本随仓库规模线性放大
+- **评测边界**：`bench --judge` 是参考型口径（文档生成质量自评），判定受 LLM-as-judge 稳定性影响（judge 三态 + abstain + tie 升级阈值已缓解，flip 率已知项）；rubrics 全量打分仅作趋势参考，不承诺与人工评审一致
+- **语义搜索降级**：embed Key 缺失或运行期失败时自动降级为纯文本搜索，`search`/`status` 显式提示「语义索引已降级」；降级状态持久化到 `semantic_degraded` 标记，下次成功生成自动清除
+- **语言覆盖**：tree-sitter 解析支持 Rust/TypeScript/TSX/Python/Go/JS/JSX/MJS/CJS/C#/Java 11 种；**无 Ruby/PHP 解析器**（rails 等 Ruby 仓库只能解析其 JS/TS 资产；纯非支持语言仓库零源文件会显式报错「未找到任何源文件」——扫描是全量自动识别，无 include 白名单配置）
 
 ## 多语言 / 搜索 / 发布（维护者）
 
@@ -142,5 +146,23 @@ Source Files → ingest (tree-sitter AST 解析) → analysis (知识图谱 + �
 | `install-to-opencode` / `uninstall-from-opencode` | 注册/移除 OpenCode 插件 |
 | `mcp` | 启动 MCP stdio server（Claude Code/Cline 接入） |
 | `bench` / `bench-manifest` | 文档质量评测 / 清单批量跑分 |
+
+## lint 检查项
+
+`repo-wiki lint` 对磁盘上的产物做静态健康检查（对齐 LLM Wiki 最佳实践：Karpathy 的 lint 健康检查、Econowiz 的孤儿页 lint）。退出码：`0` 干净 / `1` 有问题 / `2` 配置或环境错误（CI 可用）。
+
+| kind | 含义 | 发射点 |
+|---|---|---|
+| `orphan` | 孤儿页：没有任何其他页面链接指向的模块页（无人可达 = 可能过期/重复） | `src/output/lint.rs` |
+| `broken` | 断链：页面内链接指向不存在的产物文件 | 同上 |
+| `stale` | 过时：页面时间戳早于源文件修改时间（源码已变文档未更新） | 同上 |
+| `bad-citation` | 正文 `path:line` 引用指向不存在的文件或行号越界（引用契约的静态复核，3 个发射点） | 同上 |
+| `bad-citation-overlap` | 行号对但内容错：引用行区间与实体表行区间不重叠 | 同上 |
+| `bad-vctx` | 正文 `[[vctx:path#L-a-L-b@hash8]]` 手工标记 5 步哈希只读校验失败（vericontext 协议，5 个发射点） | 同上 |
+| `entity-coverage` | 页面声称的实体不在 api.md 权威清单（LLM 编造的第二道闸） | 同上 |
+| `stale-entity` | api.md 权威清单的实体在当前源码中不存在（文档引用了已删除/重命名的符号） | 同上 |
+| `bad-mermaid` | 产物中的 mermaid fence 无法被 merman 解析（历史产物/人工编辑/增量遗留） | 同上 |
+
+已知噪声：`entity-coverage` 会把**模块名引用**（api.md 的 `##` 节标题）判为不在实体清单——合成页（architecture/overview）按模块名引用属已知模式，不是 LLM 编造；人工复核时按此排除即可。检查对象是磁盘产物（真实用户看到的东西），而非内存中的文档对象。
 
 除 `bench` 外全部子命令支持 `--root <路径>` 指定项目根（默认当前目录）。
