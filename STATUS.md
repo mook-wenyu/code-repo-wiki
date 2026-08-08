@@ -667,3 +667,12 @@ knowing 全量 12 仓 mock 数据点齐（v29 9 + v30 3：rails 5239 实体/58 �
 - 验证：命令表 17 行 vs main.rs 18 枚举逐一核对（Bench/BenchManifest 合并）；配置示例键与 schema.rs 结构一致；示例引用 community.rs:54/:90 精确命中；默认值核对（zh/deepseek-v4-flash/openai-compatible/opencode.ai 网关/OPENCODEGO2_API_KEY/qwen3.7-text-embedding/百炼/BAILIAN_API_KEY）；#限制项 锚点与标题匹配；read 复核格式无截断
 - 提交：dff8acd
 - 遗留/风险点：README 数值（10 万/1 万行/16 并发/cal.com 实测）无第二真源（历史已逐项核证）；执行顺序建议「README 重构 → 运维/部署/多 Agent 文档」延续认知漏斗（未建文档页面留待后续）
+
+## 六十七节：v36 D7 实机验证 + rerank 精排移除（2026-08-09）
+- 背景：用户连续拍板——①opencode 网关不可用时保留默认并注明已知问题（question 拍板）；②「不使用 rerank 模型」——移除 v36 B 组全部 rerank 实现（YAGNI，不留死代码）
+- 修改的功能：①D7 实机验证（真实 LLM 全量 generate）：opencode.ai 网关 /chat/completions 400/500、/models 200（key 有效、模型在列）——TEMP-DIAG eprintln 实证 repo-wiki 发送 model 正确无空格，网关报错为上游消息模板伪影——**网关不可用非代码 bug**；README 已知问题块+百炼替代示例已提交（a0604ea）；百炼（BAILIAN_API_KEY）generate 实测成功：18 页产物全、architecture.md/overview.md 回归、llms.txt 11 模块完整（此前缺失=LLM 失败连锁，非 bug）447s/107 文件/2018 实体；②rerank 移除：删 src/search/rerank.rs（-315 行）、schema RerankSection+默认函数+Default、lib.rs rerank_hits+hybrid 接线、search/mod.rs pub mod、README [rerank] 配置段；hybrid 恢复「双引擎召回+RRF 融合+调用链补全」；顺带修复 config_dir 测试 env 竞态（纯函数化 config_dir_from，同 global_config_dir_from 先例）+ clippy collapsible_if（Rust 2024 let chain）+ test_hook_install parse 适配 v36 D2 hook 模板（2>> 日志重定向）
+- 摸到的文件：src/search/rerank.rs（删）、src/config/schema.rs、src/lib.rs、src/search/mod.rs、src/config/opencode.rs、tests/test_hook_install.rs、README.md
+- 是否改变了接口/契约：否（rerank 属 v36 内部增强，移除无外部契约影响；config_dir() 签名不变）
+- 验证：全量测试全绿（无 FAILED，含 config_dir 纯函数测试 3 断言+优先序断言）；clippy --all-targets 0 警告；cargo machete 仅剩 glob 冗余依赖警告（Cargo.toml 属 config zone 架构保护——architect 无权写，无计划任务可挂 coder——交付说明，用户可 `cargo remove glob` 或下轮计划处理）；rerank 实机验证（fn_entity 精排第 1）在移除前完成（证明功能本身正确，移除为产品决策非技术失败）
+- 提交：c247232（+40/-315）
+- 遗留/风险点：glob 依赖冗余（如上）；熔断记录：test_watch_e2e.rs:38 WikiConfig 构造缺 rerank 字段连续 3 次触发 NON-TRANSIENT CIRCUIT BREAKER（v36 B1 加字段漏更新构造点——移除 rerank 后该问题自然消失）
