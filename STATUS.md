@@ -688,3 +688,10 @@ knowing 全量 12 仓 mock 数据点齐（v29 9 + v30 3：rails 5239 实体/58 �
 **文档重构**：docs/ Diátaxis 11 页（tutorial/cli/config/faq/limitations/lint/architecture/watch/maintenance/glossary/index）；README 223 行→着陆页；CHANGELOG 补记 v37/v36/v35；AGENTS.md/.gitignore/scripts 改名核对；commands.rs 陈旧注释清理
 
 **验证**：全量测试绿（471+）+ clippy 0 + cargo doc 0 警告；CI run 31276550051/31276799380 已暴露并修复全部平台问题，push 待网络恢复后重试
+
+## v38 真实环境验证 install/uninstall（2026-08-10）
+
+- 真实环境 install/uninstall 全链路验证（本仓库：全局 opencode.json 8 个用户 MCP+插件、codex config、用户 memorix post-commit hook 共存场景）
+- 发现并修复 5 个集成缺陷：插件模板自举解耦（uninstall 后仓库可编译）、AGENTS.md 块双标记迁移、旧名 hook 识别、空壳清理、hook 占用提示
+- hook 端到端触发验证：Git sh 无 PATH 静默跳过（设计正确）、临时 PATH 真实 update 成功（产物生成）
+- 提交 44dbccb（7 文件 +203/-75），全量 473 测试绿 + clippy 0
