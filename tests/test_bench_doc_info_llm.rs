@@ -18,8 +18,8 @@ use std::path::PathBuf;
 
 use repo_wiki::bench::manifest::{run_manifest, RepoEntry};
 use repo_wiki::bench::{
-    render_markdown, run_rubrics_only, BenchReport, CoverageReport, DocInfoReport, LintReport,
-    TimeReport, UpdateRecallReport,
+    render_markdown, run_rubrics_only, BenchReport, CompletenessReport, CoverageReport,
+    DocInfoReport, LintReport, TimeReport, UpdateRecallReport,
 };
 use repo_wiki::config::schema::{LlmProviderType, LlmSection, WikiSection, WikiConfig};
 use repo_wiki::project::ProjectRoot;
@@ -162,6 +162,13 @@ fn test_render_markdown_doc_info_llm_branches() {
         time: TimeReport { scan_ms: 0, generate_ms: 0, total_ms: 0 },
         tqs: None,
         rubric: None,
+        completeness: CompletenessReport {
+            total_entities: 0,
+            hit_entities: 0,
+            k: 10,
+            ratio: 1.0,
+            judged: false,
+        },
     };
 
     let md_on = render_markdown(&base(true, 7.5, 3, 1));
@@ -170,7 +177,10 @@ fn test_render_markdown_doc_info_llm_branches() {
         "执行分支应输出评分行（{:.2} 格式）: {md_on}",
         7.5
     );
-    assert!(!md_on.contains("未执行"), "执行分支不得出现降级标注: {md_on}");
+    assert!(
+        !md_on.contains("LLM 信息性判定: 未执行"),
+        "执行分支不得出现 Doc Info 降级标注: {md_on}"
+    );
 
     let md_off = render_markdown(&base(false, 0.0, 0, 0));
     assert!(
@@ -211,7 +221,7 @@ fn test_run_rubrics_only_doc_info_degraded_without_llm() {
     let llm = LlmSection {
         provider: LlmProviderType::OpenAI,
         api_key: None,
-        api_key_env: "RW_DOCINFO_TEST_UNSET_KEY_9F3A".into(),
+        api_key_env: "RW_DOCINFO_TEST_UNSET_ENV_9F3A".into(),
         ..Default::default()
     };
     let (root, config) = bench_setup("degraded", llm);

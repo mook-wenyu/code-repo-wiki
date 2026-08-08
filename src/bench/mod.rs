@@ -64,6 +64,8 @@ pub struct BenchReport {
     pub tqs: Option<TqsReport>,
     /// 维度 7：Rubric 层级完整性打分（--judge 启用且 LLM 可用时 Some）
     pub rubric: Option<RubricReport>,
+    /// v32（6.3 FR-104）：Completeness@K 文档可检索性（五维对齐 RepoDocBench）
+    pub completeness: CompletenessReport,
 }
 
 /// 维度 1：实体覆盖率
@@ -105,6 +107,28 @@ pub struct DocInfoReport {
     /// 或调用/解析失败；报告暴露 abstain 数——FR-102）
     #[serde(default)]
     pub llm_abstain_modules: usize,
+}
+
+/// 维度 3（v32 6.3 FR-104）：Completeness@K 文档可检索性
+///
+/// RepoDocBench 五维之一：实体的文档可检索性——用实体名检索 text 索引
+/// （FTS5 BM25）top-K 条目，命中判定=任一条目所属模块与实体所属模块
+/// 相同，且该模块页存在于产物。语义是「能否通过检索找到实体的模块页」，
+/// 与 Coverage（提及率）互补：提及率高但检索命不中 = 文档难导航。
+#[derive(Debug, Clone, Serialize)]
+pub struct CompletenessReport {
+    /// 实体总数（AST 解析去重后，与 Coverage 同源）
+    pub total_entities: usize,
+    /// 命中实体数（top-K 检索命中所属模块页）
+    pub hit_entities: usize,
+    /// K 值（text 索引检索条目数上限，FR-104 固定 10）
+    pub k: usize,
+    /// 命中率 = hit / total（total 为 0 时 1.0 空集约定）
+    pub ratio: f64,
+    /// v32（FR-101）：text 索引缺失/不可用时降级跳过（false），
+    /// 报告显式标注而非静默
+    #[serde(default)]
+    pub judged: bool,
 }
 
 /// 维度 3：lint 健康
@@ -394,6 +418,104 @@ fn measure_coverage(root: &ProjectRoot, pages: &[(PathBuf, String)]) -> Result<C
         .count();
     let ratio = if total == 0 { 1.0 } else { covered as f64 / total as f64 };
     Ok(CoverageReport { total_entities: total, covered_entities: covered, ratio })
+}
+
+/// 模块名派生（与 chunk_by_file/collect_index_items 同规则）：
+/// 文件父目录的 Normal 路径组件用 "::" 连接；根目录文件为空串。
+/// 两侧（实体侧与索引条目侧）共用本函数保证模块相等性判断自洽。
+fn module_of(path: &std::path::Path) -> String {
+    path.parent()
+        .map(|p| {
+            p.components()
+                .filter(|c| matches!(c, std::path::Component::Normal(_)))
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("::")
+        })
+        .unwrap_or_default()
+}
+
+/// 维度 3：Completeness@K（FR-104）
+///
+/// 判定：实体名检索 text 索引（FTS5 BM25）top-K 条目中，任一条目
+/// module_path 所属模块与实体所属模块相同（module_of 同规则），且该
+/// 模块页存在于产物（{module.join("_")}.md，与 wiki_file_name 同规则）。
+///
+/// 降级语义（FR-101）：text 索引缺失（未 generate 或索引不可用）时
+/// judged=false 并返回，报告显式标注「未执行」；单实体检索失败（FTS5
+/// 查询语法错误等特殊字符）跳过该实体不中断（与 rubrics abstain 同
+/// 语义）。注意本函数独立扫描一次（与 measure_coverage 互不共享，
+/// 保持两维度可独立测试；bench 非热路径，重复扫描成本可接受）。
+fn measure_completeness_at_k(
+    root: &ProjectRoot,
+    config: &WikiConfig,
+    pages: &[(std::path::PathBuf, String)],
+) -> Result<CompletenessReport> {
+    // FR-104：top-K = 10
+    const K: usize = 10;
+
+    // 实体清单去重并携带所属模块（与 coverage 同源，口径一致）
+    let insights = crate::ingest::scan_and_parse_at(root)?.insights;
+    let mut entities: Vec<(String, String)> = insights
+        .iter()
+        .flat_map(|i| {
+            let module = module_of(&i.path);
+            i.entities.iter().map(move |e| (e.name.clone(), module.clone()))
+        })
+        .collect();
+    entities.sort();
+    entities.dedup();
+    let total = entities.len();
+
+    // text 索引打开：缺失/不可用 → 降级跳过（judged=false 显式标注）
+    let index_dir = crate::search_index_dir(config);
+    let engine = match crate::search::text::TextEngine::open(index_dir.join("text_index.db")) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!("bench: Completeness@K 降级跳过（text 索引不可用: {e}）");
+            return Ok(CompletenessReport {
+                total_entities: total,
+                hit_entities: 0,
+                k: K,
+                ratio: if total == 0 { 1.0 } else { 0.0 },
+                judged: false,
+            });
+        }
+    };
+
+    // 产物模块页文件名集合（wiki/{lang}/*.md 的 stem），
+    // 模块页命名与 wiki_file_name 同规则（module.join("_") + ".md"）
+    let mut module_page_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (path, _) in pages {
+        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            module_page_names.insert(stem.to_string());
+        }
+    }
+
+    let mut hit = 0usize;
+    for (name, module) in &entities {
+        // 模块页文件名：模块名（:: 连接）转下划线
+        let module_page = module.replace("::", "_");
+        // FTS5 查询语法错误（实体名含特殊字符）→ 跳过该实体不中断
+        let Ok(hits) = engine.search(name, K) else {
+            continue;
+        };
+        let found = hits.iter().any(|(node, _)| {
+            let node_module = node.module_path.join("::");
+            node_module == *module && module_page_names.contains(&module_page)
+        });
+        if found {
+            hit += 1;
+        }
+    }
+    let ratio = if total == 0 { 1.0 } else { hit as f64 / total as f64 };
+    Ok(CompletenessReport {
+        total_entities: total,
+        hit_entities: hit,
+        k: K,
+        ratio,
+        judged: true,
+    })
 }
 
 /// 维度 2：文本统计
@@ -822,6 +944,8 @@ pub fn run_bench(
     doc_info.llm_score = llm_info.score;
     doc_info.llm_judged_modules = llm_info.judged_modules;
     doc_info.llm_abstain_modules = llm_info.abstain_modules;
+    // v32（6.3 FR-104）：Completeness@K 文档可检索性（text 索引缺失降级）
+    let completeness = measure_completeness_at_k(root, config, &pages)?;
     let lint = measure_lint(config.output_dir(), root);
 
     let gen_start = Instant::now();
@@ -854,6 +978,7 @@ pub fn run_bench(
         },
         tqs,
         rubric,
+        completeness,
     })
 }
 
@@ -884,6 +1009,8 @@ pub fn run_rubrics_only(
     doc_info.llm_score = llm_info.score;
     doc_info.llm_judged_modules = llm_info.judged_modules;
     doc_info.llm_abstain_modules = llm_info.abstain_modules;
+    // v32（6.3 FR-104）：Completeness@K（text 索引缺失降级，无 LLM 成本）
+    let completeness = measure_completeness_at_k(root, config, &pages)?;
     let lint = measure_lint(config.output_dir(), root);
 
     // Update Recall 回放成本不可接受（v21 D 组）：大仓库跳过，
@@ -913,6 +1040,7 @@ pub fn run_rubrics_only(
         },
         tqs,
         rubric,
+        completeness,
     })
 }
 
@@ -2072,7 +2200,23 @@ pub fn render_markdown(report: &BenchReport) -> String {
     }
     out.push('\n');
 
-    out.push_str("## 3. lint 健康\n\n");
+    // v32（6.3 FR-104）：Completeness@K 文档可检索性；text 索引缺失
+    // 时显式标注降级（FR-101 不静默）
+    out.push_str("## 3. Completeness@K（文档可检索性）\n\n");
+    if report.completeness.judged {
+        out.push_str(&format!(
+            "- 实体总数: {}\n- 命中实体数（top-{} 检索命中所属模块页）: {}\n- 命中率: {:.2}\n",
+            report.completeness.total_entities,
+            report.completeness.k,
+            report.completeness.hit_entities,
+            report.completeness.ratio
+        ));
+    } else {
+        out.push_str("- 未执行（text 索引缺失——未生成或索引不可用，降级跳过）\n");
+    }
+    out.push('\n');
+
+    out.push_str("## 4. lint 健康\n\n");
     if report.lint.total_issues == 0 {
         out.push_str("- 通过（无孤儿页/断链/过时/引用/覆盖/mermaid 问题）\n\n");
     } else {
@@ -2083,7 +2227,7 @@ pub fn render_markdown(report: &BenchReport) -> String {
         out.push('\n');
     }
 
-    out.push_str("## 4. 增量召回（Update Recall）\n\n");
+    out.push_str("## 5. 增量召回（Update Recall）\n\n");
     if report.update_recall.commits_scanned == 0 {
         // v21 D 组：--rubrics-only 明确标注跳过，避免误读为"无 commit 可回放"
         out.push_str("- 跳过（--rubrics-only 模式：不执行 git commit 回放）\n\n");
@@ -2098,13 +2242,13 @@ pub fn render_markdown(report: &BenchReport) -> String {
         ));
     }
 
-    out.push_str("## 5. 耗时（Time）\n\n");
+    out.push_str("## 6. 耗时（Time）\n\n");
     out.push_str(&format!(
         "- 扫描: {}ms\n- 增量: {}ms\n- 总计: {}ms\n",
         report.time.scan_ms, report.time.generate_ms, report.time.total_ms
     ));
 
-    out.push_str("## 6. TQS 文本质量（LLM 裁判，--judge）\n\n");
+    out.push_str("## 7. TQS 文本质量（LLM 裁判，--judge）\n\n");
     if let Some(tqs) = &report.tqs {
         out.push_str(&format!(
             "- 判定模块: {}（有效 {}，复测 {} 轮/模块，裁判 {}\n- Clarity: {:.1}\n- Readability: {:.1}\n- Conciseness: {:.1}\n- Richness: {:.1}\n- Structure: {:.1}\n- 总分: {:.1}\n- 复测一致性（κ 近似）: {:.2}\n- 机会校正 κ: {:.2}\n- 位置偏差 |P(A胜)−0.5|: {:.2}\n- 复测标准差: {:.2}\n",
@@ -2149,7 +2293,7 @@ pub fn render_markdown(report: &BenchReport) -> String {
         out.push_str("- 未启用（使用 --judge 且配置 LLM API key 后启用）\n\n");
     }
 
-    out.push_str("## 7. Rubric 层级完整性（LLM 裁判，--judge）\n\n");
+    out.push_str("## 8. Rubric 层级完整性（LLM 裁判，--judge）\n\n");
     if let Some(rubric) = &report.rubric {
         out.push_str(&format!(
             "- 节点 {} 个（叶子 {} 个，满足 {} 个），生成 {} 次 LLM 调用，裁判 {}\n- 覆盖率: {:.1}%（基于有效判定叶子）\n- 加权总分 S: {:.3}（σ_R {:.3}）\n",
@@ -2241,6 +2385,154 @@ mod tests {
         assert!((cov.ratio - 1.0).abs() < 1e-9);
 
         let _ = std::fs::remove_dir_all(root.path());
+    }
+
+    /// v32（6.3 FR-104）：Completeness@K——索引条目同模块且模块页存在时命中
+    ///
+    /// 受控构造：手动建 text 索引（pipeline 同款路径 index_dir/text_index.db），
+    /// 索引条目 module_path=["src","net"]（与 chunk_by_file 同规则），
+    /// 产物模块页 src_net_tcp.md（wiki_file_name 同规则）存在。
+    #[test]
+    fn test_completeness_hit_when_module_page_exists() {
+        let dir = std::env::temp_dir()
+            .join(format!("repo_wiki_bench_ckhit_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src").join("net")).unwrap();
+        std::fs::write(
+            dir.join("src").join("net").join("tcp.rs"),
+            "pub fn tcp_fn(x: u32) -> u32 { x }\n",
+        )
+        .unwrap();
+
+        let config = WikiConfig {
+            output_dir: Some((dir.join(".repo-wiki").to_string_lossy().into_owned()).into()),
+            wiki: WikiSection { language: "zh".into() },
+            llm: LlmSection { provider: LlmProviderType::Mock, ..Default::default() },
+            ..Default::default()
+        };
+        let index_dir = crate::search_index_dir(&config);
+        std::fs::create_dir_all(&index_dir).unwrap();
+        let mut engine =
+            crate::search::text::TextEngine::open(index_dir.join("text_index.db")).unwrap();
+        engine
+            .index_batch(&[(
+                crate::model::CodeNode {
+                    id: crate::model::NodeId::new(0),
+                    kind: crate::model::NodeKind::Function,
+                    name: "tcp_fn".into(),
+                    file_path: Some("src/net/tcp.rs".into()),
+                    line_range: None,
+                    doc_comment: None,
+                    signature: Some("pub fn tcp_fn(x: u32) -> u32".into()),
+                    visibility: None,
+                    module_path: vec!["src".into(), "net".into()],
+                },
+                "pub fn tcp_fn(x: u32) -> u32 { x }".to_string(),
+            )])
+            .unwrap();
+
+        let root = ProjectRoot::new(dir.clone());
+        // 模块页 src_net.md（模块名 src::net 的页面，wiki_file_name 同规则）
+        let pages = vec![(dir.join(".repo-wiki/wiki/zh/src_net.md"), "content".to_string())];
+        let rep = measure_completeness_at_k(&root, &config, &pages).unwrap();
+        assert!(rep.judged, "索引存在应执行判定");
+        assert_eq!(rep.total_entities, 1);
+        assert_eq!(rep.hit_entities, 1, "同模块且模块页存在应命中");
+        assert_eq!(rep.k, 10, "FR-104 固定 top-K=10");
+        assert!((rep.ratio - 1.0).abs() < 1e-9);
+
+        let _ = std::fs::remove_dir_all(root.path());
+    }
+
+    /// v32（6.3 FR-104）：产物缺模块页时同模块条目不命中（可检索性判定）
+    #[test]
+    fn test_completeness_miss_when_module_page_absent() {
+        let dir = std::env::temp_dir()
+            .join(format!("repo_wiki_bench_ckmiss_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("src").join("a.rs"),
+            "pub fn alpha(x: u32) -> u32 { x }\n",
+        )
+        .unwrap();
+
+        let config = WikiConfig {
+            output_dir: Some((dir.join(".repo-wiki").to_string_lossy().into_owned()).into()),
+            wiki: WikiSection { language: "zh".into() },
+            llm: LlmSection { provider: LlmProviderType::Mock, ..Default::default() },
+            ..Default::default()
+        };
+        let index_dir = crate::search_index_dir(&config);
+        std::fs::create_dir_all(&index_dir).unwrap();
+        let mut engine =
+            crate::search::text::TextEngine::open(index_dir.join("text_index.db")).unwrap();
+        engine
+            .index_batch(&[(
+                crate::model::CodeNode {
+                    id: crate::model::NodeId::new(0),
+                    kind: crate::model::NodeKind::Function,
+                    name: "alpha".into(),
+                    file_path: Some("src/a.rs".into()),
+                    line_range: None,
+                    doc_comment: None,
+                    signature: Some("pub fn alpha(x: u32) -> u32".into()),
+                    visibility: None,
+                    module_path: vec!["src".into()],
+                },
+                "pub fn alpha(x: u32) -> u32 { x }".to_string(),
+            )])
+            .unwrap();
+
+        let root = ProjectRoot::new(dir.clone());
+        // pages 为空：模块页 src.md 不存在 → 不命中
+        let rep = measure_completeness_at_k(&root, &config, &[]).unwrap();
+        assert!(rep.judged, "索引存在仍执行判定");
+        assert_eq!(rep.total_entities, 1);
+        assert_eq!(rep.hit_entities, 0, "模块页缺失不应命中");
+        assert!((rep.ratio - 0.0).abs() < 1e-9);
+
+        let _ = std::fs::remove_dir_all(root.path());
+    }
+
+    /// v32（6.3 FR-101）：text 索引缺失 → 降级跳过（judged=false 显式标注）
+    #[test]
+    fn test_completeness_degrades_without_index() {
+        let dir = std::env::temp_dir()
+            .join(format!("repo_wiki_bench_ckdeg_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("src").join("a.rs"),
+            "pub fn alpha(x: u32) -> u32 { x }\n",
+        )
+        .unwrap();
+
+        let config = WikiConfig {
+            output_dir: Some((dir.join(".repo-wiki").to_string_lossy().into_owned()).into()),
+            wiki: WikiSection { language: "zh".into() },
+            llm: LlmSection { provider: LlmProviderType::Mock, ..Default::default() },
+            ..Default::default()
+        };
+        let root = ProjectRoot::new(dir.clone());
+        // 未建索引：search_index_dir 不存在
+        let rep = measure_completeness_at_k(&root, &config, &[]).unwrap();
+        assert!(!rep.judged, "索引缺失应降级跳过");
+        assert_eq!(rep.total_entities, 1, "实体统计仍给出（与 coverage 同源）");
+        assert_eq!(rep.ratio, 0.0, "降级时不虚报命中率");
+
+        let _ = std::fs::remove_dir_all(root.path());
+    }
+
+    /// v32（6.3）：模块名派生规则（与 chunk_by_file/collect_index_items 同规则）
+    #[test]
+    fn test_module_of_rules() {
+        assert_eq!(module_of(std::path::Path::new("src/net/tcp.rs")), "src::net");
+        assert_eq!(
+            module_of(std::path::Path::new("tcp.rs")),
+            "",
+            "根目录文件模块为空串"
+        );
     }
 
     /// 覆盖率：无产物时覆盖率为 0（实体存在但无页面提及）
@@ -2366,6 +2658,13 @@ mod tests {
             time: TimeReport { scan_ms: 0, generate_ms: 0, total_ms: 0 },
             tqs: None,
             rubric: None,
+            completeness: CompletenessReport {
+                total_entities: 0,
+                hit_entities: 0,
+                k: 10,
+                ratio: 1.0,
+                judged: false,
+            },
         };
         let md = render_markdown(&report);
         for section in ["实体覆盖率", "文本统计", "lint 健康", "增量召回", "耗时"] {
@@ -2442,6 +2741,13 @@ mod tests {
             time: TimeReport { scan_ms: 0, generate_ms: 0, total_ms: 0 },
             tqs: None,
             rubric: None,
+            completeness: CompletenessReport {
+                total_entities: 0,
+                hit_entities: 0,
+                k: 10,
+                ratio: 1.0,
+                judged: false,
+            },
         };
         let md_off = render_markdown(&report);
         assert!(md_off.contains("--judge"), "未启用时应提示 --judge: {md_off}");
@@ -2576,6 +2882,13 @@ mod tests {
             time: TimeReport { scan_ms: 0, generate_ms: 0, total_ms: 0 },
             tqs: None,
             rubric: None,
+            completeness: CompletenessReport {
+                total_entities: 0,
+                hit_entities: 0,
+                k: 10,
+                ratio: 1.0,
+                judged: false,
+            },
         };
         let md_off = render_markdown(&report);
         assert!(md_off.contains("Rubric"), "应含 Rubric 节: {md_off}");
