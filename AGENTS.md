@@ -23,17 +23,4 @@
    （pending_manual_edits 节）。
 5. 知识沉淀：`code-repo-wiki note "<记录>"` 追加到 `.code-repo-wiki/wiki/{lang}/_log.md`。
 
-<!-- CODE-REPO-WIKI:START -->
-本仓库使用 code-repo-wiki 维护可持续进化的项目 Wiki，产物位于 `.code-repo-wiki/`。
 
-## AI 代理使用指引
-
-1. 先读 `.code-repo-wiki/llms.txt` 定位目标页面（站点地图），再读
-   `.code-repo-wiki/wiki/zh/overview.md` 与 `.code-repo-wiki/wiki/zh/architecture.md`
-   建立全局认知，按需深入模块页；上下文预算充足时用 `.code-repo-wiki/llms-full.txt`
-   一次获得完整实体骨架。
-2. 查找实体（函数/结构体/类）用 `code-repo-wiki search -q "<关键词>"`（支持
-   text/semantic/hybrid 三引擎，hybrid 含调用链补全）。
-3. 修改代码后运行 `code-repo-wiki update` 增量更新；`code-repo-wiki lint` 检查产物健康。
-4. 知识沉淀：`code-repo-wiki note "<记录>"` 追加到 `.code-repo-wiki/wiki/zh/_log.md`。
-<!-- CODE-REPO-WIKI:END -->

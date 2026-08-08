@@ -125,11 +125,18 @@ impl OpenCodeConfig {
             );
         }
 
-        if value.get_mut("plugins").is_some() {
-            value
-                .as_object_mut()
-                .with_context(|| format!("opencode.json 顶层应为 JSON 对象: {}", self.config_path.display()))?
-                .remove("plugins");
+        let had_plugins = value.get("plugins").is_some();
+        value
+            .as_object_mut()
+            .with_context(|| format!("opencode.json 顶层应为 JSON 对象: {}", self.config_path.display()))?
+            .remove("plugins");
+        // 清理后若配置文件已无任何键（空对象——含从未有过 plugins 键的
+        // 历史空壳），直接删除文件：保留 `{}` 只会让用户疑惑，且下次
+        // install 会重新创建。非空配置（无 plugins 键）原样保留不动。
+        if value.as_object().is_some_and(|o| o.is_empty()) {
+            std::fs::remove_file(&self.config_path)
+                .with_context(|| format!("删除空配置文件失败: {}", self.config_path.display()))?;
+        } else if had_plugins {
             let output = serde_json::to_string_pretty(&value)
                 .with_context(|| "序列化 opencode.json 失败")?;
             std::fs::write(&self.config_path, &output)
@@ -186,11 +193,12 @@ impl OpenCodeConfig {
         let template = {
             // 模板内嵌编译（include_str）：插件模板只含 execa("code-repo-wiki")
             // 占位（下方注入 current_exe 绝对路径），不含任何编译期路径，
-            // 因此发布安装/仓库移动/uninstall 删除安装产物后仍可生成。
-            // （v33 修复：旧实现运行时读仓库内 .opencode/plugins/code-repo-wiki.ts
-            // 作为模板源——uninstall 删除该安装产物后模板源同时丢失，
-            // 再次 install 直接失败；模板与安装目标同路径是自举缺陷）
-            let raw = include_str!("../../.opencode/plugins/code-repo-wiki.ts");
+            // 因此发布安装/仓库移动后仍可生成。模板源固定为源码目录内
+            // src/config/plugin-template.ts——与安装产物 .opencode/plugins/
+            // 完全分离，uninstall 删除产物不影响编译与再次 install
+            // （v38 修复：v33 注释声称已修复自举缺陷但 include_str 仍指向
+            // 仓库内安装产物路径——真实环境 uninstall 删除产物后编译失败）
+            let raw = include_str!("plugin-template.ts");
             raw.replace(
                 "execa(\"code-repo-wiki\"",
                 &format!("execa({exe_json}"),

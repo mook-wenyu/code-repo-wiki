@@ -15,8 +15,9 @@ use std::path::PathBuf;
 mod common;
 use common::{run_bin_with_envs, unique_dir};
 
-const START: &str = "<!-- REPO-WIKI:START -->";
-const END: &str = "<!-- REPO-WIKI:END -->";
+const START: &str = "<!-- CODE-REPO-WIKI:START -->";
+const END: &str = "<!-- CODE-REPO-WIKI:END -->";
+const LEGACY_START: &str = "<!-- REPO-WIKI:START -->";
 
 /// 创建隔离临时目录 + 隔离 HOME，返回 (work_dir, envs)
 fn setup(tag: &str) -> (PathBuf, Vec<(&'static str, String)>) {
@@ -78,13 +79,18 @@ fn test_install_wiki_idempotent_preserves_user_content() {
     let _ = std::fs::remove_dir_all(&work_dir);
 }
 
-/// uninstall --force：移除标记对及内容，用户内容保留；未安装时退出码 0
+/// uninstall --force：新旧两代标记块都移除，用户内容保留；未安装时退出码 0
+/// （双块=改名升级后的残留场景：v37 前的旧块 + 重装的新块并存）
 #[test]
 fn test_uninstall_wiki_removes_block() {
     let (work_dir, envs) = setup("uninstall");
     let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
     let path = work_dir.join("AGENTS.md");
-    std::fs::write(&path, "用户头部\n\n<!-- REPO-WIKI:START -->\n块内容\n<!-- REPO-WIKI:END -->\n用户尾部\n").unwrap();
+    std::fs::write(
+        &path,
+        "用户头部\n\n<!-- REPO-WIKI:START -->\n旧名块内容\n<!-- REPO-WIKI:END -->\n\n<!-- CODE-REPO-WIKI:START -->\n块内容\n<!-- CODE-REPO-WIKI:END -->\n用户尾部\n",
+    )
+    .unwrap();
 
     let out = run_bin_with_envs(&work_dir, &["uninstall", "--force"], &envs_ref);
     assert!(
@@ -93,8 +99,14 @@ fn test_uninstall_wiki_removes_block() {
         String::from_utf8_lossy(&out.stderr)
     );
     let content = std::fs::read_to_string(&path).unwrap();
-    assert!(!content.contains(START) && !content.contains(END), "标记应被移除，实际: {content}");
-    assert!(!content.contains("块内容"), "标记块内容应被移除，实际: {content}");
+    assert!(
+        !content.contains(START) && !content.contains(END) && !content.contains(LEGACY_START),
+        "新旧两代标记都应被移除，实际: {content}"
+    );
+    assert!(
+        !content.contains("块内容") && !content.contains("旧名块内容"),
+        "两代标记块内容都应被移除，实际: {content}"
+    );
     assert!(content.contains("用户头部") && content.contains("用户尾部"), "用户内容应保留，实际: {content}");
 
     // 再次卸载：未安装 → 退出码 0 且提示
@@ -102,6 +114,29 @@ fn test_uninstall_wiki_removes_block() {
     assert!(out2.status.success(), "未安装时卸载应退出码 0");
     let stdout = String::from_utf8_lossy(&out2.stdout);
     assert!(stdout.contains("未安装"), "应提示未安装，实际: {stdout}");
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
+
+/// install：AGENTS.md 含 v37 旧标记块 → 整体迁移替换为新标记块（不残留旧块）
+#[test]
+fn test_install_wiki_migrates_legacy_block() {
+    let (work_dir, envs) = setup("migrate_legacy");
+    let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let path = work_dir.join("AGENTS.md");
+    std::fs::write(
+        &path,
+        "用户头部\n\n<!-- REPO-WIKI:START -->\n旧名块内容\n<!-- REPO-WIKI:END -->\n用户尾部\n",
+    )
+    .unwrap();
+
+    let out = run_bin_with_envs(&work_dir, &["install"], &envs_ref);
+    assert!(out.status.success(), "install 应成功");
+    let content = std::fs::read_to_string(&path).unwrap();
+    assert!(content.contains(START) && content.contains(END), "应注入新标记块，实际: {content}");
+    assert!(!content.contains(LEGACY_START), "旧标记块应被迁移替换，实际: {content}");
+    assert!(!content.contains("旧名块内容"), "旧块内容应被替换，实际: {content}");
+    assert!(content.contains("用户头部") && content.contains("用户尾部"), "用户内容应保留: {content}");
 
     let _ = std::fs::remove_dir_all(&work_dir);
 }

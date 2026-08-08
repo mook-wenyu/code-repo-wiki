@@ -264,12 +264,20 @@ pub fn install(root: &crate::project::ProjectRoot, opts: &InstallOptions) -> Res
     install_wiki(root, opts.claude)?;
 
     // 7. git hooks（v33：标记升级，用户自定义保留）
-    install_hooks(project_root)?;
+    let hooks_installed = install_hooks(project_root)?;
 
     println!("✓ code-repo-wiki 安装完成");
     println!();
     println!("日常使用（傻瓜式全自动，无需记忆命令）：");
-    println!("  1. git commit 后 wiki 自动增量更新（post-commit/post-merge hook 已装）");
+    if hooks_installed > 0 {
+        println!("  1. git commit 后 wiki 自动增量更新（post-commit/post-merge hook 已装）");
+    } else {
+        println!(
+            "  1. git commit 后 wiki 自动增量更新——hook 未安装（已有其他 hook 占用，保留未覆盖），"
+        );
+        println!("     需要自动更新请先移除 .git/hooks/post-commit/post-merge 后重跑 install；");
+        println!("     或使用命令 2/3 手动/常驻更新");
+    }
     println!("  2. 手动一条命令：code-repo-wiki update（首次自动全量生成，之后自动增量；");
     println!("     无变更秒回，失败模块自动补偿重试，尾部自动 lint 复核）");
     println!("  3. 常驻实时模式：code-repo-wiki watch（代码保存即自动更新，Ctrl-C 退出）");
@@ -280,6 +288,20 @@ pub fn install(root: &crate::project::ProjectRoot, opts: &InstallOptions) -> Res
 /// git hook 内容标记（升级判定与 uninstall 删除判定共用的「是否 code-repo-wiki
 /// 所有」判据；用户自定义 hook 不含此标记，安装/卸载均不触碰）
 pub const HOOK_MARKER: &str = "# code-repo-wiki managed";
+
+/// v37 改名前的 hook 标记（v33 旧模板）。升级/卸载时一并识别——改名后
+/// 旧 hook 里的 `repo-wiki update` 命令已不存在，残留只会静默失效。
+pub const LEGACY_HOOK_MARKER: &str = "# repo-wiki managed";
+
+/// hook 内容是否属于本工具（当前标记、v37 旧标记、或 v33 前旧模板都算——
+/// 旧 hook 是本工具旧版本的产物，升级覆盖与卸载删除都应覆盖它）。
+/// v33 前旧模板无 managed 标记，特征行是注释里的
+/// `auto-update wiki on commit`（用户/第三方 hook 不会写这行）。
+fn hook_is_ours(content: &str) -> bool {
+    content.contains(HOOK_MARKER)
+        || content.contains(LEGACY_HOOK_MARKER)
+        || content.contains("auto-update wiki on commit")
+}
 
 /// 生成 hook 脚本内容
 ///
@@ -304,7 +326,8 @@ fn write_hook(path: &std::path::Path, content: &str) -> Result<()> {
     Ok(())
 }
 
-/// 安装 git hooks（post-commit/post-merge）
+/// 安装 git hooks（post-commit/post-merge）；返回成功安装的 hook 数量
+/// （新装+升级；跳过/保留不计），供 install 总结语按实际渲染
 ///
 /// v33 升级语义：
 /// - 不存在 → 新建
@@ -312,21 +335,23 @@ fn write_hook(path: &std::path::Path, content: &str) -> Result<()> {
 ///   相同则跳过（幂等）
 /// - 已存在且无标记（用户/第三方自定义 hook）→ 保留并提示，绝不覆盖
 /// - `.git/hooks` 不存在（非 git 仓库）→ 提示跳过（install 不因此失败）
-fn install_hooks(project_root: &std::path::Path) -> Result<()> {
+fn install_hooks(project_root: &std::path::Path) -> Result<usize> {
     let hooks_dir = project_root.join(".git").join("hooks");
     if !hooks_dir.exists() {
         println!("未检测到 .git 目录，跳过 git hook 安装");
-        return Ok(());
+        return Ok(0);
     }
     let content = hook_content();
+    let mut installed = 0;
     for hook_name in &["post-commit", "post-merge"] {
         let hook_path = hooks_dir.join(hook_name);
         if hook_path.exists() {
             let existing = std::fs::read_to_string(&hook_path)?;
-            if existing.contains("code-repo-wiki") {
+            if hook_is_ours(&existing) {
                 if existing != content {
                     write_hook(&hook_path, &content)?;
                     println!("✓ git {hook_name} hook 已升级");
+                    installed += 1;
                 } else {
                     println!("✓ git {hook_name} hook 已是最新");
                 }
@@ -336,15 +361,16 @@ fn install_hooks(project_root: &std::path::Path) -> Result<()> {
         } else {
             write_hook(&hook_path, &content)?;
             println!("✓ git {hook_name} hook 已安装");
+            installed += 1;
         }
     }
-    Ok(())
+    Ok(installed)
 }
 
 /// 移除 git hooks（仅 code-repo-wiki 标记的；用户自定义 hook 保留）
 ///
-/// 与 install_hooks 的判定同源（内容含 "code-repo-wiki" 即视为本工具产物——
-/// 兼容 v33 前的旧模板：旧内容无 managed 标记但含 code-repo-wiki 调用）。
+/// 与 install_hooks 的判定同源（当前标记或 v37 旧标记——旧模板无 managed
+/// 标记但含 repo-wiki 调用，同样识别，避免改名后旧 hook 残留静默失效）。
 fn remove_hooks(project_root: &std::path::Path) -> Result<()> {
     let hooks_dir = project_root.join(".git").join("hooks");
     if !hooks_dir.exists() {
@@ -354,7 +380,7 @@ fn remove_hooks(project_root: &std::path::Path) -> Result<()> {
         let hook_path = hooks_dir.join(hook_name);
         if hook_path.exists() {
             let content = std::fs::read_to_string(&hook_path).unwrap_or_default();
-            if content.contains("code-repo-wiki") {
+            if hook_is_ours(&content) {
                 std::fs::remove_file(&hook_path)?;
                 println!("✓ git {hook_name} hook 已移除");
             }
@@ -433,11 +459,19 @@ pub fn uninstall(force: bool, root: &crate::project::ProjectRoot) -> Result<()> 
     Ok(())
 }
 
-/// wiki 引用块的起始标记（注入块的唯一边界）
-pub const WIKI_BLOCK_START: &str = "<!-- REPO-WIKI:START -->";
+/// wiki 引用块的起始标记（注入块的唯一边界；v37 改名后为 CODE-REPO-WIKI）
+pub const WIKI_BLOCK_START: &str = "<!-- CODE-REPO-WIKI:START -->";
 
 /// wiki 引用块的结束标记
-pub const WIKI_BLOCK_END: &str = "<!-- REPO-WIKI:END -->";
+pub const WIKI_BLOCK_END: &str = "<!-- CODE-REPO-WIKI:END -->";
+
+/// v37 改名前的旧标记（REPO-WIKI）。升级兼容：inject 把旧块整体替换为新
+/// 模板（迁移），remove 把新旧标记对一并删除——已注入旧块的仓库升级
+/// 后不会留下双份块。
+pub const LEGACY_WIKI_BLOCK_START: &str = "<!-- REPO-WIKI:START -->";
+
+/// v37 改名前的旧结束标记
+pub const LEGACY_WIKI_BLOCK_END: &str = "<!-- REPO-WIKI:END -->";
 
 /// 渲染注入块模板（install 的 AGENTS.md 注入与 CLAUDE.md 注入共用）
 ///
@@ -451,7 +485,7 @@ pub const WIKI_BLOCK_END: &str = "<!-- REPO-WIKI:END -->";
 pub fn wiki_block_template(output_dir: &str, lang: &str) -> String {
     format!(
         "\
-<!-- REPO-WIKI:START -->
+<!-- CODE-REPO-WIKI:START -->
 本仓库使用 code-repo-wiki 维护可持续进化的项目 Wiki，产物位于 `{output_dir}/`。
 
 ## AI 代理使用指引
@@ -464,7 +498,7 @@ pub fn wiki_block_template(output_dir: &str, lang: &str) -> String {
    text/semantic/hybrid 三引擎，hybrid 含调用链补全）。
 3. 修改代码后运行 `code-repo-wiki update` 增量更新；`code-repo-wiki lint` 检查产物健康。
 4. 知识沉淀：`code-repo-wiki note \"<记录>\"` 追加到 `{output_dir}/wiki/{lang}/_log.md`。
-<!-- REPO-WIKI:END -->
+<!-- CODE-REPO-WIKI:END -->
 "
     )
 }
@@ -479,26 +513,37 @@ enum WikiBlockState {
     None,
 }
 
-/// 定位文档中的 wiki 标记对
+/// 定位文档中的 wiki 标记对（当前标记与 v37 旧标记都识别）
+///
+/// 标记对候选按「新标记优先」顺序探测：
+/// - 新标记（CODE-REPO-WIKI）完整对 → 用它（升级替换的落点）
+/// - 新标记无、旧标记（REPO-WIKI）完整对 → 用它（旧块迁移落点）
+/// - 任一套只出现 START/END 之一，或顺序颠倒 → Half（不自动修复）
+/// - 两套都无 → None（干净状态，可安全追加）
 ///
 /// - Both: start 对齐到 START 行首、end 对齐到 END 行尾（含换行），
 ///   使"整块替换/删除"只触碰标记及其之间内容，不伤用户文本。
-/// - Half: 只出现 START 或 END 之一，或 END 出现在 START 之前（顺序颠倒）。
-///   此时不自动修复——半标记说明文件被人为改坏或与其他工具冲突，
-///   修补方向有歧义（删哪半？补哪半？），显式报错让用户处理。
-/// - None: 干净状态，可安全追加。
+/// - Half: 半标记说明文件被人为改坏或与其他工具冲突，修补方向有歧义
+///   （删哪半？补哪半？），显式报错让用户处理。
 fn wiki_block_state(content: &str) -> WikiBlockState {
-    let start = content.find(WIKI_BLOCK_START);
-    let end = content.find(WIKI_BLOCK_END);
-    match (start, end) {
-        (Some(s), Some(e)) if s < e => {
-            let line_start = content[..s].rfind('\n').map_or(0, |i| i + 1);
-            let line_end = content[e..].find('\n').map_or(content.len(), |i| e + i + 1);
-            WikiBlockState::Both(line_start, line_end)
+    // 探测顺序：新标记对优先，其次旧标记对；两套都存在时只处理新对
+    // （旧对残留由 remove 循环删除清理，inject 不重复迁移）
+    for (start_marker, end_marker) in
+        [(WIKI_BLOCK_START, WIKI_BLOCK_END), (LEGACY_WIKI_BLOCK_START, LEGACY_WIKI_BLOCK_END)]
+    {
+        let start = content.find(start_marker);
+        let end = content.find(end_marker);
+        match (start, end) {
+            (Some(s), Some(e)) if s < e => {
+                let line_start = content[..s].rfind('\n').map_or(0, |i| i + 1);
+                let line_end = content[e..].find('\n').map_or(content.len(), |i| e + i + 1);
+                return WikiBlockState::Both(line_start, line_end);
+            }
+            (None, None) => continue,
+            _ => return WikiBlockState::Half,
         }
-        (None, None) => WikiBlockState::None,
-        _ => WikiBlockState::Half,
     }
+    WikiBlockState::None
 }
 
 /// 将 wiki 引用块注入文档文本（纯函数，不含 I/O，install 的 AGENTS.md/CLAUDE.md 注入共用）
@@ -537,19 +582,29 @@ pub fn inject_wiki_block(content: &str, block: &str) -> Result<String> {
 ///
 /// 返回 `None` 表示无标记（未安装）；`Some` 为移除后的内容。
 /// 半标记同样报错（与注入一致：不自动修复）。
+///
+/// 循环删除：新标记对删完后可能还残留旧标记对（v37 改名前的块），
+/// 一并清掉——两套对都处理完才返回，保证卸载彻底。
 pub fn remove_wiki_block(content: &str) -> Result<Option<String>> {
-    match wiki_block_state(content) {
-        WikiBlockState::Both(start, end) => {
-            let mut out = String::with_capacity(content.len() - (end - start));
-            out.push_str(&content[..start]);
-            out.push_str(&content[end..]);
-            Ok(Some(out))
-        }
-        WikiBlockState::None => Ok(None),
-        WikiBlockState::Half => {
-            anyhow::bail!("检测到不完整的 wiki 标记对（只出现 {WIKI_BLOCK_START} 或 {WIKI_BLOCK_END} 之一，或顺序颠倒），拒绝修改，请人工检查文件")
+    let mut out = content.to_string();
+    let mut removed = false;
+    // 最多两轮：新对 + 旧对各一轮；每轮删除后重扫（对位置随删除前移）
+    for _ in 0..2 {
+        match wiki_block_state(&out) {
+            WikiBlockState::Both(start, end) => {
+                let mut next = String::with_capacity(out.len() - (end - start));
+                next.push_str(&out[..start]);
+                next.push_str(&out[end..]);
+                out = next;
+                removed = true;
+            }
+            WikiBlockState::None => break,
+            WikiBlockState::Half => {
+                anyhow::bail!("检测到不完整的 wiki 标记对（只出现 {WIKI_BLOCK_START} 或 {WIKI_BLOCK_END} 之一，或顺序颠倒），拒绝修改，请人工检查文件")
+            }
         }
     }
+    Ok(if removed { Some(out) } else { None })
 }
 
 /// 向单个文件写入 wiki 引用块（读 → 注入 → 原子写）
@@ -693,12 +748,29 @@ mod tests {
     /// 幂等替换：已含完整标记对 → 旧块整体替换为模板，用户前后内容保留
     #[test]
     fn test_inject_wiki_block_replaces_existing() {
-        let before = "用户头部\n\n<!-- REPO-WIKI:START -->\n旧块内容\n<!-- REPO-WIKI:END -->\n\n用户尾部\n";
+        let before =
+            "用户头部\n\n<!-- CODE-REPO-WIKI:START -->\n旧块内容\n<!-- CODE-REPO-WIKI:END -->\n\n用户尾部\n";
         let out = inject_wiki_block(before, &test_template()).unwrap();
         assert!(out.starts_with("用户头部\n\n"), "用户头部应保留, 实际: {out}");
         assert!(out.ends_with("用户尾部\n"), "用户尾部应保留, 实际: {out}");
         assert!(out.contains(&test_template()), "旧块应被替换为模板, 实际: {out}");
         assert!(!out.contains("旧块内容"), "旧块内容应被替换掉, 实际: {out}");
+    }
+
+    /// v37 旧标记迁移：含旧标记（REPO-WIKI）完整块 → 同样整体替换为新模板
+    /// （改名前的仓库升级路径，块标记随之换代）
+    #[test]
+    fn test_inject_wiki_block_migrates_legacy_marker() {
+        let before =
+            "用户头部\n\n<!-- REPO-WIKI:START -->\n旧名块内容\n<!-- REPO-WIKI:END -->\n用户尾部\n";
+        let out = inject_wiki_block(before, &test_template()).unwrap();
+        assert!(out.contains(WIKI_BLOCK_START) && out.contains(WIKI_BLOCK_END));
+        assert!(
+            !out.contains("<!-- REPO-WIKI:START -->") && !out.contains("<!-- REPO-WIKI:END -->"),
+            "旧标记应随迁移消失, 实际: {out}"
+        );
+        assert!(!out.contains("旧名块内容"), "旧块内容应被替换掉, 实际: {out}");
+        assert!(out.contains("用户头部") && out.contains("用户尾部"), "用户内容应保留: {out}");
     }
 
     /// 幂等：同一文档注入两次 → 结果一致（第二次走替换路径）
@@ -710,12 +782,15 @@ mod tests {
     }
 
     /// 半标记报错：只有 START / 只有 END / 顺序颠倒 → 均显式报错
+    /// （当前标记与 v37 旧标记两套都要检）
     #[test]
     fn test_inject_wiki_block_half_marker_errors() {
         let cases = [
+            "# 标题\n<!-- CODE-REPO-WIKI:START -->\n",
+            "<!-- CODE-REPO-WIKI:END -->\n",
+            "<!-- CODE-REPO-WIKI:END -->\n<!-- CODE-REPO-WIKI:START -->\n",
             "# 标题\n<!-- REPO-WIKI:START -->\n",
             "<!-- REPO-WIKI:END -->\n",
-            "<!-- REPO-WIKI:END -->\n<!-- REPO-WIKI:START -->\n",
         ];
         for case in cases {
             let err = inject_wiki_block(case, &test_template()).unwrap_err();
@@ -746,16 +821,30 @@ mod tests {
     #[test]
     fn test_remove_wiki_block_removes_only_block() {
         let content =
-            "用户头部\n\n<!-- REPO-WIKI:START -->\n块内容\n<!-- REPO-WIKI:END -->\n用户尾部\n";
+            "用户头部\n\n<!-- CODE-REPO-WIKI:START -->\n块内容\n<!-- CODE-REPO-WIKI:END -->\n用户尾部\n";
         let out = remove_wiki_block(content).unwrap().unwrap();
         assert!(!out.contains(WIKI_BLOCK_START) && !out.contains(WIKI_BLOCK_END), "标记应被移除: {out}");
         assert!(out.contains("用户头部") && out.contains("用户尾部"), "用户内容应保留: {out}");
     }
 
-    /// remove：半标记同样报错
+    /// remove：新旧标记块并存（升级残留的双块）→ 一并移除，用户内容保留
+    #[test]
+    fn test_remove_wiki_block_removes_both_marker_generations() {
+        let content = "用户头部\n\n<!-- REPO-WIKI:START -->\n旧名块\n<!-- REPO-WIKI:END -->\n\n<!-- CODE-REPO-WIKI:START -->\n新块\n<!-- CODE-REPO-WIKI:END -->\n用户尾部\n";
+        let out = remove_wiki_block(content).unwrap().unwrap();
+        assert!(
+            !out.contains("REPO-WIKI") && !out.contains("CODE-REPO-WIKI"),
+            "两代标记都应被移除, 实际: {out}"
+        );
+        assert!(out.contains("用户头部") && out.contains("用户尾部"), "用户内容应保留: {out}");
+    }
+
+    /// remove：半标记同样报错（当前标记与旧标记都检）
     #[test]
     fn test_remove_wiki_block_half_marker_errors() {
-        let err = remove_wiki_block("<!-- REPO-WIKI:START -->\n").unwrap_err();
+        let err = remove_wiki_block("<!-- CODE-REPO-WIKI:START -->\n").unwrap_err();
         assert!(err.to_string().contains("不完整"), "半标记应报错: {err}");
+        let err = remove_wiki_block("<!-- REPO-WIKI:START -->\n").unwrap_err();
+        assert!(err.to_string().contains("不完整"), "旧标记半标记应报错: {err}");
     }
 }
