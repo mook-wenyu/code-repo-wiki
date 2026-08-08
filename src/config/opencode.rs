@@ -161,44 +161,52 @@ impl OpenCodeConfig {
 
     /// 将插件模板写入 `{project_root}/.opencode/plugins/repo-wiki.ts`
     ///
-    /// 已存在时不覆盖（保留人工修改），返回是否实际写入。
-    /// 模板以 include_str 内嵌（src/config/ 下经 ../../ 指向仓库根 .opencode/）。
+    /// v33 升级语义（用户拍板「带标记则升级」）：插件文件是 repo-wiki
+    /// 专属产物（文件名即标记），内容与最新模板（注入当前 exe 绝对路径）
+    /// 不同即覆盖升级（旧版本模板/二进制路径变化）；相同则跳过。
+    /// 返回是否实际写入。模板在运行时读取仓库内插件文件（N9：
+    /// include_str 在发布/非仓库安装场景失效——二进制内嵌编译时路径，
+    /// 仓库移动后内容仍指旧位置）。
     pub fn install_plugin_file(&mut self) -> Result<bool> {
         let plugin_path = self
             .project_root
             .join(".opencode")
             .join("plugins")
             .join("repo-wiki.ts");
-        if plugin_path.exists() {
-            tracing::info!("插件文件已存在，跳过覆盖: {}", plugin_path.display());
-            return Ok(false);
-        }
-        std::fs::create_dir_all(plugin_path.parent().unwrap())
-            .with_context(|| format!("创建插件目录失败: {}", plugin_path.display()))?;
-        // N9：模板改为运行时读取仓库内插件文件（include_str 在发布/非仓库
-        // 安装场景失效——二进制内嵌编译时路径，仓库移动后内容仍指旧位置）
-        let template = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/.opencode/plugins/repo-wiki.ts"
-        ))
-        .with_context(|| "读取插件模板失败（仓库 .opencode/plugins/repo-wiki.ts 缺失）")?;
         // t02（v16）：PATH 硬依赖根治——把模板中 execa 的二进制名替换为
         // 当前进程的绝对路径。插件经 execa("repo-wiki", ...) 调 CLI，二进制
         // 不在 PATH 时（cargo install 目标目录未入 PATH、便携部署等）16 个
         // 工具全部 ENOENT 失效。install 时注入 current_exe() 绝对路径，
         // 插件不再依赖 PATH。只替换 execa 首参（模板中该字面量唯一）；
         // 路径经 JSON 字符串转义（Windows 反斜杠/引号安全）。
-        // 已安装的旧模板不自动升级（幂等不覆盖人工修改）：uninstall 后
-        // 重新 install 即获得绝对路径版本。
         let exe_path = std::env::current_exe()
             .with_context(|| "无法定位当前可执行文件路径（插件无法绑定绝对路径）")?;
         let exe_json =
             serde_json::to_string(&exe_path.to_string_lossy().to_string())
                 .with_context(|| "序列化可执行文件路径失败")?;
-        let template = template.replace(
-            "execa(\"repo-wiki\"",
-            &format!("execa({exe_json}"),
-        );
+        let template = {
+            // N9：模板运行时读取（见函数 doc 注释）
+            let raw = std::fs::read_to_string(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/.opencode/plugins/repo-wiki.ts"
+            ))
+            .with_context(|| "读取插件模板失败（仓库 .opencode/plugins/repo-wiki.ts 缺失）")?;
+            raw.replace(
+                "execa(\"repo-wiki\"",
+                &format!("execa({exe_json}"),
+            )
+        };
+
+        // v33：内容比对决定升级或跳过（幂等跳过 = 内容完全一致）
+        if let Ok(existing) = std::fs::read_to_string(&plugin_path) {
+            if existing == template {
+                tracing::info!("插件文件已是最新，跳过: {}", plugin_path.display());
+                return Ok(false);
+            }
+            tracing::info!("插件文件内容与模板不一致，升级覆盖: {}", plugin_path.display());
+        }
+        std::fs::create_dir_all(plugin_path.parent().unwrap())
+            .with_context(|| format!("创建插件目录失败: {}", plugin_path.display()))?;
         std::fs::write(&plugin_path, template)
             .with_context(|| format!("写入插件文件失败: {}", plugin_path.display()))?;
         tracing::info!("插件文件已写入: {}", plugin_path.display());

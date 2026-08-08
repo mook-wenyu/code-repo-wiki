@@ -172,64 +172,98 @@ fn collect_md_files(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// repo-wiki 安装: 配置 Agent 插件 + git hooks + 默认配置
+/// install 的可选集成（v33 多 Agent 支持）
+///
+/// 默认集成集 = OpenCode 插件 + OpenCode MCP（用户级全局）+ AGENTS.md
+/// + git hooks；以下 flag 扩展集成面。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct InstallOptions {
+    /// 额外写 Claude Code 项目级 `.mcp.json`（--claude）
+    pub claude: bool,
+    /// 额外写 Codex CLI 用户级配置 `~/.codex/config.toml`（--codex）
+    pub codex: bool,
+    /// 同步写 CLAUDE.md（--also-claude；Claude Code 不读 AGENTS.md，
+    /// 需要独立的 CLAUDE.md 引用块）
+    pub also_claude: bool,
+}
+
+/// repo-wiki 安装（v33 合并版）：OpenCode 插件 + 多 Agent MCP + AGENTS.md + git hooks
 ///
 /// root 为项目根（U02：--root 注入，替代进程 cwd——插件/hook/config 全部
 /// 相对项目根解析，跨 cwd 运行不再错位）。
-pub fn install(agent: &str, root: &crate::project::ProjectRoot) -> Result<()> {
+///
+/// 集成步骤（全部幂等，重复执行安全；非 repo-wiki 内容一律保留）：
+/// 1. OpenCode 插件：`{root}/.opencode/plugins/repo-wiki.ts`——模板注入
+///    current_exe 绝对路径（t02 摆脱 PATH 依赖）；内容与模板不同即升级
+/// 2. OpenCode MCP：用户级全局 `opencode.json` 的 `mcp.repo-wiki` 条目
+///    （v33 拍板：一次注册所有仓库可用，server 以工作区为 cwd）
+/// 3. Claude MCP（--claude）：项目根 `.mcp.json` 的 `mcpServers.repo-wiki`
+/// 4. Codex MCP（--codex）：用户级 `~/.codex/config.toml` 的
+///    `[mcp_servers.repo-wiki]` 表
+/// 5. AGENTS.md：wiki 引用块（标记对幂等替换；默认执行）
+/// 6. CLAUDE.md（--also-claude）：同步写
+/// 7. git hooks：post-commit/post-merge（含 repo-wiki 标记则升级覆盖；
+///    用户自定义 hook 保留并提示）
+///
+/// 用户级默认配置的确保由调用方（main.rs）先行执行（v25 语义）。
+pub fn install(root: &crate::project::ProjectRoot, opts: &InstallOptions) -> Result<()> {
     let project_root = root.path();
 
-    // 1. 配置 OpenCode 插件 (如果 agent 是 opencode)
-    if agent == "opencode" {
-        let mut oc = crate::config::opencode::OpenCodeConfig::new(root)
-            .context("读取 OpenCode 配置失败")?;
-        oc.install_plugin()?;
-        if oc.install_plugin_file()? {
-            println!("✓ OpenCode 插件文件已安装");
-        } else {
-            println!("✓ OpenCode 插件文件已存在，跳过");
-        }
-    }
+    // MCP 与插件共用当前可执行文件绝对路径（t02：不依赖 PATH）
+    let exe_path = std::env::current_exe()
+        .context("无法定位当前可执行文件路径（集成无法绑定绝对路径）")?;
+    let exe_str = exe_path.to_string_lossy().into_owned();
+    let mcp_args = ["mcp".to_string()];
 
-    // 2. 生成项目根 .mcp.json（Claude Code/Cursor/VS Code 等 MCP 客户端注册 repo-wiki server）
-    match install_mcp_config(project_root)? {
-        true => println!("✓ .mcp.json 已生成（Claude Code/Cursor 等客户端可用）"),
-        false => println!("✓ .mcp.json 已存在，跳过（保留人工修改）"),
-    }
-
-    // 3. 配置引导（v24：不再在项目级自动创建配置文件——配置属非项目
-    //    内容，自动创建只发生在用户级目录；这里只提示入口，由用户决定
-    //    是 `repo-wiki install`（确保用户级默认配置）还是 `--config` 显式指定）
-    let project_cfg = project_root.join(crate::config::PROJECT_CONFIG_FILE);
-    if !project_cfg.exists() {
-        println!(
-            "? 未检测到项目级配置 {}：可运行 `repo-wiki install` 确保用户级默认配置，或使用 --config 显式指定",
-            crate::config::PROJECT_CONFIG_FILE
-        );
-    }
-
-    // 3. 安装 git hooks
-    let hooks_dir = project_root.join(".git").join("hooks");
-    let hook_content = "#!/bin/sh\n# repo-wiki: auto-update wiki on commit\ncd \"$(git rev-parse --show-toplevel)\"\ncommand -v repo-wiki >/dev/null 2>&1 || exit 0\nrepo-wiki update 2>/dev/null || true\n";
-    if hooks_dir.exists() {
-        let post_commit = hooks_dir.join("post-commit");
-        if !post_commit.exists() {
-            std::fs::write(&post_commit, hook_content)?;
-            #[cfg(unix)]
-            std::fs::set_permissions(&post_commit, std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
-            println!("✓ git post-commit hook 已安装");
-        }
-
-        let post_merge = hooks_dir.join("post-merge");
-        if !post_merge.exists() {
-            std::fs::write(&post_merge, hook_content)?;
-            #[cfg(unix)]
-            std::fs::set_permissions(&post_merge, std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
-            println!("✓ git post-merge hook 已安装");
-        }
+    // 1. OpenCode 插件（项目级；v33：内容比对升级）
+    let mut oc = crate::config::opencode::OpenCodeConfig::new(root)
+        .context("读取 OpenCode 配置失败")?;
+    oc.install_plugin()?;
+    if oc.install_plugin_file()? {
+        println!("✓ OpenCode 插件已安装");
     } else {
-        println!("未检测到 .git 目录，跳过 git hook 安装");
+        println!("✓ OpenCode 插件已是最新");
     }
+
+    // 2. OpenCode MCP（用户级全局——v33 拍板）
+    let opencode_mcp = crate::config::mcp::OpencodeMcp {
+        config_path: crate::config::mcp::OpencodeMcp::global_path()?,
+    };
+    if opencode_mcp.install("repo-wiki", &[exe_str.clone(), mcp_args[0].clone()])? {
+        println!("✓ OpenCode MCP 已注册（用户级全局）");
+    } else {
+        println!("✓ OpenCode MCP 已是最新");
+    }
+
+    // 3. Claude MCP（--claude → 项目根 .mcp.json）
+    if opts.claude {
+        let claude = crate::config::mcp::ClaudeMcp {
+            path: crate::config::mcp::ClaudeMcp::project_path(root),
+        };
+        if claude.install("repo-wiki", &exe_str, &mcp_args)? {
+            println!("✓ Claude Code MCP 已注册（.mcp.json）");
+        } else {
+            println!("✓ Claude Code MCP 已是最新（.mcp.json）");
+        }
+    }
+
+    // 4. Codex MCP（--codex → 用户级 ~/.codex/config.toml）
+    if opts.codex {
+        let codex = crate::config::mcp::CodexMcp {
+            config_path: crate::config::mcp::CodexMcp::global_path()?,
+        };
+        if codex.install("repo-wiki", &exe_str, &mcp_args)? {
+            println!("✓ Codex MCP 已注册（~/.codex/config.toml）");
+        } else {
+            println!("✓ Codex MCP 已是最新（~/.codex/config.toml）");
+        }
+    }
+
+    // 5/6. AGENTS.md（默认）与 CLAUDE.md（--also-claude）
+    install_wiki(root, opts.also_claude)?;
+
+    // 7. git hooks（v33：标记升级，用户自定义保留）
+    install_hooks(project_root)?;
 
     println!("✓ repo-wiki 安装完成");
     println!();
@@ -242,43 +276,157 @@ pub fn install(agent: &str, root: &crate::project::ProjectRoot) -> Result<()> {
     Ok(())
 }
 
-/// repo-wiki 卸载: 移除 Agent 插件 + git hooks + 可选数据
+/// git hook 内容标记（升级判定与 uninstall 删除判定共用的「是否 repo-wiki
+/// 所有」判据；用户自定义 hook 不含此标记，安装/卸载均不触碰）
+pub const HOOK_MARKER: &str = "# repo-wiki managed";
+
+/// 生成 hook 脚本内容
 ///
-/// root 为项目根（U02：--root 注入，与 install 对称）。
-pub fn uninstall(force: bool, root: &crate::project::ProjectRoot) -> Result<()> {
-    let project_root = root.path();
+/// `#!/bin/sh` + LF：Windows 上由 Git for Windows 的 sh 执行（POSIX 语义，
+/// 绝非 PowerShell）；`cd` 到仓库顶层保证 --root 无关；`command -v` 探测
+/// 二进制存在性；update 失败静默（hook 是通知型，不让 wiki 更新失败
+/// 阻断 git 主流程）。
+fn hook_content() -> String {
+    format!(
+        "#!/bin/sh\n{0}: auto-update wiki on commit\ncd \"$(git rev-parse --show-toplevel)\"\ncommand -v repo-wiki >/dev/null 2>&1 || exit 0\nrepo-wiki update 2>/dev/null || true\n",
+        HOOK_MARKER
+    )
+}
 
-    if !force {
-        println!("警告: 卸载将移除 repo-wiki 集成配置。");
-        println!("数据目录 .repo-wiki/ 不会被删除（使用 --force 跳过确认）。");
-        anyhow::bail!("请添加 --force 参数确认卸载");
-    }
+/// 原子写 hook 并设置执行位（unix；Windows 由 sh 解释执行无需执行位）
+fn write_hook(path: &std::path::Path, content: &str) -> Result<()> {
+    crate::fs::write_file_atomic(path, content)?;
+    #[cfg(unix)]
+    std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
+    Ok(())
+}
 
-    // 1. 移除 OpenCode 插件
-    let mut oc = crate::config::opencode::OpenCodeConfig::new(root)
-        .context("读取 OpenCode 配置失败")?;
-    oc.uninstall_plugin()?;
-    oc.uninstall_plugin_file()?;
-    println!("✓ OpenCode 插件已移除");
-
-    // 2. 移除 git hooks
+/// 安装 git hooks（post-commit/post-merge）
+///
+/// v33 升级语义：
+/// - 不存在 → 新建
+/// - 已存在且含 repo-wiki 标记（旧模板/本模板）→ 内容不同则升级覆盖，
+///   相同则跳过（幂等）
+/// - 已存在且无标记（用户/第三方自定义 hook）→ 保留并提示，绝不覆盖
+/// - `.git/hooks` 不存在（非 git 仓库）→ 提示跳过（install 不因此失败）
+fn install_hooks(project_root: &std::path::Path) -> Result<()> {
     let hooks_dir = project_root.join(".git").join("hooks");
+    if !hooks_dir.exists() {
+        println!("未检测到 .git 目录，跳过 git hook 安装");
+        return Ok(());
+    }
+    let content = hook_content();
+    for hook_name in &["post-commit", "post-merge"] {
+        let hook_path = hooks_dir.join(hook_name);
+        if hook_path.exists() {
+            let existing = std::fs::read_to_string(&hook_path)?;
+            if existing.contains("repo-wiki") {
+                if existing != content {
+                    write_hook(&hook_path, &content)?;
+                    println!("✓ git {hook_name} hook 已升级");
+                } else {
+                    println!("✓ git {hook_name} hook 已是最新");
+                }
+            } else {
+                println!("? git {hook_name} hook 已存在且非 repo-wiki 内容，保留（未覆盖）");
+            }
+        } else {
+            write_hook(&hook_path, &content)?;
+            println!("✓ git {hook_name} hook 已安装");
+        }
+    }
+    Ok(())
+}
+
+/// 移除 git hooks（仅 repo-wiki 标记的；用户自定义 hook 保留）
+///
+/// 与 install_hooks 的判定同源（内容含 "repo-wiki" 即视为本工具产物——
+/// 兼容 v33 前的旧模板：旧内容无 managed 标记但含 repo-wiki 调用）。
+fn remove_hooks(project_root: &std::path::Path) -> Result<()> {
+    let hooks_dir = project_root.join(".git").join("hooks");
+    if !hooks_dir.exists() {
+        return Ok(());
+    }
     for hook_name in &["post-commit", "post-merge"] {
         let hook_path = hooks_dir.join(hook_name);
         if hook_path.exists() {
             let content = std::fs::read_to_string(&hook_path).unwrap_or_default();
             if content.contains("repo-wiki") {
                 std::fs::remove_file(&hook_path)?;
-                println!("✓ git {} hook 已移除", hook_name);
+                println!("✓ git {hook_name} hook 已移除");
             }
         }
     }
+    Ok(())
+}
 
-    // 3. 移除 .mcp.json 中的 repo-wiki server 条目（Claude Code/Cursor 等客户端配置）
-    remove_mcp_config(project_root)?;
-    println!("✓ .mcp.json 已清理（Claude Code/Cursor 等客户端配置）");
+/// repo-wiki 卸载（v33 合并版）：移除全部集成痕迹（--force 确认）
+///
+/// root 为项目根（U02：--root 注入，与 install 对称）。
+///
+/// 清理集 = install 全集的反向（全部幂等，缺省即跳过）：
+/// 1. OpenCode MCP 用户级全局条目（其他 server 保留）
+/// 2. OpenCode 插件文件
+/// 3. Claude MCP .mcp.json 条目（其他 server 保留；空则删文件）
+/// 4. Codex MCP 表（其他表/注释保留）
+/// 5. AGENTS.md / CLAUDE.md wiki 块（无标记则跳过）
+/// 6. git hooks（仅 repo-wiki 标记的删除；用户自定义 hook 保留）
+///
+/// 保留（设计如此，配置与数据属用户资产）：用户级 config.toml、
+/// `.repo-wiki/` 产物数据。
+pub fn uninstall(force: bool, root: &crate::project::ProjectRoot) -> Result<()> {
+    let project_root = root.path();
 
-    println!("✓ repo-wiki 卸载完成 (数据保留: .repo-wiki/)");
+    if !force {
+        println!("警告: 卸载将移除 repo-wiki 集成配置（插件/MCP/hook/AGENTS.md 引用块）。");
+        println!("保留：用户级 config.toml 与产物数据 .repo-wiki/（使用 --force 跳过确认）。");
+        anyhow::bail!("请添加 --force 参数确认卸载");
+    }
+
+    // 1. OpenCode MCP（用户级全局）
+    let opencode_mcp = crate::config::mcp::OpencodeMcp {
+        config_path: crate::config::mcp::OpencodeMcp::global_path()?,
+    };
+    if opencode_mcp.remove("repo-wiki")? {
+        println!("✓ OpenCode MCP 条目已移除（用户级全局——其他仓库如需继续使用请重新 install）");
+    } else {
+        println!("✓ OpenCode MCP 条目不存在，跳过");
+    }
+
+    // 2. OpenCode 插件
+    let mut oc = crate::config::opencode::OpenCodeConfig::new(root)
+        .context("读取 OpenCode 配置失败")?;
+    oc.uninstall_plugin()?;
+    oc.uninstall_plugin_file()?;
+    println!("✓ OpenCode 插件已移除");
+
+    // 3. Claude MCP（.mcp.json）
+    let claude = crate::config::mcp::ClaudeMcp {
+        path: crate::config::mcp::ClaudeMcp::project_path(root),
+    };
+    if claude.remove("repo-wiki")? {
+        println!("✓ Claude Code MCP 条目已移除（.mcp.json）");
+    } else {
+        println!("✓ Claude Code MCP 条目不存在，跳过（.mcp.json）");
+    }
+
+    // 4. Codex MCP（~/.codex/config.toml）
+    let codex = crate::config::mcp::CodexMcp {
+        config_path: crate::config::mcp::CodexMcp::global_path()?,
+    };
+    if codex.remove("repo-wiki")? {
+        println!("✓ Codex MCP 条目已移除（~/.codex/config.toml）");
+    } else {
+        println!("✓ Codex MCP 条目不存在，跳过（~/.codex/config.toml）");
+    }
+
+    // 5. AGENTS.md / CLAUDE.md wiki 块
+    uninstall_wiki(root)?;
+
+    // 6. git hooks
+    remove_hooks(project_root)?;
+
+    println!("✓ repo-wiki 卸载完成 (数据保留: .repo-wiki/ 与用户级配置)");
     Ok(())
 }
 

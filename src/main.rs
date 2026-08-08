@@ -763,11 +763,12 @@ fn main() -> anyhow::Result<()> {
         Commands::Install { root } => {
             // v25 起 init 并入 install：先确保用户级默认配置就绪
             // （缺失自动创建，含项目级 config.toml 覆盖链语义），
-            // 再注册 OpenCode 插件（原 install-to-opencode 全部步骤）。
+            // 再执行集成安装（v33 合并版：OpenCode 插件 + 多 Agent MCP
+            // + AGENTS.md + git hooks；--claude/--codex/--also-claude 扩展）。
             let root = resolve_root(root.as_deref())?;
             let (user_config, _config) = repo_wiki::config::load_default_config(&root)?;
             tracing::info!("用户级默认配置已就绪: {}", user_config.display());
-            repo_wiki::commands::install("opencode", &root)?;
+            repo_wiki::commands::install(&root, &Default::default())?;
         }
         Commands::UninstallFromOpencode { force, root } => {
             let root = resolve_root(root.as_deref())?;
