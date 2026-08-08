@@ -110,10 +110,14 @@ pub fn parse_manifest(path: &Path) -> Result<Vec<RepoEntry>> {
             RepoEntry { name, url: Some(target.to_string()), local: None, commit }
         } else {
             let name = if name.is_empty() {
-                Path::new(&target)
-                    .file_name()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "unknown".to_string())
+                // 平台无关的路径文件名提取：反斜杠在非 Windows 平台不是分隔符，
+                // 但清单里可能含 Windows 盘符路径（如 D:\tmp\repo-a），统一按
+                // `/` 与 `\` 双分隔符取最后一段，避免 ubuntu 上把整串当文件名。
+                target
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .unwrap_or("unknown")
+                    .to_string()
             } else {
                 name
             };

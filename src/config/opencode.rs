@@ -413,25 +413,24 @@ mod tests {
     }
 
     /// N11：config_dir 优先 USERPROFILE（Windows 语义）
+    ///
+    /// 纯函数调用——不触碰进程级环境变量（并行测试下 env 是全局竞态，
+    /// unsafe set_var/remove_var 的窗口会让其他测试读到被移除的 HOME，
+    /// ubuntu 无 APPDATA 兜底时必现——v36 修复后同模式）
     #[test]
     fn test_config_dir_prefers_userprofile() {
-        // Rust 2024：env::set_var/remove_var 为 unsafe（多线程环境写环境变量
-        // 与 getenv 竞态），测试内短暂修改后立即恢复
-        unsafe {
-            std::env::set_var("USERPROFILE", "C:\\Users\\testuser");
-            std::env::remove_var("HOME");
-        }
-        let dir = OpenCodeConfig::config_dir().unwrap();
+        // USERPROFILE 优先于 HOME
+        let dir = OpenCodeConfig::config_dir_from(Some("C:\\Users\\testuser"), None).unwrap();
         assert_eq!(
             dir,
             PathBuf::from("C:\\Users\\testuser").join(".config").join("opencode"),
             "USERPROFILE 应优先于 HOME"
         );
-        // 恢复环境变量（并行测试隔离：其他测试可能依赖 HOME）
-        unsafe {
-            std::env::remove_var("USERPROFILE");
-            std::env::remove_var("HOME");
-        }
+        // HOME 兜底（USERPROFILE 缺失）
+        let dir2 = OpenCodeConfig::config_dir_from(None, Some("/home/t")).unwrap();
+        assert_eq!(dir2, PathBuf::from("/home/t").join(".config").join("opencode"));
+        // 双缺失 → 显式报错
+        assert!(OpenCodeConfig::config_dir_from(None, None).is_err());
     }
 
     /// v33：config_dir 双缺失（USERPROFILE 与 HOME 均未设置）→ 显式报错

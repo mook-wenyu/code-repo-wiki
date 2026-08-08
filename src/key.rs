@@ -269,9 +269,15 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let global_dir = crate::config::global_config_dir()
-            .expect("测试环境应能解析全局配置目录")
-            .join(format!("key-test-{tag}-{}", std::process::id()));
+        // 用户级配置目录测试注入：直接用临时目录（不解析进程级环境变量——
+        // 并行测试下 global_config_dir() 读 HOME/APPDATA 与其他测试的
+        // set_var/remove_var 竞态，ubuntu 无 APPDATA 兜底时必现；路径解析
+        // 本身由 config/mod.rs 的纯函数单测覆盖，这里只验证写盘行为）
+        let global_dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_key_global_{}_{}",
+            tag,
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&global_dir);
         std::fs::create_dir_all(&global_dir).unwrap();
         let user_text = include_str!("../config.toml")
