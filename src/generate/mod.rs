@@ -73,6 +73,69 @@ pub fn create_provider(config: &WikiConfig) -> Result<Provider> {
 /// extra_edits：本次运行新检测到的人工修改记录（模块名 → 记录文本），
 /// 生成卡片前注入 LLM 输入（见 CardGenerator::generate_all_cards）；
 /// 由上层（lib.rs）从状态指纹比对结果组装，无人工修改时传空表。
+/// v32 9.2：按 [wiki.guide] 过滤与排序 chunk 列表（生成引导）。
+///
+/// - `pages` 非空时仅保留模块路径前缀匹配任一条目的 chunk（未匹配模块
+///   不生成独立页，但 overview/架构等全局文档仍全量汇总不受影响）。
+///   条目分隔符兼容 `/`、`::`、`\`（如 `src/net` 与 `src::net` 等价），
+///   前缀比较按模块名分段（`src/net` 匹配模块 `src::net::tcp`）。
+/// - `strict_empty=true`（全量路径）：过滤后为空会显式报错——避免用户
+///   pages 配置笔误导致「以为生成了实际没有」的静默失败。增量路径
+///   （`strict_empty=false`）中受影响模块都不在白名单属正常空集（无
+///   页面需更新），记录日志后返回空，不报错。
+/// - `priority` 按条目顺序稳定排序（前缀匹配的模块前置），未匹配模块
+///   保持原顺序；排序只影响生成顺序，不改变产物内容。
+fn filter_chunks_by_guide(
+    chunks: Vec<Chunk>,
+    guide: &crate::config::schema::WikiGuideSection,
+    strict_empty: bool,
+) -> Result<Vec<Chunk>> {
+    if guide.pages.is_empty() {
+        return Ok(chunks);
+    }
+    let original_len = chunks.len();
+    let mut filtered: Vec<Chunk> = chunks
+        .into_iter()
+        .filter(|c| guide.pages.iter().any(|p| guide_prefix_match(&c.module_path, p)))
+        .collect();
+    if filtered.is_empty() && original_len > 0 {
+        if strict_empty {
+            anyhow::bail!(
+                "[wiki.guide].pages 未匹配任何模块（共 {} 个模块），请检查 pages 配置",
+                original_len
+            );
+        }
+        tracing::info!("增量生成: 受影响模块均不在 [wiki.guide].pages 白名单，跳过生成");
+    }
+    if !guide.priority.is_empty() {
+        filtered.sort_by_key(|c| {
+            guide
+                .priority
+                .iter()
+                .position(|p| guide_prefix_match(&c.module_path, p))
+                .unwrap_or(usize::MAX)
+        });
+    }
+    Ok(filtered)
+}
+
+/// [wiki.guide] 前缀匹配：把 pattern 按 `/`/`::`/`\` 拆成段，与模块路径
+/// 段（Vec<String>，来自模块名 split("::")）做前缀比较。
+fn guide_prefix_match(module_path: &[String], pattern: &str) -> bool {
+    let pat: Vec<&str> = pattern
+        .split(['/', ':', '\\'])
+        .filter(|s| !s.is_empty())
+        .collect();
+    if pat.is_empty() {
+        return false;
+    }
+    module_path
+        .iter()
+        .take(pat.len())
+        .map(|s| s.as_str())
+        .eq(pat.iter().copied())
+}
+
 pub async fn run_generation(
     graph: &KnowledgeGraph,
     insights: &[FileInsight],
@@ -103,6 +166,8 @@ pub async fn run_generation(
         .into_iter()
         .filter(|c| !c.is_empty())
         .collect();
+    // v32 9.2：生成引导过滤（全量路径——空匹配显式报错，见 filter 注释）
+    let chunks = filter_chunks_by_guide(chunks, &config.wiki.guide, true)?;
     tracing::info!("生成进度: 30% - 分块完成，共 {} 个块", chunks.len());
     let chunk_ms = chunk_start.elapsed().as_millis() as u64;
 
@@ -336,6 +401,9 @@ pub async fn run_generation_filtered(
         .into_iter()
         .filter(|c| !c.is_empty())
         .collect();
+    // v32 9.2：生成引导过滤（增量路径——受影响模块不在白名单=正常空集，
+    // 不报错；白名单只约束「是否生成」，不改变增量影响传播判定本身）
+    let chunks = filter_chunks_by_guide(chunks, &config.wiki.guide, false)?;
     tracing::info!("增量分块完成: {} 个块", chunks.len());
     let chunk_ms = chunk_start.elapsed().as_millis() as u64;
 

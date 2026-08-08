@@ -233,7 +233,7 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
 
         let language = &config.wiki.language;
         let mut messages =
-            prompt::wiki_page_prompt(chunk, card_summary, language);
+            prompt::wiki_page_prompt(chunk, card_summary, language, &config.wiki.guide.notes);
         let mut content = String::new();
         let mut last_invalid = Vec::new();
         let mut last_mermaid = Vec::new();

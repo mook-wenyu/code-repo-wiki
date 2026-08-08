@@ -365,7 +365,7 @@ fn entity_signature_line(e: &crate::ingest::parser::Entity) -> String {
 /// 摘要不含行号，LLM 无法兑现契约只能编造（v29 实测 bad-citation 来源）。
 /// v32 7.1 起每条追加签名级片段（≤8 行/≤160 字符），供 LLM 精确引用签名
 /// 而无需猜测（FR-201）。实体过多时截断前 80 条并注明总数，避免输入超长。
-fn wiki_page_user_prompt(chunk: &Chunk, module_summary: &str) -> String {
+fn wiki_page_user_prompt(chunk: &Chunk, module_summary: &str, notes: &[String]) -> String {
     let mut entity_lines: Vec<String> = chunk
         .entities
         .iter()
@@ -385,13 +385,29 @@ fn wiki_page_user_prompt(chunk: &Chunk, module_summary: &str) -> String {
     if chunk.entities.len() > 80 {
         entity_lines.push(format!("- …共 {} 个实体，仅列出前 80 个", chunk.entities.len()));
     }
+    // v32 9.2：项目引导说明（[wiki.guide].notes）——逐条注入 user 消息，
+    // 引导 LLM 按项目约定撰写页面（命名规范/必写小节/注意事项）。空列表
+    // 时不生成该节，保持旧 prompt 形态（零破坏）。
+    let guide_section = if notes.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\n## 项目引导说明\n{}\n",
+            notes
+                .iter()
+                .map(|n| format!("- {}", n))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
     format!(
-        "模块路径: {}\n\n## 代码信息\n实体数: {}, 文件数: {}\n\n## 实体引用清单\n{}\n\n## 卡片摘要\n{}",
+        "模块路径: {}\n\n## 代码信息\n实体数: {}, 文件数: {}\n\n## 实体引用清单\n{}\n\n## 卡片摘要\n{}{}",
         chunk.module_path.join("::"),
         chunk.entity_count(),
         chunk.file_paths.len(),
         entity_lines.join("\n"),
-        module_summary
+        module_summary,
+        guide_section
     )
 }
 
@@ -400,9 +416,10 @@ pub fn wiki_page_prompt(
     chunk: &Chunk,
     module_summary: &str,
     language: &str,
+    notes: &[String],
 ) -> Vec<Message> {
     let system = wiki_page_system_prompt(language);
-    let user = wiki_page_user_prompt(chunk, module_summary);
+    let user = wiki_page_user_prompt(chunk, module_summary, notes);
     vec![Message::system(system), Message::user(user)]
 }
 
@@ -531,7 +548,7 @@ mod tests {
             visibility: None,
         }];
         chunk.entity_sources = vec![std::path::PathBuf::from("src/alpha.rs")];
-        let user = wiki_page_user_prompt(&chunk, "卡片摘要");
+        let user = wiki_page_user_prompt(&chunk, "卡片摘要", &[]);
         assert!(
             user.contains("src/alpha.rs:1"),
             "引用清单必须含文件:行号: {}",
@@ -540,7 +557,7 @@ mod tests {
         assert!(user.contains("alpha_fn"));
         // 无文件记录时的诚实标注路径（不得编造文件）
         chunk.entity_sources = vec![];
-        let user = wiki_page_user_prompt(&chunk, "卡片摘要");
+        let user = wiki_page_user_prompt(&chunk, "卡片摘要", &[]);
         assert!(user.contains("所属文件未记录"));
     }
 
@@ -677,7 +694,7 @@ mod tests {
             visibility: None,
         }];
         chunk.entity_sources = vec![std::path::PathBuf::from("src/alpha.rs")];
-        let user = wiki_page_user_prompt(&chunk, "卡片摘要");
+        let user = wiki_page_user_prompt(&chunk, "卡片摘要", &[]);
         assert!(
             user.contains("src/alpha.rs:1，签名: pub fn alpha_fn()"),
             "引用清单行必须含签名: {}",
