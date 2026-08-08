@@ -35,6 +35,11 @@ pub struct WikiConfig {
     pub llm: LlmSection,
     #[serde(default)]
     pub embed: EmbedSection,
+    /// v36 B1：重排模型配置（[rerank] 段）。缺段即用默认阵营
+    ///（百炼 qwen3-rerank，与 embed 同栈同 Key），无 Key 时
+    /// hybrid 自动跳过重排（见 lib.rs execute_search）。
+    #[serde(default)]
+    pub rerank: RerankSection,
     /// 运行时输出目录（serde(skip)：配置文件中不可写，由
     /// load_config_with_output 注入——CLI --output 覆盖或 root 化后的
     /// 绝对路径；None 时由 output_dir() 方法兜底硬编码常量）。
@@ -232,4 +237,45 @@ pub enum SearchEngineType {
     /// RRF 混合排序
     #[serde(rename = "hybrid")]
     Hybrid,
+}
+
+/// 重排模型配置（v36 B1）：hybrid 融合后在 top-K 候选上做交叉编码器
+/// 精排（bi-encoder 召回 + cross-encoder 重排是检索最佳实践的标准形态）。
+/// 形状与 EmbedSection 同构（model/base_url/api_key/api_key_env），缺省
+/// 阵营与 embed 同栈（百炼兼容端点 + BAILIAN_API_KEY）——用户已配置
+/// embed 即可直接使用；无 Key 时 hybrid 跳过重排并告警（不降级搜索）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RerankSection {
+    #[serde(default = "default_rerank_model")]
+    pub model: String,
+    #[serde(default = "default_rerank_base_url")]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default = "default_rerank_api_key_env")]
+    pub api_key_env: String,
+}
+
+fn default_rerank_model() -> String {
+    "qwen3-rerank".to_string()
+}
+
+fn default_rerank_base_url() -> Option<String> {
+    // 与 embed 默认同源（百炼兼容端点）——复用用户已验证的可用配置
+    default_embed_base_url()
+}
+
+fn default_rerank_api_key_env() -> String {
+    "BAILIAN_API_KEY".to_string()
+}
+
+impl Default for RerankSection {
+    fn default() -> Self {
+        Self {
+            model: "qwen3-rerank".to_string(),
+            base_url: default_embed_base_url(),
+            api_key: None,
+            api_key_env: "BAILIAN_API_KEY".to_string(),
+        }
+    }
 }
