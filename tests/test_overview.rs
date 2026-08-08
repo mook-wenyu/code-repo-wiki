@@ -43,6 +43,7 @@ fn generate_overview_doc(config: &WikiConfig) -> WikiDocument {
         cards: vec![],
         documents: vec![],
         generation_stats: GenerationStats::default(),
+        timings: Default::default(),
     };
     // 临时根目录（产物输出目录由 config 控制，root 仅用于描述缓存指纹）
     let root = repo_wiki::project::ProjectRoot::new(
@@ -198,6 +199,7 @@ fn test_overview_module_refs_match_write_path() {
         cards: vec![card1, card2],
         documents: vec![],
         generation_stats: GenerationStats::default(),
+        timings: Default::default(),
     };
     let overview = futures::executor::block_on(generator.generate_overview(
         &output,

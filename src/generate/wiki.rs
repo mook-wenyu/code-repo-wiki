@@ -1257,6 +1257,7 @@ mod tests {
             cards: vec![],
             documents: vec![],
             generation_stats: crate::generate::GenerationStats::default(),
+            timings: crate::GenerationTimings::default(),
         };
         // 临时根目录：避免默认输出目录污染工作区（缓存/产物落临时目录）
         let root = crate::project::ProjectRoot::new(

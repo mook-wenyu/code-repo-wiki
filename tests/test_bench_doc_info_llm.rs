@@ -160,6 +160,7 @@ fn test_render_markdown_doc_info_llm_branches() {
             recall: 1.0,
         },
         time: TimeReport { scan_ms: 0, generate_ms: 0, total_ms: 0 },
+        timings: None,
         tqs: None,
         rubric: None,
         completeness: CompletenessReport {
