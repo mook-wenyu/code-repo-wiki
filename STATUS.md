@@ -658,3 +658,12 @@ knowing 全量 12 仓 mock 数据点齐（v29 9 + v30 3：rails 5239 实体/58 �
 - 验证：全量 459 lib+全部集成套件 0 失败；clippy 0；machete 0；新单测 test_embed_model_marker_roundtrip_and_mismatch（写读往返/升级判定/损坏/缺失标记）；PS 5.1 实机解析通过（预览发现 417 key-test-* + 2313 临时目录残留）；test_engineer 发现 2 处缺陷已闭环（ps1 无 BOM→PS 5.1 ParserError 修复；describe_modules 缓存测试 Windows PID 复用 flake 修复）
 - 提交：eaa3f25
 - 遗留/风险点：模型重建全链路（增量触发）依赖真实 embed key 未在 CI e2e 覆盖（判定逻辑单测覆盖，留待真实环境）；fsync 极端断电仍非绝对保证（FITO 视角：失败可重建为第一道防线）；opencode.json 明文 API Key 为用户文件（备份/分享前脱敏提示）；%TEMP% 残留目录清理建议定期执行脚本
+
+## 六十六节：README 重构与 AGENTS.md 人工段修正（2026-08-09）
+- 背景：用户要求全局深度检索分析后重构 README——3 条并行 lane（explorer 本地结构盘点 + 2×researcher 网络权威实践：认知漏斗骨架/Quick Start 最小可用/注释式完整配置示例/动机 ≤1/3 首屏/Diátaxis 分类/GitHub 官方规范）；question 4 拍板（命令表合并权威一张/配置节补全全部键/AGENTS 一并修正）
+- 修改的功能：README.md 全量重构（212→211 行，净 +110/-111）：结构重排为认知漏斗（定位→30 秒了解→快速开始（前置条件+3 步含输出）→核心功能→配置（注释式全键示例：wiki.language/guide.pages/priority/notes、llm.provider/model/base_url/api_key/api_key_env、embed 同构）→命令参考（原 3 表合并为一张 17 行权威表，含 install [--claude/--codex/--also-claude]/uninstall --force/bench --repodoc 等）→FAQ（#限制项 锚点）→架构→限制项→进阶运维（watch 三平台托管与清理脚本下移）→lint 检查项→维护者；修复「7 种语言」顶部 vs 「11 种」限制项不一致；AGENTS.md 人工段 6 处旧路径修正（wiki/wiki/{lang}/→.repo-wiki/wiki/{lang}/，与生成块一致）
+- 摸到的文件：README.md、AGENTS.md（人工段，生成块不动）
+- 是否改变了接口/契约：否（纯文档）
+- 验证：命令表 17 行 vs main.rs 18 枚举逐一核对（Bench/BenchManifest 合并）；配置示例键与 schema.rs 结构一致；示例引用 community.rs:54/:90 精确命中；默认值核对（zh/deepseek-v4-flash/openai-compatible/opencode.ai 网关/OPENCODEGO2_API_KEY/qwen3.7-text-embedding/百炼/BAILIAN_API_KEY）；#限制项 锚点与标题匹配；read 复核格式无截断
+- 提交：dff8acd
+- 遗留/风险点：README 数值（10 万/1 万行/16 并发/cal.com 实测）无第二真源（历史已逐项核证）；执行顺序建议「README 重构 → 运维/部署/多 Agent 文档」延续认知漏斗（未建文档页面留待后续）
