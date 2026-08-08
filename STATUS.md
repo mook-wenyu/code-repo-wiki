@@ -641,3 +641,11 @@ knowing 全量 12 仓 mock 数据点齐（v29 9 + v30 3：rails 5239 实体/58 �
 - 大仓性能：分段计时（10 段）+ 图构建增量索引重构（cal.com 287s→20s，total 384s→119s）
 - 小项：语义降级标记与显式提示、页面 git 基线行（非 git 省略）、归档文件 UTF-8 核证（乱码=终端 gb2312 假象）、README lint 9 类+限制项对齐
 - 提交链 14+（17acaa3→9173fa2）；全量 35 套件绿 + clippy 0 + machete 0；工作树干净
+
+## 六十四节：v33 安装集成合并（2026-08-09）
+- 修改的功能：install-wiki/uninstall-wiki/install-to-opencode/uninstall-from-opencode 四子命令删除，全部并入 `install`/`uninstall`——install 默认：用户级全局 opencode.json MCP 注册（OpenCode 原生 mcp 键，type=local+exe 绝对路径+enabled）+ OpenCode 插件（内容比对升级）+ AGENTS.md 引导块注入 + git hooks（post-commit/post-merge）；`--claude` 加写项目根 .mcp.json（Claude Code/Cursor）、`--codex` 加写 ~/.codex/config.toml（[mcp_servers.repo-wiki] 表）、`--also-claude` 同步 CLAUDE.md；uninstall 无 flag 幂等全清（MCP 条目/插件/wiki 块/hooks/旧 .opencode.json 残留，数据与用户级配置保留）；带 repo-wiki 标记的旧产物升级覆盖、人工产物保留+提示
+- 摸到的文件：src/config/mcp.rs（新建 719 行：OpencodeMcp/ClaudeMcp/CodexMcp 三格式读写，Codex 文本级表编辑零新依赖）、src/config/opencode.rs（OpenCodeConfig::new(root) 修复 --root 高优缺陷 + config_dir 双缺失报错 + 插件模板 include_str 内嵌修复自举缺陷）、src/commands.rs（install/uninstall 重构，-308 行）、src/main.rs（枚举/flag/分派）、tests/*（test_install_opencode/test_install_wiki/test_hook_install 重写适配 + test_cli/test_cli_smoke）、README.md/CHANGELOG.md
+- 是否改变了接口/契约：是（未上线无存量用户）——CLI 四子命令移除、install/uninstall 语义扩展（原 install 无 MCP 注册、现默认注册全局 MCP；uninstall 原仅插件）
+- 验证：全量 458 lib+集成套件 0 失败；clippy 0；machete 0；实机闭环（隔离 HOME：install 注册全局 MCP 条目断言 mcp.repo-wiki.type=local+command[0]=exe 绝对路径 → uninstall 条目移除 opencode.json 变 {} → 再 install 幂等恢复；插件 replace 命中注入绝对路径；人工 post-commit hook 保留提示）；自举缺陷实机发现并修复（uninstall 删除插件文件后模板源同文件丢失→include_str 内嵌）
+- 提交链：b4b6a5a（主合并）→ ff14fa3（自举修复）
+- 遗留/风险点：全局 MCP 条目被其他仓库 uninstall 波及（提示已注明）；多 Agent 未真机验证（Claude/Codex 配置写文件路径与格式单测覆盖，无对应客户端实测）
