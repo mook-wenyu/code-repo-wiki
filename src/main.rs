@@ -131,13 +131,25 @@ enum Commands {
         #[arg(long)]
         root: Option<PathBuf>,
     },
-    /// 注册 OpenCode 插件并确保配置就绪
+    /// 安装 repo-wiki 集成（v33 合并版：OpenCode 插件 + 多 Agent MCP + AGENTS.md + git hooks）
     ///
-    /// 无参执行：① 确保用户级默认配置（config.toml）存在，
-    /// 缺失时自动创建（v25 起 init 并入 install，配置链=项目级
-    /// config.toml 覆盖用户级）；② 注册 repo-wiki 为 OpenCode 插件
-    /// （含 MCP/ hooks 配置注入，原 install-to-opencode 语义）。
+    /// 默认执行：① 确保用户级默认配置（config.toml）存在，缺失时自动创建
+    /// （v25 起 init 并入 install，配置链=项目级 config.toml 覆盖用户级）；
+    /// ② 注册 OpenCode 插件（项目级 .opencode/plugins/repo-wiki.ts）；
+    /// ③ 注册 OpenCode MCP（用户级全局 opencode.json 的 mcp 块）；
+    /// ④ 注入 AGENTS.md wiki 引用块；⑤ 安装 git post-commit/post-merge hooks。
+    /// --claude/--codex 额外注册对应 Agent 的 MCP；--also-claude 同步写 CLAUDE.md。
+    /// 全部幂等；已存在的非 repo-wiki 内容（用户自定义 hook/其他 MCP server）保留。
     Install {
+        /// 额外注册 Claude Code MCP（项目根 .mcp.json，mcpServers.repo-wiki）
+        #[arg(long)]
+        claude: bool,
+        /// 额外注册 Codex CLI MCP（用户级 ~/.codex/config.toml，[mcp_servers.repo-wiki]）
+        #[arg(long)]
+        codex: bool,
+        /// 同步向 CLAUDE.md 注入 wiki 引用块（Claude Code 不读 AGENTS.md）
+        #[arg(long)]
+        also_claude: bool,
         /// 项目根目录：插件/hook 安装基准，默认当前目录
         #[arg(long)]
         root: Option<PathBuf>,
@@ -197,27 +209,17 @@ enum Commands {
         #[arg(long)]
         root: Option<PathBuf>,
     },
-    /// 从 OpenCode 卸载 repo-wiki 插件
-    UninstallFromOpencode {
+    /// 卸载 repo-wiki 集成（v33 合并版：OpenCode MCP + 插件 + AGENTS.md + hooks
+    /// + Claude/Codex MCP 条目；--force 确认）
+    ///
+    /// 清理 install 写入的全部集成痕迹（幂等，缺省即跳过）；保留用户级
+    /// config.toml 与产物数据 .repo-wiki/。原 install-wiki/uninstall-wiki/
+    /// install-to-opencode/uninstall-from-opencode 四命令合并于此。
+    Uninstall {
         /// 跳过确认（卸载将移除集成配置）
         #[arg(long)]
         force: bool,
-        /// 项目根目录（插件/hook 移除基准，默认当前目录；U02 root 补齐族）
-        #[arg(long)]
-        root: Option<PathBuf>,
-    },
-    /// 向项目根 AGENTS.md 注入 wiki 引用块（标记对 <!-- REPO-WIKI:START/END --> 之间）
-    InstallWiki {
-        /// 同时将注入块写入 CLAUDE.md（与 AGENTS.md 同一套标记约定）
-        #[arg(long)]
-        also_claude: bool,
-        /// 项目根目录（默认当前目录）
-        #[arg(long)]
-        root: Option<PathBuf>,
-    },
-    /// 移除 AGENTS.md 中的 wiki 引用块（含标记本身；未安装时提示并退出码 0）
-    UninstallWiki {
-        /// 项目根目录（默认当前目录）
+        /// 项目根目录（插件/hook/AGENTS.md 移除基准，默认当前目录；U02 root 补齐族）
         #[arg(long)]
         root: Option<PathBuf>,
     },
@@ -760,7 +762,12 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Commands::Install { root } => {
+        Commands::Install {
+            claude,
+            codex,
+            also_claude,
+            root,
+        } => {
             // v25 起 init 并入 install：先确保用户级默认配置就绪
             // （缺失自动创建，含项目级 config.toml 覆盖链语义），
             // 再执行集成安装（v33 合并版：OpenCode 插件 + 多 Agent MCP
@@ -768,21 +775,16 @@ fn main() -> anyhow::Result<()> {
             let root = resolve_root(root.as_deref())?;
             let (user_config, _config) = repo_wiki::config::load_default_config(&root)?;
             tracing::info!("用户级默认配置已就绪: {}", user_config.display());
-            repo_wiki::commands::install(&root, &Default::default())?;
+            let opts = repo_wiki::commands::InstallOptions {
+                claude,
+                codex,
+                also_claude,
+            };
+            repo_wiki::commands::install(&root, &opts)?;
         }
-        Commands::UninstallFromOpencode { force, root } => {
+        Commands::Uninstall { force, root } => {
             let root = resolve_root(root.as_deref())?;
             repo_wiki::commands::uninstall(force, &root)?;
-        }
-        Commands::InstallWiki { also_claude, root } => {
-            // AGENTS.md 注入 wiki 引用块（--also-claude 双写 CLAUDE.md）；
-            // 注入逻辑在 commands::install_wiki，此处只做 --root 解析与调用
-            let root = resolve_root(root.as_deref())?;
-            repo_wiki::commands::install_wiki(&root, also_claude)?;
-        }
-        Commands::UninstallWiki { root } => {
-            let root = resolve_root(root.as_deref())?;
-            repo_wiki::commands::uninstall_wiki(&root)?;
         }
         Commands::Mcp { config, root } => {
             // MCP stdio server：阻塞直到客户端断开。异步运行时由库内
