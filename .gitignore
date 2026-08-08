@@ -13,3 +13,6 @@ wiki/
 
 # bench 输出目录（--config 指向外部输出时若落在仓库根）
 bench-out/
+
+# opencode 会话配置（bench 工作区干净检查忽略）
+.opencode/
