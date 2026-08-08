@@ -226,6 +226,51 @@ pub fn run_pipeline(
     run_pipeline_with_progress(config_path, output, force, root, mode, &|_| {})
 }
 
+/// 生成流水线分段计时（v32 8.1 FR-301 数据驱动剖析）
+///
+/// 各段毫秒：扫描/解析、图构建、增量分析、分块、卡片生成、Wiki 页生成、
+/// 阅读指南、渲染写盘、搜索索引、状态保存。由 run_pipeline_with_progress
+/// 收集（chunk/card/wiki 三段的内部值来自 generate::GenerationOutput.timings），
+/// 完成时写入 .state/last_timings.json 供 bench 回放后读取——评测可定位
+/// 大仓各阶段瓶颈（cal.com mock 372s 先例）。.state 非产物页，写入不影响
+/// test_determinism 内容级哈希；serde 全默认，文件缺失/损坏按 None 处理。
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct GenerationTimings {
+    pub scan_parse_ms: u64,
+    pub graph_ms: u64,
+    pub incremental_ms: u64,
+    pub chunk_ms: u64,
+    pub card_ms: u64,
+    pub wiki_ms: u64,
+    pub index_guide_ms: u64,
+    pub render_ms: u64,
+    pub index_ms: u64,
+    pub state_ms: u64,
+    pub total_ms: u64,
+}
+
+/// 写入最近一次生成的分段计时（v32 8.1）
+///
+/// bench 的 measure_update_recall 回放生成后读取该文件以获得各段耗时。
+/// 写失败只告警（计时是诊断信息，不阻断主流程）。
+pub(crate) fn write_last_timings(config: &config::schema::WikiConfig, timings: &GenerationTimings) {
+    let state_dir = config.output_dir().join(".state");
+    if let Err(e) = std::fs::create_dir_all(&state_dir) {
+        tracing::warn!("分段计时目录创建失败: {e}");
+        return;
+    }
+    let path = state_dir.join("last_timings.json");
+    match serde_json::to_string_pretty(timings) {
+        Ok(text) => {
+            if let Err(e) = std::fs::write(&path, text) {
+                tracing::warn!("分段计时写盘失败: {e}");
+            }
+        }
+        Err(e) => tracing::warn!("分段计时序列化失败: {e}"),
+    }
+}
+
 /// 运行完整的分析流水线，并在各阶段边界回调进度事件
 ///
 /// 事件点：scanning 10 / analyzing 25 / chunking 30 / cards 60 / wiki 90 /
@@ -242,6 +287,9 @@ pub fn run_pipeline_with_progress(
     let _span = tracing::info_span!("pipeline", config = %config_path.map(|p| p.display().to_string()).unwrap_or_else(|| "默认链".into()));
     let _enter = _span.enter();
     let start = std::time::Instant::now();
+    // v32 8.1：分段计时收集（各阶段边界打点；chunk/card/wiki 内部段在
+    // generate 侧计时，见 GenerationOutput.timings）
+    let mut timings = GenerationTimings::default();
     let mut is_incremental = matches!(mode, GenerationMode::Incremental { .. });
     // U06/D11：force 语义补全——force 时无论增量/全量都按全量重生成。
     // 旧实现 force 只清保护集，增量仍按 diff 过滤生成，未变更的文档
@@ -304,6 +352,7 @@ pub fn run_pipeline_with_progress(
     };
     let file_insights = scan.insights;
     let files_failed = scan.files_failed;
+    timings.scan_parse_ms = start.elapsed().as_millis() as u64;
     on_progress(ProgressEvent { stage: "scanning", percent: 10 });
     if file_insights.is_empty() {
         bail!("未找到任何源文件");
@@ -319,6 +368,7 @@ pub fn run_pipeline_with_progress(
     // 此处直接读结果供 stats，不重复运行检测）
     let mut graph = analysis::build_graph(&file_insights)?;
     attach_features(&mut graph, &config);
+    timings.graph_ms = start.elapsed().as_millis() as u64 - timings.scan_parse_ms;
     on_progress(ProgressEvent { stage: "analyzing", percent: 25 });
     stats.total_entities = graph.graph.node_count();
     stats.total_edges = graph.graph.edge_count();
@@ -331,6 +381,9 @@ pub fn run_pipeline_with_progress(
     } else {
         None
     };
+    timings.incremental_ms = start.elapsed().as_millis() as u64
+        - timings.scan_parse_ms
+        - timings.graph_ms;
 
     // 无代码变更短路：仅增量模式存在；此时若有新检测的人工修改仍需
     // 反向同步到卡片文件（生成路径跳过时此处的直接写盘是唯一落卡途径，
@@ -373,6 +426,10 @@ pub fn run_pipeline_with_progress(
         rt.block_on(generate::run_generation(&graph, &file_insights, &config, root, &extra_edits))?
     };
     on_progress(ProgressEvent { stage: "cards", percent: 60 });
+    // v32 8.1：generate 侧内部段（chunk/card/wiki）合并进总计时
+    timings.chunk_ms = gen_output.timings.chunk_ms;
+    timings.card_ms = gen_output.timings.card_ms;
+    timings.wiki_ms = gen_output.timings.wiki_ms;
 
     // Phase 3b: 阅读指南 index.md（仅主语言，写盘路径 wiki/{主语言}/index.md）。
     // LLM 失败重试 1 次仍失败 → 降级确定性骨架（模块入度中心度降序的链接列表）；
@@ -413,6 +470,13 @@ pub fn run_pipeline_with_progress(
         };
         gen_output.documents.push(index_doc);
     }
+    timings.index_guide_ms = start.elapsed().as_millis() as u64
+        - timings.scan_parse_ms
+        - timings.graph_ms
+        - timings.incremental_ms
+        - timings.chunk_ms
+        - timings.card_ms
+        - timings.wiki_ms;
 
     // v17 t06：mock 模式告警——占位内容页脚标注（产物可辨识，防误读为
     // 真实文档）。mock 产物的页面内容是占位 JSON（MockProvider 固定返回），
@@ -450,6 +514,14 @@ pub fn run_pipeline_with_progress(
         &output::rendered_paths(&gen_output.documents, &gen_output.cards, &config),
         &preserved_modules,
     );
+    timings.render_ms = start.elapsed().as_millis() as u64
+        - timings.scan_parse_ms
+        - timings.graph_ms
+        - timings.incremental_ms
+        - timings.chunk_ms
+        - timings.card_ms
+        - timings.wiki_ms
+        - timings.index_guide_ms;
     on_progress(ProgressEvent { stage: "output", percent: 95 });
 
     // Phase 5: 构建/增量更新搜索索引
@@ -465,6 +537,15 @@ pub fn run_pipeline_with_progress(
     if let Err(e) = index_result {
         tracing::warn!("搜索索引构建失败（不影响主流程）: {}", e);
     }
+    timings.index_ms = start.elapsed().as_millis() as u64
+        - timings.scan_parse_ms
+        - timings.graph_ms
+        - timings.incremental_ms
+        - timings.chunk_ms
+        - timings.card_ms
+        - timings.wiki_ms
+        - timings.index_guide_ms
+        - timings.render_ms;
     on_progress(ProgressEvent { stage: "index", percent: 98 });
 
     // Phase 6: 保存增量状态（含文档指纹用于人工修改保护）
@@ -487,6 +568,19 @@ pub fn run_pipeline_with_progress(
         }
     };
     save_generation_state(root, &config, &file_insights, &gen_output.documents, &gen_output.cards, &protected, &head_hash, &gen_output.generation_stats.failed_modules);
+
+    timings.state_ms = start.elapsed().as_millis() as u64
+        - timings.scan_parse_ms
+        - timings.graph_ms
+        - timings.incremental_ms
+        - timings.chunk_ms
+        - timings.card_ms
+        - timings.wiki_ms
+        - timings.index_guide_ms
+        - timings.render_ms
+        - timings.index_ms;
+    timings.total_ms = start.elapsed().as_millis() as u64;
+    write_last_timings(&config, &timings);
 
     on_progress(ProgressEvent { stage: "done", percent: 100 });
     stats.generation_time_ms = start.elapsed().as_millis() as u64;
@@ -1227,6 +1321,35 @@ pub fn execute_ast_search(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// v32 8.1：分段计时序列化往返与写盘/读取（缺省字段补零、损坏文件不 panic）
+    #[test]
+    fn test_generation_timings_roundtrip() {
+        let timings = GenerationTimings {
+            scan_parse_ms: 1,
+            graph_ms: 2,
+            incremental_ms: 3,
+            chunk_ms: 4,
+            card_ms: 5,
+            wiki_ms: 6,
+            index_guide_ms: 7,
+            render_ms: 8,
+            index_ms: 9,
+            state_ms: 10,
+            total_ms: 55,
+        };
+        let text = serde_json::to_string_pretty(&timings).unwrap();
+        let back: GenerationTimings = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.scan_parse_ms, 1);
+        assert_eq!(back.total_ms, 55);
+        // 损坏文件 → 解析失败（调用方按 None 处理，不 panic）
+        assert!(serde_json::from_str::<GenerationTimings>("{broken").is_err());
+        // 缺字段 → serde(default) 补零
+        let partial: GenerationTimings =
+            serde_json::from_str(r#"{"scan_parse_ms": 42}"#).unwrap();
+        assert_eq!(partial.scan_parse_ms, 42);
+        assert_eq!(partial.total_ms, 0);
+    }
 
     /// 产物集合 diff 清理（票 10）：旧状态记录过、但本次渲染集合之外的
     /// 产物路径被删除（全语言目录），本次渲染集合内的路径（含受保护文档）

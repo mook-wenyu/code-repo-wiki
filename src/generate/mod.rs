@@ -27,6 +27,9 @@ pub struct GenerationOutput {
     pub cards: Vec<KnowledgeCard>,
     pub documents: Vec<WikiDocument>,
     pub generation_stats: GenerationStats,
+    /// v32 8.1：分块/卡片/Wiki 页三段的内部计时（毫秒）——上层
+    /// run_pipeline_with_progress 收集后落盘供 bench 回放剖析
+    pub timings: crate::GenerationTimings,
 }
 
 /// 生成统计信息
@@ -78,6 +81,8 @@ pub async fn run_generation(
     extra_edits: &HashMap<String, Vec<String>>,
 ) -> Result<GenerationOutput> {
     let start = Instant::now();
+    // v32 8.1：三段内部计时（chunk/card/wiki）
+    let chunk_start = Instant::now();
 
     // 1. AST 感知分块
     let chunks = if graph.modules.is_empty() {
@@ -99,11 +104,13 @@ pub async fn run_generation(
         .filter(|c| !c.is_empty())
         .collect();
     tracing::info!("生成进度: 30% - 分块完成，共 {} 个块", chunks.len());
+    let chunk_ms = chunk_start.elapsed().as_millis() as u64;
 
     // 2. 创建 LLM Provider
     let provider = create_provider(config)?;
 
     // 3. 并行生成 Knowledge Card
+    let card_start = Instant::now();
     let card_gen = CardGenerator::new(
         &provider,
         config.clone(),
@@ -116,13 +123,16 @@ pub async fn run_generation(
     // 特征追溯回填（演进计划 T3.3）：模块实体与特征实体的交集 → 特征名
     backfill_features(&mut cards, &chunks, graph);
     tracing::info!("生成进度: 60% - 知识卡片生成完成，共 {} 个卡片", cards.len());
+    let card_ms = card_start.elapsed().as_millis() as u64;
 
     // 4. 按语言独立生成 Wiki 页面（并行，演进计划 T3.1；卡片仅主语言生成一次，
     // 各语言页面复用主语言卡片摘要；语言列表在 generate_wiki_pages 内部计算）
+    let wiki_start = Instant::now();
     let wiki_gen = WikiGenerator::new(&provider, crate::config::schema::LLM_MAX_CONCURRENT);
     let mut documents =
         generate_wiki_pages(&wiki_gen, &chunks, &cards, config, crate::config::schema::LLM_MAX_CONCURRENT, root, &build_entity_ranges(insights)).await;
     tracing::info!("生成进度: 90% - Wiki 页面生成完成，共 {} 个页面", documents.len());
+    let wiki_ms = wiki_start.elapsed().as_millis() as u64;
 
     // 5. 生成全局文档（架构概览 + 数据库 Schema，全量/增量共用同一辅助函数）
     generate_global_documents(&wiki_gen, &provider, graph, config, root, &cards, &mut documents, &GlobalDocAffected::all(), false).await?;
@@ -144,6 +154,12 @@ pub async fn run_generation(
         cards,
         documents,
         generation_stats: stats,
+        timings: crate::GenerationTimings {
+            chunk_ms,
+            card_ms,
+            wiki_ms,
+            ..Default::default()
+        },
     })
 }
 
@@ -165,6 +181,8 @@ pub async fn run_generation_filtered(
     let changed_files = &inc.changed_files;
     let entity_changes = &inc.entity_changes;
     let affected_modules = &inc.affected_modules;
+    // v32 8.1：三段内部计时
+    let chunk_start = Instant::now();
 
     // 过滤出变更文件的 Insight（克隆为拥有数据）。
     // T2 传播闭环接线：除变更文件外，语义传播判定的受影响模块文件也
@@ -290,6 +308,7 @@ pub async fn run_generation_filtered(
                 cards,
                 documents,
                 generation_stats: GenerationStats::default(),
+                timings: crate::GenerationTimings::default(),
             });
         } else {
             tracing::warn!("增量生成: 纯删除场景但导出快照缺失，回退全量生成防止产物误清");
@@ -318,11 +337,13 @@ pub async fn run_generation_filtered(
         .filter(|c| !c.is_empty())
         .collect();
     tracing::info!("增量分块完成: {} 个块", chunks.len());
+    let chunk_ms = chunk_start.elapsed().as_millis() as u64;
 
     // 2. 创建 LLM Provider
     let provider = create_provider(config)?;
 
     // 3. 并行生成 Knowledge Card（仅变更块）
+    let card_start = Instant::now();
     let card_gen = CardGenerator::new(
         &provider,
         config.clone(),
@@ -334,12 +355,15 @@ pub async fn run_generation_filtered(
         .await?;
     // 特征追溯回填（演进计划 T3.3）：模块实体与特征实体的交集 → 特征名
     backfill_features(&mut cards, &chunks, graph);
+    let card_ms = card_start.elapsed().as_millis() as u64;
 
     // 4. 按语言独立生成 Wiki 页面（并行，演进计划 T3.1；仅变更块；卡片仅主语言生成一次，
     // 各语言页面复用主语言卡片摘要）
+    let wiki_start = Instant::now();
     let wiki_gen = WikiGenerator::new(&provider, crate::config::schema::LLM_MAX_CONCURRENT);
     let mut documents =
         generate_wiki_pages(&wiki_gen, &chunks, &cards, config, crate::config::schema::LLM_MAX_CONCURRENT, root, &build_entity_ranges(insights)).await;
+    let wiki_ms = wiki_start.elapsed().as_millis() as u64;
 
     // 5. 生成全局文档（架构概览 + 数据库 Schema）
     // P1-2 全局文档增量（受影响判断）：架构/概览只在接口级实体变化
@@ -372,6 +396,12 @@ pub async fn run_generation_filtered(
         cards,
         documents,
         generation_stats: stats,
+        timings: crate::GenerationTimings {
+            chunk_ms,
+            card_ms,
+            wiki_ms,
+            ..Default::default()
+        },
     })
 }
 
@@ -554,6 +584,7 @@ async fn generate_global_documents(
                 cards: cards.to_vec(),
                 documents: documents.clone(),
                 generation_stats: GenerationStats::default(),
+                timings: crate::GenerationTimings::default(),
             };
             match wiki_gen
                 .generate_architecture(&output_snapshot, graph, config, root)
@@ -598,6 +629,7 @@ async fn generate_global_documents(
             cards: cards.to_vec(),
             documents: documents.clone(),
             generation_stats: GenerationStats::default(),
+            timings: crate::GenerationTimings::default(),
         };
         match wiki_gen
             .generate_architecture(&output_snapshot, graph, config, root)

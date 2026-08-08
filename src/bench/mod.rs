@@ -60,6 +60,10 @@ pub struct BenchReport {
     pub lint: LintReport,
     pub update_recall: UpdateRecallReport,
     pub time: TimeReport,
+    /// v32 8.1：生成流水线分段计时（update_recall 回放后从
+    /// .state/last_timings.json 读取；无回放/无文件时 None）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timings: Option<crate::GenerationTimings>,
     /// TQS 裁判打分（--judge 启用且 LLM 可用时 Some；否则 None）
     pub tqs: Option<TqsReport>,
     /// 维度 7：Rubric 层级完整性打分（--judge 启用且 LLM 可用时 Some）
@@ -365,6 +369,17 @@ const TQS_FLIP_RATE_ESCALATION_THRESHOLD: f64 = 0.20;
 /// item 6 estimand 声明）。tie 率 >30% 说明裁判区分度不足（新旧文档
 /// 总分经常相等），单次判定不可信，需更多 trials 收敛。
 const TQS_TIE_ESCALATION_THRESHOLD: f64 = 0.30;
+
+/// 读取最近一次生成的分段计时（v32 8.1）
+///
+/// 由 run_pipeline_with_progress 在每次生成完成后写入
+/// `.state/last_timings.json`；bench 的 update_recall 回放生成后读取。
+/// 文件缺失/损坏（首次评测、无回放、半写）→ None，渲染层不输出该节。
+fn read_last_timings(output_dir: &Path) -> Option<crate::GenerationTimings> {
+    let path = output_dir.join(".state").join("last_timings.json");
+    let text = std::fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&text).ok()
+}
 
 /// 收集全部产物页内容（wiki/{lang}/*.md，主语言 + 扩展语言）
 fn collect_wiki_pages(output_dir: &Path) -> Vec<(PathBuf, String)> {
@@ -980,6 +995,8 @@ pub fn run_bench(
     let gen_start = Instant::now();
     let update_recall = measure_update_recall(config_path, root)?;
     let generate_ms = gen_start.elapsed().as_millis() as u64;
+    // v32 8.1：回放生成后读取分段计时（无回放/文件缺失 → None 不渲染）
+    let timings = read_last_timings(config.output_dir());
 
     let tqs = if judge {
         measure_tqs(config)?
@@ -1005,6 +1022,7 @@ pub fn run_bench(
             generate_ms,
             total_ms: start.elapsed().as_millis() as u64,
         },
+        timings,
         tqs,
         rubric,
         completeness,
@@ -1067,6 +1085,8 @@ pub fn run_rubrics_only(
             generate_ms: 0,
             total_ms: start.elapsed().as_millis() as u64,
         },
+        // rubrics-only 跳过 git 回放（无生成），不读取分段计时
+        timings: None,
         tqs,
         rubric,
         completeness,
@@ -2346,6 +2366,14 @@ pub fn render_markdown(report: &BenchReport) -> String {
         "- 扫描: {}ms\n- 增量: {}ms\n- 总计: {}ms\n",
         report.time.scan_ms, report.time.generate_ms, report.time.total_ms
     ));
+    // v32 8.1：分段计时（update_recall 回放后的 last_timings.json；缺失不输出）
+    if let Some(t) = &report.timings {
+        out.push_str(&format!(
+            "- 分段: 扫描/解析 {}ms | 图构建 {}ms | 增量分析 {}ms | 分块 {}ms | 卡片 {}ms | Wiki 页 {}ms | 阅读指南 {}ms | 渲染 {}ms | 索引 {}ms | 状态 {}ms | 总计 {}ms\n",
+            t.scan_parse_ms, t.graph_ms, t.incremental_ms, t.chunk_ms, t.card_ms,
+            t.wiki_ms, t.index_guide_ms, t.render_ms, t.index_ms, t.state_ms, t.total_ms
+        ));
+    }
 
     out.push_str("## 7. TQS 文本质量（LLM 裁判，--judge）\n\n");
     if let Some(tqs) = &report.tqs {
@@ -2768,6 +2796,7 @@ mod tests {
             lint: LintReport { total_issues: 0, by_kind: Default::default() },
             update_recall: UpdateRecallReport { commits_scanned: 0, commits_with_changes: 0, correctly_updated: 0, recall: 1.0 },
             time: TimeReport { scan_ms: 0, generate_ms: 0, total_ms: 0 },
+            timings: None,
             tqs: None,
             rubric: None,
             completeness: CompletenessReport {
@@ -2856,6 +2885,7 @@ mod tests {
                 recall: 1.0,
             },
             time: TimeReport { scan_ms: 1, generate_ms: 2, total_ms: 3 },
+            timings: None,
             tqs: Some(TqsReport {
                 judged_modules: 2,
                 avg_clarity: 8.0,
@@ -2928,6 +2958,7 @@ mod tests {
                 recall: 1.0,
             },
             time: TimeReport { scan_ms: 0, generate_ms: 0, total_ms: 0 },
+            timings: None,
             tqs: None,
             rubric: None,
             completeness: CompletenessReport {
@@ -2969,6 +3000,7 @@ mod tests {
             lint: LintReport { total_issues: 0, by_kind: Default::default() },
             update_recall: UpdateRecallReport { commits_scanned: 0, commits_with_changes: 0, correctly_updated: 0, recall: 1.0 },
             time: TimeReport { scan_ms: 0, generate_ms: 0, total_ms: 0 },
+            timings: None,
             tqs: None,
             rubric: None,
             completeness: CompletenessReport {
@@ -3110,6 +3142,7 @@ mod tests {
             lint: LintReport { total_issues: 0, by_kind: Default::default() },
             update_recall: UpdateRecallReport { commits_scanned: 0, commits_with_changes: 0, correctly_updated: 0, recall: 1.0 },
             time: TimeReport { scan_ms: 0, generate_ms: 0, total_ms: 0 },
+            timings: None,
             tqs: None,
             rubric: None,
             completeness: CompletenessReport {
