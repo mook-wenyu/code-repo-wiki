@@ -32,6 +32,7 @@ use serde::Serialize;
 use crate::config::schema::WikiConfig;
 use crate::generate::llm::LlmProvider;
 use crate::project::ProjectRoot;
+use crate::search::tokenize::extract_keywords;
 
 /// 增量回放的最大 commit 数（对齐 RepoDoc 每仓库 20 commit 协议）
 const MAX_RECALL_COMMITS: usize = 20;
@@ -503,7 +504,7 @@ fn measure_completeness_at_k(
         });
     }
     let engine = match crate::search::text::TextEngine::open(&index_path) {
-        Ok(e) => e,
+        Ok((e, _)) => e,
         Err(e) => {
             tracing::warn!("bench: Completeness@K 降级跳过（text 索引不可用: {e}）");
             return Ok(CompletenessReport {
@@ -2072,49 +2073,6 @@ fn truncate(s: &str, max_chars: usize) -> String {
     s.chars().take(max_chars).collect()
 }
 
-/// 判断是否为 CJK 表意文字（统一表意/扩展 A/兼容区；2-gram 切分只对
-/// 汉字有意义，日文假名等非汉字字形不切分，按非 CJK 字符处理）
-fn is_cjk(c: char) -> bool {
-    matches!(c as u32, 0x4E00..=0x9FFF | 0x3400..=0x4DBF | 0xF900..=0xFAFF)
-}
-
-/// 从需求文本提取检索关键词：CJK 连续串按滑动窗口 2-gram 切分
-/// （如「安装配置指南」→ 安装/装配/配置/置指/指南；单字不成词，
-/// 2-gram 覆盖绝大多数中文术语），英文词/数字串保留原样
-/// （"GPT-4" 拆为 "GPT"/"4" 两个关键词）。空串/纯标点返回空 Vec，
-/// 调用方按「无关键词可检索」退化处理（维持现状证据）。
-fn extract_keywords(requirement: &str) -> Vec<String> {
-    let mut keywords = Vec::new();
-    let mut cjk_run: Vec<char> = Vec::new();
-    let mut ascii_run = String::new();
-    let flush_cjk = |run: &mut Vec<char>, out: &mut Vec<String>| {
-        for w in run.windows(2) {
-            out.push(w.iter().collect());
-        }
-        run.clear();
-    };
-    let flush_ascii = |run: &mut String, out: &mut Vec<String>| {
-        if !run.is_empty() {
-            out.push(std::mem::take(run));
-        }
-    };
-    for c in requirement.chars() {
-        if is_cjk(c) {
-            flush_ascii(&mut ascii_run, &mut keywords);
-            cjk_run.push(c);
-        } else if c.is_ascii_alphanumeric() {
-            flush_cjk(&mut cjk_run, &mut keywords);
-            ascii_run.push(c);
-        } else {
-            flush_cjk(&mut cjk_run, &mut keywords);
-            flush_ascii(&mut ascii_run, &mut keywords);
-        }
-    }
-    flush_cjk(&mut cjk_run, &mut keywords);
-    flush_ascii(&mut ascii_run, &mut keywords);
-    keywords
-}
-
 /// 按关键词对 wiki 页正文做计数检索：每页统计全部关键词出现次数之和
 /// （2-gram 各分量各计各的，如正文含「安装」×2 +「配置」×1 则合计 3），
 /// 按命中数降序取 top_k（平局按页名字典序），每页正文截断 3000 字符
@@ -2541,7 +2499,7 @@ mod tests {
         let index_dir = crate::search_index_dir(&config);
         std::fs::create_dir_all(&index_dir).unwrap();
         let mut engine =
-            crate::search::text::TextEngine::open(index_dir.join("text_index.db")).unwrap();
+            crate::search::text::TextEngine::open(index_dir.join("text_index.db")).unwrap().0;
         engine
             .index_batch(&[(
                 crate::model::CodeNode {
@@ -2606,7 +2564,7 @@ mod tests {
         let index_dir = crate::search_index_dir(&config);
         std::fs::create_dir_all(&index_dir).unwrap();
         let mut engine =
-            crate::search::text::TextEngine::open(index_dir.join("text_index.db")).unwrap();
+            crate::search::text::TextEngine::open(index_dir.join("text_index.db")).unwrap().0;
         engine
             .index_batch(&[(
                 crate::model::CodeNode {
@@ -3176,27 +3134,6 @@ mod tests {
         assert!(md_on.contains("加权总分 S: 0.700"), "应输出加权总分: {md_on}");
         assert!(md_on.contains("abstain 叶子"), "应输出 abstain 指标: {md_on}");
         assert!(md_on.contains("多数投票"), "应输出叶子判定协议: {md_on}");
-    }
-
-    /// 方案甲：关键词提取——CJK 连续串 2-gram 切分 / 英文数字保留原样 /
-    /// 空串与纯标点退化返回空 Vec
-    #[test]
-    fn test_extract_keywords() {
-        let kws = extract_keywords("安装配置指南");
-        assert_eq!(
-            kws,
-            vec!["安装", "装配", "配置", "置指", "指南"],
-            "连续中文按滑动窗口 2-gram 切分"
-        );
-        assert!(!kws.contains(&"安".to_string()), "单字不成 2-gram");
-
-        let mixed = extract_keywords("支持 Setup v2 认证");
-        assert!(mixed.contains(&"Setup".to_string()), "英文词保留原样");
-        assert!(mixed.contains(&"v2".to_string()), "英文+数字串保留原样");
-        assert!(mixed.contains(&"认证".to_string()), "中文 2 字串切出一个 2-gram");
-
-        assert!(extract_keywords("").is_empty(), "空串返回空");
-        assert!(extract_keywords("！！！---").is_empty(), "纯标点无关键词返回空");
     }
 
     /// 方案甲：计数检索排序——命中数多者排前，无命中页不返回，

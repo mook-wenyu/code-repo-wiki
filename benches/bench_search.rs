@@ -54,7 +54,7 @@ fn bench_text_search() {
     let _ = std::fs::remove_file(&text_path);
 
     // 构建 500 条索引
-    let mut engine = repo_wiki::search::text::TextEngine::open(&text_path).unwrap();
+    let mut engine = repo_wiki::search::text::TextEngine::open(&text_path).unwrap().0;
     for i in 0..500 {
         let node = repo_wiki::model::CodeNode {
             id: repo_wiki::model::NodeId::new(i),
@@ -158,7 +158,7 @@ fn bench_index_batch() {
 
     let text_path = std::env::temp_dir().join(format!("bench_index_{}.db", std::process::id()));
     let _ = std::fs::remove_file(&text_path);
-    let mut engine = repo_wiki::search::text::TextEngine::open(&text_path).unwrap();
+    let mut engine = repo_wiki::search::text::TextEngine::open(&text_path).unwrap().0;
 
     let items: Vec<(repo_wiki::model::CodeNode, String)> = (0..1000)
         .map(|i| {

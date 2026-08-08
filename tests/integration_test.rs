@@ -119,7 +119,7 @@ fn test_search_index_build_and_query() {
         })
         .collect();
 
-    let mut engine = TextEngine::open(&index_path).expect("打开索引失败");
+    let (mut engine, _) = TextEngine::open(&index_path).expect("打开索引失败");
     engine.index_batch(&items).expect("批量索引失败");
 
     // 验证索引非空
@@ -151,7 +151,7 @@ fn test_incremental_remove_by_file() {
     std::fs::create_dir_all(&tmp_dir).expect("创建临时目录失败");
     let index_path = tmp_dir.join("text_index.bin");
 
-    let mut engine = TextEngine::open(&index_path).expect("打开索引失败");
+    let (mut engine, _) = TextEngine::open(&index_path).expect("打开索引失败");
 
     // 索引两个不同文件的实体（使用完全不同的名称避免 token 重叠）
     let node_a = repo_wiki::model::CodeNode {

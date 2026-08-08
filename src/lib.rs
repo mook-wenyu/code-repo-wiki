@@ -997,7 +997,7 @@ fn build_search_index(
     // 全量重建 TextEngine
     let text_path = index_dir.join("text_index.db");
     let _ = std::fs::remove_file(&text_path); // 清除旧索引
-    let mut text_engine = search::text::TextEngine::open(&text_path)?;
+    let (mut text_engine, _) = search::text::TextEngine::open(&text_path)?;
     text_engine.index_batch(&items)?;
 
     // 如果 embed 已启用，构建语义索引
@@ -1064,37 +1064,37 @@ fn update_search_index_incremental(
         return build_search_index(graph, file_insights, config);
     }
 
-    let mut text_engine = search::text::TextEngine::open(&text_path)?;
+    let (mut text_engine, need_reindex) = search::text::TextEngine::open(&text_path)?;
 
-    // 删除变更文件的旧索引
-    let mut total_removed = 0;
-    for file in changed_files {
-        let file_str = file.to_string_lossy();
-        total_removed += text_engine.remove_by_file(&file_str)?;
-    }
-
-    // 重新索引变更文件中的实体（全量 items 提取复用：collect_index_items
-    // 是全量路径与增量路径的公共过滤骨架，避免两处过滤规则漂移）
+    // 分支内统计量提升到外层：函数末尾的汇总日志需要（Rust 作用域）；
+    // source_map/items 同样提升：语义增量段（下方）需要引用
     let source_map = build_source_map(file_insights);
-    let items: Vec<(model::CodeNode, String)> = collect_index_items(graph, &source_map)
-        .into_iter()
-        .filter(|(node, _)| {
-            // 只索引属于变更文件的实体
-            let Some(node_file) = node.file_path.as_deref() else {
-                return false;
-            };
-            // 比较前归一化路径分隔符（票 08）：node.file_path 可能是反斜杠
-            // 平台路径，changed_files 来自 git diff/watch（正斜杠或相对路径）。
-            // 库内 file_path 键已统一正斜杠，比较点必须同基准，否则增量
-            // 索引删除/重索引在 Windows 上永不命中。
-            let node_file_norm = incremental::norm_sep(node_file);
-            changed_files
-                .iter()
-                .any(|f| incremental::norm_sep(&f.to_string_lossy()) == node_file_norm)
-        })
-        .collect();
+    let mut total_removed = 0;
+    let mut indexed_count = 0;
+    let mut items: Vec<(model::CodeNode, String)> = Vec::new();
 
-    text_engine.index_batch(&items)?;
+    if need_reindex {
+        // v36 schema 迁移：旧版 text 索引（无 CJK tokens 列）被 open 时
+        // 重建为空表，增量补 changed_files 会丢失全部旧实体——回退
+        // 全量文本重索引（纯文本、无 LLM，成本低；语义索引不受影响，
+        // 继续走下方增量路径）
+        tracing::warn!("文本索引 schema 已升级（CJK tokens 列），重建全量文本索引");
+        items = collect_index_items(graph, &source_map);
+        indexed_count = items.len();
+        text_engine.index_batch(&items)?;
+    } else {
+        // 删除变更文件的旧索引
+        for file in changed_files {
+            let file_str = file.to_string_lossy();
+            total_removed += text_engine.remove_by_file(&file_str)?;
+        }
+
+        // 重新索引变更文件中的实体（与全量路径共用 collect_index_items，
+        // 过滤规则单一来源）
+        items = incremental_index_items(graph, file_insights, changed_files);
+        indexed_count = items.len();
+        text_engine.index_batch(&items)?;
+    }
 
     // 增量更新语义索引（如已启用）
     let semantic_path = index_dir.join("semantic_index.db");
@@ -1191,7 +1191,7 @@ fn update_search_index_incremental(
         }
     }
 
-    tracing::info!("搜索索引增量更新: 删除 {} 条, 新增 {} 条", total_removed, items.len());
+    tracing::info!("搜索索引增量更新: 删除 {} 条, 新增 {} 条", total_removed, indexed_count);
     Ok(())
 }
 
@@ -1225,6 +1225,33 @@ fn collect_index_items(
 fn build_source_map(insights: &[ingest::parser::FileInsight]) -> std::collections::HashMap<String, String> {
     insights.iter()
         .map(|i| (i.path.to_string_lossy().to_string(), i.source.clone()))
+        .collect()
+}
+
+/// 收集增量路径的待索引实体：全量 items 中只保留属于变更文件的实体
+///
+/// 与全量路径共用 collect_index_items（过滤规则单一来源），再按
+/// 变更文件集过滤。路径比较前归一化分隔符（票 08）：node.file_path
+/// 可能是平台反斜杠路径，changed_files 来自 git diff/watch（正斜杠
+/// 或相对路径），比较点必须同基准，否则增量删除/重索引在 Windows
+/// 上永不命中。
+fn incremental_index_items(
+    graph: &model::KnowledgeGraph,
+    file_insights: &[ingest::parser::FileInsight],
+    changed_files: &std::collections::HashSet<std::path::PathBuf>,
+) -> Vec<(model::CodeNode, String)> {
+    let source_map = build_source_map(file_insights);
+    collect_index_items(graph, &source_map)
+        .into_iter()
+        .filter(|(node, _)| {
+            let Some(node_file) = node.file_path.as_deref() else {
+                return false;
+            };
+            let node_file_norm = incremental::norm_sep(node_file);
+            changed_files
+                .iter()
+                .any(|f| incremental::norm_sep(&f.to_string_lossy()) == node_file_norm)
+        })
         .collect()
 }
 
@@ -1285,7 +1312,7 @@ pub fn execute_search(
             if !text_path.exists() {
                 anyhow::bail!("搜索索引不存在，请先运行 `repo-wiki generate` 或 `repo-wiki update` 构建索引");
             }
-            let text_engine = search::text::TextEngine::open(&text_path)?;
+            let (text_engine, _) = search::text::TextEngine::open(&text_path)?;
             let results = text_engine.search(query, top_k)?;
             Ok(search::hybrid::text_results_to_hits(results))
         }
@@ -1307,7 +1334,7 @@ pub fn execute_search(
             if !text_path.exists() {
                 anyhow::bail!("搜索索引不存在，请先运行 `repo-wiki generate` 或 `repo-wiki update` 构建索引");
             }
-            let text_engine = search::text::TextEngine::open(&text_path)?;
+            let (text_engine, _) = search::text::TextEngine::open(&text_path)?;
             // hybrid 语义一路：语义引擎构建失败（embedding 配置缺失/key
             // 无效/数据库损坏）显式告警并降级为纯 text——搜索结果少一路
             // 召回，但错误可见而非静默（v5 审计：全 .ok() 链把失败全吞掉，

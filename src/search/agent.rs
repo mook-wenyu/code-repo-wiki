@@ -102,7 +102,7 @@ mod tests {
 
     fn make_text_engine() -> TextEngine {
         let path = unique_db_path("agent_text");
-        let mut t = TextEngine::open(&path).unwrap();
+        let (mut t, _) = TextEngine::open(&path).unwrap();
         let _ = t.index(&CodeNode {
             id: NodeId::new(0), kind: NodeKind::Function,
             name: "add_user".into(), file_path: None, line_range: None,
@@ -119,7 +119,7 @@ mod tests {
 
     fn make_text_empty() -> TextEngine {
         let path = unique_db_path("agent_empty");
-        TextEngine::open(&path).unwrap()
+        TextEngine::open(&path).unwrap().0
     }
 
     /// 可编程 mock 语义引擎（v6：SemanticSearch trait 抽象使语义分支可测试）
@@ -190,7 +190,7 @@ mod tests {
     fn test_agent_skips_semantic_when_text_sufficient() {
         // 构造 3 条使 FTS 命中 ≥3，验证不触发回溯
         let path = unique_db_path("agent_text3");
-        let mut t = TextEngine::open(&path).unwrap();
+        let (mut t, _) = TextEngine::open(&path).unwrap();
         let _ = t.index(&mock_node("add_user"), "fn add_user(name: &str)");
         let _ = t.index(&mock_node("delete_user"), "fn delete_user(id: u64)");
         let _ = t.index(&mock_node("update_user"), "fn update_user(id: u64)");
@@ -258,7 +258,7 @@ mod tests {
         let kg = KnowledgeGraph { graph: g, modules: vec![], features: Vec::new() };
         let index = CallGraph::new(&kg).build_call_index();
 
-        let mut t = TextEngine::open(unique_db_path("agent_callgraph")).unwrap();
+        let (mut t, _) = TextEngine::open(unique_db_path("agent_callgraph")).unwrap();
         let _ = t.index(&make_node(1, "b"), "fn b()");
 
         let agent = SearchAgent::new(t, None, 60.0).with_call_index(index);

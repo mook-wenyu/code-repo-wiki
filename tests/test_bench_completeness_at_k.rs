@@ -77,7 +77,7 @@ fn repo_with_pages(dir: &Path, source_rel: &str, source: &str, pages: &[(&str, &
 fn write_index(config: &WikiConfig, node: CodeNode, content: &str) {
     let index_dir = config.output_dir().join(SEARCH_INDEX_DIR);
     std::fs::create_dir_all(&index_dir).unwrap();
-    let mut engine = TextEngine::open(index_dir.join("text_index.db")).unwrap();
+    let (mut engine, _) = TextEngine::open(index_dir.join("text_index.db")).unwrap();
     engine.index_batch(&[(node, content.to_string())]).unwrap();
     // engine 先 drop（释放 SQLite 文件锁），再进入被测流程与清理
 }

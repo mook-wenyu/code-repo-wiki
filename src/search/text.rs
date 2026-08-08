@@ -21,9 +21,12 @@ impl TextEngine {
     /// 打开或创建持久化搜索引擎。
     ///
     /// path 指向 SQLite 数据库文件（.db），不存在时自动创建。
-    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let store = SearchStore::open(path)?;
-        Ok(Self { store })
+    /// 返回 (engine, need_reindex)：need_reindex=true 表示旧 schema 已
+    /// 迁移重建（索引为空），调用方必须全量重索引（增量路径只补
+    /// changed_files 会丢失旧实体）。
+    pub fn open(path: impl AsRef<Path>) -> Result<(Self, bool)> {
+        let (store, need_reindex) = SearchStore::open(path)?;
+        Ok((Self { store }, need_reindex))
     }
 
     /// 索引一个 CodeNode。
@@ -87,7 +90,7 @@ mod tests {
 
     #[test]
     fn test_index_and_search() -> Result<()> {
-        let mut engine = TextEngine::open(tmp_path("index_search"))?;
+        let (mut engine, _) = TextEngine::open(tmp_path("index_search"))?;
         engine.index(&make_node("add_user", NodeKind::Function), "fn add_user(name: &str)")?;
         engine.index(&make_node("delete_user", NodeKind::Function), "fn delete_user(id: u64)")?;
         let results = engine.search("add_user", 10)?;
@@ -98,7 +101,7 @@ mod tests {
 
     #[test]
     fn test_empty_engine() -> Result<()> {
-        let engine = TextEngine::open(tmp_path("empty"))?;
+        let (engine, _) = TextEngine::open(tmp_path("empty"))?;
         assert!(engine.search("anything", 10)?.is_empty());
         Ok(())
     }
@@ -107,10 +110,10 @@ mod tests {
     fn test_persistence() -> Result<()> {
         let path = tmp_path("persist");
         {
-            let mut engine = TextEngine::open(&path)?;
+            let (mut engine, _) = TextEngine::open(&path)?;
             engine.index(&make_node("persist_test", NodeKind::Function), "fn test()")?;
         }
-        let engine = TextEngine::open(&path)?;
+        let (engine, _) = TextEngine::open(&path)?;
         assert_eq!(engine.doc_count(), 1);
         let results = engine.search("persist_test", 10)?;
         assert!(!results.is_empty());
@@ -119,7 +122,7 @@ mod tests {
 
     #[test]
     fn test_clear() -> Result<()> {
-        let mut engine = TextEngine::open(tmp_path("clear"))?;
+        let (mut engine, _) = TextEngine::open(tmp_path("clear"))?;
         engine.index(&make_node("x", NodeKind::Function), "")?;
         assert_eq!(engine.doc_count(), 1);
         engine.clear()?;
@@ -129,7 +132,7 @@ mod tests {
 
     #[test]
     fn test_remove_by_file() -> Result<()> {
-        let mut engine = TextEngine::open(tmp_path("remove"))?;
+        let (mut engine, _) = TextEngine::open(tmp_path("remove"))?;
         let node_a = CodeNode {
             id: NodeId::new(0), kind: NodeKind::Function,
             name: "alpha_unique".into(),
@@ -158,7 +161,7 @@ mod tests {
     /// 这同时是"不引入 reranker"决策的本地证据之一）
     #[test]
     fn test_short_keyword_baseline() -> Result<()> {
-        let mut engine = TextEngine::open(tmp_path("short_keyword"))?;
+        let (mut engine, _) = TextEngine::open(tmp_path("short_keyword"))?;
         engine.index(&make_node("a_helper", NodeKind::Function), "fn a_helper(x: u32)")?;
         engine.index(&make_node("udp_send", NodeKind::Function), "fn udp_send(sock: u32)")?;
         // 1 字符 token 查询：BM25 token 精确匹配，含单字符 token 的实体命中
