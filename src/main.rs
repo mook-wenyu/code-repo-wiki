@@ -773,8 +773,10 @@ fn main() -> anyhow::Result<()> {
             // 再执行集成安装（v33 合并版：OpenCode 插件 + 多 Agent MCP
             // + AGENTS.md + git hooks；--claude/--codex/--also-claude 扩展）。
             let root = resolve_root(root.as_deref())?;
-            let (user_config, _config) = repo_wiki::config::load_default_config(&root)?;
-            tracing::info!("用户级默认配置已就绪: {}", user_config.display());
+            let (source, _config) = repo_wiki::config::load_default_config(&root)?;
+            // 配置链解析完成（来源可能是用户级或项目级 config.toml——
+            // 项目级存在时优先，用户级缺失不自动创建，见 load_default_config）
+            tracing::info!("配置链就绪（来源: {}）", source.display());
             let opts = repo_wiki::commands::InstallOptions {
                 claude,
                 codex,

@@ -164,9 +164,8 @@ impl OpenCodeConfig {
     /// v33 升级语义（用户拍板「带标记则升级」）：插件文件是 repo-wiki
     /// 专属产物（文件名即标记），内容与最新模板（注入当前 exe 绝对路径）
     /// 不同即覆盖升级（旧版本模板/二进制路径变化）；相同则跳过。
-    /// 返回是否实际写入。模板在运行时读取仓库内插件文件（N9：
-    /// include_str 在发布/非仓库安装场景失效——二进制内嵌编译时路径，
-    /// 仓库移动后内容仍指旧位置）。
+    /// 返回是否实际写入。模板经 include_str 内嵌编译（见下方实现注释：
+    /// v33 修复自举缺陷——模板源不再依赖仓库内安装产物文件）。
     pub fn install_plugin_file(&mut self) -> Result<bool> {
         let plugin_path = self
             .project_root
@@ -185,12 +184,13 @@ impl OpenCodeConfig {
             serde_json::to_string(&exe_path.to_string_lossy().to_string())
                 .with_context(|| "序列化可执行文件路径失败")?;
         let template = {
-            // N9：模板运行时读取（见函数 doc 注释）
-            let raw = std::fs::read_to_string(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/.opencode/plugins/repo-wiki.ts"
-            ))
-            .with_context(|| "读取插件模板失败（仓库 .opencode/plugins/repo-wiki.ts 缺失）")?;
+            // 模板内嵌编译（include_str）：插件模板只含 execa("repo-wiki")
+            // 占位（下方注入 current_exe 绝对路径），不含任何编译期路径，
+            // 因此发布安装/仓库移动/uninstall 删除安装产物后仍可生成。
+            // （v33 修复：旧实现运行时读仓库内 .opencode/plugins/repo-wiki.ts
+            // 作为模板源——uninstall 删除该安装产物后模板源同时丢失，
+            // 再次 install 直接失败；模板与安装目标同路径是自举缺陷）
+            let raw = include_str!("../../.opencode/plugins/repo-wiki.ts");
             raw.replace(
                 "execa(\"repo-wiki\"",
                 &format!("execa({exe_json}"),
@@ -463,7 +463,8 @@ mod tests {
         assert!(
             content.contains(&format!("execa({exe_json}")),
             "插件应绑定注入的绝对路径（JSON 转义）, 实际: {}",
-            &content[..content.len().min(400)]
+            // char 安全切片：字节索引可能落在多字节 UTF-8 中间（panic）
+            content.chars().take(400).collect::<String>()
         );
         assert!(
             !content.contains("execa(\"repo-wiki\""),
