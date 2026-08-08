@@ -32,24 +32,27 @@ impl OpenCodeConfig {
     /// 创建管理器，自动查找 opencode.json
     ///
     /// 搜索顺序：
-    /// 1. 项目根目录 `.opencode.json`
+    /// 1. 项目根 `root` 下 `.opencode.json`
     /// 2. `~/.config/opencode/opencode.json`
-    pub fn new() -> Result<Self> {
-        // 尝试当前目录下的 .opencode.json
-        let cwd = std::env::current_dir().context("获取当前工作目录失败")?;
-        let project_config = cwd.join(".opencode.json");
+    ///
+    /// v33 起接收注入的 `root`（--root 语义修复）：插件文件/配置查找
+    /// 全部相对项目根解析，不再依赖进程 cwd（v32 审查 HIGH：跨 cwd 运行
+    /// 会把插件装进 cwd 仓库，只有 hooks/.mcp.json 落对目标仓库）。
+    pub fn new(root: &crate::project::ProjectRoot) -> Result<Self> {
+        let project_root = root.path().to_path_buf();
+        let project_config = project_root.join(".opencode.json");
         if project_config.exists() {
             return Ok(Self {
                 config_path: project_config,
-                project_root: cwd,
+                project_root,
             });
         }
 
         // 回退到全局配置
-        let global_config = Self::config_dir().join("opencode.json");
+        let global_config = Self::config_dir()?.join("opencode.json");
         Ok(Self {
             config_path: global_config,
-            project_root: cwd,
+            project_root,
         })
     }
 
@@ -222,13 +225,18 @@ impl OpenCodeConfig {
     }
 
     /// 获取 OpenCode 配置的根目录 (~/.config/opencode/)
-    pub fn config_dir() -> PathBuf {
+    ///
+    /// v33：USERPROFILE 与 HOME 都缺失时显式报错（与
+    /// [`crate::config::global_config_dir`] 的「写错位置比报错更隐蔽」
+    /// 语义统一），不再回退 `.` 静默写当前目录。
+    pub fn config_dir() -> Result<PathBuf> {
         // N11：Windows 语义——USERPROFILE 优先于 HOME（
         // 部分 Windows 环境两者都存在时 HOME 可能是 Cygwin/残留值）
         let home = std::env::var("USERPROFILE")
             .or_else(|_| std::env::var("HOME"))
-            .unwrap_or_else(|_| ".".to_string());
-        PathBuf::from(home).join(".config").join("opencode")
+            .map(PathBuf::from)
+            .map_err(|_| anyhow::anyhow!("无法确定用户级配置目录（USERPROFILE 与 HOME 均未设置）"))?;
+        Ok(home.join(".config").join("opencode"))
     }
 }
 
@@ -392,7 +400,7 @@ mod tests {
             std::env::set_var("USERPROFILE", "C:\\Users\\testuser");
             std::env::remove_var("HOME");
         }
-        let dir = OpenCodeConfig::config_dir();
+        let dir = OpenCodeConfig::config_dir().unwrap();
         assert_eq!(
             dir,
             PathBuf::from("C:\\Users\\testuser").join(".config").join("opencode"),
@@ -403,6 +411,17 @@ mod tests {
             std::env::remove_var("USERPROFILE");
             std::env::remove_var("HOME");
         }
+    }
+
+    /// v33：config_dir 双缺失（USERPROFILE 与 HOME 均未设置）→ 显式报错
+    /// （与 config::global_config_dir 语义统一，不再回退 "." 写当前目录）
+    #[test]
+    fn test_config_dir_errors_without_home() {
+        unsafe {
+            std::env::remove_var("USERPROFILE");
+            std::env::remove_var("HOME");
+        }
+        assert!(OpenCodeConfig::config_dir().is_err());
     }
 
     /// N12：顶层非对象 JSON（数组/标量）→ install/uninstall 显式报错

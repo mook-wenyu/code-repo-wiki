@@ -181,7 +181,7 @@ pub fn install(agent: &str, root: &crate::project::ProjectRoot) -> Result<()> {
 
     // 1. 配置 OpenCode 插件 (如果 agent 是 opencode)
     if agent == "opencode" {
-        let mut oc = crate::config::opencode::OpenCodeConfig::new()
+        let mut oc = crate::config::opencode::OpenCodeConfig::new(root)
             .context("读取 OpenCode 配置失败")?;
         oc.install_plugin()?;
         if oc.install_plugin_file()? {
@@ -255,7 +255,7 @@ pub fn uninstall(force: bool, root: &crate::project::ProjectRoot) -> Result<()> 
     }
 
     // 1. 移除 OpenCode 插件
-    let mut oc = crate::config::opencode::OpenCodeConfig::new()
+    let mut oc = crate::config::opencode::OpenCodeConfig::new(root)
         .context("读取 OpenCode 配置失败")?;
     oc.uninstall_plugin()?;
     oc.uninstall_plugin_file()?;
