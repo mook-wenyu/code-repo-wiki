@@ -561,6 +561,37 @@ mod tests {
         assert!(user.contains("所属文件未记录"));
     }
 
+    /// 项目引导说明注入（v32 9.1/9.2 FR-402）：notes 非空时 user 消息
+    /// 追加「项目引导说明」节（逐条列出）；空列表不生成该节（零破坏）。
+    #[test]
+    fn test_wiki_page_user_prompt_injects_guide_notes() {
+        let chunk = Chunk {
+            module_path: vec!["src".into(), "alpha".into()],
+            entities: vec![crate::ingest::parser::Entity {
+                name: "alpha_fn".into(),
+                kind: "fn".into(),
+                line_start: 1,
+                line_end: 3,
+                doc_comment: None,
+                signature: None,
+                visibility: None,
+            }],
+            imports: vec![],
+            dependencies: vec![],
+            entity_sources: vec![std::path::PathBuf::from("src/alpha.rs")],
+            file_paths: vec![std::path::PathBuf::from("src/alpha.rs")],
+        };
+        // 空 notes：不含引导节
+        let user = wiki_page_user_prompt(&chunk, "卡片摘要", &[]);
+        assert!(!user.contains("项目引导说明"), "空 notes 不应生成引导节");
+        // 非空 notes：含节标题与每条内容
+        let notes = vec!["命名规范：公开函数必须写文档注释".to_string(), "必写小节：用法示例".to_string()];
+        let user = wiki_page_user_prompt(&chunk, "卡片摘要", &notes);
+        assert!(user.contains("## 项目引导说明"), "notes 非空应生成引导节: {}", user);
+        assert!(user.contains("命名规范：公开函数必须写文档注释"), "应包含第一条 note");
+        assert!(user.contains("必写小节：用法示例"), "应包含第二条 note");
+    }
+
     /// 签名级片段注入（v32 7.1 FR-201）：实体清单行必须携带签名（≤8 行/≤160
     /// 字符，超长截断加 …）；签名缺失/空白 → 空串不输出占位。
     #[test]
