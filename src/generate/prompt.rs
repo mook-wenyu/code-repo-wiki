@@ -333,23 +333,47 @@ Wiki 页面是给人类开发者阅读的叙述性文档。
     )
 }
 
+/// 实体签名单行化（v32 7.1 FR-201 签名级片段注入）
+///
+/// 签名是多行代码文本：压成单行避免破坏清单逐行结构；超 8 行或超 160 字符
+/// 截断至 160 字符并追加 …（边界：签名缺失/空白 → 空串，不输出占位）。
+/// 只读格式化，不改变 chunk 结构与 insights_cache 格式。
+fn entity_signature_line(e: &crate::ingest::parser::Entity) -> String {
+    let Some(raw) = &e.signature else {
+        return String::new();
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let line_count = trimmed.lines().count();
+    let mut flat = trimmed.replace('\n', " ");
+    if line_count > 8 || flat.chars().count() > 160 {
+        flat = flat.chars().take(160).collect();
+        flat.push('…');
+    }
+    format!("，签名: {flat}")
+}
+
 /// 生成 Wiki Page 的 user prompt
 ///
 /// 输入包含「实体引用清单」：实体名+类型+文件路径:行号（真源），
 /// 是源码引用契约（不得编造）唯一允许的引用来源——此前只传卡片摘要，
 /// 摘要不含行号，LLM 无法兑现契约只能编造（v29 实测 bad-citation 来源）。
-/// 实体过多时截断前 80 条并注明总数，避免输入超长。
+/// v32 7.1 起每条追加签名级片段（≤8 行/≤160 字符），供 LLM 精确引用签名
+/// 而无需猜测（FR-201）。实体过多时截断前 80 条并注明总数，避免输入超长。
 fn wiki_page_user_prompt(chunk: &Chunk, module_summary: &str) -> String {
     let mut entity_lines: Vec<String> = chunk
         .entities
         .iter()
         .enumerate()
         .map(|(i, e)| {
+            let sig = entity_signature_line(e);
             match chunk.entity_sources.get(i) {
-                Some(path) => format!("- `{}` ({}) — {}:{}", e.name, e.kind, path.display(), e.line_start),
+                Some(path) => format!("- `{}` ({}) — {}:{}{}", e.name, e.kind, path.display(), e.line_start, sig),
                 None => format!(
-                    "- `{}` ({}) — 第 {}-{} 行（所属文件未记录）",
-                    e.name, e.kind, e.line_start, e.line_end
+                    "- `{}` ({}) — 第 {}-{} 行（所属文件未记录）{}",
+                    e.name, e.kind, e.line_start, e.line_end, sig
                 ),
             }
         })
@@ -515,5 +539,79 @@ mod tests {
         chunk.entity_sources = vec![];
         let user = wiki_page_user_prompt(&chunk, "卡片摘要");
         assert!(user.contains("所属文件未记录"));
+    }
+
+    /// 签名级片段注入（v32 7.1 FR-201）：实体清单行必须携带签名（≤8 行/≤160
+    /// 字符，超长截断加 …）；签名缺失/空白 → 空串不输出占位。
+    #[test]
+    fn test_wiki_page_user_prompt_injects_entity_signature() {
+        // 签名存在且短：完整输出
+        let e = crate::ingest::parser::Entity {
+            name: "short_fn".into(),
+            kind: "fn".into(),
+            line_start: 1,
+            line_end: 2,
+            doc_comment: None,
+            signature: Some("pub fn short_fn(x: u32) -> u32".into()),
+            visibility: None,
+        };
+        assert_eq!(
+            entity_signature_line(&e),
+            "，签名: pub fn short_fn(x: u32) -> u32"
+        );
+        // 超 8 行：截断至 160 字符加 …
+        let long = (0..10).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let e2 = crate::ingest::parser::Entity {
+            name: "long_fn".into(),
+            kind: "fn".into(),
+            line_start: 1,
+            line_end: 12,
+            doc_comment: None,
+            signature: Some(long),
+            visibility: None,
+        };
+        let out = entity_signature_line(&e2);
+        assert!(out.starts_with("，签名: "));
+        assert!(out.ends_with('…'), "超限签名必须截断加 …: {out}");
+        assert!(out.chars().count() <= 167, "截断后不超过 160+签名前缀: {out}");
+        // 签名缺失 / 空白：空串（不输出占位）
+        let e3 = crate::ingest::parser::Entity {
+            name: "no_sig".into(),
+            kind: "fn".into(),
+            line_start: 1,
+            line_end: 2,
+            doc_comment: None,
+            signature: None,
+            visibility: None,
+        };
+        assert_eq!(entity_signature_line(&e3), "");
+        let e4 = crate::ingest::parser::Entity {
+            name: "blank_sig".into(),
+            kind: "fn".into(),
+            line_start: 1,
+            line_end: 2,
+            doc_comment: None,
+            signature: Some("   \n  ".into()),
+            visibility: None,
+        };
+        assert_eq!(entity_signature_line(&e4), "");
+        // 集成：wiki page prompt 携带签名行
+        let mut chunk = make_test_chunk(&["src", "alpha"]);
+        chunk.entities = vec![crate::ingest::parser::Entity {
+            name: "alpha_fn".into(),
+            kind: "fn".into(),
+            line_start: 1,
+            line_end: 3,
+            doc_comment: None,
+            signature: Some("pub fn alpha_fn()".into()),
+            visibility: None,
+        }];
+        chunk.entity_sources = vec![std::path::PathBuf::from("src/alpha.rs")];
+        let user = wiki_page_user_prompt(&chunk, "卡片摘要");
+        assert!(
+            user.contains("src/alpha.rs:1，签名: pub fn alpha_fn()"),
+            "引用清单行必须含签名: {}",
+            user
+        );
     }
 }
