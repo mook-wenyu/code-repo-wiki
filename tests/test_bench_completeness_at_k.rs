@@ -26,7 +26,7 @@
 //! 不配置 embed；索引为本地 SQLite 文件。环境中的真实 LLM key
 //! （OPENCODEGO2_API_KEY/BAILIAN_API_KEY）不会被任何用例读取。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use repo_wiki::bench::{
     render_markdown, run_rubrics_only, BenchReport, CompletenessReport, CoverageReport,
@@ -51,7 +51,7 @@ fn temp_dir(tag: &str) -> PathBuf {
 /// 构造被测仓库：dir/src/<rel> 写入源码，.repo-wiki/wiki/zh/<page>
 /// 写入手工产物页（确定性内容，不依赖生成流水线），LLM 恒为 Mock。
 /// 返回 (root, config)。
-fn repo_with_pages(dir: &PathBuf, source_rel: &str, source: &str, pages: &[(&str, &str)]) -> (ProjectRoot, WikiConfig) {
+fn repo_with_pages(dir: &Path, source_rel: &str, source: &str, pages: &[(&str, &str)]) -> (ProjectRoot, WikiConfig) {
     let file = dir.join(source_rel);
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(&file, source).unwrap();
@@ -67,7 +67,7 @@ fn repo_with_pages(dir: &PathBuf, source_rel: &str, source: &str, pages: &[(&str
         ..Default::default()
     };
     std::fs::write(dir.join("config.toml"), toml::to_string_pretty(&config).unwrap()).unwrap();
-    (ProjectRoot::new(dir.clone()), config)
+    (ProjectRoot::new(dir.to_path_buf()), config)
 }
 
 /// 在 config.output_dir()/.search/text_index.db 建 text 索引并写入条目。

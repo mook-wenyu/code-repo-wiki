@@ -2192,6 +2192,76 @@ fn parse_tqs_score(content: &str) -> Result<([f64; 5], [f64; 5])> {
     Ok((parse_doc("A")?, parse_doc("B")?))
 }
 
+/// v32（6.4 FR-101）：RepoDocBench 对齐五维聚合摘要。
+///
+/// 五维 = Coverage（实体提及率）/ Doc Information（LLM 判定+文本统计并存）/
+/// Completeness@K / TQS / Update Recall。各维缺失时**降级跳过并显式标注**
+/// （FR-101：不得静默）——缺失来源：LLM 不可用（doc_info 判定与
+/// completeness 降级、TQS None）、导出快照缺失（TQS None）、
+/// 非 git 仓库/快照缺失（Update Recall 无提交可扫描）。
+pub fn render_repodoc(report: &BenchReport) -> String {
+    let mut out = String::from("## RepoDocBench 对齐五维报告\n\n");
+    // 维度 1：Coverage（实体提及率）——恒可计算，无降级路径
+    out.push_str(&format!(
+        "- **Coverage 实体提及率**: {:.2}（{}/{} 实体被产物提及）\n",
+        report.coverage.ratio,
+        report.coverage.covered_entities,
+        report.coverage.total_entities
+    ));
+    // 维度 2：Doc Information——LLM 判定与文本统计并存；LLM 不可用时
+    // 判定维降级跳过（llm_judged=false 由 measure_doc_info_llm 显式标注）
+    if report.doc_info.llm_judged {
+        out.push_str(&format!(
+            "- **Doc Information**: LLM 判定 {:.2}/10（{} 页判定，{} abstain）；文本统计 {} 页/{} 词/{} 交叉引用\n",
+            report.doc_info.llm_score,
+            report.doc_info.llm_judged_modules,
+            report.doc_info.llm_abstain_modules,
+            report.doc_info.pages,
+            report.doc_info.words,
+            report.doc_info.cross_references
+        ));
+    } else {
+        out.push_str(&format!(
+            "- **Doc Information**: LLM 判定降级跳过（LLM 不可用）；文本统计 {} 页/{} 词/{} 交叉引用\n",
+            report.doc_info.pages, report.doc_info.words, report.doc_info.cross_references
+        ));
+    }
+    // 维度 3：Completeness@K——text 索引缺失降级（judged=false 显式标注）
+    if report.completeness.judged {
+        out.push_str(&format!(
+            "- **Completeness@K**: {:.2}（{}/{} 实体命中所属模块页，K={}）\n",
+            report.completeness.ratio,
+            report.completeness.hit_entities,
+            report.completeness.total_entities,
+            report.completeness.k
+        ));
+    } else {
+        out.push_str("- **Completeness@K**: 降级跳过（text 索引缺失——未生成或索引不可用）\n");
+    }
+    // 维度 4：TQS——LLM 裁判；快照缺失/LLM 不可用 → None（降级标注）
+    match &report.tqs {
+        Some(t) => out.push_str(&format!(
+            "- **TQS**: {:.2}（{} 模块，judge {}）\n",
+            t.avg_total, t.judged_modules, t.judge_model
+        )),
+        None => out.push_str("- **TQS**: 降级跳过（导出快照缺失或 LLM 不可用，详见日志）\n"),
+    }
+    // 维度 5：Update Recall——非 git 仓库/快照缺失 → 0 提交（降级标注）
+    if report.update_recall.commits_scanned == 0 {
+        out.push_str("- **Update Recall**: 降级跳过（非 git 仓库或快照缺失）\n");
+    } else {
+        out.push_str(&format!(
+            "- **Update Recall**: {:.2}（扫描 {} 提交/{} 变更提交/{} 正确更新）\n",
+            report.update_recall.recall,
+            report.update_recall.commits_scanned,
+            report.update_recall.commits_with_changes,
+            report.update_recall.correctly_updated
+        ));
+    }
+    out.push('\n');
+    out
+}
+
 /// 渲染 Markdown 报告（人类可读，CI/人工复跑对比用）
 pub fn render_markdown(report: &BenchReport) -> String {
     let mut out = String::new();
@@ -2760,6 +2830,124 @@ mod tests {
         assert!(parse_tqs_score("no json here").is_err(), "非 JSON 应报错");
     }
 
+    /// v32（6.4 FR-101）：--repodoc 五维聚合摘要——全维可用时输出各维数值
+    #[test]
+    fn test_render_repodoc_all_dimensions_judged() {
+        let report = BenchReport {
+            repo_name: "demo".into(),
+            generated_at: "2026-08-03T00:00:00Z".into(),
+            coverage: CoverageReport { total_entities: 100, covered_entities: 87, ratio: 0.87 },
+            doc_info: DocInfoReport {
+                pages: 5,
+                words: 1200,
+                cross_references: 30,
+                code_blocks: 3,
+                diagrams: 1,
+                llm_judged: true,
+                llm_score: 6.5,
+                llm_judged_modules: 5,
+                llm_abstain_modules: 1,
+            },
+            lint: LintReport { total_issues: 0, by_kind: Default::default() },
+            update_recall: UpdateRecallReport {
+                commits_scanned: 2,
+                commits_with_changes: 2,
+                correctly_updated: 2,
+                recall: 1.0,
+            },
+            time: TimeReport { scan_ms: 1, generate_ms: 2, total_ms: 3 },
+            tqs: Some(TqsReport {
+                judged_modules: 2,
+                avg_clarity: 8.0,
+                avg_readability: 7.5,
+                avg_conciseness: 6.0,
+                avg_richness: 7.0,
+                avg_structure: 8.5,
+                avg_total: 7.4,
+                repeats: 5,
+                kappa_like: 1.0,
+                kappa: 0.5,
+                position_bias: 0.05,
+                low_confidence_modules: Vec::new(),
+                avg_std: 0.5,
+                judge_model: "mock-model".into(),
+                kappa_cohen: 0.8,
+                flip_rate: 0.1,
+                position_flip_rate: 0.2,
+                delta_kappa: 0.5,
+                eligible_modules: 2,
+                parse_success_rate: 1.0,
+                judgment_scale: "0-10 连续五维点分".into(),
+                aggregation_level: "模块级".into(),
+                tie_handling: "exclude".into(),
+                tie_rate: 0.0,
+                agreement_breakdown: [10, 10, 0],
+            }),
+            rubric: None,
+            completeness: CompletenessReport {
+                total_entities: 100,
+                hit_entities: 80,
+                k: 10,
+                ratio: 0.8,
+                judged: true,
+            },
+        };
+        let s = render_repodoc(&report);
+        assert!(s.contains("**Coverage 实体提及率**: 0.87"), "Coverage 行: {s}");
+        assert!(s.contains("LLM 判定 6.50/10"), "Doc Info LLM 判定行: {s}");
+        assert!(s.contains("5 页判定，1 abstain"), "abstain 数暴露: {s}");
+        assert!(s.contains("**Completeness@K**: 0.80"), "Completeness 行: {s}");
+        assert!(s.contains("**TQS**: 7.40"), "TQS 行: {s}");
+        assert!(s.contains("**Update Recall**: 1.00"), "Update Recall 行: {s}");
+        assert!(!s.contains("降级跳过"), "全维可用时不应出现降级标注: {s}");
+    }
+
+    /// v32（6.4 FR-101）：各维缺失时降级跳过并显式标注（不得静默）
+    #[test]
+    fn test_render_repodoc_degraded_dimensions_annotated() {
+        let report = BenchReport {
+            repo_name: "demo".into(),
+            generated_at: "2026-08-03T00:00:00Z".into(),
+            coverage: CoverageReport { total_entities: 10, covered_entities: 5, ratio: 0.5 },
+            doc_info: DocInfoReport {
+                pages: 2,
+                words: 300,
+                cross_references: 4,
+                code_blocks: 0,
+                diagrams: 0,
+                llm_judged: false,
+                llm_score: 0.0,
+                llm_judged_modules: 0,
+                llm_abstain_modules: 0,
+            },
+            lint: LintReport { total_issues: 0, by_kind: Default::default() },
+            update_recall: UpdateRecallReport {
+                commits_scanned: 0,
+                commits_with_changes: 0,
+                correctly_updated: 0,
+                recall: 1.0,
+            },
+            time: TimeReport { scan_ms: 0, generate_ms: 0, total_ms: 0 },
+            tqs: None,
+            rubric: None,
+            completeness: CompletenessReport {
+                total_entities: 10,
+                hit_entities: 0,
+                k: 10,
+                ratio: 0.0,
+                judged: false,
+            },
+        };
+        let s = render_repodoc(&report);
+        assert!(s.contains("**Doc Information**: LLM 判定降级跳过"), "LLM 判定降级标注: {s}");
+        assert!(s.contains("**Completeness@K**: 降级跳过"), "Completeness 降级标注: {s}");
+        assert!(s.contains("**TQS**: 降级跳过"), "TQS 降级标注: {s}");
+        assert!(s.contains("**Update Recall**: 降级跳过"), "Update Recall 降级标注: {s}");
+        assert!(s.contains("文本统计 2 页"), "降级时文本统计仍输出: {s}");
+        assert!(s.contains("**Coverage 实体提及率**: 0.50"), "Coverage 恒输出: {s}");
+        assert!(!s.contains("LLM 判定 0.00/10"), "降级分支不得伪装成执行: {s}");
+    }
+
     /// U11：报告渲染——启用时输出五维分数，未启用时提示 --judge
     #[test]
     fn test_render_markdown_tqs_section() {
@@ -2768,16 +2956,16 @@ mod tests {
             generated_at: "2026-08-03T00:00:00Z".into(),
             coverage: CoverageReport { total_entities: 0, covered_entities: 0, ratio: 1.0 },
             doc_info: DocInfoReport {
-    pages: 0,
-    words: 0,
-    cross_references: 0,
-    code_blocks: 0,
-    diagrams: 0,
-    llm_judged: false,
-    llm_score: 0.0,
-    llm_judged_modules: 0,
-    llm_abstain_modules: 0,
-},
+                pages: 0,
+                words: 0,
+                cross_references: 0,
+                code_blocks: 0,
+                diagrams: 0,
+                llm_judged: false,
+                llm_score: 0.0,
+                llm_judged_modules: 0,
+                llm_abstain_modules: 0,
+            },
             lint: LintReport { total_issues: 0, by_kind: Default::default() },
             update_recall: UpdateRecallReport { commits_scanned: 0, commits_with_changes: 0, correctly_updated: 0, recall: 1.0 },
             time: TimeReport { scan_ms: 0, generate_ms: 0, total_ms: 0 },
