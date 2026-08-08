@@ -900,6 +900,52 @@ pub fn semantic_degraded_reason(config: &config::schema::WikiConfig) -> Option<S
     std::fs::read_to_string(&marker).ok()
 }
 
+/// embedding 模型标记文件路径（.search/embed_model.json）
+///
+/// 用途：embedding 模型升级（同维度）时强制全量重建语义索引。维度探测
+/// （U04/D2）只覆盖「维度变化」；同维度模型（如 qwen3 → qwen3.7 同为
+/// 1024 维）的向量语义空间不同，新旧向量混存会静默劣化检索结果。
+/// 本标记持久化「索引构建时的模型名」，增量路径与当前配置比对，
+/// 不一致即回退全量重建语义索引。
+fn embed_model_marker(config: &config::schema::WikiConfig) -> std::path::PathBuf {
+    search_index_dir(config).join("embed_model.json")
+}
+
+/// 读取索引构建时的 embedding 模型名
+///
+/// - 标记缺失（旧版本构建的索引，模型未知）→ None
+/// - 标记损坏（非 JSON / 缺 model 字段）→ None
+///
+/// 两者都按「未知模型」保守处理：增量路径视为不匹配并回退全量重建，
+/// 重建成功后写入新标记，自愈收敛（不会反复重建）。
+fn read_embed_model(config: &config::schema::WikiConfig) -> Option<String> {
+    let path = embed_model_marker(config);
+    let text = std::fs::read_to_string(&path).ok()?;
+    serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| v.get("model")?.as_str().map(|s| s.to_string()))
+}
+
+/// 记录当前 embedding 模型名（只在全量重建语义索引成功后调用）
+///
+/// 失败仅告警：标记缺失会让下次增量再次走全量重建（保守正确，
+/// 且全量重建会再次尝试写标记，幂等收敛）。
+fn write_embed_model(config: &config::schema::WikiConfig) {
+    let path = embed_model_marker(config);
+    let content = serde_json::json!({ "model": config.embed.model }).to_string();
+    if let Err(e) = crate::fs::write_file_atomic(&path, &content) {
+        tracing::warn!("embedding 模型标记写入失败（下次增量将回退全量重建）: {}", e);
+    }
+}
+
+/// 判定索引模型与当前配置是否不匹配（不匹配需回退全量重建语义索引）
+///
+/// 标记缺失/损坏一律视为不匹配（旧版本构建的索引模型未知，保守重建），
+/// 重建成功后写入新标记自愈收敛。纯文件比对、无网络依赖，可单测。
+fn embed_model_mismatch(config: &config::schema::WikiConfig) -> bool {
+    read_embed_model(config).as_deref() != Some(config.embed.model.as_str())
+}
+
 /// 实体级特征聚类接线（演进计划 T1.2b）
 ///
 /// 在 build_graph 之后调用：embed 未启用或 EmbeddingEngine 初始化失败时
@@ -975,6 +1021,8 @@ fn build_search_index(
                     Ok(()) => {
                         tracing::info!("语义索引构建完成: {} 个实体已向量化", items.len());
                         clear_semantic_degraded(config);
+                        // v33：记录构建时的 embedding 模型名（模型升级检测基准）
+                        write_embed_model(config);
                     }
                     Err(e) => {
                         tracing::warn!("语义索引构建失败（保留旧索引，搜索回退纯文本）: {}", e);
@@ -1060,33 +1108,54 @@ fn update_search_index_incremental(
                 let embedder = std::sync::Arc::new(embedder);
                 match search::semantic::SemanticEngine::open(&semantic_path, embedder.clone(), get_global_runtime().clone()) {
                     Ok(mut semantic_engine) => {
-                        // U04/D2：embedding 维度探测——换模型（维度变化）时，增量
-                        // 删除 + 只回填变更集会把既有全部向量丢掉（vecdb 维度不匹配
-                        // 重建 DROP 全表，仅 warn）。探测到维度变化则回退全量重建
-                        // 语义索引（clear + 全量 items），与全量路径行为一致。
-                        let probe_dim = if items.is_empty() {
-                            None
+                        // v33：embedding 模型版本化——同维度模型升级强制全量重建。
+                        // 维度探测（U04/D2）只覆盖维度变化；同维度模型（维度相同）
+                        // 混用旧向量会静默劣化检索。标记缺失/损坏视为未知模型
+                        // （旧版构建），保守回退全量重建一次并写回新标记自愈。
+                        let stored_model = read_embed_model(config);
+                        let model_mismatch = embed_model_mismatch(config);
+                        // 模型不匹配时无需探测维度（直接全量重建）
+                        let dim_changed = if model_mismatch {
+                            false
                         } else {
-                            match get_global_runtime().block_on(embedder.embed(&items[0].1)) {
-                                Ok(v) => Some(v.len()),
+                            // U04/D2：embedding 维度探测——换模型（维度变化）时，增量
+                            // 删除 + 只回填变更集会把既有全部向量丢掉（vecdb 维度不匹配
+                            // 重建 DROP 全表，仅 warn）。探测到维度变化则回退全量重建
+                            // 语义索引（clear + 全量 items），与全量路径行为一致。
+                            let probe_dim = if items.is_empty() {
+                                None
+                            } else {
+                                match get_global_runtime().block_on(embedder.embed(&items[0].1)) {
+                                    Ok(v) => Some(v.len()),
+                                    Err(e) => {
+                                        tracing::warn!("embedding 维度探测失败，跳过维度重建检查: {}", e);
+                                        None
+                                    }
+                                }
+                            };
+                            // 维度探测失败（数据库损坏/权限）显式告警并跳过重建检查，
+                            // 不静默当作"维度未变"——保持行为的同时错误可见
+                            match semantic_engine.table_dimension() {
+                                Ok(existing_dim) => probe_dim
+                                    .zip(existing_dim)
+                                    .is_some_and(|(new_dim, existing)| new_dim != existing),
                                 Err(e) => {
-                                    tracing::warn!("embedding 维度探测失败，跳过维度重建检查: {}", e);
-                                    None
+                                    tracing::warn!("读取语义索引维度失败，跳过维度重建检查: {}", e);
+                                    false
                                 }
                             }
                         };
-                        // 维度探测失败（数据库损坏/权限）显式告警并跳过重建检查，
-                        // 不静默当作"维度未变"——保持行为的同时错误可见
-                        let dim_changed = match semantic_engine.table_dimension() {
-                            Ok(existing_dim) => probe_dim
-                                .zip(existing_dim)
-                                .is_some_and(|(new_dim, existing)| new_dim != existing),
-                            Err(e) => {
-                                tracing::warn!("读取语义索引维度失败，跳过维度重建检查: {}", e);
-                                false
-                            }
-                        };
-                        if dim_changed {
+                        if model_mismatch {
+                            tracing::warn!(
+                                "embedding 模型变化（标记 {:?} → 配置 {}），回退全量重建语义索引（新旧模型向量空间不兼容）",
+                                stored_model,
+                                config.embed.model
+                            );
+                            let all_items = collect_index_items(graph, &source_map);
+                            semantic_engine.clear()?;
+                            semantic_engine.index_batch(&all_items)?;
+                            write_embed_model(config);
+                        } else if dim_changed {
                             tracing::warn!(
                                 "embedding 维度变化，回退全量重建语义索引（增量删除+回填会丢全部既有向量）"
                             );
@@ -1365,6 +1434,49 @@ pub fn execute_ast_search(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// v33 生产审计 ②：embedding 模型标记写读往返 + 不匹配判定
+    ///
+    /// 模型版本化判定为纯文件比对（无网络），在此做单元级覆盖；
+    /// 全链路（增量触发重建）依赖真实 embed key，留待真实环境验证。
+    #[test]
+    fn test_embed_model_marker_roundtrip_and_mismatch() {
+        let dir = std::env::temp_dir().join(format!("repo_wiki_test_embed_marker_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".search")).unwrap();
+
+        let mut config = config::schema::WikiConfig {
+            output_dir: Some(dir.clone()),
+            embed: config::schema::EmbedSection {
+                model: "model-a".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        // 无标记（旧版构建的索引）→ 视为不匹配（保守触发重建）
+        assert!(embed_model_mismatch(&config), "标记缺失应视为模型不匹配");
+
+        // 写入标记后匹配
+        write_embed_model(&config);
+        assert!(!embed_model_mismatch(&config), "标记与配置一致应匹配");
+        assert_eq!(read_embed_model(&config).as_deref(), Some("model-a"));
+
+        // 模型升级（同维度）→ 不匹配
+        config.embed.model = "model-b".into();
+        assert!(embed_model_mismatch(&config), "同维度模型升级应判定不匹配");
+
+        // 重写标记自愈 → 匹配
+        write_embed_model(&config);
+        assert!(!embed_model_mismatch(&config));
+        assert_eq!(read_embed_model(&config).as_deref(), Some("model-b"));
+
+        // 标记损坏 → 视为未知模型（不匹配）
+        std::fs::write(dir.join(".search").join("embed_model.json"), "{broken").unwrap();
+        assert!(embed_model_mismatch(&config), "损坏标记应视为不匹配");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// v32 8.1：分段计时序列化往返与写盘/读取（缺省字段补零、损坏文件不 panic）
     #[test]

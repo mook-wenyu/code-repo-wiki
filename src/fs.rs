@@ -33,6 +33,16 @@ pub fn write_file_atomic(path: &Path, content: &str) -> Result<()> {
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, content)
         .with_context(|| format!("写入临时文件失败: {}", tmp.display()))?;
+    // 落盘屏障：rename 的原子性只保证「命名」原子替换，不保证数据已持久化。
+    // 断电/崩溃可能留下「已 rename 但内容截断」的文件（salt 9c18c27 实证），
+    // 因此在 rename 前显式 flush + fsync 数据。用写句柄打开以确保 Windows
+    // FlushFileBuffers 语义（读句柄在不同平台上行为不一）。
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&tmp)
+        .with_context(|| format!("打开临时文件刷新失败: {}", tmp.display()))?;
+    file.sync_all()
+        .with_context(|| format!("刷新临时文件失败: {}", tmp.display()))?;
     std::fs::rename(&tmp, path)
         .with_context(|| format!("原子替换失败: {} -> {}", tmp.display(), path.display()))?;
     Ok(())

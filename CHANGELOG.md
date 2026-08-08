@@ -5,7 +5,21 @@
 
 ## [Unreleased]
 
+### Added
+- 生产可用性审计改进（v33）：embedding 模型版本化——`.search/embed_model.json`
+  持久化构建时模型名，增量路径检测到模型变化（含同维度模型升级与旧版索引
+  标记缺失）回退全量重建语义索引，消除新旧向量混存导致的检索静默劣化
+  （`embed_model_marker`/`read_embed_model`/`write_embed_model`/`embed_model_mismatch`，
+  含单元测试）；
+- 测试残留清理脚本 `scripts/cleanup-test-residue.ps1`（预览/确认两段式，
+  清理 `%APPDATA%\repo-wiki\key-test-*` 与 `%TEMP%\repo_wiki*` 历史测试残留）；
+- README 新增 watch 常驻进程托管模板（systemd 用户服务 / launchd
+  LaunchAgent / Windows 任务计划程序，均含崩溃自愈配置）。
+
 ### Changed
+- 原子写补齐 fsync：`write_file_atomic` 在 rename 前显式
+  flush + `sync_all`（写句柄，兼容 Windows FlushFileBuffers），
+  消除「已 rename 但内容截断」的断电窗口（salt 9c18c27 实证）。
 - 安装集成合并（v33）：`install-wiki`/`uninstall-wiki`/`install-to-opencode`/
   `uninstall-from-opencode` 四子命令删除，全部并入 `install`/`uninstall`；
   MCP 注册默认写用户级全局 `opencode.json`（OpenCode 原生格式，多仓库共享），

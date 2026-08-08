@@ -1464,16 +1464,18 @@ mod tests {
         };
         let provider = MockProvider::new();
         let generator = WikiGenerator::new(&provider, 0);
+        // 测试泄漏根治（v33 审计发现）：目录按 PID 命名且从不清理——Windows
+        // PID 复用时上一进程的落盘缓存被本进程读到，缓存命中断言变成
+        // 「残留命中」而偶发失败。开头清理保证从干净基线开始。
+        let out_dir = std::env::temp_dir().join(format!("rw_desc_cache_hit_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out_dir);
+        let root_dir = std::env::temp_dir().join(format!("rw_desc_root_hit_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root_dir);
         let config = crate::config::schema::WikiConfig {
-            output_dir: Some(
-                std::env::temp_dir()
-                    .join(format!("rw_desc_cache_hit_{}", std::process::id())),
-            ),
+            output_dir: Some(out_dir),
             ..Default::default()
         };
-        let root = crate::project::ProjectRoot::new(
-            std::env::temp_dir().join(format!("rw_desc_root_hit_{}", std::process::id())),
-        );
+        let root = crate::project::ProjectRoot::new(root_dir);
         let first = generator.describe_modules(&kg, "zh", &config, &root).await;
         assert!(first[0].description.is_some(), "首次应走 LLM 获得描述");
         let calls_after_first = generator.llm_call_count();

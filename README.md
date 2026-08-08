@@ -39,6 +39,51 @@ repo-wiki generate        # 产物在 .repo-wiki/，打开 .repo-wiki/wiki/zh/ �
 
 **一键全自动（推荐）**：`repo-wiki install` 注册 git `post-commit`/`post-merge` hook——之后**每次 commit 后 Wiki 自动增量更新**，无需再手动执行任何命令。常驻实时模式用 `repo-wiki watch`（代码保存即更新）。
 
+### watch 常驻进程托管（可选）
+
+`watch` 进程崩溃后不会自动重启——需要「常驻 + 崩溃自愈」时按平台托管（watch 启动时先全量生成再监听，重启后自动收敛，不会损坏产物）：
+
+- **Linux（systemd 用户服务）**：`~/.config/systemd/user/repo-wiki-watch.service`
+  ```ini
+  [Unit]
+  Description=repo-wiki watch daemon
+  [Service]
+  ExecStart=/absolute/path/to/repo-wiki watch
+  WorkingDirectory=/absolute/path/to/project
+  Restart=on-failure
+  RestartSec=5
+  [Install]
+  WantedBy=default.target
+  ```
+  `systemctl --user enable --now repo-wiki-watch`
+- **macOS（launchd LaunchAgent）**：`~/Library/LaunchAgents/com.repo-wiki.watch.plist`
+  ```xml
+  <plist version="1.0"><dict>
+    <key>Label</key><string>com.repo-wiki.watch</string>
+    <key>ProgramArguments</key>
+    <array><string>/absolute/path/to/repo-wiki</string><string>watch</string></array>
+    <key>WorkingDirectory</key><string>/absolute/path/to/project</string>
+    <key>KeepAlive</key><true/>
+  </dict></plist>
+  ```
+  `launchctl load ~/Library/LaunchAgents/com.repo-wiki.watch.plist`
+- **Windows（任务计划程序）**：登录触发 + 失败重启（`RestartCount` 与 `RestartInterval` 需同时设置）
+  ```powershell
+  $action  = New-ScheduledTaskAction -Execute 'D:\path\to\repo-wiki.exe' -Argument 'watch' -WorkingDirectory 'D:\path\to\project'
+  $trigger = New-ScheduledTaskTrigger -AtLogOn
+  $settings = New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+  Register-ScheduledTask -TaskName 'repo-wiki-watch' -Action $action -Trigger $trigger -Settings $settings
+  ```
+
+### 测试残留清理
+
+历史测试可能遗留无意义的临时目录（`%APPDATA%\repo-wiki\key-test-*` 与 `%TEMP%\repo_wiki*`，≈0B 占用、无敏感数据）。需要清理时：
+
+```powershell
+powershell -File scripts/cleanup-test-residue.ps1          # 先预览
+powershell -File scripts/cleanup-test-residue.ps1 -Apply   # 确认后删除
+```
+
 ## 日常命令
 
 | 命令 | 作用 |
