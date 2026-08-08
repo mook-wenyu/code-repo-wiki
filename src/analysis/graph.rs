@@ -343,7 +343,9 @@ fn parse_impl_target(kind: &str, name: &str) -> Option<String> {
         } else {
             name
         };
-        let trait_name = after_impl[..for_idx].trim().to_string();
+        let trait_name = after_impl[..for_idx.saturating_sub(name.len() - after_impl.len())].trim().to_string();
+        // NOTE: for_idx is relative to the original name; subtract the "impl " prefix length
+        // to index into after_impl. Fixes a pre-existing off-by-prefix bug (v32 8.2).
         if !trait_name.is_empty() {
             return Some(trait_name);
         }
