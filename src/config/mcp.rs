@@ -15,7 +15,7 @@
 //!   Codex 删表）
 //! - 只动本 server 的条目，绝不触碰其他 server/配置键（多 Agent 共存）
 //! - 畸形文件（JSON 非对象/TOML 解析失败）→ 显式报错，拒绝静默处理
-//!   （契约与 `remove_mcp_config` 一致：损坏的配置文件不能被静默吞掉）
+//!   （契约与 v32 commands::remove_mcp_config 一致：损坏的配置文件不能被静默吞掉）
 
 use std::path::PathBuf;
 
@@ -243,8 +243,8 @@ impl ClaudeMcp {
         Ok(true)
     }
 
-    /// 移除 MCP server；返回是否实际移除（语义与 v32 `remove_mcp_config` 相同，
-    /// 迁入本模块统一管理）
+    /// 移除 MCP server；返回是否实际移除（语义与 v32 commands::remove_mcp_config
+    /// 相同，迁入本模块统一管理）
     ///
     /// - 文件缺失 → `false`（幂等）
     /// - 移除后 mcpServers 为空 → 删整个文件（文件失去价值）
@@ -332,18 +332,21 @@ impl CodexMcp {
     /// 行首 `[`（TOML 表头必须行首）且精确匹配 header 字符串。
     fn find_table(content: &str, header: &str) -> Option<(usize, usize)> {
         let lines: Vec<&str> = content.lines().collect();
-        let mut start = None;
+        let mut start: Option<usize> = None;
         for (i, line) in lines.iter().enumerate() {
             let trimmed = line.trim_start();
-            if start.is_none() {
-                // 未找到目标表：目标表头必须精确匹配（行首 [ 且整行等于 header）
-                if trimmed.starts_with('[') && line.trim() == header {
-                    start = Some(i);
+            match start {
+                None => {
+                    // 未找到目标表：目标表头必须精确匹配（行首 [ 且整行等于 header）
+                    if trimmed.starts_with('[') && line.trim() == header {
+                        start = Some(i);
+                    }
                 }
-            } else {
-                // 已找到目标表：下一个行首 [ 的表头（非注释内）即表块结束
-                if trimmed.starts_with('[') {
-                    return Some((start.unwrap(), i));
+                Some(s) => {
+                    // 已找到目标表：下一个行首 [ 的表头（非注释内）即表块结束
+                    if trimmed.starts_with('[') {
+                        return Some((s, i));
+                    }
                 }
             }
         }

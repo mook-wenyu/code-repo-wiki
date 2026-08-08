@@ -40,7 +40,7 @@ fn prepare_repo(tag: &str) -> PathBuf {
 
 // ==================== 测试用例 ====================
 
-/// uninstall-from-opencode：无 --force 必须拒绝（非 0 退出码 + 提示），
+/// uninstall：无 --force 必须拒绝（非 0 退出码 + 提示），
 /// --force 在隔离 HOME 下成功（不触碰宿主机 OpenCode 配置）
 #[test]
 fn test_uninstall_requires_force() {
@@ -57,7 +57,7 @@ fn test_uninstall_requires_force() {
     ];
 
     // 1. 无 --force → 非 0 退出码且提示需要 --force
-    let out = run_bin_with_envs(&work_dir, &["uninstall-from-opencode"], envs);
+    let out = run_bin_with_envs(&work_dir, &["uninstall"], envs);
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
@@ -75,7 +75,7 @@ fn test_uninstall_requires_force() {
     assert!(combined.contains("卸载"), "拒绝提示应提及卸载");
 
     // 2. --force → 退出码 0；隔离环境下无 opencode.json/git hooks，安全返回
-    let out = run_bin_with_envs(&work_dir, &["uninstall-from-opencode", "--force"], envs);
+    let out = run_bin_with_envs(&work_dir, &["uninstall", "--force"], envs);
     assert!(
         out.status.success(),
         "--force 应卸载成功，stderr: {}",

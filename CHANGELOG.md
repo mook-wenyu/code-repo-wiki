@@ -6,6 +6,14 @@
 ## [Unreleased]
 
 ### Changed
+- 安装集成合并（v33）：`install-wiki`/`uninstall-wiki`/`install-to-opencode`/
+  `uninstall-from-opencode` 四子命令删除，全部并入 `install`/`uninstall`；
+  MCP 注册默认写用户级全局 `opencode.json`（OpenCode 原生格式，多仓库共享），
+  `--claude` 可选写项目根 `.mcp.json`（Claude Code/Cursor），`--codex` 可选写
+  `~/.codex/config.toml`（Codex）；已存在集成产物带 repo-wiki 标记则升级覆盖
+  （插件文件内容比对、hooks 标记判定），无标记的人工产物保留并提示；
+  `install` 默认注入 AGENTS.md 引导块（`--also-claude` 同步 CLAUDE.md）；
+  `uninstall` 无 flag 幂等清理全部 repo-wiki 集成痕迹
 - 傻瓜式自动化配置（v30）：`output.dir`（恒 `.repo-wiki`）、`embed.enabled`
   （恒 true）、`search.enabled`（恒 true）、`incremental.enabled`/
   `incremental.strategy`（恒 FileWatch 监听模式）全部硬编码为代码常量，

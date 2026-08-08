@@ -474,9 +474,10 @@ pub fn generate_agents_md(output_dir: &Path) -> Result<bool> {
     if agents_path.exists() {
         // t04a（v21）：已存在时跳过注入是保护行为，但必须让用户/外部 Agent
         // 知道产物没被指引（静默跳过会让 AI 代理找不到 wiki 入口）——
-        // 提示补救路径（install-wiki 命令可把当前工具的指引合并进既有文件）。
+        // 提示补救路径（v33：install 命令默认注入 wiki 引用块，可把
+        // 当前工具的指引合并进既有文件）。
         tracing::warn!(
-            "仓库已存在 AGENTS.md（{}），跳过注入以保护人工维护内容；如需 repo-wiki 指引可运行 `repo-wiki install-wiki`",
+            "仓库已存在 AGENTS.md（{}），跳过注入以保护人工维护内容；如需 repo-wiki 指引可运行 `repo-wiki install`",
             agents_path.display()
         );
         return Ok(false);

@@ -136,14 +136,13 @@ Source Files → ingest (tree-sitter AST 解析) → analysis (知识图谱 + �
 | `export` | 导出 HTML（`--skip-generate` 从快照直接导出） |
 | `doctor` | 环境诊断（配置/产物/输出/Key/网络/版本六查） |
 | `key` | 交互式配置 LLM API key（用户级，`--env` 用环境变量引用） |
-| `install` | 确保用户级默认配置 + 注册 OpenCode 插件与 git hooks |
+| `install` | 一键集成：确保用户级默认配置 + 注册 MCP（OpenCode 全局）/OpenCode 插件/AGENTS.md 引导/git hooks（`--claude` 加 .mcp.json、`--codex` 加 Codex 配置、`--also-claude` 同步 CLAUDE.md） |
+| `uninstall` | 移除全部 repo-wiki 集成（MCP 条目/插件/引导块/hooks；需 `--force` 确认） |
 | `watch` | 监听文件变更自动更新 |
 | `search` | 搜索代码实体（text/semantic/hybrid） |
 | `ast-search` | AST 精确符号查找（文件+行号+签名） |
 | `card` | 知识卡片操作（generate/modify/supplement/rewrite） |
 | `note` | 知识沉淀记录（追加到 `_log.md`） |
-| `install-wiki` / `uninstall-wiki` | 在 AGENTS.md（或 CLAUDE.md）注入/移除 Wiki 引导块 |
-| `install-to-opencode` / `uninstall-from-opencode` | 注册/移除 OpenCode 插件 |
 | `mcp` | 启动 MCP stdio server（Claude Code/Cline 接入） |
 | `bench` / `bench-manifest` | 文档质量评测 / 清单批量跑分 |
 

@@ -175,7 +175,7 @@ fn test_uninstall_removes_only_own_hooks() {
     let envs: Vec<(&str, String)> = home_envs(&home);
     let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
-    let out = run_bin_with_envs(&work_dir, &["uninstall-from-opencode", "--force"], &envs_ref);
+    let out = run_bin_with_envs(&work_dir, &["uninstall", "--force"], &envs_ref);
     assert!(
         out.status.success(),
         "uninstall --force 应成功，stderr: {}",
@@ -193,6 +193,59 @@ fn test_uninstall_removes_only_own_hooks() {
         std::fs::read_to_string(hooks_dir.join("post-merge")).unwrap(),
         "#!/bin/sh\necho '人工合并后处理'\n",
         "保留的 hook 内容不应被改动"
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// v33 升级语义：install 对已存在的旧模板 hook（含 repo-wiki 标记）覆盖升级
+/// （内容更新为带 # repo-wiki managed 标记的新模板）
+#[test]
+fn test_install_upgrades_legacy_hooks() {
+    let work_dir = unique_dir("upgrade_hooks");
+    let _ = std::fs::remove_dir_all(&work_dir);
+    std::fs::create_dir_all(&work_dir).unwrap();
+    let hooks_dir = init_git_repo(&work_dir);
+    // 预置旧版本模板 hook（v33 前：含 repo-wiki 但无 managed 标记行）
+    std::fs::write(
+        hooks_dir.join("post-commit"),
+        "#!/bin/sh\n# repo-wiki: auto-update wiki on commit\nrepo-wiki update 2>/dev/null || true\n",
+    )
+    .unwrap();
+    // 预置人工 hook（无 repo-wiki 标记）——install 不得覆盖
+    std::fs::write(
+        hooks_dir.join("post-merge"),
+        "#!/bin/sh\necho '人工 hook'\n",
+    )
+    .unwrap();
+    let home = unique_dir("upgrade_hooks_home");
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let envs: Vec<(&str, String)> = home_envs(&home);
+    let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
+
+    let out = run_bin_with_envs(&work_dir, &["install"], &envs_ref);
+    assert!(
+        out.status.success(),
+        "install 应成功，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // 旧模板 post-commit 被升级为带 managed 标记的新模板
+    let upgraded = std::fs::read_to_string(hooks_dir.join("post-commit")).unwrap();
+    assert!(
+        upgraded.contains("# repo-wiki managed"),
+        "旧模板应升级为含 managed 标记，实际: {upgraded}"
+    );
+    assert!(
+        upgraded.contains("repo-wiki update"),
+        "升级后仍应含 update 命令"
+    );
+    // 人工 post-merge 原样保留
+    assert_eq!(
+        std::fs::read_to_string(hooks_dir.join("post-merge")).unwrap(),
+        "#!/bin/sh\necho '人工 hook'\n",
+        "人工 hook 不应被覆盖"
     );
 
     let _ = std::fs::remove_dir_all(&work_dir);

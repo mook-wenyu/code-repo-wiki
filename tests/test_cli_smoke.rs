@@ -849,7 +849,7 @@ fn test_update_noop_stdout_contract() {
 }
 
 /// v21 A 组（t04a）：仓库已存在 AGENTS.md 时生成端跳过注入（保护人工维护），
-/// 但必须 warn 提示（含补救路径 install-wiki），不得静默。
+/// 但必须 warn 提示（含补救路径 install——v33 起 install 默认注入），不得静默。
 #[test]
 fn test_generate_warns_when_agents_md_exists() {
     let work_dir = prepare_repo("agents_md_warn");
@@ -869,7 +869,7 @@ fn test_generate_warns_when_agents_md_exists() {
         "已存在 AGENTS.md 时必须 warn 提示: {stderr:?}"
     );
     assert!(
-        stderr.contains("install-wiki"),
+        stderr.contains("repo-wiki install"),
         "warn 必须给出补救路径: {stderr:?}"
     );
     // 人工内容不得被覆盖
