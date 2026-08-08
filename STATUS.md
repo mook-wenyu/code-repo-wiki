@@ -649,3 +649,12 @@ knowing 全量 12 仓 mock 数据点齐（v29 9 + v30 3：rails 5239 实体/58 �
 - 验证：全量 458 lib+集成套件 0 失败；clippy 0；machete 0；实机闭环（隔离 HOME：install 注册全局 MCP 条目断言 mcp.repo-wiki.type=local+command[0]=exe 绝对路径 → uninstall 条目移除 opencode.json 变 {} → 再 install 幂等恢复；插件 replace 命中注入绝对路径；人工 post-commit hook 保留提示）；自举缺陷实机发现并修复（uninstall 删除插件文件后模板源同文件丢失→include_str 内嵌）
 - 提交链：b4b6a5a（主合并）→ ff14fa3（自举修复）
 - 遗留/风险点：全局 MCP 条目被其他仓库 uninstall 波及（提示已注明）；多 Agent 未真机验证（Claude/Codex 配置写文件路径与格式单测覆盖，无对应客户端实测）
+
+## 六十五节：v33 生产可用性审计改进（2026-08-09）
+- 背景：用户要求全面分析「个人/小团队本地安装生产环境是否可用」——3 条并行 lane（explorer 本地足迹盘点 + 2×researcher 网络权威检索：LLM 文档工具生产共识 13 来源 + Rust CLI 部署实践 22 来源）→ 分析报告（可用结论 + 9 项差距矩阵）→ 用户拍板「全部实施」4 项
+- 修改的功能：①fsync 补齐（write_file_atomic rename 前写句柄 flush+sync_all，消除断电截断窗口）；②embedding 模型版本化（.search/embed_model.json 持久化构建时模型名，增量路径检测同维度模型升级/旧版索引标记缺失即回退全量重建语义索引——维度探测只覆盖维度变化的盲区补全；判定抽纯函数 embed_model_mismatch 可单测）；③清理脚本 scripts/cleanup-test-residue.ps1（UTF-8 BOM 兼容 PS 5.1，预览/确认两段式，清理 key-test-*/repo_wiki*/rw_desc_*）；④README watch 三平台托管模板（systemd 用户服务/launchd LaunchAgent/Windows 任务计划 RestartOnFailure）+ 清理脚本说明
+- 摸到的文件：src/fs.rs（+15/-5）、src/lib.rs（+134/-22：标记三函数+mismatch 判定+build/增量两处接线+单测）、src/generate/wiki.rs（flaky 测试泄漏根治：PID 命名临时目录开头清理）、scripts/cleanup-test-residue.ps1（新建 83 行）、README.md/CHANGELOG.md
+- 是否改变了接口/契约：否（全部为内部实现与文档；新增私有函数无导出）
+- 验证：全量 459 lib+全部集成套件 0 失败；clippy 0；machete 0；新单测 test_embed_model_marker_roundtrip_and_mismatch（写读往返/升级判定/损坏/缺失标记）；PS 5.1 实机解析通过（预览发现 417 key-test-* + 2313 临时目录残留）；test_engineer 发现 2 处缺陷已闭环（ps1 无 BOM→PS 5.1 ParserError 修复；describe_modules 缓存测试 Windows PID 复用 flake 修复）
+- 提交：eaa3f25
+- 遗留/风险点：模型重建全链路（增量触发）依赖真实 embed key 未在 CI e2e 覆盖（判定逻辑单测覆盖，留待真实环境）；fsync 极端断电仍非绝对保证（FITO 视角：失败可重建为第一道防线）；opencode.json 明文 API Key 为用户文件（备份/分享前脱敏提示）；%TEMP% 残留目录清理建议定期执行脚本
