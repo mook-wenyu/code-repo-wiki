@@ -591,6 +591,41 @@ mod tests {
         let out_wide = entity_signature_line(&e_wide);
         assert!(out_wide.ends_with('…'), "160 字符截断分支: {out_wide}");
         assert_eq!(out_wide.chars().count(), 166, "160 截断+前缀5+…1");
+        // 阈值临界点（test_engineer 缺口）：恰好 8 行不截断、恰好 9 行截断、
+        // 恰好 160 字符不截断
+        let e8 = crate::ingest::parser::Entity {
+            name: "eight_fn".into(),
+            kind: "fn".into(),
+            line_start: 1,
+            line_end: 9,
+            doc_comment: None,
+            signature: Some((0..8).map(|i| format!("l{i}")).collect::<Vec<_>>().join("\n")),
+            visibility: None,
+        };
+        let out8 = entity_signature_line(&e8);
+        assert!(!out8.ends_with('…'), "恰好 8 行不截断: {out8}");
+        let e9 = crate::ingest::parser::Entity {
+            name: "nine_fn".into(),
+            kind: "fn".into(),
+            line_start: 1,
+            line_end: 10,
+            doc_comment: None,
+            signature: Some((0..9).map(|i| format!("l{i}")).collect::<Vec<_>>().join("\n")),
+            visibility: None,
+        };
+        let out9 = entity_signature_line(&e9);
+        assert!(out9.ends_with('…'), "恰好 9 行截断: {out9}");
+        let e160 = crate::ingest::parser::Entity {
+            name: "exact160_fn".into(),
+            kind: "fn".into(),
+            line_start: 1,
+            line_end: 2,
+            doc_comment: None,
+            signature: Some("w".repeat(160)),
+            visibility: None,
+        };
+        let out160 = entity_signature_line(&e160);
+        assert!(!out160.ends_with('…'), "恰好 160 字符不截断: {out160}");
         // CRLF 源文件（\r\n 换行）：压平后不得残留 \r（reviewer LOW）
         let crlf = "pub fn a(\r\n    x: u32,\r\n) -> u32".to_string();
         let e_crlf = crate::ingest::parser::Entity {
