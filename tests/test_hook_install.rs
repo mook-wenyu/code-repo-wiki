@@ -40,11 +40,11 @@ fn parse_hook_command(content: &str) -> String {
         .lines()
         .find(|l| l.starts_with("repo-wiki "))
         .expect("hook 应包含 repo-wiki 命令行")
-        .split("2>/dev/null")
+        // v36 D2 起模板为 `repo-wiki update 2>>.repo-wiki/update-error.log || …`：
+        // 命令在首个重定向标记前结束
+        .split(" 2>>")
         .next()
         .unwrap()
-        .trim()
-        .trim_end_matches("|| true")
         .trim()
         .to_string()
 }

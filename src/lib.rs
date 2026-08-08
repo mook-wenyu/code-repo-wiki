@@ -886,12 +886,11 @@ fn search_index_dir(config: &config::schema::WikiConfig) -> std::path::PathBuf {
 fn call_index_fingerprint(config: &config::schema::WikiConfig) -> Option<String> {
     let root = config.output_dir().parent()?;
     // git 优先：HEAD 精确代表「源码版本」
-    if let Ok(repo) = git2::Repository::discover(root) {
-        if let Ok(head) = repo.head() {
-            if let Some(target) = head.target() {
-                return Some(format!("git:{}", target));
-            }
-        }
+    if let Ok(repo) = git2::Repository::discover(root)
+        && let Ok(head) = repo.head()
+        && let Some(target) = head.target()
+    {
+        return Some(format!("git:{}", target));
     }
     // 非 git：生成状态文件 (len, mtime) 作为粗指纹
     let state_path = config.output_dir().join(".state").join("generation_state.json");
@@ -1453,66 +1452,10 @@ pub fn execute_search(
                 }
             };
             agent = agent.with_call_index(index);
-            // v36 B3：RRF 融合后的 top-K 候选做 cross-encoder 精排。
-            // 无 Key/调用失败 → 跳过重排保持原顺序（告警可见）——
-            // 精排是增强，不降低检索可用性。
-            Ok(rerank_hits(&config, query, agent.search(query, top_k, true)))
-        }
-    }
-}
-
-/// v36 B3：hybrid 候选精排——调用重排器按「查询 × 文档」相关性重排
-/// top-K 候选。文档文本 = 实体名 + 签名（代码检索的相关性载体）。
-/// 无候选/单候选/无 Key/调用失败时保持原顺序（增强语义，绝不吞结果）。
-fn rerank_hits(
-    config: &config::schema::WikiConfig,
-    query: &str,
-    hits: Vec<search::hybrid::SearchHit>,
-) -> Vec<search::hybrid::SearchHit> {
-    if hits.len() <= 1 {
-        return hits;
-    }
-    let documents: Vec<String> = hits
-        .iter()
-        .map(|h| {
-            let mut s = h.node.name.clone();
-            if let Some(sig) = &h.node.signature {
-                s.push(' ');
-                s.push_str(sig);
-            }
-            s
-        })
-        .collect();
-    let reranker = match search::rerank::Reranker::new(&config.rerank, get_global_runtime().handle().clone())
-    {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::warn!("重排器初始化失败，保持原顺序: {}", e);
-            return hits;
-        }
-    };
-    match get_global_runtime().block_on(reranker.rerank(query, &documents, documents.len())) {
-        Ok(order) => {
-            // order = 按相关性降序的下标序列；未返回的下标（服务端截断
-            // 场景）保持原相对顺序追加在末尾——结果集永不缩水
-            let mut seen = vec![false; hits.len()];
-            let mut out = Vec::with_capacity(hits.len());
-            for &i in &order {
-                if i < hits.len() && !seen[i] {
-                    out.push(hits[i].clone());
-                    seen[i] = true;
-                }
-            }
-            for (i, h) in hits.into_iter().enumerate() {
-                if !seen[i] {
-                    out.push(h);
-                }
-            }
-            out
-        }
-        Err(e) => {
-            tracing::warn!("重排失败，保持原顺序: {}", e);
-            hits
+            // v36 起 hybrid = 双引擎召回 + RRF 融合 + 调用链补全
+            // （v36 用户拍板：不使用 rerank 精排——召回质量已足够，
+            // 精排增加延迟与外部依赖，收益不成比例）
+            Ok(agent.search(query, top_k, true))
         }
     }
 }

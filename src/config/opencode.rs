@@ -238,13 +238,26 @@ impl OpenCodeConfig {
     /// [`crate::config::global_config_dir`] 的「写错位置比报错更隐蔽」
     /// 语义统一），不再回退 `.` 静默写当前目录。
     pub fn config_dir() -> Result<PathBuf> {
-        // N11：Windows 语义——USERPROFILE 优先于 HOME（
-        // 部分 Windows 环境两者都存在时 HOME 可能是 Cygwin/残留值）
-        let home = std::env::var("USERPROFILE")
-            .or_else(|_| std::env::var("HOME"))
+        let userprofile = std::env::var("USERPROFILE").ok();
+        let home = std::env::var("HOME").ok();
+        Self::config_dir_from(userprofile.as_deref(), home.as_deref())
+    }
+
+    /// 纯函数版配置根目录解析（N11/v33 语义）——Windows 下
+    /// USERPROFILE 优先于 HOME（两者都存在时 HOME 可能是
+    /// Cygwin/残留值）。拆成纯函数以便测试不依赖进程级环境变量
+    /// （并行测试对全局 env 的读写是竞态）。
+    pub fn config_dir_from(
+        userprofile: Option<&str>,
+        home: Option<&str>,
+    ) -> Result<PathBuf> {
+        let user_home = userprofile
+            .or(home)
             .map(PathBuf::from)
-            .map_err(|_| anyhow::anyhow!("无法确定用户级配置目录（USERPROFILE 与 HOME 均未设置）"))?;
-        Ok(home.join(".config").join("opencode"))
+            .ok_or_else(|| {
+                anyhow::anyhow!("无法确定用户级配置目录（USERPROFILE 与 HOME 均未设置）")
+            })?;
+        Ok(user_home.join(".config").join("opencode"))
     }
 }
 
@@ -422,14 +435,16 @@ mod tests {
     }
 
     /// v33：config_dir 双缺失（USERPROFILE 与 HOME 均未设置）→ 显式报错
-    /// （与 config::global_config_dir 语义统一，不再回退 "." 写当前目录）
+    /// （与 config::global_config_dir 语义统一，不再回退 "." 写当前目录）。
+    /// 纯函数调用——不触碰进程级环境变量（并行测试下 env 是全局竞态）。
     #[test]
     fn test_config_dir_errors_without_home() {
-        unsafe {
-            std::env::remove_var("USERPROFILE");
-            std::env::remove_var("HOME");
-        }
-        assert!(OpenCodeConfig::config_dir().is_err());
+        assert!(OpenCodeConfig::config_dir_from(None, None).is_err());
+        assert!(OpenCodeConfig::config_dir_from(Some("C:/Users/t"), None).is_ok());
+        assert!(OpenCodeConfig::config_dir_from(None, Some("/home/t")).is_ok());
+        // USERPROFILE 优先于 HOME
+        let p = OpenCodeConfig::config_dir_from(Some("C:/Users/t"), Some("/home/x")).unwrap();
+        assert_eq!(p, PathBuf::from("C:/Users/t/.config/opencode"));
     }
 
     /// N12：顶层非对象 JSON（数组/标量）→ install/uninstall 显式报错
