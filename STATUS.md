@@ -634,3 +634,10 @@ knowing 全量 12 仓 mock 数据点齐（v29 9 + v30 3：rails 5239 实体/58 �
 ### 验证
 - 全量 29 套件 0 失败、clippy -D warnings 0、machete 0
 - 提交链 9 个（d50cb3d → 26cb62e）
+
+### v32 评测体系升级与生成引导（6.1-10.5 全完成）
+- 评测：--repodoc 五维对齐输出、judge 三态增强（tie_rate 阈值 0.3）、Completeness@K、rubrics 证据检索注入、TQS repeats 5 与 κ/flip 稳定性度量；基准换轨 RepoDocBench 五维（论文 arXiv 2604.26523）
+- 签名级片段注入：prompt 实体清单加签名行（8 行/160 字符截断）；生成引导：[wiki.guide] 段 pages 过滤/priority 排序/notes 注入
+- 大仓性能：分段计时（10 段）+ 图构建增量索引重构（cal.com 287s→20s，total 384s→119s）
+- 小项：语义降级标记与显式提示、页面 git 基线行（非 git 省略）、归档文件 UTF-8 核证（乱码=终端 gb2312 假象）、README lint 9 类+限制项对齐
+- 提交链 14+（17acaa3→9173fa2）；全量 35 套件绿 + clippy 0 + machete 0；工作树干净
