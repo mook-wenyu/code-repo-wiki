@@ -127,6 +127,8 @@ jobs:
       # 4 个目标二进制全部上传完成后，Draft → 正式发布。
       # 按 id PATCH（gh release edit 按 tag 查 Draft 会 404——draft 不公开）
       - name: Publish release
-        run: gh api --method PATCH "repos/{owner}/{repo}/releases/${{ needs.create-release.outputs.release_id }}" -F draft=false
+        # 用 ${{ github.repository }} 显式展开——gh api 的 {owner}/{repo} 占位符
+        # 依赖 git remote 解析，本 job 无 checkout 步骤会报 unable to expand placeholder
+        run: gh api --method PATCH "repos/${{ github.repository }}/releases/${{ needs.create-release.outputs.release_id }}" -F draft=false
         env:
           GH_TOKEN: ${{ github.token }}
