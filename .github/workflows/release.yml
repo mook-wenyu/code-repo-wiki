@@ -51,7 +51,9 @@ jobs:
       - name: Create draft release
         id: create
         run: |
-          RELEASE_ID="$(gh api --method POST repos/{owner}/{repo}/releases \
+          # 引号包裹 URL：{owner}/{repo} 是 gh api 的仓库占位符，
+          # 裸花括号会触发 shellcheck SC1083（actionlint 门禁）
+          RELEASE_ID="$(gh api --method POST "repos/{owner}/{repo}/releases" \
             -f tag_name="${{ github.ref_name }}" \
             -F draft=true \
             -F generate_release_notes=true \
