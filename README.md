@@ -2,7 +2,7 @@
 
 自动为代码仓库生成**持续更新**的 Wiki 文档：模块页、API 参考、知识卡片，供人和 AI 助手阅读。
 
-零配置文件 · 单二进制 · 支持 11 种语言 · 增量更新 · 可注册为 OpenCode 插件 / MCP server
+零配置开箱即用 · 单二进制 · 支持 11 种语言 · 增量更新 · 可注册为 OpenCode 插件 / Claude / Codex MCP
 
 ---
 
@@ -19,30 +19,39 @@
 ```markdown
 ## analysis
 
-- `pub fn detect_communities(graph: &KnowledgeGraph) -> Vec<Vec<NodeId>>`（模块）· 文件级社区检测：
-  构建 File 节点弱连通分量，每簇一个 Vec<NodeId> · src\analysis\community.rs:54
-- `MIN_DIRS_FOR_SUPERNODE`（常量） · src\analysis\community.rs:90
+- `pub fn detect_communities(graph: &KnowledgeGraph) -> Vec<Vec<NodeId>>` (函数, pub) — 文件级社区检测：返回 File 节点的社区划分（每社区一个 `Vec<NodeId>`） — src\analysis\community.rs:54
+- `MIN_DIRS_FOR_SUPERNODE` (常量) —  — src\analysis\community.rs:90
 ```
 
 ## 快速开始
 
-> 前置条件：需要 Rust 工具链（含 `cargo`）；目标仓库可以是**任何语言**的项目（解析器见[限制项](docs/reference/limitations.md)），不要求是 Rust 仓库，也不要求是 git 仓库。
+> 前置条件：需要 Rust 工具链（含 `cargo`）。目标仓库可以是**任何语言**的项目（解析器见[限制项](docs/reference/limitations.md)），不要求是 Rust 仓库，也不要求是 git 仓库。
 
 ```bash
 # 1. 安装（源码构建；发布 crates.io 后可直接 cargo install code-repo-wiki）
 cargo install --path . --locked
 
 # 2. 配置 LLM API key（不配也能跑：自动降级为本地模拟内容）
-export OPENCODEGO2_API_KEY="sk-..."
+export OPENCODEGO2_API_KEY="sk-..."            # macOS/Linux
+# Windows PowerShell: $env:OPENCODEGO2_API_KEY = "sk-..."
 
 # 3. 在目标仓库里生成 Wiki（零参数全自动，产物在 .code-repo-wiki/wiki/zh/）
 cd /path/to/your/repo
 code-repo-wiki generate
 ```
 
-**一键全自动（推荐）**：`code-repo-wiki install` 注册 git `post-commit`/`post-merge` hook——之后**每次 commit 后 Wiki 自动增量更新**，无需再手动执行任何命令。常驻实时模式用 `code-repo-wiki watch`（代码保存即更新）。卸载用 `code-repo-wiki uninstall --force`。
+**一键全自动（推荐）**：`code-repo-wiki install` 注册 git `post-commit`/`post-merge` hook——之后**每次 commit 后 Wiki 自动增量更新**，无需再手动执行任何命令；同时注册 OpenCode 插件与 MCP（用户级全局，一次安装所有仓库可用），`--claude` / `--codex` 可加注 Claude Code / Codex MCP。常驻实时模式用 `code-repo-wiki watch`（代码保存即更新）。卸载用 `code-repo-wiki uninstall --force`。
 
-> ⚠️ **已知问题（2026-08 期间）**：默认 LLM 端点 `https://opencode.ai/zen/go/v1` 曾出现上游临时拒绝（网关生成端点 400/500，`/models` 正常），表现为 `generate` 报「Wiki 页面生成失败」且 `failed_modules` 全模块失败。**已于 2026-08-10 实测恢复**（真实 `generate` 端到端成功）。若再遇 400/500：先重试一次（上游波动）；持续失败时切换兼容端点（阿里百炼）——见 [docs/reference/config.md](docs/reference/config.md#已知问题)。
+**可选配置**：默认零配置即可运行；需要自定义时使用 `config.toml`——用户级（Windows: `%APPDATA%\code-repo-wiki\config.toml`；其他: `~/code-repo-wiki/config.toml`）与项目级（仓库根 `config.toml`）字段级合并，详见[配置参考](docs/reference/config.md)。
+
+## 面向 AI 助手
+
+本项目把「可被 AI 高效使用」作为一等目标：
+
+- `code-repo-wiki search --query "关键词" --engine hybrid --top-k 10` —— 代码语义搜索（BM25 + 向量 + RRF 混合，默认 hybrid；另有 `ast-search` 精确符号查找）
+- 每次生成自动重写 `llms.txt` / `llms-full.txt` —— 按 Agent 上下文预算裁剪的仓库索引
+- `install` 向仓库根注入 AGENTS.md 引导块 —— AI 代理打开仓库即可按指引维护文档
+- 已注册的插件 / MCP 工具可供 OpenCode、Claude Code、Codex 会话直接调用（生成、搜索、查询、评测、lint 等）
 
 ## 核心功能
 
@@ -55,7 +64,7 @@ code-repo-wiki generate
 | 搜索 | BM25 全文 + 向量语义 + RRF 混合排序（默认 hybrid）；另有 `ast-search` 精确符号查找 |
 | 文件监听 | `watch` 常驻监听，保存即更新（内置崩溃自愈） |
 | HTML 导出 | `export` 一键导出静态 HTML 站点 |
-| AI Agent 友好 | 自动生成 `llms.txt`/`llms-full.txt`（Agent 索引）、AGENTS.md 引导块；可注册为 OpenCode 插件 / MCP server（`install --claude` / `--codex`） |
+| AI Agent 友好 | 自动生成 `llms.txt`/`llms-full.txt`（Agent 索引）、AGENTS.md 引导块；`install` 注册 OpenCode 插件 / Claude / Codex MCP（用户级全局） |
 | 质量评测 | `bench` RepoDocBench 五维评测 + rubrics 准则评分；`lint` 九类健康检查（断链/过时/引用错位/LLM 编造） |
 
 ## 文档
@@ -75,13 +84,13 @@ code-repo-wiki generate
 | 没有 API key 能跑吗？ | 能。LLM 降级为本地模拟、语义搜索降级为纯文本，全流程不中断 |
 | 手动改过文档会被覆盖吗？ | 不会。人工修改过的页面自动加入保护集（SHA256 指纹） |
 | 文档过时了？ | `code-repo-wiki lint` 检查断链/过时/引用错位；commit 后自动增量更新 |
-| 会泄露我的代码/密钥吗？ | 只把模块内实体清单/文件路径发给 LLM（不发全文件）；key 只从环境变量或用户级配置读取 |
+| 会泄露我的代码/密钥吗？ | 只把模块内实体清单/文件路径发给 LLM（不发全文件）；key 从环境变量或 `config.toml` 读取（建议明文 key 只放用户级配置或环境变量，项目级 `config.toml` 若入版本控制则不要写 key） |
+| 网关报 400/500？ | 默认 LLM 端点上游偶发波动（2026-08 期间出现过，已实测恢复）；重试一次，持续失败切换阿里百炼端点——见[配置参考-已知问题](docs/reference/config.md) |
 
 更多见 [FAQ](docs/reference/faq.md)。
 
 ## 贡献
 
-- 搜索：`code-repo-wiki search --query "k" --engine hybrid --top-k 10`
-- AI Agent 入口：`llms.txt` + `llms-full.txt`（随生成确定性重写）
-- CI：clippy `-D warnings` + `cargo doc` 门禁 + ubuntu/windows 测试矩阵 + actionlint
-- 发布流程：见 [docs/how-to/maintenance.md](docs/how-to/maintenance.md)
+- **构建**：`cargo build --release`；**测试**：`cargo test`（全量套件）；**静态检查**：`cargo clippy -- -D warnings` + `cargo doc --no-deps`
+- **CI**：ubuntu/windows 测试矩阵 + clippy/doc 门禁 + actionlint（工作流见 `.github/workflows/ci.yml`）
+- **发布流程**：版本号与 CHANGELOG 规范见 [docs/how-to/maintenance.md](docs/how-to/maintenance.md)
