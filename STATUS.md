@@ -695,3 +695,11 @@ knowing 全量 12 仓 mock 数据点齐（v29 9 + v30 3：rails 5239 实体/58 �
 - 发现并修复 5 个集成缺陷：插件模板自举解耦（uninstall 后仓库可编译）、AGENTS.md 块双标记迁移、旧名 hook 识别、空壳清理、hook 占用提示
 - hook 端到端触发验证：Git sh 无 PATH 静默跳过（设计正确）、临时 PATH 真实 update 成功（产物生成）
 - 提交 44dbccb（7 文件 +203/-75），全量 473 测试绿 + clippy 0
+
+## v39 用户级集成落点对称化（2026-08-10）
+
+- 用户指出：Claude Code/Codex 等 Agent 的「用户级内容」也应装各自的配置根目录——4 lane 检索核证官方语义（opencode 全局插件目录自动加载、Claude MCP 三 scope、Codex 用户级 config.toml）
+- OpenCode 插件改用户级 `~/.config/opencode/plugins/`（官方自动加载目录，一次 install 全仓库可用）+ 旧版项目级产物自动迁移清理（含 plugin/ 单数目录不对称清理）
+- Claude MCP 改用户级 `~/.claude.json` 顶层 mcpServers（User scope——command 绑定本机 exe 路径=用户级内容；不再写项目根 .mcp.json）；空 mcpServers 保留文件（OAuth 会话绝不动）
+- Codex MCP 已是用户级（~/.codex/config.toml）无需改；CLAUDE.md/AGENTS.md 保持项目级（官方「团队共享入 git」语义）
+- 提交 6dc47ed（插件 2 文件 +186/-59）+ 0a23fde（Claude MCP 6 文件 +106/-84）；全量 476 lib + 全部套件绿 + clippy 0
