@@ -83,13 +83,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # 注：macos 仅发 aarch64（arm64）——GitHub macos-latest 已全 arm64；
+        # x86_64-apple-darwin 交叉编译需 x86_64 版 openssl（brew openssl@3 仅
+        # arm64——taiki-e 实测 openssl-sys 找不到安装目录）。Intel Mac 用户
+        # 走 crates.io 源码路径：cargo install code-repo-wiki --locked
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
           - target: x86_64-pc-windows-msvc
             os: windows-latest
-          - target: x86_64-apple-darwin
-            os: macos-latest
           - target: aarch64-apple-darwin
             os: macos-latest
     runs-on: ${{ matrix.os }}
