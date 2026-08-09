@@ -759,17 +759,36 @@ fn remove_wiki_block_from_file(path: &Path) -> Result<bool> {
 /// output.dir 与 wiki.language；配置缺失（首次运行/未 install）时回退默认值
 /// (".code-repo-wiki", "zh") 不报错——wiki 块缺失比注入失败更隐蔽。
 pub fn install_wiki(root: &crate::project::ProjectRoot, also_claude: bool) -> Result<()> {
-    // 目标仓库配置路径（v25：项目级 config.toml，与产物目录分离）；
-    // 缺失时回退默认——v30 起 load_config 原样加载无净化（用户拍板），
-    // 此处取的是 output_dir/language（项目契约）
-    let config_path = root.join(Path::new(crate::config::PROJECT_CONFIG_FILE));
-    let (output_dir, lang) = match crate::config::load_config(&config_path) {
-        Ok(c) => (c.output_dir().to_string_lossy().into_owned(), c.wiki.language),
+    // 渲染配置走完整配置链（v41 修复：与运行命令同源——项目级 config.toml
+    // 字段级合并覆盖用户级 ~/.code-repo-wiki/config.toml；两者皆无时自动
+    // 创建用户级默认模板）。此前只读项目级单文件，用户级配置存在时仍误报
+    // 「未找到有效配置」，且渲染值忽略用户级偏好（如 wiki.language）。
+    let (_, cfg) = match crate::config::load_default_config(root) {
+        Ok(pair) => pair,
+        // 配置畸形（如 TOML 语法错误）：按默认值继续注入——wiki 块缺失
+        // 比注入失败更隐蔽（U02 语义保持）
         Err(e) => {
-            println!("提示: 未找到有效配置（{}），注入块按默认产物路径 (.code-repo-wiki / zh) 渲染", e);
-            (".code-repo-wiki".to_string(), "zh".to_string())
+            println!(
+                "提示: 配置解析失败（{e}），注入块按默认产物路径 (.code-repo-wiki / zh) 渲染"
+            );
+            let cfg = crate::config::load_config(&root.join(Path::new(crate::config::PROJECT_CONFIG_FILE)))
+                .unwrap_or_else(|_| crate::config::schema::WikiConfig::default());
+            let output_dir = cfg.output_dir().to_string_lossy().into_owned();
+            let lang = cfg.wiki.language;
+            let block = wiki_block_template(&output_dir, &lang);
+            let agents_path = root.join(Path::new("AGENTS.md"));
+            write_wiki_block(&agents_path, &block)?;
+            println!("✓ wiki 引用块已注入 {}", agents_path.display());
+            if also_claude {
+                let claude_path = root.join(Path::new("CLAUDE.md"));
+                write_wiki_block(&claude_path, &block)?;
+                println!("✓ wiki 引用块已注入 {}", claude_path.display());
+            }
+            return Ok(());
         }
     };
+    let output_dir = cfg.output_dir().to_string_lossy().into_owned();
+    let lang = cfg.wiki.language;
     let block = wiki_block_template(&output_dir, &lang);
     let agents_path = root.join(Path::new("AGENTS.md"));
     write_wiki_block(&agents_path, &block)?;

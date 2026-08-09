@@ -19,6 +19,7 @@
 
 ### Changed
 - **项目改名 Code Repo Wiki（v37）**：crate/二进制/命令名 `repo-wiki` → `code-repo-wiki`（代码/测试/文档/MCP 注册键/git hooks 字面量/AGENTS 注入块全链路同步）；产物目录 `.repo-wiki` → `.code-repo-wiki`；用户级配置目录 `%APPDATA%\repo-wiki` → `%APPDATA%\code-repo-wiki`（改名不迁移，删除重装并重新配置 key）；GitHub 仓库改名 `mook-wenyu/code-repo-wiki`
+- **install 注入块渲染接入完整配置链（v42）**：`install_wiki` 改用 `load_default_config(root)`（项目级字段级合并覆盖用户级），不再只读项目级单文件——项目无 config.toml 时不再误报「未找到有效配置」，且按用户级配置（如 `language`）渲染注入块；两处配置皆无时 install 自动创建用户级默认模板（install 语义即确保用户级配置）；畸形配置降级为「配置解析失败」提示并继续注入
 - **CI 增强（v37）**：三 job 重构——check（clippy `-D warnings` + `cargo doc --no-deps` 门禁）、test（ubuntu + windows 矩阵，fail-fast:false）、lint-workflow（actionlint 校验 workflow）；新增 `rust-toolchain.toml`（stable + clippy）；concurrency cancel-in-progress
 - **跨平台测试修复（v37）**：bench manifest 本地路径名提取改双分隔符（ubuntu 上 Windows 盘符路径不再被当相对路径）；key 测试全局配置目录注入临时路径 + opencode config_dir 测试纯函数化（消除并行 env 竞态——ubuntu 无 APPDATA 兜底必现）
 - **文档重构（v37）**：docs/ 目录按 Diátaxis 组织（教程/CLI 参考/配置参考/FAQ/限制项/lint 检查项/架构说明/watch 托管/维护/术语表），README 瘦身为着陆页（原 22 节内容下沉 docs/）

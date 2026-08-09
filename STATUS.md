@@ -718,3 +718,11 @@ knowing 全量 12 仓 mock 数据点齐（v29 9 + v30 3：rails 5239 实体/58 �
 - git hooks 改尾部追加标记块（# code-repo-wiki: append-begin/append-end）：与 LFS 包装/memorix 区块共存；再次 install 幂等只更新块；uninstall 剥离块还原用户内容；旧标记 hook 整文件升级；core.hooksPath 检查（指向其他目录提示不生效）
 - 真实环境验证：本机 doctor 触发迁移（新路径 config.toml + 旧路径保留 + MD5 一致）；Unity 项目 install 追加块成功 + 二次 install 幂等
 - 提交 16f0ca2（13 文件 +511/-88）；hook 8/8、smoke 20/20、config 50/50、clippy 0
+
+## v42 install 注入块渲染接入完整配置链（2026-08-10）
+
+- 用户反馈：Unity 项目 install 仍提示「未找到有效配置（配置文件不存在: {项目}\config.toml）」——配置链明明就绪为何还提示、为何不创建配置
+- 根因：install_wiki 渲染注入块只读项目级单文件 load_config(&root/config.toml)——用户级配置不参与渲染（v25 U02 设计局限，v30 用户级合并语义引入后未同步）
+- 修复：改用完整配置链 load_default_config(root)（项目级字段级合并覆盖用户级；两者皆无时自动创建用户级默认模板）；畸形配置降级「配置解析失败」提示并继续注入；测试 9/9（无配置自动创建模板+无提示断言、用户级 language=en 渲染 en 路径）
+- 实机验证（release 重装 .cargo/bin 后）：提示消失、渲染 zh（用户级值）、hook 幂等「已是最新」
+- 生产就绪盘点（3 lanes）：发布阻塞=缺 license/license-file/repository/keywords/categories + 无 LICENSE 文件（crates.io 400）；发布自动化缺=无 tag 触发/publish/Releases 二进制（cargo-dist 或 taiki-e）；版本漂移=0.3.0 未打 tag；LLM 真实验证缺口 pending（DeepSeek 402 后未复验）

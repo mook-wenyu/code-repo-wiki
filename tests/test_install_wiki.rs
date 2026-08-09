@@ -235,10 +235,11 @@ fn test_install_wiki_template_uses_config_paths() {
     let _ = std::fs::remove_dir_all(&work_dir);
 }
 
-/// U02 回归：无配置时按默认产物路径渲染并提示
+/// U02 回归（v41 语义）：无任何配置时按默认渲染，且不误报「未找到有效配置」——
+/// install 走完整配置链，自动创建用户级默认模板后即有有效配置
 #[test]
 fn test_install_wiki_template_defaults_without_config() {
-    let (work_dir, _home, envs) = setup("template_default");
+    let (work_dir, home, envs) = setup("template_default");
     let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
     let out = run_bin_with_envs(&work_dir, &["install"], &envs_ref);
@@ -248,11 +249,53 @@ fn test_install_wiki_template_defaults_without_config() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(combined.contains("默认"), "应提示按默认值渲染，实际: {combined}");
+    assert!(
+        !combined.contains("未找到有效配置"),
+        "用户级配置存在（install 自动创建）时不应提示未找到配置，实际: {combined}"
+    );
+    // 用户级默认模板被自动创建（链第 3 步——install 语义即确保用户级配置）
+    let user_cfg = home.join(".code-repo-wiki").join("config.toml");
+    assert!(
+        user_cfg.exists(),
+        "install 应创建用户级默认配置: {}",
+        user_cfg.display()
+    );
     let content = std::fs::read_to_string(work_dir.join("AGENTS.md")).unwrap();
     assert!(
         content.contains("`.code-repo-wiki/wiki/zh/overview.md`"),
         "默认应渲染 .code-repo-wiki/zh 路径，实际: {content}"
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
+
+/// v41 修复回归：用户级配置存在（如 wiki.language=en）时，注入块按用户级
+/// 配置渲染——此前只读项目级单文件，用户级配置被忽略并误报「未找到有效配置」
+#[test]
+fn test_install_wiki_renders_with_user_config() {
+    let (work_dir, home, envs) = setup("user_cfg_render");
+    let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
+
+    // 用户级配置：language=en（隔离 HOME 下）
+    let user_dir = home.join(".code-repo-wiki");
+    std::fs::create_dir_all(&user_dir).unwrap();
+    std::fs::write(user_dir.join("config.toml"), "[wiki]\nlanguage = \"en\"\n").unwrap();
+
+    let out = run_bin_with_envs(&work_dir, &["install"], &envs_ref);
+    assert!(out.status.success(), "install 应成功");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !combined.contains("未找到有效配置"),
+        "用户级配置存在时不应提示未找到配置，实际: {combined}"
+    );
+    let content = std::fs::read_to_string(work_dir.join("AGENTS.md")).unwrap();
+    assert!(
+        content.contains("`.code-repo-wiki/wiki/en/overview.md`"),
+        "注入块应渲染用户级 language=en 路径，实际: {content}"
     );
 
     let _ = std::fs::remove_dir_all(&work_dir);
