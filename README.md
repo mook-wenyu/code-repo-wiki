@@ -42,7 +42,7 @@ code-repo-wiki generate
 
 **一键全自动（推荐）**：`code-repo-wiki install` 注册 git `post-commit`/`post-merge` hook——之后**每次 commit 后 Wiki 自动增量更新**，无需再手动执行任何命令。常驻实时模式用 `code-repo-wiki watch`（代码保存即更新）。卸载用 `code-repo-wiki uninstall --force`。
 
-> ⚠️ **已知问题（2026-08 实测）**：默认 LLM 端点 `https://opencode.ai/zen/go/v1` 当前不可用（网关生成端点 400/500）。首次 `generate` 会报「Wiki 页面生成失败」且 `failed_modules` 全模块失败。**临时方案**：把 `[llm]` 段改为实测可用的兼容端点（阿里百炼）——见 [docs/reference/config.md](docs/reference/config.md#已知问题)。
+> ⚠️ **已知问题（2026-08 期间）**：默认 LLM 端点 `https://opencode.ai/zen/go/v1` 曾出现上游临时拒绝（网关生成端点 400/500，`/models` 正常），表现为 `generate` 报「Wiki 页面生成失败」且 `failed_modules` 全模块失败。**已于 2026-08-10 实测恢复**（真实 `generate` 端到端成功）。若再遇 400/500：先重试一次（上游波动）；持续失败时切换兼容端点（阿里百炼）——见 [docs/reference/config.md](docs/reference/config.md#已知问题)。
 
 ## 核心功能
 
