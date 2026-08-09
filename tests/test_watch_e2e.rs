@@ -31,7 +31,7 @@ fn wait_until(mut cond: impl FnMut() -> bool, interval: Duration, what: &str) {
         }
         std::thread::sleep(interval);
     }
-    panic!("等待超时（30s）: {what}");
+    panic!("等待超时（90s）: {what}");
 }
 
 /// watch 端到端配置：provider=mock（不发起网络）+ FileWatch 增量策略 + 输出到临时仓库
