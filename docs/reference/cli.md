@@ -36,7 +36,7 @@
 | `OPENCODEGO2_API_KEY` | 默认 LLM key（opencode.ai 网关） |
 | `BAILIAN_API_KEY` | 默认 embed key（阿里百炼），LLM 降级时也常用 |
 
-用户级配置（`%APPDATA%\code-repo-wiki\config.toml`）中可写 `api_key_env` 引用任意环境变量名，项目级配置只写变量名不写明文。
+用户级配置（`~/.code-repo-wiki/config.toml`，Windows 为 `%USERPROFILE%\.code-repo-wiki\config.toml`）中可写 `api_key_env` 引用任意环境变量名，项目级配置只写变量名不写明文。
 
 ## 退出码约定
 

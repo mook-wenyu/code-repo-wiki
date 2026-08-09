@@ -51,35 +51,106 @@ pub fn create_default_config(path: &Path) -> Result<schema::WikiConfig> {
 
 /// 全局（用户级）配置目录的纯路径组装（可测试，不读环境变量）
 ///
-/// 平台语义（用户拍板，v13 E 组）：
-/// - Windows：`%APPDATA%/code-repo-wiki`（Roaming AppData 是 Windows 用户级
-///   应用数据的标准位置，随用户漫游）
-/// - 其他平台：`$HOME/code-repo-wiki`（无 XDG 前缀，用户指定）
-/// - APPDATA 缺失（非常见环境）时退化 `$HOME/code-repo-wiki`；
-///   APPDATA 与 HOME 都缺失时返回 Err——无法确定用户级目录时显式报错，
-///   不静默写当前目录（写错位置比报错更隐蔽）。
-pub fn global_config_dir_from(appdata: Option<&Path>, home: Option<&Path>) -> Result<PathBuf> {
-    match appdata {
-        Some(p) if !p.as_os_str().is_empty() => Ok(p.join("code-repo-wiki")),
+/// 平台语义（用户拍板，v41——对齐 Codex/Claude Code/Azure CLI 等官方
+/// home 点目录惯例：`~/.codex`、`~/.claude`、`%USERPROFILE%\.azure`）：
+/// - Windows：`%USERPROFILE%/.code-repo-wiki`（用户主目录点目录）
+/// - 其他平台：`$HOME/.code-repo-wiki`
+/// - USERPROFILE 缺失（非 Windows 环境）时退化 `$HOME/.code-repo-wiki`；
+///   USERPROFILE 与 HOME 都缺失时返回 Err——无法确定用户级目录时显式
+///   报错，不静默写当前目录（写错位置比报错更隐蔽）。
+pub fn global_config_dir_from(userprofile: Option<&Path>, home: Option<&Path>) -> Result<PathBuf> {
+    match userprofile {
+        Some(p) if !p.as_os_str().is_empty() => Ok(p.join(".code-repo-wiki")),
         _ => home
             .filter(|h| !h.as_os_str().is_empty())
-            .ok_or_else(|| anyhow::anyhow!("无法确定用户级配置目录（APPDATA 与 HOME 均未设置）"))
-            .map(|h| h.join("code-repo-wiki")),
+            .ok_or_else(|| anyhow::anyhow!("无法确定用户级配置目录（USERPROFILE 与 HOME 均未设置）"))
+            .map(|h| h.join(".code-repo-wiki")),
     }
 }
 
 /// 全局（用户级）配置目录（读环境变量，委托纯函数）
 ///
-/// Windows 语义（N11 先例，opencode.rs config_dir）：USERPROFILE 优先于
-/// HOME——Windows 构建工具（Git Bash/Cygwin/MSYS）常把 HOME 指向临时值，
-/// USERPROFILE 才是用户真实主目录。非 Windows 平台用 HOME。
+/// 解析优先级（v41 拍板）：
+/// 1. `CODE_REPO_WIKI_HOME` 环境变量——显式重定位（对齐 CODEX_HOME 惯例，
+///    用户可自定义配置根；设置后不做旧路径迁移，旧目录由用户自行处理）；
+/// 2. USERPROFILE（Windows 用户真实主目录——Git Bash/Cygwin/MSYS 常把
+///    HOME 指向临时值；N11 先例同 opencode.rs config_dir）；
+/// 3. HOME。
 pub fn global_config_dir() -> Result<PathBuf> {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
+    if let Some(dir) = std::env::var("CODE_REPO_WIKI_HOME")
         .ok()
-        .map(PathBuf::from);
-    let appdata = std::env::var("APPDATA").ok().map(PathBuf::from);
-    global_config_dir_from(appdata.as_deref(), home.as_deref())
+        .filter(|v| !v.is_empty())
+    {
+        return Ok(PathBuf::from(dir));
+    }
+    let userprofile = std::env::var("USERPROFILE").ok().map(PathBuf::from);
+    let home = std::env::var("HOME").ok().map(PathBuf::from);
+    global_config_dir_from(userprofile.as_deref(), home.as_deref())
+}
+/// 全局（用户级）配置目录就绪入口（v41）：解析目录（含
+/// `CODE_REPO_WIKI_HOME` 重定位）+ 一次性迁移 v41 前的旧路径
+/// （`%APPDATA%/code-repo-wiki` 与 `$HOME/code-repo-wiki`——参考 git
+/// 双读与 Claude Code 弃用兼容先例：新路径优先、旧目录内容复制到新
+/// 路径、旧目录保留不删；`CODE_REPO_WIKI_HOME` 显式指定时跳过迁移）。
+///
+/// 返回（目录, 是否发生迁移）——迁移发生时调用方打印提示。
+/// 生产入口（lib.rs 配置加载、key 命令）用它替代 [`global_config_dir`]。
+pub fn ensure_global_config_dir() -> Result<(PathBuf, bool)> {
+    let dir = global_config_dir()?;
+    let legacy_dirs: Vec<PathBuf> = if std::env::var("CODE_REPO_WIKI_HOME").is_ok() {
+        Vec::new()
+    } else {
+        let mut legacy = Vec::new();
+        if let Some(appdata) = std::env::var("APPDATA").ok().filter(|v| !v.is_empty()) {
+            legacy.push(PathBuf::from(appdata).join("code-repo-wiki"));
+        }
+        if let Some(home) = std::env::var("HOME").ok().filter(|v| !v.is_empty()) {
+            legacy.push(PathBuf::from(home).join("code-repo-wiki"));
+        }
+        legacy
+    };    let migrated = migrate_global_config(&dir, &legacy_dirs)?;
+    Ok((dir, migrated))
+}
+
+/// 一次性迁移旧用户级配置目录（纯逻辑，可测试）：新目录已有
+/// `config.toml` 时不迁移（新配置优先）；否则按序检查候选旧目录，
+/// 第一个含 `config.toml` 的旧目录整个复制到新目录。
+///
+/// 返回是否发生了迁移。旧目录保留不删（配置属用户资产）。
+pub fn migrate_global_config(new_dir: &Path, legacy_dirs: &[PathBuf]) -> Result<bool> {
+    if new_dir.join(USER_CONFIG_FILE).exists() {
+        return Ok(false);
+    }
+    for legacy in legacy_dirs {
+        if !legacy.join(USER_CONFIG_FILE).exists() {
+            continue;
+        }
+        std::fs::create_dir_all(new_dir)
+            .with_context(|| format!("创建全局配置目录失败: {}", new_dir.display()))?;
+        copy_dir_contents(legacy, new_dir)?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// 递归复制目录内容（迁移用；简单文件复制——配置目录无符号链接场景）
+fn copy_dir_contents(from: &Path, to: &Path) -> Result<()> {
+    std::fs::create_dir_all(to)
+        .with_context(|| format!("创建目录失败: {}", to.display()))?;
+    for entry in std::fs::read_dir(from)
+        .with_context(|| format!("读取目录失败: {}", from.display()))?
+    {
+        let entry = entry?;
+        let src = entry.path();
+        let dst = to.join(entry.file_name());
+        if src.is_dir() {
+            copy_dir_contents(&src, &dst)?;
+        } else {
+            std::fs::copy(&src, &dst)
+                .with_context(|| format!("复制失败: {} → {}", src.display(), dst.display()))?;
+        }
+    }
+    Ok(())
 }
 
 /// 字段级 TOML 合并（v25 拍板，主流工具语义，参考 uv/Claude Code/cargo
@@ -162,9 +233,16 @@ pub fn load_default_config_with(
     }
 }
 
-/// 默认配置链加载（生产入口，全局目录按环境变量解析）
+/// 默认配置链加载（生产入口，全局目录按环境变量解析 + 旧路径迁移）
 pub fn load_default_config(root: &ProjectRoot) -> Result<(PathBuf, schema::WikiConfig)> {
-    load_default_config_with(root, &global_config_dir()?)
+    let (global_dir, migrated) = ensure_global_config_dir()?;
+    if migrated {
+        println!(
+            "提示: 用户级配置已迁移到 {}（旧目录保留，未删除）",
+            global_dir.display()
+        );
+    }
+    load_default_config_with(root, &global_dir)
 }
 
 /// 默认配置文件解析：项目级 → 全局 → 创建全局（用户拍板，v13 E 组；
@@ -196,9 +274,16 @@ pub fn resolve_default_config_path_with(root: &ProjectRoot, global_dir: &Path) -
     Ok(global_config)
 }
 
-/// 默认配置文件解析（生产入口，全局目录按环境变量解析）
+/// 默认配置文件解析（生产入口，全局目录按环境变量解析 + 旧路径迁移）
 pub fn resolve_default_config_path(root: &ProjectRoot) -> Result<PathBuf> {
-    resolve_default_config_path_with(root, &global_config_dir()?)
+    let (global_dir, migrated) = ensure_global_config_dir()?;
+    if migrated {
+        println!(
+            "提示: 用户级配置已迁移到 {}（旧目录保留，未删除）",
+            global_dir.display()
+        );
+    }
+    resolve_default_config_path_with(root, &global_dir)
 }
 
 /// `--config` 参数解析：显式指定原样使用（不存在时由 load_config 报错）；
@@ -246,26 +331,108 @@ mod tests {
 
     // ============ E 组：全局配置链 ============
 
-    /// 全局目录路径组装：APPDATA 提供时拼 %APPDATA%/code-repo-wiki
+    /// 全局目录路径组装：USERPROFILE 提供时拼 %USERPROFILE%/.code-repo-wiki
+    /// （v41 拍板——home 点目录惯例，对齐 ~/.codex、~/.claude）
     #[test]
-    fn test_global_config_dir_from_appdata() {
-        let dir = global_config_dir_from(Some(Path::new("C:/Users/wenyu/AppData/Roaming")), Some(Path::new("C:/Users/wenyu")))
+    fn test_global_config_dir_from_userprofile() {
+        let dir = global_config_dir_from(Some(Path::new("C:/Users/wenyu")), Some(Path::new("/home/wenyu")))
             .unwrap();
-        assert_eq!(dir, PathBuf::from("C:/Users/wenyu/AppData/Roaming/code-repo-wiki"));
+        assert_eq!(dir, PathBuf::from("C:/Users/wenyu/.code-repo-wiki"));
     }
 
-    /// 全局目录路径组装：APPDATA 缺失（非 Windows）时退化 $HOME/code-repo-wiki
+    /// 全局目录路径组装：USERPROFILE 缺失（非 Windows）时退化 $HOME/.code-repo-wiki
     #[test]
     fn test_global_config_dir_from_home_fallback() {
         let dir = global_config_dir_from(None, Some(Path::new("/home/wenyu"))).unwrap();
-        assert_eq!(dir, PathBuf::from("/home/wenyu/code-repo-wiki"));
+        assert_eq!(dir, PathBuf::from("/home/wenyu/.code-repo-wiki"));
     }
 
-    /// APPDATA 与 HOME 都缺失：显式报错（不静默写当前目录）
+    /// USERPROFILE 与 HOME 都缺失：显式报错（不静默写当前目录）
     #[test]
     fn test_global_config_dir_from_missing_both_errors() {
         assert!(global_config_dir_from(None, None).is_err());
         assert!(global_config_dir_from(None, Some(Path::new(""))).is_err());
+    }
+
+    /// 一次性迁移：新目录无 config.toml 且旧目录存在 → 复制内容 + 返回 true
+    #[test]
+    fn test_migrate_global_config_migrates_legacy() {
+        let tmp = test_tmp_dir("migrate-legacy");
+        let legacy = tmp.join("legacy");
+        let new = tmp.join("new");
+        std::fs::create_dir_all(legacy.join("sub")).unwrap();
+        std::fs::write(legacy.join("config.toml"), "llm_model = 'deepseek'").unwrap();
+        std::fs::write(legacy.join("sub/notes.txt"), "abc").unwrap();
+
+        assert!(migrate_global_config(&new, std::slice::from_ref(&legacy)).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(new.join("config.toml")).unwrap(),
+            "llm_model = 'deepseek'"
+        );
+        assert_eq!(std::fs::read_to_string(new.join("sub/notes.txt")).unwrap(), "abc");
+        // 旧目录保留不删
+        assert!(legacy.join("config.toml").exists());
+    }
+
+    /// 一次性迁移：新目录已有 config.toml → 不迁移（新配置优先）
+    #[test]
+    fn test_migrate_global_config_skips_when_new_exists() {
+        let tmp = test_tmp_dir("migrate-new-exists");
+        let legacy = tmp.join("legacy");
+        let new = tmp.join("new");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("config.toml"), "old").unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(new.join("config.toml"), "new-content").unwrap();
+
+        assert!(!migrate_global_config(&new, &[legacy]).unwrap());
+        assert_eq!(std::fs::read_to_string(new.join("config.toml")).unwrap(), "new-content");
+    }
+
+    /// 一次性迁移：新目录空且旧目录不存在 → 不迁移（正常全新安装）
+    #[test]
+    fn test_migrate_global_config_skips_when_legacy_missing() {
+        let tmp = test_tmp_dir("migrate-legacy-missing");
+        let legacy = tmp.join("missing");
+        let new = tmp.join("new");
+        assert!(!migrate_global_config(&new, &[legacy]).unwrap());
+        assert!(!new.exists());
+    }
+
+    /// 一次性迁移：多个候选旧目录按序取第一个有效的
+    #[test]
+    fn test_migrate_global_config_uses_first_legacy_with_config() {
+        let tmp = test_tmp_dir("migrate-first-legacy");
+        let legacy_empty = tmp.join("empty");
+        let legacy_real = tmp.join("real");
+        let new = tmp.join("new");
+        std::fs::create_dir_all(&legacy_empty).unwrap();
+        std::fs::create_dir_all(&legacy_real).unwrap();
+        std::fs::write(legacy_real.join("config.toml"), "real-content").unwrap();
+
+        assert!(migrate_global_config(&new, &[legacy_empty, legacy_real]).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(new.join("config.toml")).unwrap(),
+            "real-content"
+        );
+    }
+
+    /// 测试用唯一临时目录（std 实现——Cargo.toml 无 dev-dependencies；
+    /// 进程 id + 原子序号防并行测试冲突——v19 教训）
+    ///
+    /// clippy 在非测试视角下对 cfg(test) 模块内被测试调用的 helper 会
+    /// 误报 never used（rustc dead_code 以 lib 编译单元分析）；4 个迁移
+    /// 测试均调用它（cargo test 全绿），非死代码。
+    #[allow(dead_code)]
+    fn test_tmp_dir(name: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static SEQ: AtomicUsize = AtomicUsize::new(0);
+        std::env::temp_dir().join(format!(
+            "code-repo-wiki-config-test-{}-{}-{}",
+            std::process::id(),
+            name,
+            SEQ.fetch_add(1, Ordering::SeqCst)
+        ))
     }
 
     /// E 组搜索链：项目级配置存在 → 返回项目级（项目级优先；v24 起为

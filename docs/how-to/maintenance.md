@@ -2,7 +2,7 @@
 
 ## 测试残留清理
 
-历史测试可能遗留无意义的临时目录（`%APPDATA%\code-repo-wiki\key-test-*` 与 `%TEMP%\repo_wiki*` / `code_repo_wiki*`，≈0B 占用、无敏感数据）。需要清理时：
+历史测试可能遗留无意义的临时目录（`%USERPROFILE%\.code-repo-wiki\key-test-*` 与 `%TEMP%\repo_wiki*` / `code_repo_wiki*`，≈0B 占用、无敏感数据）。需要清理时：
 
 ```powershell
 powershell -File scripts/cleanup-test-residue.ps1          # 先预览

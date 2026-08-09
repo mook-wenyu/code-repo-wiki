@@ -27,7 +27,7 @@ pub fn run(env: bool, config_path: Option<&Path>, root: &ProjectRoot) -> Result<
         env,
         config_path,
         root,
-        &crate::config::global_config_dir()?,
+        &crate::config::ensure_global_config_dir()?.0,
         std::io::stdin().is_terminal(),
         &mut read_stdin_line,
     )

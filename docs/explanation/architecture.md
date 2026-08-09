@@ -59,7 +59,7 @@ Source Files → ingest (tree-sitter AST 解析) → analysis (知识图谱 + �
 | `.code-repo-wiki/.state/` | 生成状态（`generation_state.json`）、指纹库、单实例锁（`run.lock`） |
 | `.code-repo-wiki/.cache/` | 检索图谱缓存（`call_index.json` + 指纹，v36） |
 | `.code-repo-wiki/export/` | 导出快照 |
-| `%APPDATA%\code-repo-wiki\config.toml` | 用户级配置（v37 起） |
+| `~/.code-repo-wiki/config.toml`（Windows 为 `%USERPROFILE%\.code-repo-wiki\`） | 用户级配置（v41 起，home 点目录惯例；`CODE_REPO_WIKI_HOME` 可重定位） |
 
 ## 设计决策速查
 

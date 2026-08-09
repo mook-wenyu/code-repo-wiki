@@ -199,8 +199,9 @@ fn test_uninstall_removes_only_own_hooks() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// v33 升级语义：install 对已存在的旧模板 hook（含 code-repo-wiki 标记）覆盖升级
-/// （内容更新为带 # code-repo-wiki managed 标记的新模板）
+/// v33 升级语义（v41 追加块版）：install 对已存在的旧模板 hook（含
+/// code-repo-wiki 旧标记）整文件覆盖升级为当前模板；人工 hook 尾部追加
+/// 块（原内容保留）
 #[test]
 fn test_install_upgrades_legacy_hooks() {
     let work_dir = unique_dir("upgrade_hooks");
@@ -213,7 +214,7 @@ fn test_install_upgrades_legacy_hooks() {
         "#!/bin/sh\n# code-repo-wiki: auto-update wiki on commit\ncode-repo-wiki update 2>/dev/null || true\n",
     )
     .unwrap();
-    // 预置人工 hook（无 code-repo-wiki 标记）——install 不得覆盖
+    // 预置人工 hook（无 code-repo-wiki 标记）——install 追加块而非覆盖
     std::fs::write(
         hooks_dir.join("post-merge"),
         "#!/bin/sh\necho '人工 hook'\n",
@@ -231,21 +232,149 @@ fn test_install_upgrades_legacy_hooks() {
         "install 应成功，stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    // 旧模板 post-commit 被升级为带 managed 标记的新模板
+    // 旧模板 post-commit 被升级为含当前标记的新模板
     let upgraded = std::fs::read_to_string(hooks_dir.join("post-commit")).unwrap();
     assert!(
-        upgraded.contains("# code-repo-wiki managed"),
-        "旧模板应升级为含 managed 标记，实际: {upgraded}"
+        upgraded.contains("# code-repo-wiki: append-begin"),
+        "旧模板应升级为含当前标记，实际: {upgraded}"
     );
     assert!(
         upgraded.contains("code-repo-wiki update"),
         "升级后仍应含 update 命令"
     );
-    // 人工 post-merge 原样保留
-    assert_eq!(
-        std::fs::read_to_string(hooks_dir.join("post-merge")).unwrap(),
+    // 人工 post-merge 原样保留 + 追加块
+    let merged = std::fs::read_to_string(hooks_dir.join("post-merge")).unwrap();
+    assert!(
+        merged.contains("echo '人工 hook'"),
+        "人工 hook 原内容应保留，实际: {merged}"
+    );
+    assert!(
+        merged.contains("# code-repo-wiki: append-begin"),
+        "人工 hook 应追加 code-repo-wiki 块，实际: {merged}"
+    );
+    assert!(
+        merged.contains("code-repo-wiki update"),
+        "追加块应含 update 命令，实际: {merged}"
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// v41：人工 hook + 追加块后再次 install 幂等——不重复追加块
+#[test]
+fn test_install_appends_idempotent() {
+    let work_dir = unique_dir("append_idem");
+    let _ = std::fs::remove_dir_all(&work_dir);
+    std::fs::create_dir_all(&work_dir).unwrap();
+    let hooks_dir = init_git_repo(&work_dir);
+    std::fs::write(
+        hooks_dir.join("post-commit"),
         "#!/bin/sh\necho '人工 hook'\n",
-        "人工 hook 不应被覆盖"
+    )
+    .unwrap();
+    let home = unique_dir("append_idem_home");
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let envs: Vec<(&str, String)> = home_envs(&home);
+    let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
+
+    // 第一次 install：追加块
+    let out = run_bin_with_envs(&work_dir, &["install"], &envs_ref);
+    assert!(out.status.success(), "install 应成功");
+    let once = std::fs::read_to_string(hooks_dir.join("post-commit")).unwrap();
+    // 第二次 install：块已存在且内容相同 → 不重复追加
+    let out = run_bin_with_envs(&work_dir, &["install"], &envs_ref);
+    assert!(out.status.success(), "第二次 install 应成功");
+    let twice = std::fs::read_to_string(hooks_dir.join("post-commit")).unwrap();
+    assert_eq!(once, twice, "幂等：第二次 install 不得改变 hook 内容");
+    assert_eq!(
+        twice.matches("# code-repo-wiki: append-begin").count(),
+        1,
+        "追加块只应出现一次，实际: {twice}"
+    );
+    assert!(
+        twice.contains("echo '人工 hook'"),
+        "人工 hook 原内容应保留，实际: {twice}"
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// v41：追加块场景的升级——只替换块区间，人工内容保留
+#[test]
+fn test_install_upgrades_appended_block_keeps_user_content() {
+    let work_dir = unique_dir("append_upgrade");
+    let _ = std::fs::remove_dir_all(&work_dir);
+    std::fs::create_dir_all(&work_dir).unwrap();
+    let hooks_dir = init_git_repo(&work_dir);
+    // 预置：人工 hook + 旧版追加块（块内容与当前模板不同——v33 旧模板行）
+    std::fs::write(
+        hooks_dir.join("post-commit"),
+        "#!/bin/sh\necho '人工 hook'\n# code-repo-wiki: append-begin\ncode-repo-wiki update 2>/dev/null || true\n# code-repo-wiki: append-end\n",
+    )
+    .unwrap();
+    let home = unique_dir("append_upgrade_home");
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let envs: Vec<(&str, String)> = home_envs(&home);
+    let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
+
+    let out = run_bin_with_envs(&work_dir, &["install"], &envs_ref);
+    assert!(out.status.success(), "install 应成功");
+    let content = std::fs::read_to_string(hooks_dir.join("post-commit")).unwrap();
+    assert!(
+        content.contains("echo '人工 hook'"),
+        "人工内容应保留，实际: {content}"
+    );
+    assert!(
+        content.contains("2>>.code-repo-wiki/update-error.log"),
+        "块应升级为当前模板（v36 D2 错误日志特性），实际: {content}"
+    );
+    assert_eq!(
+        content.matches("# code-repo-wiki: append-begin").count(),
+        1,
+        "块只应有一个，实际: {content}"
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// v41：uninstall 剥离追加块区间，人工 hook 内容保留写回
+#[test]
+fn test_uninstall_strips_appended_block() {
+    let work_dir = unique_dir("strip_block");
+    let _ = std::fs::remove_dir_all(&work_dir);
+    std::fs::create_dir_all(&work_dir).unwrap();
+    let hooks_dir = init_git_repo(&work_dir);
+    // 预置：人工 hook + 追加块
+    std::fs::write(
+        hooks_dir.join("post-commit"),
+        "#!/bin/sh\necho '人工 hook'\n# code-repo-wiki: append-begin\n# 自动更新 wiki\ncode-repo-wiki update 2>>.code-repo-wiki/update-error.log || echo x >&2\n# code-repo-wiki: append-end\n",
+    )
+    .unwrap();
+    let home = unique_dir("strip_block_home");
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let envs: Vec<(&str, String)> = home_envs(&home);
+    let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
+
+    let out = run_bin_with_envs(&work_dir, &["uninstall", "--force"], &envs_ref);
+    assert!(
+        out.status.success(),
+        "uninstall --force 应成功，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let remaining = std::fs::read_to_string(hooks_dir.join("post-commit")).unwrap();
+    assert!(
+        remaining.contains("echo '人工 hook'"),
+        "人工内容应保留，实际: {remaining}"
+    );
+    assert!(
+        !remaining.contains("code-repo-wiki"),
+        "块应被剥离，实际: {remaining}"
     );
 
     let _ = std::fs::remove_dir_all(&work_dir);

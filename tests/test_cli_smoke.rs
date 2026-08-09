@@ -172,8 +172,9 @@ fn test_install_ensures_user_default_config() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    // 用户级默认配置被创建（v30：硬编码段不再写入模板，仅 wiki/scope/llm/embed 四段）
-    let cfg_path = home.join("code-repo-wiki").join("config.toml");
+    // 用户级默认配置被创建（v30：硬编码段不再写入模板，仅 wiki/scope/llm/embed 四段；
+    // v41：全局目录=~/.code-repo-wiki——home 点目录惯例，对齐 ~/.codex）
+    let cfg_path = home.join(".code-repo-wiki").join("config.toml");
     let content = std::fs::read_to_string(&cfg_path)
         .unwrap_or_else(|e| panic!("用户级配置应存在 {}: {}", cfg_path.display(), e));
     for section in ["[wiki]", "[llm]", "[embed]"] {

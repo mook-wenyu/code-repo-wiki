@@ -2,8 +2,9 @@
 #
 # 背景（v33 生产审计 ①）：历史测试（key 命令注入隔离修复前）在真实
 # 用户目录留下三类残留，均为无害但不卫生的目录：
-#   1. %APPDATA%\code-repo-wiki\key-test-*   —— key 命令测试夹具目录
-#      （每目录仅一个假 config.toml，无真实密钥）
+#   1. ~/.code-repo-wiki/key-test-* 与 %APPDATA%\code-repo-wiki\key-test-*
+#      —— key 命令测试夹具目录（每目录仅一个假 config.toml，无真实密钥；
+#      %APPDATA% 为 v41 迁移前的历史位置）
 #   2. %TEMP%\repo_wiki* / code_repo_wiki*   —— 各测试的临时仓库目录
 #      （为空目录，≈0B 占用；repo_wiki* 为 v37 改名前的历史命名）
 #   3. %TEMP%\rw_desc_*                       —— generate/wiki.rs 描述缓存测试残留
@@ -40,9 +41,16 @@ function Preview-Deletes {
     }
 }
 
-# ---- 1. APPDATA 下的 key 测试夹具（新名 code-repo-wiki 与历史旧名 repo-wiki 双清） ----
+# ---- 1. 用户级配置根下的 key 测试夹具（新 home 点目录与历史 APPDATA 双清） ----
 $keyResidue = [System.Collections.Generic.List[string]]::new()
 foreach ($appName in @('code-repo-wiki', 'repo-wiki')) {
+    # v41 起 home 点目录（Windows %USERPROFILE%\.code-repo-wiki）
+    $homeDir = Join-Path $env:USERPROFILE ".$appName"
+    if (Test-Path -LiteralPath $homeDir) {
+        Get-ChildItem -LiteralPath $homeDir -Directory -Filter 'key-test-*' -ErrorAction SilentlyContinue |
+            ForEach-Object { $keyResidue.Add($_.FullName) }
+    }
+    # v41 前历史位置（%APPDATA%，迁移后旧目录保留）
     $appData = Join-Path $env:APPDATA $appName
     if (Test-Path -LiteralPath $appData) {
         Get-ChildItem -LiteralPath $appData -Directory -Filter 'key-test-*' -ErrorAction SilentlyContinue |

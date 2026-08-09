@@ -31,4 +31,4 @@ embed Key 缺失或运行期失败时自动降级为纯文本搜索，`search`/`
 
 - 二进制/命令名：v37 起 `code-repo-wiki`（此前 `repo-wiki`），两者不共存。
 - 产物目录：v37 起 `.code-repo-wiki/`（此前 `.repo-wiki/`），改名时不迁移，删除重生成。
-- 用户级配置目录：v37 起 `%APPDATA%\code-repo-wiki\`（此前 `%APPDATA%\repo-wiki\`），改名时不迁移，删除重装并重新配置 key。
+- 用户级配置目录：v41 起 `~/.code-repo-wiki`（Windows `%USERPROFILE%\.code-repo-wiki`，自动迁移旧目录内容）；v37–v40 为 `%APPDATA%\code-repo-wiki\`（此前 `%APPDATA%\repo-wiki\`，改名时不迁移，删除重装并重新配置 key）。

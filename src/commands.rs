@@ -270,20 +270,19 @@ pub fn install(root: &crate::project::ProjectRoot, opts: &InstallOptions) -> Res
     // Claude Code 不读 AGENTS.md，注册 MCP 时文档指引随之注入）
     install_wiki(root, opts.claude)?;
 
-    // 7. git hooks（v33：标记升级，用户自定义保留）
-    let hooks_installed = install_hooks(project_root)?;
+    // 7. git hooks（v41：新装独立脚本；既有用户 hook 尾部追加块共存）
+    let hooks_present = install_hooks(project_root)?;
 
     println!("✓ code-repo-wiki 安装完成");
     println!();
     println!("日常使用（傻瓜式全自动，无需记忆命令）：");
-    if hooks_installed > 0 {
-        println!("  1. git commit 后 wiki 自动增量更新（post-commit/post-merge hook 已装）");
+    if hooks_present {
+        println!("  1. git commit 后 wiki 自动增量更新（post-commit/post-merge hook 已配置）");
     } else {
         println!(
-            "  1. git commit 后 wiki 自动增量更新——hook 未安装（已有其他 hook 占用，保留未覆盖），"
+            "  1. git commit 后 wiki 自动增量更新——hook 未安装（未检测到 .git 目录），"
         );
-        println!("     需要自动更新请先移除 .git/hooks/post-commit/post-merge 后重跑 install；");
-        println!("     或使用命令 2/3 手动/常驻更新");
+        println!("     使用命令 2/3 手动/常驻更新");
     }
     println!("  2. 手动一条命令：code-repo-wiki update（首次自动全量生成，之后自动增量；");
     println!("     无变更秒回，失败模块自动补偿重试，尾部自动 lint 复核）");
@@ -292,16 +291,21 @@ pub fn install(root: &crate::project::ProjectRoot, opts: &InstallOptions) -> Res
     Ok(())
 }
 
-/// git hook 内容标记（升级判定与 uninstall 删除判定共用的「是否 code-repo-wiki
-/// 所有」判据；用户自定义 hook 不含此标记，安装/卸载均不触碰）
-pub const HOOK_MARKER: &str = "# code-repo-wiki managed";
+/// git hook 追加块开始标记（v41 方案：与用户既有 hook 共存——尾部追加
+/// 标记块，升级判定与卸载剥离判定共用「是否 code-repo-wiki 所有」判据；
+/// 用户自定义 hook 不含此标记，不会被覆盖，只追加块）
+pub const HOOK_MARKER: &str = "# code-repo-wiki: append-begin";
 
-/// v37 改名前的 hook 标记（v33 旧模板）。升级/卸载时一并识别——改名后
-/// 旧 hook 里的 `repo-wiki update` 命令已不存在，残留只会静默失效。
+/// git hook 追加块结束标记（与 [`HOOK_MARKER`] 成对，剥离时按区间删除）
+pub const HOOK_END_MARKER: &str = "# code-repo-wiki: append-end";
+
+/// v37 改名前的 hook 标记（v33 旧模板——独立脚本式）。升级/卸载时一并
+/// 识别——改名后旧 hook 里的 `repo-wiki update` 命令已不存在，残留只会
+/// 静默失效。
 pub const LEGACY_HOOK_MARKER: &str = "# repo-wiki managed";
 
-/// hook 内容是否属于本工具（当前标记、v37 旧标记、或 v33 前旧模板都算——
-/// 旧 hook 是本工具旧版本的产物，升级覆盖与卸载删除都应覆盖它）。
+/// hook 内容是否属于本工具（追加块标记、v37 旧标记、或 v33 前旧模板都
+/// 算——旧 hook 是本工具旧版本的产物，升级剥离与卸载删除都应覆盖它）。
 /// v33 前旧模板无 managed 标记，特征行是注释里的
 /// `auto-update wiki on commit`（用户/第三方 hook 不会写这行）。
 fn hook_is_ours(content: &str) -> bool {
@@ -310,7 +314,7 @@ fn hook_is_ours(content: &str) -> bool {
         || content.contains("auto-update wiki on commit")
 }
 
-/// 生成 hook 脚本内容
+/// 生成独立 hook 脚本内容（新装/整文件升级场景）
 ///
 /// `#!/bin/sh` + LF：Windows 上由 Git for Windows 的 sh 执行（POSIX 语义，
 /// 绝非 PowerShell）；`cd` 到仓库顶层保证 --root 无关；`command -v` 探测
@@ -325,6 +329,50 @@ fn hook_content() -> String {
     )
 }
 
+/// 生成追加块内容（v41：无 shebang——追加在用户 hook 尾部；`cd` 到仓库
+/// 顶层保证位置；每条命令带 `|| exit 0`/`|| echo` 满足 `set -e` 隔离——
+/// 单条失败不传播为 git hook 失败，也不被静默吞掉）
+fn hook_block() -> String {
+    format!(
+        "{0}\n# 自动更新 wiki（追加块，与仓库既有 hook 共存；用户 hook 若以 exit 结束，\n# 本块不会执行——post-commit 场景罕见，若需保证请移除既有 hook 后重装）\ncd \"$(git rev-parse --show-toplevel)\" 2>/dev/null || exit 0\ncommand -v code-repo-wiki >/dev/null 2>&1 || exit 0\nmkdir -p .code-repo-wiki 2>/dev/null || exit 0\ncode-repo-wiki update 2>>.code-repo-wiki/update-error.log || echo \"code-repo-wiki: wiki 更新失败（详见 .code-repo-wiki/update-error.log）\" >&2\n{1}\n",
+        HOOK_MARKER, HOOK_END_MARKER
+    )
+}
+
+/// 剥离追加块区间（begin 标记行到 end 标记行含两端），返回剩余内容。
+/// 无区间时原样返回（幂等）。剥离后 trim——去掉区间剥除留下的多余空行。
+fn strip_hook_block(content: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let begin = lines.iter().position(|l| l.trim() == HOOK_MARKER);
+    let end = lines.iter().position(|l| l.trim() == HOOK_END_MARKER);
+    match (begin, end) {
+        (Some(b), Some(e)) if b <= e => {
+            let mut kept: Vec<&str> = Vec::new();
+            for (i, line) in lines.iter().enumerate() {
+                if i < b || i > e {
+                    kept.push(line);
+                }
+            }
+            kept.join("\n").trim().to_string()
+        }
+        // 区间不完整（只有一端）→ 保守不动（不破坏用户 hook）
+        _ => content.trim().to_string(),
+    }
+}
+
+/// 在既有内容尾部追加块（块不存在时；已存在则整文件升级走
+/// [`replace_hook_block`]）
+fn append_hook_block(existing: &str, block: &str) -> String {
+    format!("{}\n\n{}", existing.trim_end(), block)
+}
+
+/// 替换既有内容中的追加块区间（begin-end 整体替换为新块——升级场景，
+/// 保留区间外的用户内容）
+fn replace_hook_block(existing: &str, block: &str) -> String {
+    let stripped = strip_hook_block(existing);
+    format!("{}\n\n{}", stripped, block)
+}
+
 /// 原子写 hook 并设置执行位（unix；Windows 由 sh 解释执行无需执行位）
 fn write_hook(path: &std::path::Path, content: &str) -> Result<()> {
     crate::fs::write_file_atomic(path, content)?;
@@ -333,50 +381,97 @@ fn write_hook(path: &std::path::Path, content: &str) -> Result<()> {
     Ok(())
 }
 
-/// 安装 git hooks（post-commit/post-merge）；返回成功安装的 hook 数量
-/// （新装+升级；跳过/保留不计），供 install 总结语按实际渲染
+/// 检测 core.hooksPath 配置（v41）：Git 从该目录加载 hook——若指向
+/// .git/hooks 之外，写入 .git/hooks 的 hook 不会生效，安装前必须提示。
+/// 返回配置值（未配置返回 None）。
+fn detect_core_hooks_path(project_root: &std::path::Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["config", "--get", "core.hooksPath"])
+        .current_dir(project_root)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+/// 安装 git hooks（post-commit/post-merge）；返回（新装/升级数量,
+/// 任一 hook 文件最终是否存在）——第二值供总结语区分「已配置」与
+/// 「未检测到 .git 目录」（v41：全部已最新时 installed=0 但 hook 可用，
+/// 不再误报「未安装」）
 ///
-/// v33 升级语义：
-/// - 不存在 → 新建
-/// - 已存在且含 code-repo-wiki 标记（旧模板/本模板）→ 内容不同则升级覆盖，
-///   相同则跳过（幂等）
-/// - 已存在且无标记（用户/第三方自定义 hook）→ 保留并提示，绝不覆盖
+/// v41 追加块语义（与用户既有 hook 共存，业界标记块惯例——husky 等
+/// 工具同款思路）：
+/// - 不存在 → 新建独立脚本
+/// - 已存在且含追加块标记 → 只替换块区间（保留区间外用户内容）
+/// - 已存在且含旧标记（v33/v37 独立脚本）→ 内容不同则整文件覆盖升级
+/// - 已存在且无标记（用户/第三方自定义 hook）→ 尾部追加块（不覆盖）
 /// - `.git/hooks` 不存在（非 git 仓库）→ 提示跳过（install 不因此失败）
-fn install_hooks(project_root: &std::path::Path) -> Result<usize> {
+/// - core.hooksPath 指向 .git/hooks 之外 → 提示（不失败）
+fn install_hooks(project_root: &std::path::Path) -> Result<bool> {
     let hooks_dir = project_root.join(".git").join("hooks");
     if !hooks_dir.exists() {
         println!("未检测到 .git 目录，跳过 git hook 安装");
-        return Ok(0);
+        return Ok(false);
+    }
+    if let Some(path) = detect_core_hooks_path(project_root) {
+        // hooksPath 指向 .git/hooks 本身 = 等同默认，无影响；指向其他
+        // 目录才提示（写入 .git/hooks 不会生效）
+        let hooks_dir_abs = hooks_dir.canonicalize().unwrap_or_else(|_| hooks_dir.clone());
+        let hooks_path_abs = std::path::Path::new(&path)
+            .canonicalize()
+            .unwrap_or_else(|_| std::path::PathBuf::from(&path));
+        if hooks_path_abs != hooks_dir_abs {
+            println!(
+                "? 检测到 git core.hooksPath = {path}——hook 将从该目录加载，写入 .git/hooks 不会生效（可移除该配置或将其指向 .git/hooks）"
+            );
+        }
     }
     let content = hook_content();
-    let mut installed = 0;
+    let block = hook_block();
     for hook_name in &["post-commit", "post-merge"] {
         let hook_path = hooks_dir.join(hook_name);
         if hook_path.exists() {
             let existing = std::fs::read_to_string(&hook_path)?;
             if hook_is_ours(&existing) {
-                if existing != content {
+                if existing.contains(HOOK_MARKER) {
+                    // 追加块场景：只替换块区间，保留用户内容
+                    let new_content = replace_hook_block(&existing, &block);
+                    if new_content != existing {
+                        write_hook(&hook_path, &new_content)?;
+                        println!("✓ git {hook_name} hook 已升级（追加块已更新，用户内容保留）");
+                    } else {
+                        println!("✓ git {hook_name} hook 已是最新");
+                    }
+                } else if existing != content {
                     write_hook(&hook_path, &content)?;
                     println!("✓ git {hook_name} hook 已升级");
-                    installed += 1;
                 } else {
                     println!("✓ git {hook_name} hook 已是最新");
                 }
             } else {
-                println!("? git {hook_name} hook 已存在且非 code-repo-wiki 内容，保留（未覆盖）");
+                // 用户/第三方 hook：尾部追加块，保留原内容
+                write_hook(&hook_path, &append_hook_block(&existing, &block))?;
+                println!("✓ git {hook_name} hook 已追加 code-repo-wiki 块（原内容保留）");
             }
         } else {
             write_hook(&hook_path, &content)?;
             println!("✓ git {hook_name} hook 已安装");
-            installed += 1;
         }
     }
-    Ok(installed)
+    Ok(true)
 }
 
-/// 移除 git hooks（仅 code-repo-wiki 标记的；用户自定义 hook 保留）
+/// 移除 git hooks（仅 code-repo-wiki 的；用户自定义 hook 保留）
 ///
-/// 与 install_hooks 的判定同源（当前标记或 v37 旧标记——旧模板无 managed
+/// v41：追加块场景剥离块区间（用户内容保留写回）；独立脚本场景删文件。
+/// 判定与 install_hooks 同源（当前标记或 v37 旧标记——旧模板无 managed
 /// 标记但含 repo-wiki 调用，同样识别，避免改名后旧 hook 残留静默失效）。
 fn remove_hooks(project_root: &std::path::Path) -> Result<()> {
     let hooks_dir = project_root.join(".git").join("hooks");
@@ -388,8 +483,19 @@ fn remove_hooks(project_root: &std::path::Path) -> Result<()> {
         if hook_path.exists() {
             let content = std::fs::read_to_string(&hook_path).unwrap_or_default();
             if hook_is_ours(&content) {
-                std::fs::remove_file(&hook_path)?;
-                println!("✓ git {hook_name} hook 已移除");
+                if content.contains(HOOK_MARKER) {
+                    // 追加块：剥离区间，用户内容保留
+                    let remaining = strip_hook_block(&content);
+                    if remaining.is_empty() {
+                        std::fs::remove_file(&hook_path)?;
+                    } else {
+                        write_hook(&hook_path, &remaining)?;
+                    }
+                    println!("✓ git {hook_name} hook 已移除 code-repo-wiki 块（原内容保留）");
+                } else {
+                    std::fs::remove_file(&hook_path)?;
+                    println!("✓ git {hook_name} hook 已移除");
+                }
             }
         }
     }

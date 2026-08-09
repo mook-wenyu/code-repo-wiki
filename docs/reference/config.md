@@ -4,7 +4,9 @@ v30 起绝大多数选项已硬编码为合理默认（输出目录恒 `.code-re
 
 ## 配置文件层级与合并
 
-项目级 `{root}/config.toml` 按**字段级合并**覆盖用户级配置（Windows `%APPDATA%\code-repo-wiki\config.toml`），未写出的键继承默认。字段级合并语义与 uv/Claude Code/cargo 官方 merge 一致：表递归合并，未命中的键取默认，数组整体覆盖。
+项目级 `{root}/config.toml` 按**字段级合并**覆盖用户级配置（Windows `%USERPROFILE%\.code-repo-wiki\config.toml`，其他 `~/.code-repo-wiki/config.toml`），未写出的键继承默认。字段级合并语义与 uv/Claude Code/cargo 官方 merge 一致：表递归合并，未命中的键取默认，数组整体覆盖。
+
+用户级目录解析优先级（v41 拍板，对齐 Codex/Claude Code 的 home 点目录惯例）：`CODE_REPO_WIKI_HOME` 环境变量（显式重定位）→ `%USERPROFILE%\.code-repo-wiki`（Windows）→ `~/.code-repo-wiki`。首次运行时自动从旧目录（`%APPDATA%\code-repo-wiki` / `~/code-repo-wiki`）**一次性迁移**（复制内容，旧目录保留不删）；`CODE_REPO_WIKI_HOME` 显式设置时不迁移。
 
 ## 全部可配键（注释式完整示例，与默认值一致，按需取消注释修改）
 
@@ -51,4 +53,4 @@ api_key_env = "BAILIAN_API_KEY"
 
 ## 迁移说明
 
-旧版本配置项（`scope`/`output`/`plan` 段、`embed.enabled`、`incremental.strategy` 等）已删除或硬编码，残留键会被**静默忽略**，可安全删除。v37 起用户级配置目录为 `%APPDATA%\code-repo-wiki\`（v37 之前为 `%APPDATA%\repo-wiki\`，改名时不迁移，直接删除重装并重新配置 key）。
+旧版本配置项（`scope`/`output`/`plan` 段、`embed.enabled`、`incremental.strategy` 等）已删除或硬编码，残留键会被**静默忽略**，可安全删除。用户级配置目录沿革：v37 起 `%APPDATA%\code-repo-wiki\`；v41 起 `~/.code-repo-wiki`（home 点目录惯例），首次运行自动迁移旧目录内容（旧目录保留）；v37 改名（`%APPDATA%\repo-wiki` → `%APPDATA%\code-repo-wiki`）时不迁移，删除重装并重新配置 key。

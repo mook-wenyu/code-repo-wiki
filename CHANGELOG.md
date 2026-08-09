@@ -38,6 +38,16 @@
   MCP 工具描述补「需先运行 generate」前置条件
 - 搜索完备性审计（v35）：代码库与 llms.txt 自身两份 Agent 索引的完整性/新鲜度
   比对分析与差距清单（CJK 分词、rerank、错误路径一致性、评测覆盖等）
+- **用户级配置目录迁移 home 点目录（v41）**：`%APPDATA%\code-repo-wiki`
+  → `%USERPROFILE%\.code-repo-wiki`（Unix `~/.code-repo-wiki`，对齐
+  Codex/Claude Code 点目录惯例）；`CODE_REPO_WIKI_HOME` 环境变量显式重定位；
+  首次运行从旧目录一次性迁移（复制内容，旧目录保留不删，显式设置
+  `CODE_REPO_WIKI_HOME` 时不迁移）；key 测试夹具清理脚本同步双路径
+- **git hooks 共存追加（v41）**：install 对已存在且非 code-repo-wiki 内容的
+  hook 改为**尾部追加标记块**（`# code-repo-wiki: append-begin/append-end`，
+  与 LFS 包装/memorix 等既有 hook 共存，再次 install 幂等只更新块，uninstall
+  剥离块并还原用户内容）；安装前检查 `core.hooksPath` 并提示指向其他目录时
+  hook 不生效
 - 安装集成合并（v33）：`install-wiki`/`uninstall-wiki`/`install-to-opencode`/
   `uninstall-from-opencode` 四子命令删除，全部并入 `install`/`uninstall`；
   MCP 注册默认写用户级全局 `opencode.json`（OpenCode 原生格式，多仓库共享），
