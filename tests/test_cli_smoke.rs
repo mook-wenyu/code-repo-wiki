@@ -255,6 +255,47 @@ fn test_sync_merges_manual_edit_into_state() {
     let _ = std::fs::remove_dir_all(&work_dir);
 }
 
+/// generate 文本模式进度提示（v46）：stderr 输出阶段行 + LLM 逐项进度，
+/// done 事件非 TTY 不渲染（完成摘要行由 stdout 接管——用户明确感知结束）。
+#[test]
+fn test_generate_progress_stderr() {
+    let work_dir = prepare_repo("progress_stderr");
+    let out = run_bin(&work_dir, &["generate", "-c", "config.toml"]);
+    assert!(
+        out.status.success(),
+        "generate 应成功，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // 首阶段行必输出（非 TTY 节流：阶段切换/跨 10 档必打）
+    assert!(
+        stderr.contains("进度 [扫描源码] 10%"),
+        "首阶段进度行应输出到 stderr，实际: {stderr}"
+    );
+    // LLM 密集阶段应有项级进度（生成知识卡片 / 生成 Wiki 页）
+    assert!(
+        stderr.contains("进度 [生成知识卡片]"),
+        "卡片生成阶段应有进度行，实际: {stderr}"
+    );
+    assert!(
+        stderr.contains("进度 [生成 Wiki 页]"),
+        "Wiki 页生成阶段应有进度行，实际: {stderr}"
+    );
+    // done 事件非 TTY 不渲染（完成摘要行由 stdout 打印）
+    assert!(
+        !stderr.contains("进度 [完成]"),
+        "done 事件非 TTY 不应渲染，实际: {stderr}"
+    );
+    // stdout 完成摘要（用户明确感知结束的信号）
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("生成完成"),
+        "stdout 应有完成摘要，实际: {stdout}"
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
+
 /// search text 引擎：generate 构建文本索引后，-e text --json 输出合法 JSON
 /// 且命中 authenticate（auth.rs 定义）
 #[test]

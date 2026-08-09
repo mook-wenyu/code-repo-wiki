@@ -142,6 +142,7 @@ pub async fn run_generation(
     config: &WikiConfig,
     root: &crate::project::ProjectRoot,
     extra_edits: &HashMap<String, Vec<String>>,
+    on_progress: &dyn Fn(crate::ProgressEvent),
 ) -> Result<GenerationOutput> {
     let start = Instant::now();
     // v32 8.1：三段内部计时（chunk/card/wiki）
@@ -183,7 +184,7 @@ pub async fn run_generation(
         config.wiki.language.clone(),
     );
     let mut cards = card_gen
-        .generate_all_cards(&chunks, extra_edits)
+        .generate_all_cards(&chunks, extra_edits, on_progress)
         .await?;
     // 特征追溯回填（演进计划 T3.3）：模块实体与特征实体的交集 → 特征名
     backfill_features(&mut cards, &chunks, graph);
@@ -195,8 +196,7 @@ pub async fn run_generation(
     let wiki_start = Instant::now();
     let wiki_gen = WikiGenerator::new(&provider, crate::config::schema::LLM_MAX_CONCURRENT);
     let mut documents =
-        generate_wiki_pages(&wiki_gen, &chunks, &cards, config, crate::config::schema::LLM_MAX_CONCURRENT, root, &build_entity_ranges(insights)).await;
-    tracing::info!("生成进度: 90% - Wiki 页面生成完成，共 {} 个页面", documents.len());
+        generate_wiki_pages(&wiki_gen, &chunks, &cards, config, crate::config::schema::LLM_MAX_CONCURRENT, root, &build_entity_ranges(insights), on_progress).await;
     let wiki_ms = wiki_start.elapsed().as_millis() as u64;
 
     // 5. 生成全局文档（架构概览 + 数据库 Schema，全量/增量共用同一辅助函数）
@@ -241,6 +241,7 @@ pub async fn run_generation_filtered(
     root: &crate::project::ProjectRoot,
     inc: &crate::incremental::IncrementalResult,
     extra_edits: &HashMap<String, Vec<String>>,
+    on_progress: &dyn Fn(crate::ProgressEvent),
 ) -> Result<GenerationOutput> {
     let start = Instant::now();
     let changed_files = &inc.changed_files;
@@ -419,7 +420,7 @@ pub async fn run_generation_filtered(
         config.wiki.language.clone(),
     );
     let mut cards = card_gen
-        .generate_all_cards(&chunks, extra_edits)
+        .generate_all_cards(&chunks, extra_edits, on_progress)
         .await?;
     // 特征追溯回填（演进计划 T3.3）：模块实体与特征实体的交集 → 特征名
     backfill_features(&mut cards, &chunks, graph);
@@ -430,7 +431,8 @@ pub async fn run_generation_filtered(
     let wiki_start = Instant::now();
     let wiki_gen = WikiGenerator::new(&provider, crate::config::schema::LLM_MAX_CONCURRENT);
     let mut documents =
-        generate_wiki_pages(&wiki_gen, &chunks, &cards, config, crate::config::schema::LLM_MAX_CONCURRENT, root, &build_entity_ranges(insights)).await;
+        generate_wiki_pages(&wiki_gen, &chunks, &cards, config, crate::config::schema::LLM_MAX_CONCURRENT, root, &build_entity_ranges(insights), on_progress).await;
+    tracing::info!("生成进度: 90% - Wiki 页面生成完成，共 {} 个页面", documents.len());
     let wiki_ms = wiki_start.elapsed().as_millis() as u64;
 
     // 5. 生成全局文档（架构概览 + 数据库 Schema）
@@ -543,6 +545,10 @@ fn backfill_features(cards: &mut [KnowledgeCard], chunks: &[Chunk], graph: &Know
 /// 卡片摘要按 chunk 索引一一对应；并发受 max_concurrent 信号量控制，
 /// join_all 保序收集——与串行版的产出顺序一致，页面集合不变。
 /// 失败页面跳过并告警（不中断整体生成）。
+// 例外说明（复杂度红线 5 参数规则）：8 个参数均为相互独立的上下文项
+// （生成器/输入/配置/并发/输出/进度回调），引入包装结构体反而降低调用点
+// 可读性；进度回调为显式注入契约（v46），不并入上下文结构。
+#[allow(clippy::too_many_arguments)]
 async fn generate_wiki_pages<P: LlmProvider>(
     wiki_gen: &WikiGenerator<'_, P>,
     chunks: &[Chunk],
@@ -551,12 +557,17 @@ async fn generate_wiki_pages<P: LlmProvider>(
     max_concurrent: usize,
     root: &crate::project::ProjectRoot,
     entity_ranges: &crate::output::citation::EntityRanges,
+    on_progress: &dyn Fn(crate::ProgressEvent),
 ) -> Vec<WikiDocument> {
     let languages = crate::output::wiki_languages(config);
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(max_concurrent.max(1)));
     let mut handles = Vec::with_capacity(chunks.len() * languages.len());
     // 记录每个任务的模块名（失败时写入 wiki_gen 的失败列表，T3.2）
     let mut task_modules = Vec::with_capacity(chunks.len() * languages.len());
+    // v46：LLM 逐页进度——并发任务完成计数（fetch_add 线程安全；单线程
+    // runtime 轮询下依然成立——join_all 在同一任务内并发轮询各 future）
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let total = (chunks.len() * languages.len()) as u32;
     for lang in &languages {
         let mut lang_cfg = config.clone();
         lang_cfg.wiki.language = lang.clone();
@@ -564,15 +575,27 @@ async fn generate_wiki_pages<P: LlmProvider>(
             let card_summary = cards.get(i).map(|c| c.summary.clone()).unwrap_or_default();
             let semaphore = semaphore.clone();
             let lang_cfg = lang_cfg.clone();
+            let done = done.clone();
             task_modules.push(chunk.module_path.join("::"));
             handles.push(async move {
                 let _permit = semaphore
                     .acquire()
                     .await
                     .map_err(|_| anyhow::anyhow!("信号量已关闭"))?;
-                wiki_gen
+                let result = wiki_gen
                     .generate_wiki_page(chunk, &card_summary, &lang_cfg, root, Some(entity_ranges))
-                    .await
+                    .await;
+                // 成败均计数并回报进度（失败项也算「已处理」——总数是任务数）
+                // v46：wiki 项级区间 90..95（系数 5）——上限与 output 阶段点
+                //（95%）相接，整条事件流百分比保持单调（90→90+…→95→98→100）
+                let d = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                on_progress(crate::ProgressEvent {
+                    stage: "wiki",
+                    percent: (90 + (d as u64 * 5) / total.max(1) as u64) as u8,
+                    current: Some(d as u32),
+                    total: Some(total),
+                });
+                result
             });
         }
     }

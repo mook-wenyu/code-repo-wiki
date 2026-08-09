@@ -191,6 +191,10 @@ pub struct ProgressEvent {
     pub stage: &'static str,
     /// 进度百分比（0-100）
     pub percent: u8,
+    /// 阶段内已完成项数（LLM 逐项进度——卡片/页面级；无项级进度时为 None）
+    pub current: Option<u32>,
+    /// 阶段内总项数（与 current 配套）
+    pub total: Option<u32>,
 }
 
 /// 生成模式（票 12：双流水线合并为单入口的 mode 区分）
@@ -357,7 +361,7 @@ pub fn run_pipeline_with_progress(
     let file_insights = scan.insights;
     let files_failed = scan.files_failed;
     timings.scan_parse_ms = start.elapsed().as_millis() as u64;
-    on_progress(ProgressEvent { stage: "scanning", percent: 10 });
+    on_progress(ProgressEvent { stage: "scanning", percent: 10, current: None, total: None });
     if file_insights.is_empty() {
         bail!("未找到任何源文件");
     }
@@ -373,7 +377,7 @@ pub fn run_pipeline_with_progress(
     let mut graph = analysis::build_graph(&file_insights)?;
     attach_features(&mut graph, &config);
     timings.graph_ms = start.elapsed().as_millis() as u64 - timings.scan_parse_ms;
-    on_progress(ProgressEvent { stage: "analyzing", percent: 25 });
+    on_progress(ProgressEvent { stage: "analyzing", percent: 25, current: None, total: None });
     stats.total_entities = graph.graph.node_count();
     stats.total_edges = graph.graph.edge_count();
     stats.modules_detected = graph.modules.len();
@@ -402,6 +406,9 @@ pub fn run_pipeline_with_progress(
             }
         }
         tracing::info!("无变更，跳过生成");
+        // v46：no-op 早退也发 done 事件——进度流保持终态完整
+        //（--progress-json 消费者无需依赖 EOF 推断完成）
+        on_progress(ProgressEvent { stage: "done", percent: 100, current: None, total: None });
         let stats = AnalysisStats {
             files_scanned: file_insights.len(),
             generation_time_ms: start.elapsed().as_millis() as u64,
@@ -419,17 +426,21 @@ pub fn run_pipeline_with_progress(
     // LLM 输入（collect_manual_edits：旧状态指纹比对 + 模块归属精确匹配）。
     // 增量模式只对变更文件 + 语义传播判定的受影响模块过滤生成
     //（run_generation_filtered），全量模式全量生成。
-    on_progress(ProgressEvent { stage: "chunking", percent: 30 });
+    // v46：cards/wiki 两个阶段点（60/90）在 run_generation 前发射——LLM
+    // 逐项进度事件在 run_generation 内部按 60..90 / 90..95 区间插值，
+    // 阶段点在前保证整条事件流百分比单调（30→60→90→60+…→90…→95→98→100）。
+    on_progress(ProgressEvent { stage: "chunking", percent: 30, current: None, total: None });
+    on_progress(ProgressEvent { stage: "cards", percent: 60, current: None, total: None });
+    on_progress(ProgressEvent { stage: "wiki", percent: 90, current: None, total: None });
     let rt = get_global_runtime();
     let extra_edits = collect_manual_edits(old_state.as_ref());
     let mut gen_output = if let Some(inc) = &inc_result {
         rt.block_on(generate::run_generation_filtered(
-            &graph, &file_insights, &config, root, inc, &extra_edits,
+            &graph, &file_insights, &config, root, inc, &extra_edits, &on_progress,
         ))?
     } else {
-        rt.block_on(generate::run_generation(&graph, &file_insights, &config, root, &extra_edits))?
+        rt.block_on(generate::run_generation(&graph, &file_insights, &config, root, &extra_edits, &on_progress))?
     };
-    on_progress(ProgressEvent { stage: "cards", percent: 60 });
     // v32 8.1：generate 侧内部段（chunk/card/wiki）合并进总计时
     timings.chunk_ms = gen_output.timings.chunk_ms;
     timings.card_ms = gen_output.timings.card_ms;
@@ -503,7 +514,8 @@ pub fn run_pipeline_with_progress(
     // Phase 4: 输出（render_all 内部同步写导出快照；产物集合 diff 清理
     // 全量/增量统一：旧状态记录过但本次未生成的产物（含已删模块的
     // 旧页面/卡片）一律清理，module_{n} 档不再漏删）
-    on_progress(ProgressEvent { stage: "wiki", percent: 90 });
+    // v46：wiki 阶段点在 run_generation 前已发射（90）——此处不再重复，
+    // 项级 wiki 事件上限 95（与 output 95 相接，保持百分比单调）。
     output::render_all(&gen_output.documents, &gen_output.cards, &graph, &config, &protected)?;
     // 保留集 = 当前扫描的全部模块（graph.modules 基于全部 insights 检测，
     // 含增量未受影响的模块）：增量只重新生成受影响模块，未受影响模块的
@@ -526,7 +538,7 @@ pub fn run_pipeline_with_progress(
         - timings.card_ms
         - timings.wiki_ms
         - timings.index_guide_ms;
-    on_progress(ProgressEvent { stage: "output", percent: 95 });
+    on_progress(ProgressEvent { stage: "output", percent: 95, current: None, total: None });
 
     // Phase 5: 构建/增量更新搜索索引
     let index_result = if is_incremental {
@@ -550,7 +562,7 @@ pub fn run_pipeline_with_progress(
         - timings.wiki_ms
         - timings.index_guide_ms
         - timings.render_ms;
-    on_progress(ProgressEvent { stage: "index", percent: 98 });
+    on_progress(ProgressEvent { stage: "index", percent: 98, current: None, total: None });
 
     // Phase 6: 保存增量状态（含文档指纹用于人工修改保护）
     // A3（v14）：git 基线获取失败显式区分——非 git 仓库（info：预期
@@ -586,7 +598,7 @@ pub fn run_pipeline_with_progress(
     timings.total_ms = start.elapsed().as_millis() as u64;
     write_last_timings(&config, &timings);
 
-    on_progress(ProgressEvent { stage: "done", percent: 100 });
+    on_progress(ProgressEvent { stage: "done", percent: 100, current: None, total: None });
     stats.generation_time_ms = start.elapsed().as_millis() as u64;
     // 展示用统计（失败模块真源在 generation_stats；save 调用已直接使用
     // generation_stats.failed_modules——顺序修复：此前在此处才赋值，晚于

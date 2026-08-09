@@ -33,7 +33,7 @@ code-repo-wiki generate
 
 | 命令 | 说明 |
 |---|---|
-| `generate` | 全量生成 Wiki（分阶段进度提示 + 完成摘要） |
+| `generate` | 全量生成 Wiki（分阶段进度提示 + LLM 逐项进度 + 完成摘要） |
 | `update` | 增量更新：无变更秒回，失败模块自动补偿重试，尾部自动 lint 复核 |
 | `watch` | 常驻监听，代码保存即自动更新（内置崩溃自愈） |
 | `search --query "关键词"` | 代码语义搜索——默认 hybrid 引擎 + top-k 10，**均可省略**；另有 `ast-search` 精确符号查找 |

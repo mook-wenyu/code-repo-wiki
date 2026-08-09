@@ -4,8 +4,8 @@
 
 | 命令 | 用途 |
 |---|---|
-| `generate` | 全量生成 Wiki（分阶段进度提示 + 完成摘要；`-o` 输出覆盖、`--force` 强制重写、`--progress-json` 机器可读进度） |
-| `update` | 增量更新（git diff / 文件指纹；分阶段进度提示 + 完成摘要；`--dry-run` 预览不执行） |
+| `generate` | 全量生成 Wiki（分阶段进度提示 + LLM 逐项进度 `N/M` + 完成摘要；`-o` 输出覆盖、`--force` 强制重写、`--progress-json` 机器可读进度） |
+| `update` | 增量更新（git diff / 文件指纹；分阶段进度提示 + LLM 逐项进度 + 完成摘要；`--dry-run` 预览不执行） |
 | `watch` | 监听文件变更自动更新（内置崩溃自愈循环） |
 | `sync` | 以 Git 工作区内容同步指纹库（不触发 LLM） |
 | `status` | 查看 Wiki 状态（含语义索引 / LLM 状态行） |

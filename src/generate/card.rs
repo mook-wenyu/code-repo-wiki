@@ -146,8 +146,13 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
         &self,
         chunks: &[Chunk],
         extra_edits: &std::collections::HashMap<String, Vec<String>>,
+        on_progress: &dyn Fn(crate::ProgressEvent),
     ) -> Result<Vec<KnowledgeCard>> {
         let mut handles = Vec::with_capacity(chunks.len());
+        // v46：LLM 逐卡进度——总任务数=非空 chunk 数；并发完成计数
+        //（fetch_add 线程安全；单线程 runtime 轮询下依然成立）
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let total = chunks.iter().filter(|c| !c.is_empty()).count() as u32;
 
         // task_modules 与 handles 同源收集：循环内仅对非空 chunk push，
         // 下方 zip 时二者长度/顺序 1:1，空 chunk 跳过不会造成失败归因错位
@@ -186,7 +191,19 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
             // async move 拥有 pending（避免 future 借用循环内临时值）；
             // chunk 为 &Chunk，self 为 &self，均为引用移动
             let generator = self;
-            handles.push(async move { generator.generate_card(chunk, &pending).await });
+            let done = done.clone();
+            handles.push(async move {
+                let result = generator.generate_card(chunk, &pending).await;
+                // 成败均计数并回报进度（失败项也算「已处理」——总数是任务数）
+                let d = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                on_progress(crate::ProgressEvent {
+                    stage: "cards",
+                    percent: (60 + (d as u64 * 30) / total.max(1) as u64) as u8,
+                    current: Some(d as u32),
+                    total: Some(total),
+                });
+                result
+            });
         }
 
         let results = join_all(handles).await;
@@ -652,7 +669,7 @@ mod tests {
             vec!["人工修改待同步: wiki/zh/src.md 内容摘要: 新修改".to_string()],
         );
 
-        let cards = generator.generate_all_cards(&[chunk], &extra).await.unwrap();
+        let cards = generator.generate_all_cards(&[chunk], &extra, &|_| {}).await.unwrap();
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].pending_manual_edits.len(), 2, "旧记录 + 新记录应合并为 2 条");
         assert!(cards[0].pending_manual_edits.iter().any(|n| n.contains("旧记录")));
@@ -662,6 +679,7 @@ mod tests {
         let cards2 = generator.generate_all_cards(
             &[make_test_chunk()],
             &extra,
+            &|_| {},
         ).await.unwrap();
         assert!(
             cards2[0].pending_manual_edits.len() <= 2,
@@ -693,7 +711,7 @@ mod tests {
             vec!["人工修改待同步: wiki/zh/src.md 内容摘要: 新修改".to_string()],
         );
 
-        let cards = generator.generate_all_cards(&[chunk], &extra).await.unwrap();
+        let cards = generator.generate_all_cards(&[chunk], &extra, &|_| {}).await.unwrap();
         assert_eq!(cards.len(), 1, "旧卡片读失败不应中断整批生成");
         assert_eq!(
             cards[0].pending_manual_edits,
@@ -722,7 +740,7 @@ mod tests {
         let (config, dir) = card_fixture("interleave-fail", "src", "# src\n\n## 摘要\n旧内容");
         let fail_gen = CardGenerator::new(&failing, config, 1, "zh".into());
         let cards = fail_gen
-            .generate_all_cards(&[empty.clone(), make_test_chunk()], &std::collections::HashMap::new())
+            .generate_all_cards(&[empty.clone(), make_test_chunk()], &std::collections::HashMap::new(), &|_| {})
             .await
             .unwrap();
         assert!(cards.is_empty(), "失败模块不产出卡片");
@@ -738,7 +756,7 @@ mod tests {
         let (config2, dir2) = card_fixture("interleave-ok", "src", "# src\n\n## 摘要\n旧内容");
         let gen2 = CardGenerator::new(&provider, config2, 1, "zh".into());
         let cards2 = gen2
-            .generate_all_cards(&[empty, make_test_chunk()], &std::collections::HashMap::new())
+            .generate_all_cards(&[empty, make_test_chunk()], &std::collections::HashMap::new(), &|_| {})
             .await
             .unwrap();
         assert_eq!(cards2.len(), 1, "成功卡片不得静默丢失");

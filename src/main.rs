@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -380,6 +381,60 @@ fn stage_zh(stage: &str) -> &str {
     }
 }
 
+/// v46：文本进度渲染状态（节流判定的上一事件快照）。
+#[derive(Default)]
+struct ProgressRenderState {
+    last_stage: Option<&'static str>,
+    last_percent: u8,
+    last_quarter: Option<u32>,
+}
+
+/// 渲染一条进度事件，返回要打印的文本（None = 无实质变化，跳过）。
+///
+/// - TTY：行内刷新（`\r` + 清行），阶段切换时先换行；done 事件清行
+///   （清理行内残留，交由完成摘要收尾）。
+/// - 非 TTY（管道/重定向/后台）：普通文本行，按 阶段切换 / 百分比跨
+///   10 档 / 每 5 项 节流，避免刷屏（对齐 Ubuntu CLI 规范与 clig.dev）。
+/// - 有 current/total 时显示任务单位「N/M（百分比）」（LLM 逐项进度），
+///   无项级进度时显示阶段百分比。
+fn render_progress(
+    evt: &code_repo_wiki::ProgressEvent,
+    tty: bool,
+    state: &mut ProgressRenderState,
+) -> Option<String> {
+    if evt.stage == "done" {
+        // 完成态：TTY 下清掉行内残留（摘要行随后接管 stdout）；非 TTY 无残留
+        return if tty { Some("\r\u{1b}[K".to_string()) } else { None };
+    }
+    let line = match (evt.current, evt.total) {
+        (Some(c), Some(t)) if t > 0 => {
+            format!("进度 [{}] {}/{}（{}%）", stage_zh(evt.stage), c, t, evt.percent)
+        }
+        _ => format!("进度 [{}] {}%", stage_zh(evt.stage), evt.percent),
+    };
+    let stage_changed = state.last_stage != Some(evt.stage);
+    if tty {
+        // 行内刷新：阶段切换先换行（上一阶段完整行保留），同阶段原地覆盖
+        let prefix = if state.last_stage.is_some() && stage_changed { "\n" } else { "" };
+        state.last_stage = Some(evt.stage);
+        state.last_percent = evt.percent;
+        state.last_quarter = evt.current;
+        return Some(format!("{prefix}\r\u{1b}[K{line}"));
+    }
+    // 非 TTY 节流：阶段切换 / 百分比跨 10 档 / 每 5 项
+    let quarter = evt.current.map(|c| c / 5);
+    let changed = stage_changed
+        || evt.percent / 10 != state.last_percent / 10
+        || quarter != state.last_quarter;
+    if changed {
+        state.last_stage = Some(evt.stage);
+        state.last_percent = evt.percent;
+        state.last_quarter = quarter;
+        return Some(line);
+    }
+    None
+}
+
 fn main() -> anyhow::Result<()> {
     // t03 契约（v21 实证发现）：tracing_subscriber::fmt() 默认 writer 是
     // stdout——所有日志会混入业务 stdout，破坏外部 AI Coding Agent 的
@@ -406,22 +461,30 @@ fn main() -> anyhow::Result<()> {
             // 事实源可解析）。--progress-json 保持原样（插件流式解析）。
             let started = std::time::Instant::now();
             let result = if progress_json {
-                // JSONL 进度输出：插件 wiki_generate 流式解析
+                // JSONL 进度输出：插件 wiki_generate 流式解析。
+                // v46：新增 current/total 字段（LLM 逐项进度；无项级时为 null）
                 code_repo_wiki::run_pipeline_with_progress(
                     config.as_deref(), output.as_deref(), force, &root,
                     &code_repo_wiki::GenerationMode::Full,
                     &|evt| {
-                        println!(r#"{{"stage":"{}","progress":{}}}"#, evt.stage, evt.percent);
+                        let cur = evt.current.map(|c| c.to_string()).unwrap_or_else(|| "null".into());
+                        let tot = evt.total.map(|c| c.to_string()).unwrap_or_else(|| "null".into());
+                        println!(r#"{{"stage":"{}","progress":{},"current":{},"total":{}}}"#, evt.stage, evt.percent, cur, tot);
                     },
                 )?
             } else {
+                // v46：文本模式 TTY 感知渲染——终端下行内刷新（\r 原地更新），
+                // 非终端（管道/CI/后台）节流输出普通文本行；均走 stderr
+                //（clig.dev 约定），不污染 stdout 业务输出
+                let tty = std::io::stderr().is_terminal();
+                let render_state = std::sync::Mutex::new(ProgressRenderState::default());
                 code_repo_wiki::run_pipeline_with_progress(
                     config.as_deref(), output.as_deref(), force, &root,
                     &code_repo_wiki::GenerationMode::Full,
                     &|evt| {
-                        // 文本模式阶段行（stderr）；done 阶段由完成摘要行取代
-                        if evt.stage != "done" {
-                            tracing::info!("进度 [{}] {}%", stage_zh(evt.stage), evt.percent);
+                        let mut st = render_state.lock().expect("进度渲染锁中毒");
+                        if let Some(s) = render_progress(&evt, tty, &mut st) {
+                            eprint!("{s}");
                         }
                     },
                 )?
@@ -474,10 +537,14 @@ fn main() -> anyhow::Result<()> {
                         change_kind: None,
                     },
                     &|evt| {
-                        println!(r#"{{"stage":"{}","progress":{}}}"#, evt.stage, evt.percent);
+                        let cur = evt.current.map(|c| c.to_string()).unwrap_or_else(|| "null".into());
+                        let tot = evt.total.map(|c| c.to_string()).unwrap_or_else(|| "null".into());
+                        println!(r#"{{"stage":"{}","progress":{},"current":{},"total":{}}}"#, evt.stage, evt.percent, cur, tot);
                     },
                 )?
             } else {
+                let tty = std::io::stderr().is_terminal();
+                let render_state = std::sync::Mutex::new(ProgressRenderState::default());
                 code_repo_wiki::run_pipeline_with_progress(
                     config.as_deref(), output.as_deref(), force, &root,
                     &code_repo_wiki::GenerationMode::Incremental {
@@ -485,8 +552,9 @@ fn main() -> anyhow::Result<()> {
                         change_kind: None,
                     },
                     &|evt| {
-                        if evt.stage != "done" {
-                            tracing::info!("进度 [{}] {}%", stage_zh(evt.stage), evt.percent);
+                        let mut st = render_state.lock().expect("进度渲染锁中毒");
+                        if let Some(s) = render_progress(&evt, tty, &mut st) {
+                            eprint!("{s}");
                         }
                     },
                 )?
@@ -940,4 +1008,66 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ev(
+        stage: &'static str,
+        percent: u8,
+        current: Option<u32>,
+        total: Option<u32>,
+    ) -> code_repo_wiki::ProgressEvent {
+        code_repo_wiki::ProgressEvent { stage, percent, current, total }
+    }
+
+    #[test]
+    fn test_render_progress_non_tty_throttles() {
+        let mut st = ProgressRenderState::default();
+        // 首事件必打印（阶段切换）
+        let s1 = render_progress(&ev("scanning", 10, None, None), false, &mut st);
+        assert!(s1.is_some());
+        assert!(s1.unwrap().contains("进度 [扫描源码] 10%"));
+        // 同阶段同档：跳过
+        assert!(render_progress(&ev("scanning", 10, None, None), false, &mut st).is_none());
+        // 阶段切换：必打印
+        let s2 = render_progress(&ev("analyzing", 25, None, None), false, &mut st).unwrap();
+        assert!(s2.contains("进度 [构建知识图谱] 25%"));
+        // 项级进度：进入 cards 阶段首事件打印（0/10）
+        let s3 = render_progress(&ev("cards", 62, Some(0), Some(10)), false, &mut st).unwrap();
+        assert!(s3.contains("进度 [生成知识卡片] 0/10（62%）"));
+        // 同 quarter（0..=4）：跳过
+        assert!(render_progress(&ev("cards", 62, Some(2), Some(10)), false, &mut st).is_none());
+        // 跨 quarter（5/10）：打印
+        let s4 = render_progress(&ev("cards", 62, Some(5), Some(10)), false, &mut st).unwrap();
+        assert!(s4.contains("5/10（62%）"));
+        // 百分比跨 10 档（80%）：打印
+        let s5 = render_progress(&ev("cards", 80, Some(10), Some(10)), false, &mut st).unwrap();
+        assert!(s5.contains("10/10（80%）"));
+        // done：非 TTY 无残留（摘要行由命令 stdout 打印）
+        assert!(render_progress(&ev("done", 100, None, None), false, &mut st).is_none());
+    }
+
+    #[test]
+    fn test_render_progress_tty_inline() {
+        let mut st = ProgressRenderState::default();
+        // 首事件：行内刷新（无前导换行）
+        let s1 = render_progress(&ev("scanning", 10, None, None), true, &mut st).unwrap();
+        assert!(s1.starts_with('\r'));
+        // TTY 同事件重复：仍打印（行内原地刷新）
+        assert!(render_progress(&ev("scanning", 10, None, None), true, &mut st).is_some());
+        // 阶段切换：前导换行
+        let s2 = render_progress(&ev("analyzing", 25, None, None), true, &mut st).unwrap();
+        assert!(s2.starts_with("\n\r"));
+        // 项级进度文本
+        let s3 = render_progress(&ev("cards", 62, Some(0), Some(10)), true, &mut st).unwrap();
+        assert!(s3.contains("0/10（62%）"));
+        // done：清行清理残留
+        assert_eq!(
+            render_progress(&ev("done", 100, None, None), true, &mut st),
+            Some("\r\u{1b}[K".to_string())
+        );
+    }
 }
