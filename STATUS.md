@@ -816,3 +816,8 @@ knowing 全量 12 仓 mock 数据点齐（v29 9 + v30 3：rails 5239 实体/58 �
 
 - Unity 项目 3143 文件首次 generate 实测反馈「25% 后不动」：①解析器合法 kind "var"（Go 包级变量）漏映射 → 90+ 条「未知实体类型」warn 同毫秒刷屏 → 补 var → Variable 映射；②循环依赖全量 Debug 打印无截断（跨模块同名字段/方法按名互连的巨型伪 SCC 可达数百节点、30K+ 字符刷屏）→ 新增 format_cycles 紧凑格式化（每链 ≤8 名称、总链数/节点数摘要）③analyzing 25% 与 chunking 30% 之间大仓分钟级无输出 → 补 analyzing 27% 事件（25→27→30 单调推进）
 - 验证：format_cycles 3 单测 + lib 486 全绿 + progress_test（含 27 断言）+ clippy 0；遗留：跨模块同名字段/方法伪边深修（调用边同文件优先匹配）列入后续
+## v49 大仓模块检测卡死修复（2026-08-10）
+
+- 用户 Unity 大仓实测「analyzing 27% 后不动」→ 根因：module.rs 旧实现对每个社区调用 count_edges 三次（cohesion/coupling/expanded），每次遍历全图边两遍——O(社区数 × 边数)，数百目录 × 约 20 万边 × 5 遍 ≈ 数亿次迭代
+- 重构为单遍边聚合：File→社区/实体→File 归位索引一次遍历 + 单遍非 Contains 边累加各社区 internal/external——O(边 + 社区)；语义严格等价（等价性论证：跨界边对两端社区各计一次 external 与旧逐社区遍历一致）
+- 测试：6/6（test_cohesion/test_coupling 改用 detect 断言、新增聚合与暴力参照逐社区数值一致测试、300 目录×10 文件大图冒烟 0.02s）；lib 488 全绿 + clippy 0

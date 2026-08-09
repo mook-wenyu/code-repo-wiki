@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use petgraph::visit::{EdgeRef, IntoEdgeReferences};
 
@@ -26,10 +26,81 @@ impl<'a> ModuleDetector<'a> {
     /// 的唯一来源，重名会互相覆盖）。
     ///
     /// cohesion/coupling 仅作为**描述性元数据**写入 ModuleCluster（见
-    /// count_edges 注释：历史上阈值拒绝导致"全有或全无"的脆弱分界）。
+    /// v49 聚合注释：历史上阈值拒绝导致"全有或全无"的脆弱分界）。
     pub fn detect(&self) -> Vec<ModuleCluster> {
         let communities = detect_communities(self.graph);
-        let mut clusters: Vec<ModuleCluster> = Vec::with_capacity(communities.len());
+        let n_comm = communities.len();
+        if n_comm == 0 {
+            return Vec::new();
+        }
+
+        // ===== 内聚/耦合/扩展的 O(边 + 社区) 单遍聚合（v49）=====
+        // 性能动机（实机证据）：旧实现对每个社区调用 count_edges 三次
+        //（cohesion、coupling、expanded 各一次），每次遍历全图边两遍——
+        // 即每社区 5 遍全图边扫描，复杂度 O(社区数 × 边数)。Unity 大仓
+        //（3145 文件、数百目录、约 20 万条依赖边）实测卡在 analyzing 27%
+        // 之后分钟级（数亿次迭代）。重构为：边归位一次遍历 + 每社区
+        // 常数次组装，复杂度降为 O(边 + 社区)。
+        // 等价性论证：count_edges 对社区 C 的统计 = 遍历所有非 Contains
+        // 边，两端都在 C 的扩展集合（文件 + 其直接实体）→ internal，
+        // 恰一端在 → external。该统计可按边单遍完成：每条非 Contains 边
+        // (s, t) 归位到两端社区——同社区记 internal，跨社区给**两个**社区
+        // 各记 external（旧实现逐社区遍历时，这条边对两端社区各贡献一次
+        // external）。逐社区统计与单遍聚合在数值上逐边一致，无舍入差。
+
+        // 1) File 节点 → 社区索引（归属键）
+        let mut file_comm: HashMap<NodeId, usize> = HashMap::with_capacity(n_comm * 2);
+        for (idx, community) in communities.iter().enumerate() {
+            for &nid in community {
+                file_comm.insert(nid, idx);
+            }
+        }
+
+        // 2) 单遍 Contains 边：实体 → 所属 File（归位键）+ File → 直接实体
+        //   （与旧 count_edges 的"扩展集合"规则一致：File 的直接 Contains 目标）
+        let mut entity_file: HashMap<NodeId, NodeId> = HashMap::new();
+        let mut file_entities: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+        for edge in self.graph.graph.edge_references() {
+            let kind = self.graph.graph.edge_weight(edge.id()).map(|e| e.kind.clone());
+            if kind != Some(EdgeKind::Contains) {
+                continue;
+            }
+            if file_comm.contains_key(&edge.source()) {
+                entity_file.insert(edge.target(), edge.source());
+                file_entities.entry(edge.source()).or_default().push(edge.target());
+            }
+        }
+
+        // 3) 端点归位：File → 社区；实体 → 所属 File → 社区。
+        //    Module/Project 等容器节点无社区归属（旧实现同样不计数）。
+        let node_comm = |nid: NodeId| -> Option<usize> {
+            file_comm
+                .get(&nid)
+                .copied()
+                .or_else(|| entity_file.get(&nid).and_then(|f| file_comm.get(f).copied()))
+        };
+
+        // 4) 单遍非 Contains 边：internal/external 按社区聚合
+        let mut internal = vec![0.0f64; n_comm];
+        let mut external = vec![0.0f64; n_comm];
+        for edge in self.graph.graph.edge_references() {
+            let kind = self.graph.graph.edge_weight(edge.id()).map(|e| e.kind.clone());
+            if kind == Some(EdgeKind::Contains) {
+                continue;
+            }
+            let (Some(sc), Some(tc)) = (node_comm(edge.source()), node_comm(edge.target())) else {
+                continue;
+            };
+            if sc == tc {
+                internal[sc] += 1.0;
+            } else {
+                external[sc] += 1.0;
+                external[tc] += 1.0;
+            }
+        }
+
+        // 5) 组装：命名/消歧与旧实现完全一致
+        let mut clusters: Vec<ModuleCluster> = Vec::with_capacity(n_comm);
         // 已用模块名集合：保证产物路径唯一
         let mut used_names: HashSet<String> = HashSet::new();
 
@@ -62,27 +133,29 @@ impl<'a> ModuleDetector<'a> {
             }
             used_names.insert(name.clone());
 
-            let cohesion = self.calculate_cohesion(community);
-            let coupling = self.calculate_coupling(community);
-
-            // 扩展：File 节点 + 其直接 Contains 的实体节点（与 count_edges 同一规则，
-            // 但这是**持久化到 ModuleCluster.node_ids** 的集合——api.md 分组、
-            // mermaid 模块图跨模块边聚合都遍历 node_ids，若只含 File 节点则
-            // 实体清单为空、模块图全空）
-            let file_set: HashSet<NodeId> = community.iter().copied().collect();
-            let mut expanded: HashSet<NodeId> = file_set.clone();
-            for edge in self.graph.graph.edge_references() {
-                let kind = self.graph.graph.edge_weight(edge.id()).map(|e| e.kind.clone());
-                if kind == Some(EdgeKind::Contains) && file_set.contains(&edge.source()) {
-                    expanded.insert(edge.target());
+            // 扩展：File 节点 + 其直接 Contains 的实体节点（与 count_edges
+            // 同一规则，但这是**持久化到 ModuleCluster.node_ids** 的集合——
+            // api.md 分组、mermaid 模块图跨模块边聚合都遍历 node_ids）
+            let mut expanded: Vec<NodeId> = Vec::with_capacity(community.len() * 2);
+            for &f in community {
+                expanded.push(f);
+                if let Some(entities) = file_entities.get(&f) {
+                    expanded.extend(entities.iter().copied());
                 }
             }
             // 去重排序，保持确定性输出
-            let mut unique: Vec<NodeId> = expanded.into_iter().collect();
-            unique.sort();
+            expanded.sort_unstable();
+            expanded.dedup();
+
+            let total = internal[idx] + external[idx];
+            let (cohesion, coupling) = if total == 0.0 {
+                (0.0, 0.0)
+            } else {
+                (internal[idx] / total, external[idx] / total)
+            };
             clusters.push(ModuleCluster {
                 name,
-                node_ids: unique,
+                node_ids: expanded,
                 cohesion,
                 coupling,
                 description: None,
@@ -90,67 +163,6 @@ impl<'a> ModuleDetector<'a> {
         }
 
         clusters
-    }
-
-    /// 计算模块内聚度（0.0~1.0）
-    fn calculate_cohesion(&self, node_ids: &[NodeId]) -> f64 {
-        let (internal, external) = self.count_edges(node_ids);
-        let total = internal + external;
-        if total == 0.0 {
-            return 0.0;
-        }
-        internal / total
-    }
-
-    /// 计算模块耦合度（0.0~1.0）
-    fn calculate_coupling(&self, node_ids: &[NodeId]) -> f64 {
-        let (internal, external) = self.count_edges(node_ids);
-        let total = internal + external;
-        if total == 0.0 {
-            return 0.0;
-        }
-        external / total
-    }
-
-    /// 统计集合内部和跨集合边数
-    ///
-    /// 关键语义：聚类单位是 File 节点，但调用/导入/实现边都挂在
-    /// **实体节点**上（File 节点只有 Contains 边）。因此先按
-    /// File→Entity 的 Contains 边把集合扩展为"文件 + 其直接包含的实体"，
-    /// 边统计才有意义；随后统计时**排除全部 Contains 边**（结构性边，
-    /// 只表达归属，不是依赖关系），否则 Module→File/File→Entity 的
-    /// Contains 会把 external 撑爆、cohesion 恒压到 0，导致任何目录都
-    /// 无法通过阈值（此前模块检测在全量图上恒产出 0 个模块的根因）。
-    fn count_edges(&self, node_ids: &[NodeId]) -> (f64, f64) {
-        // 1. 集合扩展：File 节点 + 其直接 Contains 的实体节点
-        let file_set: HashSet<NodeId> = node_ids.iter().copied().collect();
-        let mut set: HashSet<NodeId> = file_set.clone();
-        for edge in self.graph.graph.edge_references() {
-            let kind = self.graph.graph.edge_weight(edge.id()).map(|e| e.kind.clone());
-            if kind == Some(EdgeKind::Contains) && file_set.contains(&edge.source()) {
-                set.insert(edge.target());
-            }
-        }
-
-        // 2. 边统计：排除 Contains（结构性），只数依赖类边
-        let mut internal = 0.0;
-        let mut external = 0.0;
-        for edge in self.graph.graph.edge_references() {
-            let kind = self.graph.graph.edge_weight(edge.id()).map(|e| e.kind.clone());
-            if kind == Some(EdgeKind::Contains) {
-                continue;
-            }
-            let s = edge.source();
-            let t = edge.target();
-            let in_s = set.contains(&s);
-            let in_t = set.contains(&t);
-            if in_s && in_t {
-                internal += 1.0;
-            } else if in_s || in_t {
-                external += 1.0;
-            }
-        }
-        (internal, external)
     }
 }
 
@@ -166,6 +178,77 @@ fn file_stem(files: &[String]) -> Option<String> {
 mod tests {
     use super::*;
     
+
+    /// v49 大图/分流测试合成图构造器：n_dirs 个目录 dirNN/，每目录
+    /// files_per_dir 个文件（各带 1 个实体），connected_pairs 指定跨目录
+    /// Calls 边（dir_a 的实体 0 → dir_b 的实体 0，与 community.rs 测试同构）
+    fn make_dirs_graph(
+        n_dirs: usize,
+        files_per_dir: usize,
+        connected_pairs: &[(usize, usize)],
+    ) -> KnowledgeGraph {
+        let mut kg = KnowledgeGraph::default();
+        let g = &mut kg.graph;
+        let mut first_entity: HashMap<String, NodeId> = HashMap::new();
+        for d in 0..n_dirs {
+            let dir = format!("dir{d:02}");
+            for f in 0..files_per_dir {
+                let path = format!("{dir}/f{f}.rs");
+                let nid = g.add_node(CodeNode {
+                    id: NodeId::new(g.node_count()),
+                    kind: NodeKind::File,
+                    name: path.clone(),
+                    file_path: Some(path.clone()),
+                    line_range: None,
+                    doc_comment: None,
+                    signature: None,
+                    visibility: None,
+                    module_path: vec![dir.clone()],
+                });
+                let eid = g.add_node(CodeNode {
+                    id: NodeId::new(g.node_count()),
+                    kind: NodeKind::Function,
+                    name: format!("f{f}"),
+                    file_path: Some(path),
+                    line_range: None,
+                    doc_comment: None,
+                    signature: None,
+                    visibility: None,
+                    module_path: Vec::new(),
+                });
+                g.add_edge(
+                    nid,
+                    eid,
+                    CodeEdge {
+                        id: EdgeId::new(g.edge_count()),
+                        kind: EdgeKind::Contains,
+                        source: nid,
+                        target: eid,
+                        weight: 1.0,
+                        location: None,
+                    },
+                );
+                first_entity.entry(dir.clone()).or_insert(eid);
+            }
+        }
+        for (a, b) in connected_pairs {
+            let ea = first_entity[&format!("dir{a:02}")];
+            let eb = first_entity[&format!("dir{b:02}")];
+            g.add_edge(
+                ea,
+                eb,
+                CodeEdge {
+                    id: EdgeId::new(g.edge_count()),
+                    kind: EdgeKind::Calls,
+                    source: ea,
+                    target: eb,
+                    weight: 0.7,
+                    location: None,
+                },
+            );
+        }
+        kg
+    }
 
     fn make_small_graph() -> KnowledgeGraph {
         let mut kg = KnowledgeGraph::default();
@@ -215,38 +298,106 @@ mod tests {
         kg
     }
 
+    /// v49：内聚统计（单遍聚合路径）——make_small_graph 中 a.rs/b.rs 互调
+    /// （e1→e2 Calls 一条）且无外部边：src 模块 cohesion 应为 1.0
     #[test]
     fn test_cohesion() {
         let kg = make_small_graph();
         let detector = ModuleDetector::new(&kg);
-        // 只传文件节点（集合会按 Contains 边自动扩展为 文件+实体）
-        let ids = vec![NodeId::new(2), NodeId::new(3)];
-        let c = detector.calculate_cohesion(&ids);
-        // 扩展后 set={f1,f2,e1,e2};内部非 Contains: e1→e2 (Calls) = 1
-        // Contains 结构性边全部排除;无外部边
-        // 总非 Contains = 1, 内聚 = 1.0
-        let expected = 1.0;
-        assert!((c - expected).abs() < 1e-6);
+        let clusters = detector.detect();
+        // 单目录仓库（src/a.rs + src/b.rs）→ 目录分流 → 1 个社区，命名 src
+        assert_eq!(clusters.len(), 1, "应产出 1 个模块, 实际: {:?}", clusters.iter().map(|c| &c.name).collect::<Vec<_>>());
+        // 互调边两端都在扩展集合内（internal=1、external=0）→ cohesion 1.0
+        assert!((clusters[0].cohesion - 1.0).abs() < 1e-6, "cohesion 应为 1.0, 实际 {}", clusters[0].cohesion);
+        assert!((clusters[0].coupling).abs() < 1e-6, "coupling 应为 0.0, 实际 {}", clusters[0].coupling);
     }
 
+    /// v49：耦合统计（单遍聚合路径）——24 目录合成图走目录分流（确定性），
+    /// dir00 的实体跨目录调用 dir01 的实体：dir00 社区 coupling 应为 1.0
     #[test]
     fn test_coupling() {
-        let mut kg = make_small_graph();
-        // 添加外部边（TypeReference 已随未构建边类型删除，改用 Calls）
-        kg.graph.add_edge(
-            NodeId::new(4), NodeId::new(5),
-            CodeEdge {
-                id: EdgeId::new(kg.graph.edge_count()), kind: EdgeKind::Calls,
-                source: NodeId::new(4), target: NodeId::new(5), weight: 0.5, location: None,
-            },
-        );
+        let kg = make_dirs_graph(24, 2, &[(0, 1)]);
         let detector = ModuleDetector::new(&kg);
-        let ids = vec![NodeId::new(2)]; // 只包含 a.rs（扩展后含 foo）
-        let coupling = detector.calculate_coupling(&ids);
-        // 扩展后 set={f1,e1};跨边界: e1→e2 的 Calls 两条（原有 + 新增）→ e2 在集合外 => 2
-        // 总非 Contains = 2; coupling = 2/2 = 1.0
-        dbg!(coupling);
-        assert!((coupling - 1.0).abs() < 1e-6);
+        let clusters = detector.detect();
+        // ≥24 目录 → 目录分流 → 恰 24 个社区，每目录一个
+        assert_eq!(clusters.len(), 24, "24 目录应产出 24 个模块, 实际 {}", clusters.len());
+        let dir00 = clusters
+            .iter()
+            .find(|c| c.name == "dir00")
+            .expect("应存在 dir00 模块");
+        // dir00 扩展集合 = {dir00/f0.rs, dir00/f1.rs, 2 实体}；跨边 f0→f0(dir01)
+        // 恰一端在集合内 → external=1、internal=0 → coupling 1.0
+        assert!((dir00.coupling - 1.0).abs() < 1e-6, "dir00 coupling 应为 1.0, 实际 {}", dir00.coupling);
+        assert!((dir00.cohesion).abs() < 1e-6, "dir00 cohesion 应为 0.0, 实际 {}", dir00.cohesion);
+    }
+
+    /// v49：单遍聚合与暴力参照（测试内独立实现的 O(社区 × 边) 统计）
+    /// 逐社区数值一致——防聚合语义回归（internal/external/扩展集合规则）。
+    #[test]
+    fn test_aggregate_matches_bruteforce() {
+        // 30 目录 × 3 文件（≥24 → 目录分流确定性）；多条跨目录链连接
+        let kg = make_dirs_graph(30, 3, &[(0, 1), (1, 2), (5, 6), (6, 7), (6, 8), (20, 21)]);
+        let detector = ModuleDetector::new(&kg);
+        let clusters = detector.detect();
+        let communities = detect_communities(&kg);
+        assert_eq!(clusters.len(), communities.len(), "社区数一致");
+
+        // 暴力参照：对每个社区独立遍历全图边（旧 count_edges 语义）
+        for (idx, comm) in communities.iter().enumerate() {
+            let file_set: HashSet<NodeId> = comm.iter().copied().collect();
+            let mut set: HashSet<NodeId> = file_set.clone();
+            for edge in kg.graph.edge_references() {
+                let kind = kg.graph.edge_weight(edge.id()).map(|e| e.kind.clone());
+                if kind == Some(EdgeKind::Contains) && file_set.contains(&edge.source()) {
+                    set.insert(edge.target());
+                }
+            }
+            let (mut b_internal, mut b_external) = (0.0f64, 0.0f64);
+            for edge in kg.graph.edge_references() {
+                let kind = kg.graph.edge_weight(edge.id()).map(|e| e.kind.clone());
+                if kind == Some(EdgeKind::Contains) {
+                    continue;
+                }
+                let in_s = set.contains(&edge.source());
+                let in_t = set.contains(&edge.target());
+                if in_s && in_t {
+                    b_internal += 1.0;
+                } else if in_s || in_t {
+                    b_external += 1.0;
+                }
+            }
+            let b_total = b_internal + b_external;
+            let (b_cohesion, b_coupling) = if b_total == 0.0 {
+                (0.0, 0.0)
+            } else {
+                (b_internal / b_total, b_external / b_total)
+            };
+            let cluster = &clusters[idx];
+            assert!(
+                (cluster.cohesion - b_cohesion).abs() < 1e-9 && (cluster.coupling - b_coupling).abs() < 1e-9,
+                "社区 {idx} ({}) 聚合统计与暴力参照不一致: 聚合 ({}, {}) vs 暴力 ({}, {})",
+                cluster.name, cluster.cohesion, cluster.coupling, b_cohesion, b_coupling
+            );
+            // 扩展集合（node_ids）也与暴力参照一致（File + 直接实体，排序去重）
+            let mut b_nodes: Vec<NodeId> = set.into_iter().collect();
+            b_nodes.sort_unstable();
+            assert_eq!(cluster.node_ids, b_nodes, "社区 {idx} 的 node_ids 与暴力参照不一致");
+        }
+    }
+
+    /// v49：大图冒烟——300 目录 × 10 文件（≥24 → 目录分流）全链跨目录边，
+    /// detect 必须在线性时间内完成且产出 300 个模块（防 O(社区 × 边) 回归）
+    #[test]
+    fn test_detect_large_repo_smoke() {
+        let pairs: Vec<(usize, usize)> = (0..299).map(|a| (a, a + 1)).collect();
+        let kg = make_dirs_graph(300, 10, &pairs);
+        let detector = ModuleDetector::new(&kg);
+        let clusters = detector.detect();
+        assert_eq!(clusters.len(), 300, "300 目录应产出 300 个模块, 实际 {}", clusters.len());
+        // 每模块含 10 文件 + 10 实体（扩展集合完整）
+        for c in &clusters {
+            assert_eq!(c.node_ids.len(), 20, "模块 {} 应含 10 文件 + 10 实体", c.name);
+        }
     }
 
     #[test]
