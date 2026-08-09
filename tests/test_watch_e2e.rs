@@ -19,9 +19,12 @@ use code_repo_wiki::config::schema::{LlmProviderType, LlmSection, WikiConfig, Wi
 use code_repo_wiki::ingest::parser::{Entity, FileInsight};
 use code_repo_wiki::incremental::state::GenerationState;
 
-/// 轮询等待条件成立，30s 上限，超时 panic（watch 防抖 300ms，轮询间隔按场景 250~500ms）
+/// 轮询等待条件成立，90s 上限，超时 panic（watch 防抖 300ms，轮询间隔按场景 250~500ms）
+///
+/// 30s 在 CI（windows-latest）实测超时：watch 进程启动 + 初始生成 + 事件检测 +
+/// 增量生成全链路在慢 IO runner 上超过 30s；本地/ubuntu 均在 5s 内完成。
 fn wait_until(mut cond: impl FnMut() -> bool, interval: Duration, what: &str) {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(90);
     while Instant::now() < deadline {
         if cond() {
             return;
