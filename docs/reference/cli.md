@@ -13,7 +13,7 @@
 | `export` | 导出 HTML（`--skip-generate` 从快照直接导出） |
 | `doctor` | 环境诊断（配置/产物/输出/Key/网络/版本六查） |
 | `key` | 交互式配置 LLM API key（用户级，`--env` 用环境变量引用） |
-| `install` | 一键集成：用户级默认配置 + OpenCode 全局 MCP/插件 + AGENTS.md 引导 + git hooks（`--claude` 加 .mcp.json + CLAUDE.md、`--codex` 加 Codex 配置） |
+| `install` | 一键集成：用户级默认配置 + OpenCode 全局 MCP/插件 + AGENTS.md 引导 + git hooks（`--claude` 加用户级 ~/.claude.json MCP + CLAUDE.md、`--codex` 加 Codex 配置） |
 | `uninstall` | 移除全部集成（MCP 条目/插件/引导块/hooks；需 `--force`） |
 | `search` | 搜索代码实体（text/semantic/hybrid 三引擎；`--query/--engine/--top-k`） |
 | `ast-search` | AST 精确符号查找（文件+行号+签名） |

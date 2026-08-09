@@ -178,8 +178,10 @@ fn collect_md_files(dir: &Path) -> Vec<PathBuf> {
 /// + git hooks；以下 flag 扩展集成面。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct InstallOptions {
-    /// 额外写 Claude Code 项目级 `.mcp.json`（--claude）；v36 起同时
-    /// 同步注入 CLAUDE.md（Claude Code 不读 AGENTS.md，注册 MCP 时
+    /// 额外注册 Claude Code MCP（--claude，用户级 `~/.claude.json` 顶层
+    /// mcpServers，User scope——command 绑定本机 exe 路径=用户级内容，与
+    /// opencode/codex 全局注册对称；v39 起不再写项目根 .mcp.json）；
+    /// 同时同步注入 CLAUDE.md（Claude Code 不读 AGENTS.md，注册 MCP 时
     /// 必然需要文档指引——原 --also-claude 开关合并于此）
     pub claude: bool,
     /// 额外写 Codex CLI 用户级配置 `~/.codex/config.toml`（--codex）
@@ -192,16 +194,21 @@ pub struct InstallOptions {
 /// 相对项目根解析，跨 cwd 运行不再错位）。
 ///
 /// 集成步骤（全部幂等，重复执行安全；非 code-repo-wiki 内容一律保留）：
-/// 1. OpenCode 插件：`{root}/.opencode/plugins/code-repo-wiki.ts`——模板注入
-///    current_exe 绝对路径（t02 摆脱 PATH 依赖）；内容与模板不同即升级
+/// 1. OpenCode 插件：用户级配置根 `~/.config/opencode/plugins/code-repo-wiki.ts`
+///    （v39：插件是用户级内容——装进 Agent 配置根目录，官方自动加载目录，
+///    一次 install 全仓库 opencode 会话可用；不再写入项目 `.opencode/plugins/`，
+///    旧版项目级产物自动迁移清理）；模板注入 current_exe 绝对路径
+///    （t02 摆脱 PATH 依赖）；内容与模板不同即升级
 /// 2. OpenCode MCP：用户级全局 `opencode.json` 的 `mcp.code-repo-wiki` 条目
 ///    （v33 拍板：一次注册所有仓库可用，server 以工作区为 cwd）
-/// 3. Claude MCP（--claude）：项目根 `.mcp.json` 的 `mcpServers.code-repo-wiki`
+/// 3. Claude MCP（--claude）：用户级 `~/.claude.json` 顶层 mcpServers 条目
+///    （Claude Code 官方 User scope，command 绑定本机 exe=用户级内容；
+///    v39 起不再写项目根 .mcp.json——机器相关配置不入团队共享文件）
 /// 4. Codex MCP（--codex）：用户级 `~/.codex/config.toml` 的
-///    `[mcp_servers.code-repo-wiki]` 表
+///    `[mcp_servers.code-repo-wiki]` 表（Codex 官方用户级配置）
 /// 5. AGENTS.md：wiki 引用块（标记对幂等替换；默认执行）
 /// 6. CLAUDE.md（随 --claude，v36 起）：Claude Code 不读 AGENTS.md，
-///    注册 .mcp.json 时同步注入引用块
+///    注册 Claude MCP 时同步注入引用块
 /// 7. git hooks：post-commit/post-merge（含 code-repo-wiki 标记则升级覆盖；
 ///    用户自定义 hook 保留并提示）
 ///
@@ -215,12 +222,12 @@ pub fn install(root: &crate::project::ProjectRoot, opts: &InstallOptions) -> Res
     let exe_str = exe_path.to_string_lossy().into_owned();
     let mcp_args = ["mcp".to_string()];
 
-    // 1. OpenCode 插件（项目级；v33：内容比对升级）
+    // 1. OpenCode 插件（用户级配置根——v39：Agent 配置根目录安装）
     let mut oc = crate::config::opencode::OpenCodeConfig::new(root)
         .context("读取 OpenCode 配置失败")?;
     oc.install_plugin()?;
     if oc.install_plugin_file()? {
-        println!("✓ OpenCode 插件已安装");
+        println!("✓ OpenCode 插件已安装（用户级: ~/.config/opencode/plugins/）");
     } else {
         println!("✓ OpenCode 插件已是最新");
     }
@@ -235,15 +242,15 @@ pub fn install(root: &crate::project::ProjectRoot, opts: &InstallOptions) -> Res
         println!("✓ OpenCode MCP 已是最新");
     }
 
-    // 3. Claude MCP（--claude → 项目根 .mcp.json）
+    // 3. Claude MCP（--claude → 用户级 ~/.claude.json User scope，v39）
     if opts.claude {
         let claude = crate::config::mcp::ClaudeMcp {
-            path: crate::config::mcp::ClaudeMcp::project_path(root),
+            path: crate::config::mcp::ClaudeMcp::user_global_path()?,
         };
         if claude.install("code-repo-wiki", &exe_str, &mcp_args)? {
-            println!("✓ Claude Code MCP 已注册（.mcp.json）");
+            println!("✓ Claude Code MCP 已注册（用户级: ~/.claude.json）");
         } else {
-            println!("✓ Claude Code MCP 已是最新（.mcp.json）");
+            println!("✓ Claude Code MCP 已是最新（~/.claude.json）");
         }
     }
 
@@ -396,7 +403,8 @@ fn remove_hooks(project_root: &std::path::Path) -> Result<()> {
 /// 清理集 = install 全集的反向（全部幂等，缺省即跳过）：
 /// 1. OpenCode MCP 用户级全局条目（其他 server 保留）
 /// 2. OpenCode 插件文件
-/// 3. Claude MCP .mcp.json 条目（其他 server 保留；空则删文件）
+/// 3. Claude MCP `~/.claude.json` 顶层 mcpServers 条目（其他键/其他 server
+///    保留；空 mcpServers 保留文件——OAuth 会话等用户配置绝不动）
 /// 4. Codex MCP 表（其他表/注释保留）
 /// 5. AGENTS.md / CLAUDE.md wiki 块（无标记则跳过）
 /// 6. git hooks（仅 code-repo-wiki 标记的删除；用户自定义 hook 保留）
@@ -422,21 +430,21 @@ pub fn uninstall(force: bool, root: &crate::project::ProjectRoot) -> Result<()> 
         println!("✓ OpenCode MCP 条目不存在，跳过");
     }
 
-    // 2. OpenCode 插件
+    // 2. OpenCode 插件（用户级配置根 + 旧版项目级产物迁移清理）
     let mut oc = crate::config::opencode::OpenCodeConfig::new(root)
         .context("读取 OpenCode 配置失败")?;
     oc.uninstall_plugin()?;
     oc.uninstall_plugin_file()?;
-    println!("✓ OpenCode 插件已移除");
+    println!("✓ OpenCode 插件已移除（用户级全局——所有仓库的 opencode 会话不再自动加载）");
 
-    // 3. Claude MCP（.mcp.json）
+    // 3. Claude MCP（用户级 ~/.claude.json User scope，v39）
     let claude = crate::config::mcp::ClaudeMcp {
-        path: crate::config::mcp::ClaudeMcp::project_path(root),
+        path: crate::config::mcp::ClaudeMcp::user_global_path()?,
     };
     if claude.remove("code-repo-wiki")? {
-        println!("✓ Claude Code MCP 条目已移除（.mcp.json）");
+        println!("✓ Claude Code MCP 条目已移除（~/.claude.json——其他仓库如需继续使用请重新 install）");
     } else {
-        println!("✓ Claude Code MCP 条目不存在，跳过（.mcp.json）");
+        println!("✓ Claude Code MCP 条目不存在，跳过（~/.claude.json）");
     }
 
     // 4. Codex MCP（~/.codex/config.toml）

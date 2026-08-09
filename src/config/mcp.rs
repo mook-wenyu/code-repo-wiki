@@ -1,9 +1,10 @@
-//! 多 Agent MCP 配置读写模块（v33）
+//! 多 Agent MCP 配置读写模块（v33；v39 落点统一为用户级）
 //!
 //! 合并 install 的多 Agent 支持：`install` 默认注册 opencode（用户级全局
-//! `~/.config/opencode/opencode.json` 的 `mcp` 块），`--claude` 额外写项目根
-//! `.mcp.json`（Claude Code 格式 `mcpServers`），`--codex` 额外写用户级
-//! `~/.codex/config.toml` 的 `[mcp_servers.<name>]` 表。
+//! `~/.config/opencode/opencode.json` 的 `mcp` 块），`--claude` 额外写
+//! 用户级 `~/.claude.json` 顶层 `mcpServers`（User scope——command 绑定
+//! 本机 exe 路径=用户级内容，v39 起不再写项目根 `.mcp.json`），`--codex`
+//! 额外写用户级 `~/.codex/config.toml` 的 `[mcp_servers.<name>]` 表。
 //!
 //! 三个 writer（`OpencodeMcp`/`ClaudeMcp`/`CodexMcp`）各自封装一种
 //! 格式，共同契约：
@@ -11,9 +12,10 @@
 //!   存在但命令不同（升级，如二进制路径变化）→ 更新返回 `true`；
 //!   不存在 → 新建返回 `true`
 //! - `remove(server)`：文件缺失/无条目 → 幂等返回 `false`；移除后空容器
-//!   的清理语义各格式不同（opencode 删 `mcp` 键、Claude 空则删整个文件、
-//!   Codex 删表）
-//! - 只动本 server 的条目，绝不触碰其他 server/配置键（多 Agent 共存）
+//!   的清理语义各格式不同（opencode 删 `mcp` 键、Claude 保留空 `mcpServers`
+//!   对象——`~/.claude.json` 承载 OAuth 会话，绝不删整个文件、Codex 删表）
+//! - 只动本 server 的条目，绝不触碰其他 server/配置键（多 Agent 共存；
+//!   Claude/opencode 的用户配置键——OAuth、provider 等——原样保留）
 //! - 畸形文件（JSON 非对象/TOML 解析失败）→ 显式报错，拒绝静默处理
 //!   （契约与 v32 commands::remove_mcp_config 一致：损坏的配置文件不能被静默吞掉）
 
@@ -22,7 +24,6 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 
 use crate::fs::write_file_atomic;
-use crate::project::ProjectRoot;
 
 /// 用户主目录（Codex/opencode 用户级配置的基础）
 ///
@@ -160,33 +161,40 @@ impl OpencodeMcp {
 }
 
 // ---------------------------------------------------------------------------
-// Claude Code（项目根 `.mcp.json` 的 `mcpServers`）
+// Claude Code（用户级 `~/.claude.json` 顶层 `mcpServers`，User scope）
 // ---------------------------------------------------------------------------
 
-/// Claude Code MCP 配置读写（项目根 `.mcp.json`）
+/// Claude Code MCP 配置读写（用户级 `~/.claude.json` 顶层 `mcpServers`）
 ///
-/// Claude Code 官方格式（code.claude.com/docs/en/mcp）：顶层 `mcpServers` →
-/// 服务器名 → `{ "type": "stdio", "command": "<string>", "args": [...] }`。
+/// Claude Code 官方格式（code.claude.com/docs/en/mcp）：User scope 的 MCP
+/// 服务器注册在 `~/.claude.json` 顶层 `mcpServers` → 服务器名 →
+/// `{ "type": "stdio", "command": "<string>", "args": [...] }`，对所有项目生效。
+///
+/// 落点论证（v39）：MCP server 的 `command` 绑定本机可执行文件绝对路径
+/// （机器相关=用户级内容），与 opencode 全局配置、Codex `~/.codex/config.toml`
+/// 同语义——一次 install 所有仓库的 Claude 会话可用；项目根 `.mcp.json`
+/// （Project scope，团队共享入 git）不再写入。
+///
 /// 与 opencode 格式不兼容（键名/command 形态/env 变量语法均不同），
-/// 故独立 writer。文件是人工可编辑配置：只动本 server 条目，其他 server
-/// 与人工修改保留。
+/// 故独立 writer。`~/.claude.json` 承载 OAuth 会话等大量用户配置：
+/// 只动顶层 `mcpServers` 本 server 条目，其他键与人工修改一律保留。
 pub struct ClaudeMcp {
-    /// 项目根 `.mcp.json` 路径
+    /// 用户级 `~/.claude.json` 路径
     pub path: PathBuf,
 }
 
 impl ClaudeMcp {
-    /// 项目根 `.mcp.json` 路径
-    pub fn project_path(root: &ProjectRoot) -> PathBuf {
-        root.path().join(".mcp.json")
+    /// 用户级 `~/.claude.json` 路径（`%USERPROFILE%/.claude.json`）
+    pub fn user_global_path() -> Result<PathBuf> {
+        Ok(user_home()?.join(".claude.json"))
     }
 
     /// 注册/更新 MCP server；返回是否实际变更
     ///
-    /// - 文件缺失 → 新建（含 mcpServers 容器）
+    /// - 文件缺失 → 新建（仅含 mcpServers 容器，其余键留给 Claude 会话写入）
     /// - 本 server 存在且 command+args 一致 → `false`
     /// - 本 server 存在但命令不同 → 更新（升级）
-    /// - 其他 server 条目原样保留
+    /// - OAuth 会话与其他 server 条目原样保留
     pub fn install(
         &self,
         server: &str,
@@ -198,10 +206,10 @@ impl ClaudeMcp {
             serde_json::Value::Object(Default::default())
         } else {
             serde_json::from_str(&content)
-                .with_context(|| format!("解析 .mcp.json 失败: {}", self.path.display()))?
+                .with_context(|| format!("解析 Claude 用户配置失败: {}", self.path.display()))?
         };
         if !value.is_object() {
-            anyhow::bail!(".mcp.json 顶层应为 JSON 对象: {}", self.path.display());
+            anyhow::bail!("Claude 用户配置顶层应为 JSON 对象: {}", self.path.display());
         }
 
         let unchanged = value
@@ -235,19 +243,20 @@ impl ClaudeMcp {
             .or_insert_with(|| serde_json::Value::Object(Default::default()));
         servers
             .as_object_mut()
-            .with_context(|| format!(".mcp.json 的 mcpServers 键应为对象: {}", self.path.display()))?
+            .with_context(|| format!("Claude 用户配置的 mcpServers 键应为对象: {}", self.path.display()))?
             .insert(server.to_string(), entry);
 
-        let output = serde_json::to_string_pretty(&value).context("序列化 .mcp.json 失败")?;
+        let output = serde_json::to_string_pretty(&value).context("序列化 Claude 用户配置失败")?;
         write_file_atomic(&self.path, &output)?;
         Ok(true)
     }
 
     /// 移除 MCP server；返回是否实际移除（语义与 v32 commands::remove_mcp_config
-    /// 相同，迁入本模块统一管理）
+    /// 相同，迁入本模块统一管理；v39 落点改用户级 `~/.claude.json`）
     ///
     /// - 文件缺失 → `false`（幂等）
-    /// - 移除后 mcpServers 为空 → 删整个文件（文件失去价值）
+    /// - 移除后 mcpServers 为空 → 保留空对象写回（`~/.claude.json` 承载 OAuth
+    ///   会话等用户配置，**绝不删除整个文件**；与 opencode.json 同语义）
     /// - 移除后仍有其他 server → 原子写回保留
     /// - JSON 解析失败 → 显式报错（拒绝静默清理损坏配置）
     pub fn remove(&self, server: &str) -> Result<bool> {
@@ -255,23 +264,15 @@ impl ClaudeMcp {
             return Ok(false);
         }
         let content = std::fs::read_to_string(&self.path)
-            .with_context(|| format!("读取 .mcp.json 失败: {}", self.path.display()))?;
+            .with_context(|| format!("读取 Claude 用户配置失败: {}", self.path.display()))?;
         let mut value: serde_json::Value = serde_json::from_str(&content)
-            .with_context(|| format!("解析 .mcp.json 失败（拒绝静默跳过）: {}", self.path.display()))?;
+            .with_context(|| format!("解析 Claude 用户配置失败（拒绝静默跳过）: {}", self.path.display()))?;
 
         let removed = {
             let servers = value.get_mut("mcpServers").and_then(|v| v.as_object_mut());
             match servers {
                 None => false,
-                Some(s) => {
-                    let hit = s.remove(server).is_some();
-                    if hit && s.is_empty() {
-                        // mcpServers 已无任何 server → 整个文件失去价值，删除
-                        std::fs::remove_file(&self.path)?;
-                        return Ok(true);
-                    }
-                    hit
-                }
+                Some(s) => s.remove(server).is_some(),
             }
         };
         if !removed {
@@ -585,7 +586,7 @@ mod tests {
     #[test]
     fn claude_install_creates_servers_block() {
         let dir = temp_dir("cl-create");
-        let path = dir.join(".mcp.json");
+        let path = dir.join("claude.json");
         let mcp = ClaudeMcp { path: path.clone() };
         assert!(mcp.install("code-repo-wiki", "rw", &["mcp".to_string()]).unwrap());
         let parsed: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
@@ -598,32 +599,35 @@ mod tests {
     #[test]
     fn claude_install_preserves_other_servers_and_idempotent() {
         let dir = temp_dir("cl-preserve");
-        let path = dir.join(".mcp.json");
-        write(&path, r#"{"mcpServers": {"other": {"command": "npx", "args": ["x"]}}}"#);
+        let path = dir.join("claude.json");
+        write(&path, r#"{"oauthAccount": {}, "mcpServers": {"other": {"command": "npx", "args": ["x"]}}}"#);
         let mcp = ClaudeMcp { path: path.clone() };
         let cmd = ("rw", vec!["mcp".to_string()]);
         assert!(mcp.install("code-repo-wiki", cmd.0, &cmd.1).unwrap());
         assert!(!mcp.install("code-repo-wiki", cmd.0, &cmd.1).unwrap());
         let parsed: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(parsed["oauthAccount"].is_object(), "OAuth 会话等用户键必须保留");
         assert!(parsed["mcpServers"]["other"].is_object());
         assert!(parsed["mcpServers"]["code-repo-wiki"].is_object());
     }
 
     #[test]
-    fn claude_remove_empty_deletes_file() {
+    fn claude_remove_keeps_file_with_empty_servers() {
         let dir = temp_dir("cl-remove");
-        let path = dir.join(".mcp.json");
+        let path = dir.join("claude.json");
         let mcp = ClaudeMcp { path: path.clone() };
         mcp.install("code-repo-wiki", "rw", &[]).unwrap();
         assert!(mcp.remove("code-repo-wiki").unwrap());
-        assert!(!path.exists()); // 空则删整个文件
-        assert!(!mcp.remove("code-repo-wiki").unwrap()); // 文件缺失 → 幂等
+        // ~/.claude.json 承载 OAuth 会话等用户配置：空 mcpServers 保留文件
+        let parsed: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(parsed["mcpServers"].as_object().unwrap().is_empty());
+        assert!(!mcp.remove("code-repo-wiki").unwrap()); // 条目缺失 → 幂等
     }
 
     #[test]
     fn claude_remove_preserves_other_servers() {
         let dir = temp_dir("cl-remove-preserve");
-        let path = dir.join(".mcp.json");
+        let path = dir.join("claude.json");
         write(&path, r#"{"mcpServers": {"code-repo-wiki": {"command": "rw"}, "other": {"command": "npx"}}}"#);
         let mcp = ClaudeMcp { path: path.clone() };
         assert!(mcp.remove("code-repo-wiki").unwrap());
@@ -635,7 +639,7 @@ mod tests {
     #[test]
     fn claude_remove_rejects_malformed_json() {
         let dir = temp_dir("cl-malformed");
-        let path = dir.join(".mcp.json");
+        let path = dir.join("claude.json");
         write(&path, "{not json");
         let mcp = ClaudeMcp { path: path.clone() };
         assert!(mcp.remove("code-repo-wiki").is_err());

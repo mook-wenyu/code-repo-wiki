@@ -19,8 +19,8 @@ const START: &str = "<!-- CODE-REPO-WIKI:START -->";
 const END: &str = "<!-- CODE-REPO-WIKI:END -->";
 const LEGACY_START: &str = "<!-- REPO-WIKI:START -->";
 
-/// 创建隔离临时目录 + 隔离 HOME，返回 (work_dir, envs)
-fn setup(tag: &str) -> (PathBuf, Vec<(&'static str, String)>) {
+/// 创建隔离临时目录 + 隔离 HOME，返回 (work_dir, home, envs)
+fn setup(tag: &str) -> (PathBuf, PathBuf, Vec<(&'static str, String)>) {
     let dir = unique_dir(tag);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -31,7 +31,7 @@ fn setup(tag: &str) -> (PathBuf, Vec<(&'static str, String)>) {
         ("HOME", home.to_string_lossy().into_owned()),
         ("USERPROFILE", home.to_string_lossy().into_owned()),
     ];
-    (dir, envs)
+    (dir, home, envs)
 }
 
 // ==================== 测试用例 ====================
@@ -39,7 +39,7 @@ fn setup(tag: &str) -> (PathBuf, Vec<(&'static str, String)>) {
 /// install：默认创建 AGENTS.md 并注入含标记对的 wiki 引用块
 #[test]
 fn test_install_wiki_creates_agents_md() {
-    let (work_dir, envs) = setup("creates_agents_md");
+    let (work_dir, _home, envs) = setup("creates_agents_md");
     let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
     let out = run_bin_with_envs(&work_dir, &["install"], &envs_ref);
@@ -61,7 +61,7 @@ fn test_install_wiki_creates_agents_md() {
 /// install 幂等：重复执行内容不变，且用户已有内容保留
 #[test]
 fn test_install_wiki_idempotent_preserves_user_content() {
-    let (work_dir, envs) = setup("idempotent");
+    let (work_dir, _home, envs) = setup("idempotent");
     let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
     let path = work_dir.join("AGENTS.md");
     std::fs::write(&path, "# 用户项目说明\n").unwrap();
@@ -83,7 +83,7 @@ fn test_install_wiki_idempotent_preserves_user_content() {
 /// （双块=改名升级后的残留场景：v37 前的旧块 + 重装的新块并存）
 #[test]
 fn test_uninstall_wiki_removes_block() {
-    let (work_dir, envs) = setup("uninstall");
+    let (work_dir, _home, envs) = setup("uninstall");
     let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
     let path = work_dir.join("AGENTS.md");
     std::fs::write(
@@ -121,7 +121,7 @@ fn test_uninstall_wiki_removes_block() {
 /// install：AGENTS.md 含 v37 旧标记块 → 整体迁移替换为新标记块（不残留旧块）
 #[test]
 fn test_install_wiki_migrates_legacy_block() {
-    let (work_dir, envs) = setup("migrate_legacy");
+    let (work_dir, _home, envs) = setup("migrate_legacy");
     let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
     let path = work_dir.join("AGENTS.md");
     std::fs::write(
@@ -142,10 +142,11 @@ fn test_install_wiki_migrates_legacy_block() {
 }
 
 /// --claude（v36 起合并 --also-claude）：AGENTS.md 与 CLAUDE.md 都写入
-/// 标记对（同时注册 .mcp.json）；uninstall 同时清理
+/// 标记对（同时注册用户级 ~/.claude.json MCP——v39：不再写项目根 .mcp.json）；
+/// uninstall 同时清理
 #[test]
 fn test_install_wiki_also_claude_writes_both() {
-    let (work_dir, envs) = setup("also_claude");
+    let (work_dir, home, envs) = setup("also_claude");
     let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
     let out = run_bin_with_envs(&work_dir, &["install", "--claude"], &envs_ref);
@@ -155,7 +156,11 @@ fn test_install_wiki_also_claude_writes_both() {
     assert!(agents.contains(START) && agents.contains(END), "AGENTS.md 应含标记对");
     assert!(claude.contains(START) && claude.contains(END), "CLAUDE.md 应含标记对");
     assert_eq!(agents, claude, "CLAUDE.md 应原样写入与 AGENTS.md 相同的注入块");
-    assert!(work_dir.join(".mcp.json").exists(), "--claude 应同时注册 .mcp.json");
+    let claude_json = home.join(".claude.json");
+    assert!(claude_json.exists(), "--claude 应注册用户级 ~/.claude.json，实际路径: {}", claude_json.display());
+    let parsed: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&claude_json).unwrap()).unwrap();
+    assert!(parsed["mcpServers"]["code-repo-wiki"].is_object(), "~/.claude.json 应含 code-repo-wiki MCP 条目");
+    assert!(!work_dir.join(".mcp.json").exists(), "v39 起不再写项目根 .mcp.json");
 
     let out2 = run_bin_with_envs(&work_dir, &["uninstall", "--force"], &envs_ref);
     assert!(out2.status.success(), "uninstall 应成功");
@@ -163,14 +168,17 @@ fn test_install_wiki_also_claude_writes_both() {
     let claude2 = std::fs::read_to_string(work_dir.join("CLAUDE.md")).unwrap();
     assert!(!agents2.contains(START), "AGENTS.md 标记应被移除");
     assert!(!claude2.contains(START), "CLAUDE.md 标记应被移除");
+    let parsed2: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&claude_json).unwrap()).unwrap();
+    assert!(parsed2["mcpServers"].get("code-repo-wiki").is_none(), "uninstall 应移除 ~/.claude.json MCP 条目");
 
     let _ = std::fs::remove_dir_all(&work_dir);
+    let _ = std::fs::remove_dir_all(&home);
 }
 
 /// 半标记：只含 START 的 AGENTS.md → install/uninstall 均非 0 退出码且文件不被修改
 #[test]
 fn test_half_marker_errors_and_preserves_file() {
-    let (work_dir, envs) = setup("half_marker");
+    let (work_dir, _home, envs) = setup("half_marker");
     let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
     let path = work_dir.join("AGENTS.md");
     let broken = "# 标题\n<!-- REPO-WIKI:START -->\n";
@@ -204,7 +212,7 @@ fn test_half_marker_errors_and_preserves_file() {
 /// .code-repo-wiki，仅 wiki.language 参与渲染）
 #[test]
 fn test_install_wiki_template_uses_config_paths() {
-    let (work_dir, envs) = setup("template_config");
+    let (work_dir, _home, envs) = setup("template_config");
     let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
     std::fs::write(work_dir.join("config.toml"), "[wiki]\nlanguage = \"en\"\n").unwrap();
 
@@ -230,7 +238,7 @@ fn test_install_wiki_template_uses_config_paths() {
 /// U02 回归：无配置时按默认产物路径渲染并提示
 #[test]
 fn test_install_wiki_template_defaults_without_config() {
-    let (work_dir, envs) = setup("template_default");
+    let (work_dir, _home, envs) = setup("template_default");
     let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
     let out = run_bin_with_envs(&work_dir, &["install"], &envs_ref);

@@ -135,16 +135,17 @@ enum Commands {
     ///
     /// 默认执行：① 确保用户级默认配置（config.toml）存在，缺失时自动创建
     /// （v25 起 init 并入 install，配置链=项目级 config.toml 覆盖用户级）；
-    /// ② 注册 OpenCode 插件（项目级 .opencode/plugins/code-repo-wiki.ts）；
+    /// ② 注册 OpenCode 插件（用户级 ~/.config/opencode/plugins/code-repo-wiki.ts）；
     /// ③ 注册 OpenCode MCP（用户级全局 opencode.json 的 mcp 块）；
     /// ④ 注入 AGENTS.md wiki 引用块；⑤ 安装 git post-commit/post-merge hooks。
-    /// --claude 额外注册 Claude Code MCP（.mcp.json）并同步注入 CLAUDE.md
+    /// --claude 额外注册 Claude Code MCP（用户级 ~/.claude.json 顶层 mcpServers，
+    /// User scope——v39 起不再写项目根 .mcp.json）并同步注入 CLAUDE.md
     /// （v36 起 --also-claude 并入——Claude Code 不读 AGENTS.md，注册 MCP
     /// 时必然需要文档指引，两个开关分离无意义）；--codex 额外注册 Codex
     /// CLI MCP（用户级 ~/.codex/config.toml）。
     /// 全部幂等；已存在的非 code-repo-wiki 内容（用户自定义 hook/其他 MCP server）保留。
     Install {
-        /// 额外注册 Claude Code MCP（项目根 .mcp.json）并同步注入 CLAUDE.md
+        /// 额外注册 Claude Code MCP（用户级 ~/.claude.json）并同步注入 CLAUDE.md
         #[arg(long)]
         claude: bool,
         /// 额外注册 Codex CLI MCP（用户级 ~/.codex/config.toml，[mcp_servers.code-repo-wiki]）

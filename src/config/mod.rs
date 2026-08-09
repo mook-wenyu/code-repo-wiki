@@ -1,5 +1,6 @@
 pub mod opencode;
-/// 多 Agent MCP 配置读写（v33：opencode 全局 / Claude Code .mcp.json / Codex config.toml）
+/// 多 Agent MCP 配置读写（v33；v39 落点统一用户级：opencode 全局 /
+/// Claude Code ~/.claude.json User scope / Codex config.toml）
 pub mod mcp;
 
 pub mod schema;
