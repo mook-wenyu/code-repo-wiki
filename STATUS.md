@@ -1,5 +1,17 @@
 # 项目状态简报 （AI自动维护，禁止贴代码）
 
+## 五十九、v47 更新卡死根因修复（2026-08-09，本会话）
+- 修改的功能：①非 TTY 进度行补换行（不再与 tracing 日志粘行）；②`analyzing 25%`
+  移至图构建前发射（消除 54s 黑屏误判）；③HTTP `send()` 新增 90s 首字节超时
+  （端点黑洞不再无限挂起——实测旧版一进程卡 16 小时、用户旧版 update 卡死已杀）；
+  ④v30 FileWatch 状态哨兵 `"file-watch"` 被当 git SHA 解析（`unable to parse OID`
+  →每次 update 全量回退+no-op 失效）——哨兵显式识别+git 仓库改记真实 HEAD。
+- 验证证据：lib 482 绿、incremental 65 绿（含黑洞/HEAD 新测试）、全量无 FAILED、
+  clippy 0；force update 真实 LLM 全链路 426s（107 文件/16 页/13 模块，SSE
+  1283 chunk 正常消费）进度 10→25→30→60→90→95→98% 全程可见、无卡死。
+- 已知风险：.cargo\bin 旧版 0.5.0 无首字节超时（会卡黑洞）——需重装新二进制；
+  Cargo.toml 0.5.1（用户手动改，随本提交）；v47 未打 tag。
+
 ## 五十八、v46 命令进度增强：LLM 逐项进度（2026-08-09，本会话）
 - 修改的功能：①`ProgressEvent` 增加 `current`/`total` 字段；②`generate`/`update`
   的卡片生成与 Wiki 页生成两个 LLM 密集阶段输出任务单位进度

@@ -72,6 +72,8 @@ impl EmbeddingEngine {
             // N16：embedding 请求接入统一重试骨架（与 LLM 通道一致：429/5xx/
             // 超时/连接失败按指数退避重试，其余 4xx 立即失败）。每轮重试重建
             // 请求（闭包捕获 body/url/key 的引用）。
+            // v47：retry_with_backoff 输出放宽为 anyhow（send 阶段首字节超时
+            // 保护）；此处直接包一层 Ok(...) 保持 anyhow 语义。
             let resp = crate::generate::llm::retry_with_backoff(
                 crate::generate::llm::MAX_RETRIES,
                 || {
@@ -86,6 +88,7 @@ impl EmbeddingEngine {
                             .json(body)
                             .send()
                             .await
+                            .map_err(anyhow::Error::from)
                     }
                 },
             )

@@ -154,10 +154,13 @@ fn is_retryable_status(status: reqwest::StatusCode) -> bool {
 pub(crate) async fn retry_with_backoff<F, Fut>(
     max_retries: u32,
     send_fn: F,
-) -> Result<reqwest::Response>
+) -> anyhow::Result<reqwest::Response>
 where
     F: Fn() -> Fut,
-    Fut: std::future::Future<Output = Result<reqwest::Response, reqwest::Error>> + Send,
+    // v47：输出类型从 reqwest::Result 放宽为 anyhow::Result——send 阶段
+    // 现由 send_with_timeout 包裹（tokio 首字节超时→anyhow 错误），
+    // 网络错误重试判定改为 downcast reqwest::Error（见 is_retryable_network）。
+    Fut: std::future::Future<Output = anyhow::Result<reqwest::Response>> + Send,
 {
     let mut last_error = None;
     for attempt in 0..max_retries {
@@ -184,7 +187,7 @@ where
                 last_error = Some(anyhow::anyhow!("API 返回错误 ({}): {}", status, text));
             }
             Ok(resp) => return Ok(resp),
-            Err(e) if e.is_timeout() || e.is_connect() => {
+            Err(e) if is_retryable_network(&e) => {
                 tracing::warn!(
                     "LLM 请求超时/连接失败（第 {} 次尝试，将重试）: {}",
                     attempt + 1,
@@ -201,6 +204,14 @@ where
         max_retries,
         last_error
     ))
+}
+
+/// 网络类错误才重试：仅 reqwest 真错误（连接失败/客户端超时）标记为
+/// 可重试；send_with_timeout 的 tokio 首字节超时（anyhow 包装，90s 无
+/// 首字节）不重试——那是端点黑洞信号，重试只会再等 90s。
+fn is_retryable_network(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<reqwest::Error>()
+        .is_some_and(|re| re.is_timeout() || re.is_connect())
 }
 
 /// 共享 SSE 行解析：按 \n 切分、跳过空行、剥离行前缀、解析 JSON，
@@ -242,6 +253,29 @@ fn parse_sse_stream(
 /// SSE 行解析复用 parse_sse_stream 的语义（`data: ` 前缀 + 提取闭包），
 /// 逐行增量处理；跨 chunk 的残行保留到下一块。
 const SSE_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// send 阶段总超时（仅到首字节）
+///
+/// 流式主体由 collect_sse 的空闲超时保护（长生成不截断），但
+/// `reqwest::RequestBuilder::send()` 只覆盖「发出请求 → 收到响应首字节」：
+/// 若端点黑洞（TCP 连上但永不返回 HTTP 头），send 会无限挂起——
+/// 实测出现过 16 小时僵尸进程（generate 卡死不退出、锁残留阻塞后续命令）。
+/// 首字节等待超 90s 即判定端点不可达，交由上层重试/错误传播。
+const SEND_FIRST_BYTE_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// 带首字节超时的请求发送（防黑洞挂起；测试可注入更短超时）
+///
+/// 注意：不接收 `&Client`——`reqwest::RequestBuilder` 内部已持有 client
+/// 引用，`req.send()` 无需外部 client（clippy unused_variables 实证）。
+async fn send_with_timeout(
+    req: reqwest::RequestBuilder,
+    timeout: Duration,
+) -> Result<reqwest::Response> {
+    tokio::time::timeout(timeout, req.send())
+        .await
+        .map_err(|_| anyhow::anyhow!("请求超时（{}s 未收到响应首字节，端点可能不可达）", timeout.as_secs()))?
+        .map_err(Into::into)
+}
 
 async fn collect_sse(
     resp: reqwest::Response,
@@ -508,12 +542,12 @@ impl OpenAiProvider {
         let url = format!("{}/chat/completions", self.base_url);
         let body = self.build_chat_body(messages, true, max_tokens_override);
 
+        // v47：send 包首字节超时（防端点黑洞挂起——实测 16h 僵尸进程）
         let resp = retry_with_backoff(self.max_retries, || {
-            self.client
-                .post(&url)
-                .bearer_auth(&self.api_key)
-                .json(&body)
-                .send()
+            send_with_timeout(
+                self.client.post(&url).bearer_auth(&self.api_key).json(&body),
+                SEND_FIRST_BYTE_TIMEOUT,
+            )
         })
         .await?;
 
@@ -545,12 +579,12 @@ impl OpenAiProvider {
         let url = format!("{}/responses", self.base_url);
         let body = self.build_responses_body(messages, true, max_output_tokens_override);
 
+        // v47：send 包首字节超时（防端点黑洞挂起）
         let resp = retry_with_backoff(self.max_retries, || {
-            self.client
-                .post(&url)
-                .bearer_auth(&self.api_key)
-                .json(&body)
-                .send()
+            send_with_timeout(
+                self.client.post(&url).bearer_auth(&self.api_key).json(&body),
+                SEND_FIRST_BYTE_TIMEOUT,
+            )
         })
         .await?;
 
@@ -686,13 +720,16 @@ impl LlmProvider for AnthropicProvider {
         let url = format!("{}/messages", self.base_url);
         let body = self.build_messages_body(messages, true, None);
 
+        // v47：send 包首字节超时（防端点黑洞挂起）
         let resp = retry_with_backoff(self.max_retries, || {
-            self.client
-                .post(&url)
-                .header("x-api-key", &self.api_key)
-                .header("anthropic-version", "2023-06-01")
-                .json(&body)
-                .send()
+            send_with_timeout(
+                self.client
+                    .post(&url)
+                    .header("x-api-key", &self.api_key)
+                    .header("anthropic-version", "2023-06-01")
+                    .json(&body),
+                SEND_FIRST_BYTE_TIMEOUT,
+            )
         })
         .await?;
 
@@ -726,13 +763,16 @@ impl LlmProvider for AnthropicProvider {
         let url = format!("{}/messages", self.base_url);
         let body = self.build_messages_body(messages, true, max_output_tokens);
 
+        // v47：send 包首字节超时（防端点黑洞挂起）
         let resp = retry_with_backoff(self.max_retries, || {
-            self.client
-                .post(&url)
-                .header("x-api-key", &self.api_key)
-                .header("anthropic-version", "2023-06-01")
-                .json(&body)
-                .send()
+            send_with_timeout(
+                self.client
+                    .post(&url)
+                    .header("x-api-key", &self.api_key)
+                    .header("anthropic-version", "2023-06-01")
+                    .json(&body),
+                SEND_FIRST_BYTE_TIMEOUT,
+            )
         })
         .await?;
 
@@ -1143,13 +1183,48 @@ data: [DONE]
             .unwrap();
 
         let resp = retry_with_backoff(MAX_RETRIES, || {
-            client.get(format!("{}/t", base_url)).send()
+            let client = client.clone();
+            let url = format!("{base_url}/t");
+            async move { Ok(client.get(url).send().await?) }
         })
         .await
         .unwrap();
 
         assert_eq!(resp.status(), 200);
         assert_eq!(attempts.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn test_send_with_timeout_blackhole() {
+        // v47：端点黑洞（TCP 连上但永不返回首字节）——send_with_timeout
+        // 应在注入的短超时内返回 Err，而不是无限挂起（16h 僵尸进程前科：
+        // generate 卡死、锁残留阻塞后续命令）。provider 生产路径使用
+        // SEND_FIRST_BYTE_TIMEOUT=90s（首字节后流式空闲超时接管）。
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        // 黑洞：接受连接后不读不写，挂住连接（线程 10s 后自然退出；
+        // 期间由 send 侧超时保护——若立即关闭连接会变成 EOF 而非超时，
+        // 必须把连接挂住）
+        std::thread::spawn(move || {
+            // 接受一个连接（incoming().next() 即 accept），不读不写挂住
+            if let Some(Ok(_stream)) = listener.incoming().next() {
+                std::thread::sleep(Duration::from_secs(10));
+            }
+        });
+
+        let client = Client::new();
+        let started = std::time::Instant::now();
+        let result = send_with_timeout(
+            client.get(format!("http://{addr}/t")),
+            Duration::from_millis(500),
+        )
+        .await;
+        assert!(result.is_err());
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(450) && elapsed < Duration::from_secs(3),
+            "超时应在注入的 500ms 附近返回，实际 {elapsed:?}"
+        );
     }
 
     #[test]

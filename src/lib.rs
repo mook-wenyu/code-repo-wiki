@@ -277,8 +277,8 @@ pub(crate) fn write_last_timings(config: &config::schema::WikiConfig, timings: &
 
 /// 运行完整的分析流水线，并在各阶段边界回调进度事件
 ///
-/// 事件点：scanning 10 / analyzing 25 / chunking 30 / cards 60 / wiki 90 /
-/// output 95 / index 98 / done 100，对应扫描、分析、生成、渲染、索引、保存阶段。
+/// 事件点：scanning 10 / analyzing 25（图构建前，v47 提前）/ chunking 30 /
+/// cards 60（生成前）/ wiki 90（生成前）/ output 95 / index 98 / done 100，对应扫描、分析、生成、渲染、索引、保存阶段。
 pub fn run_pipeline_with_progress(
     config_path: Option<&Path>,
     output: Option<&Path>,
@@ -374,10 +374,13 @@ pub fn run_pipeline_with_progress(
 
     // Phase 2: 分析（build_graph 内部完成模块检测并写回 graph.modules，
     // 此处直接读结果供 stats，不重复运行检测）
+    // v47：analyzing 25% 在 build_graph 之前发射——build_graph+attach_features
+    // 实测 54s（274 特征），若在之后发射则 10%→25% 之间长时间无进度，
+    // 用户误判卡死（实测反馈）。
+    on_progress(ProgressEvent { stage: "analyzing", percent: 25, current: None, total: None });
     let mut graph = analysis::build_graph(&file_insights)?;
     attach_features(&mut graph, &config);
     timings.graph_ms = start.elapsed().as_millis() as u64 - timings.scan_parse_ms;
-    on_progress(ProgressEvent { stage: "analyzing", percent: 25, current: None, total: None });
     stats.total_entities = graph.graph.node_count();
     stats.total_edges = graph.graph.edge_count();
     stats.modules_detected = graph.modules.len();

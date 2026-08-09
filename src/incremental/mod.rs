@@ -17,6 +17,12 @@ use self::change::{classify_entity_changes_at, no_entity_change_files, EntityCha
 use self::impact::{propagate_impact, propagate_impact_semantic};
 use self::state::GenerationState;
 
+/// watch（FileWatch）模式写入状态的 last_commit_hash 哨兵值：watch 无
+/// git 基准可记，用固定哨兵占位。update 命令复读该状态时须显式识别
+/// （见 run_file_watch_incremental 的 has_valid_base 判断），否则哨兵会
+/// 被当作 git SHA 解析报 "unable to parse OID" 并回退全量（v47 实测）。
+pub(crate) const FILE_WATCH_SENTINEL: &str = "file-watch";
+
 /// no-op 快速跳过判定（v19 t06，OpenWiki git-head 模式）
 ///
 /// 定时 CI / watch 常驻场景下，无变更时 update 仍会全量扫描 + 分析
@@ -284,34 +290,48 @@ fn run_file_watch_incremental(
     // 磁盘上已不存在的视为 deleted。非 Git 仓库或无上次 commit 时分类
     // 内部返回空集，回退保守的双向传播（与 GitDiff 路径失败回退一致）。
     let (entity_changes, classification_failed) = if let Some(state) = &state {
-        // git tree 查询需要相对仓库根的路径（insight.path 可能是绝对路径，
-        // 直接传入会让旧实体读取 miss 而误判为 Added→接口级双向传播误伤
-        // 依赖方，见 test_incremental_git_e2e 场景 A 回归）
-        let rel = |p: &PathBuf| p.strip_prefix(root.path()).unwrap_or(p).to_path_buf();
-        // exists() 必须以 root 为基准（changed_files 是相对路径，裸判
-        // exists 落在进程 cwd 上——测试/守护进程 cwd 是仓库根时，相对
-        // 路径全部误判为"已删除"→实体被误标 Removed→接口级双向传播
-        // 误伤依赖方，见 test_incremental_git_e2e 场景 A 回归）
-        let exists_at_root = |p: &PathBuf| root.path().join(p).exists();
-        let diff = crate::incremental::diff::GitDiffResult {
-            modified: changed_files
-                .iter()
-                .filter(|p| exists_at_root(p))
-                .map(rel)
-                .collect(),
-            deleted: changed_files
-                .iter()
-                .filter(|p| !exists_at_root(p))
-                .map(rel)
-                .collect(),
-            from_commit: state.last_commit_hash.clone().unwrap_or_default(),
-            ..Default::default()
-        };
-        match classify_entity_changes_at(root, &diff, insights) {
-            Ok(set) => (set, false),
-            Err(e) => {
-                tracing::warn!("FileWatch 实体级变化分类失败，回退双向传播: {}", e);
-                (EntityChangeSet::default(), true)
+        // watch 模式写入的哨兵 last_commit_hash（"file-watch"，见下方
+        // FILE_WATCH_SENTINEL）不是合法 SHA——update 命令复读该状态时若
+        // 直接喂给 Oid 解析会报误导性 "unable to parse OID" 并回退全量
+        // （v47 实测：每次 update 全量生成）。显式识别哨兵/缺失基准：
+        // 无法实体级分类 → 直接回退保守双向传播（语义与分类失败一致，
+        // 不产生误导报错）。
+        let has_valid_base = state
+            .last_commit_hash
+            .as_deref()
+            .is_some_and(|h| h != FILE_WATCH_SENTINEL);
+        if !has_valid_base {
+            (EntityChangeSet::default(), true)
+        } else {
+            // git tree 查询需要相对仓库根的路径（insight.path 可能是绝对路径，
+            // 直接传入会让旧实体读取 miss 而误判为 Added→接口级双向传播误伤
+            // 依赖方，见 test_incremental_git_e2e 场景 A 回归）
+            let rel = |p: &PathBuf| p.strip_prefix(root.path()).unwrap_or(p).to_path_buf();
+            // exists() 必须以 root 为基准（changed_files 是相对路径，裸判
+            // exists 落在进程 cwd 上——测试/守护进程 cwd 是仓库根时，相对
+            // 路径全部误判为"已删除"→实体被误标 Removed→接口级双向传播
+            // 误伤依赖方，见 test_incremental_git_e2e 场景 A 回归）
+            let exists_at_root = |p: &PathBuf| root.path().join(p).exists();
+            let diff = crate::incremental::diff::GitDiffResult {
+                modified: changed_files
+                    .iter()
+                    .filter(|p| exists_at_root(p))
+                    .map(rel)
+                    .collect(),
+                deleted: changed_files
+                    .iter()
+                    .filter(|p| !exists_at_root(p))
+                    .map(rel)
+                    .collect(),
+                from_commit: state.last_commit_hash.clone().unwrap_or_default(),
+                ..Default::default()
+            };
+            match classify_entity_changes_at(root, &diff, insights) {
+                Ok(set) => (set, false),
+                Err(e) => {
+                    tracing::warn!("FileWatch 实体级变化分类失败，回退双向传播: {}", e);
+                    (EntityChangeSet::default(), true)
+                }
             }
         }
     } else {
@@ -337,8 +357,14 @@ fn run_file_watch_incremental(
 
     // 保存新状态
     // 同上（票 03）：FileWatch 中途存盘同样合并旧状态保护字段；
-    // 复用前面已加载的 state（Option），不存在二次 load 静默失败路径
-    if let Ok(mut new_state) = GenerationState::from_insights(root, insights, "file-watch") {
+    // 复用前面已加载的 state（Option），不存在二次 load 静默失败路径。
+    // v47：提交标记=git HEAD（有 git 时）——哨兵会导致：①下次实体级
+    // 分类无基准（每次 update 全量回退，实测 OID 报错）；②no-op 快速
+    // 跳过判定失效（HEAD != "file-watch" 恒不跳过）。非 git 仓库
+    // （watch 场景）才落哨兵。
+    let commit_marker = crate::incremental::diff::git_head_oid(root.path())
+        .unwrap_or_else(|_| FILE_WATCH_SENTINEL.to_string());
+    if let Ok(mut new_state) = GenerationState::from_insights(root, insights, &commit_marker) {
         if let Some(old_state) = &state {
             new_state.preserve_protection(old_state);
         }

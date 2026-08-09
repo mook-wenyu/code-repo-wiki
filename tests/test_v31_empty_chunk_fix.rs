@@ -74,7 +74,7 @@ async fn all_empty_chunks_yield_empty_cards_and_no_failures() {
     let generator = CardGenerator::new(&provider, config, 1, "zh".into());
 
     let cards = generator
-        .generate_all_cards(&[make_empty_chunk("zzz_a"), make_empty_chunk("zzz_b")], &HashMap::new())
+        .generate_all_cards(&[make_empty_chunk("zzz_a"), make_empty_chunk("zzz_b")], &HashMap::new(), &|_| {})
         .await
         .unwrap();
     assert!(cards.is_empty(), "全空 chunk 应产出空卡片列表");
@@ -103,6 +103,7 @@ async fn mixed_interleave_success_empty_failure_attributes_correctly() {
         .generate_all_cards(
             &[make_test_chunk(), make_empty_chunk("zzz"), other],
             &HashMap::new(),
+            &|_| {},
         )
         .await
         .unwrap();
@@ -125,7 +126,7 @@ async fn empty_chunk_interleaved_with_failure_and_success() {
     let (config1, dir1) = temp_config("empty_fail");
     let gen1 = CardGenerator::new(&failing, config1, 1, "zh".into());
     let cards1 = gen1
-        .generate_all_cards(&[make_empty_chunk("zzz"), make_test_chunk()], &HashMap::new())
+        .generate_all_cards(&[make_empty_chunk("zzz"), make_test_chunk()], &HashMap::new(), &|_| {})
         .await
         .unwrap();
     assert!(cards1.is_empty(), "失败模块不产出卡片");
@@ -141,7 +142,7 @@ async fn empty_chunk_interleaved_with_failure_and_success() {
     let (config2, dir2) = temp_config("empty_ok");
     let gen2 = CardGenerator::new(&provider, config2, 1, "zh".into());
     let cards2 = gen2
-        .generate_all_cards(&[make_empty_chunk("zzz"), make_test_chunk()], &HashMap::new())
+        .generate_all_cards(&[make_empty_chunk("zzz"), make_test_chunk()], &HashMap::new(), &|_| {})
         .await
         .unwrap();
     assert_eq!(cards2.len(), 1, "成功卡片不得静默丢失");

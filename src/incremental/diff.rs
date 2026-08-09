@@ -27,9 +27,20 @@ pub struct GitDiffResult {
 ///
 /// 使用 git2 库分析 last_commit_hash（如有）与 HEAD 的差异。
 /// 无 Git 历史或 last_commit_hash 为 None 时退化为 HEAD^。
+/// 当前 HEAD 的 commit OID（字符串）；非 git 仓库或无 HEAD 时 Err。
+///
+/// v47：FileWatch 指纹路径写状态时，git 仓库记 HEAD 而非哨兵——哨兵
+/// 会使下次实体级分类无基准（全量回退）且破坏 no-op 快速跳过判定
+/// （HEAD != "file-watch" 恒不跳过）。
+pub fn git_head_oid(repo_path: &std::path::Path) -> Result<String> {
+    let repo = git2::Repository::open(repo_path)?;
+    let head = repo.head()?;
+    let commit = head.peel_to_commit()?;
+    Ok(commit.id().to_string())
+}
+
 /// 无父 commit 时返回空结果。
-pub fn analyze_git_diff(repo_path: &std::path::Path, last_commit_hash: Option<&str>) -> Result<GitDiffResult> {
-    let repo = git2::Repository::open(repo_path)
+pub fn analyze_git_diff(repo_path: &std::path::Path, last_commit_hash: Option<&str>) -> Result<GitDiffResult> {    let repo = git2::Repository::open(repo_path)
         .with_context(|| format!("不是 Git 仓库: {}", repo_path.display()))?;
 
     // 获取 HEAD commit
@@ -186,6 +197,28 @@ mod tests {
         assert_eq!(result.deleted_lines, 1);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_git_head_oid_returns_head_commit() {
+        // v47：FileWatch 写状态用 git HEAD 作分类基准（非哨兵）
+        let dir = std::env::temp_dir().join(format!("repo_wiki_head_oid_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let repo = git2::Repository::init(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "hello\n").unwrap();
+        let first = add_and_commit(&repo, "init");
+
+        assert_eq!(git_head_oid(&dir).unwrap(), first);
+
+        // 非 git 目录 → Err（调用方据此落哨兵）
+        let not_git = std::env::temp_dir().join(format!("repo_wiki_head_oid_notgit_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&not_git);
+        std::fs::create_dir_all(&not_git).unwrap();
+        assert!(git_head_oid(&not_git).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&not_git);
     }
 
     /// 提交当前工作区全部文件并返回 commit id

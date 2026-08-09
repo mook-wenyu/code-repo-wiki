@@ -430,7 +430,10 @@ fn render_progress(
         state.last_stage = Some(evt.stage);
         state.last_percent = evt.percent;
         state.last_quarter = quarter;
-        return Some(line);
+        // v47：非 TTY 行必须以换行结尾——调用处统一 `eprint!`（TTY 分支
+        // 用 \r 行内刷新不能带换行），无 \n 会与后续 tracing 日志粘在同一行
+        // （实测：`进度 [扫描源码] 10%2026-08-09T17:09:49Z WARN ...`）。
+        return Some(format!("{line}\n"));
     }
     None
 }
