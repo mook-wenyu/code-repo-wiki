@@ -709,3 +709,12 @@ knowing 全量 12 仓 mock 数据点齐（v29 9 + v30 3：rails 5239 实体/58 �
 - README 重写：新增「面向 AI 助手」节、已知问题压缩进 FAQ、贡献节重写（构建/测试/CI/发布）、Windows key 配置提示、可选配置说明
 - reviewer 门发现 3 项事实缺陷并全部修正：key 读取来源表述（项目级 config.toml 亦生效——llm.rs:350 核对）、产物示例改用当前 api.md 真实片段、config.md 锚点修正
 - 提交 c63a79f（23+/14-）；cargo check 干净
+
+## v41 用户级配置迁移 home 点目录 + git hooks 共存追加（2026-08-10）
+
+- 用户反馈：hook 遇既有 hook（LFS/memorix）「保留未覆盖」=未安装；配置根在 %APPDATA% 应参照 ~/.codegraph、~/.codex 放 home 点目录
+- 3 lane 检索核证：Codex/Claude Code/Azure CLI 官方均用 home 点目录（%USERPROFILE%\.codex 等）；hook 业界惯例=标记判断所有权+幂等+可还原（husky 同款；memorix 章节式=本地先例）；迁移推荐=一次性迁移+旧目录保留+环境变量逃生舱
+- 配置根改 %USERPROFILE%\.code-repo-wiki（Unix ~/.code-repo-wiki）+ CODE_REPO_WIKI_HOME 显式重定位（对齐 CODEX_HOME）+ 首次运行一次性迁移（复制旧 %APPDATA% 内容、旧目录保留、显式设 env 时不迁移）；测试 +4（迁移三态+home 路径）
+- git hooks 改尾部追加标记块（# code-repo-wiki: append-begin/append-end）：与 LFS 包装/memorix 区块共存；再次 install 幂等只更新块；uninstall 剥离块还原用户内容；旧标记 hook 整文件升级；core.hooksPath 检查（指向其他目录提示不生效）
+- 真实环境验证：本机 doctor 触发迁移（新路径 config.toml + 旧路径保留 + MD5 一致）；Unity 项目 install 追加块成功 + 二次 install 幂等
+- 提交 16f0ca2（13 文件 +511/-88）；hook 8/8、smoke 20/20、config 50/50、clippy 0
