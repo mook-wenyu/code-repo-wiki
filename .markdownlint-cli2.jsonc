@@ -1,0 +1,16 @@
+{
+  // 历史/运维记录：Keep a Changelog 官方紧凑格式与 MD022/MD032 冲突；STATUS 为会话运维日志
+  "excludes": ["**/CHANGELOG.md", "**/STATUS.md"],
+  "config": {
+    // 中文技术文档：行宽/内联 HTML/强调式标题/重复标题/首行标题等规则不适用
+    "MD013": false,
+    "MD033": false,
+    "MD036": false,
+    "MD024": false,
+    "MD041": false,
+    // 表格列对齐（MD060）与连续空行数（MD012）：中英文混合表格与生成/模板文件的
+    // 空行风格无法统一约束
+    "MD060": false,
+    "MD012": false
+  }
+}

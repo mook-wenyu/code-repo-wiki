@@ -16,6 +16,15 @@
   `code_repo_wiki*` 历史测试残留；v37 起新旧命名双清）；
 - README 新增 watch 常驻进程托管模板（systemd 用户服务 / launchd
   LaunchAgent / Windows 任务计划程序，均含崩溃自愈配置）。
+- **Apache License 2.0（v43）**：仓库根 LICENSE 官方全文（apache.org 权威文本原样）；
+  `Cargo.toml` 补发布元数据（`license = "Apache-2.0"`、`repository`、`readme`、
+  `keywords` ≤5、`categories` ≤5——crates.io 硬性必填 description+license，缺失即 400）
+- **发布工作流（v43）**：`.github/workflows/release.yml`——tag `v*` 触发：crates.io
+  发布（Trusted Publishing OIDC 免长期 token，首次发布需手动）+ GitHub Releases
+  二进制矩阵（linux/macos/windows 四目标，taiki-e upload-rust-binary-action）
+- **文档质量门禁（v43）**：`.markdownlint-cli2.jsonc` 中文文档规则配置 + CI 新增
+  `lint-docs` job（markdownlint-cli2 结构检查 + lychee 链接可达性；CHANGELOG/STATUS
+  历史记录豁免，已知不可用网关端点与脱敏占位 URL 入 `.lycheeignore`）
 
 ### Changed
 - **项目改名 Code Repo Wiki（v37）**：crate/二进制/命令名 `repo-wiki` → `code-repo-wiki`（代码/测试/文档/MCP 注册键/git hooks 字面量/AGENTS 注入块全链路同步）；产物目录 `.repo-wiki` → `.code-repo-wiki`；用户级配置目录 `%APPDATA%\repo-wiki` → `%APPDATA%\code-repo-wiki`（改名不迁移，删除重装并重新配置 key）；GitHub 仓库改名 `mook-wenyu/code-repo-wiki`

@@ -1,0 +1,77 @@
+name: Release
+
+# 发布工作流（tag v* 触发）：
+#   1. publish-crates-io —— crates.io 发布（Trusted Publishing，OIDC 免长期 token）
+#   2. build-binaries  —— GitHub Releases 二进制产物（矩阵：linux/macos/windows）
+#
+# 注意（首次发布）：
+#   - 新 crate 不能走 Trusted Publishing，首次必须手动 `cargo publish`
+#     （crates.io 账号验证邮箱 + cargo login 后手动执行一次）；
+#   - 之后 tag vX.Y.Z 推送即自动触发本工作流。
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write # Trusted Publishing：向 crates.io 换取短期发布 token
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish-crates-io:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install system deps (git2/openssl)
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev zlib1g-dev
+      # OIDC 交换 30 分钟短期 token（需 crates.io 侧启用 Trusted Publishing）
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - name: Publish to crates.io
+        run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+  build-binaries:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Install system deps (git2/openssl)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev zlib1g-dev
+      # 构建 + 上传 Release 资产（tag 推送时自动创建 Release，tar 用于 unix/zip 用于 windows）
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: code-repo-wiki
+          target: ${{ matrix.target }}
+          tar: unix
+          zip: windows

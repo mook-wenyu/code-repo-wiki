@@ -11,7 +11,23 @@ powershell -File scripts/cleanup-test-residue.ps1 -Apply   # 确认后删除
 
 ## 发布新版本
 
-SemVer 更新 `Cargo.toml` → `cargo test` / `clippy` / `machete` 全绿 → `cargo publish` + `git tag vX` → 干净环境 `cargo install code-repo-wiki` + `doctor` 六查。
+**前置（首次发布必做；后续发布仅版本号变更）**：
+
+- `Cargo.toml` 元数据完备——`description` + `license`（SPDX 表达式，如 `Apache-2.0`）为
+  crates.io **硬性必填**（缺失即 400 拒绝发布）；`repository` / `readme` / `keywords`
+  （≤5 个，ASCII ≤20 字符）/ `categories`（≤5 个，slug 必须精确匹配
+  [crates.io category_slugs](https://crates.io/category_slugs)，未知 slug 即 400）为推荐项；
+  `license-file` 与 `license` 不要同时填（cargo 警告）
+- 发布前核对：`cargo package --list`（打包文件集——git 仓库遵循 .gitignore，`target/` 恒排除、
+  `Cargo.lock` 恒包含）+ `cargo publish --dry-run`（元数据校验）
+- crates.io 账号已验证邮箱；**新 crate 首次必须手动 `cargo publish`**
+  （Trusted Publishing 不支持首次发布，且需先在 crates.io 侧启用）
+
+**流程**：SemVer 更新 `Cargo.toml` → `cargo test` / `clippy` / `machete` 全绿 →
+`cargo publish --dry-run` → 首次：手动 `cargo publish`；后续：推送 `git tag vX.Y.Z`
+触发 release 工作流（`.github/workflows/release.yml`——crates.io 发布 + GitHub Releases
+二进制矩阵，linux/macos/windows 四目标）→ 干净环境 `cargo install code-repo-wiki` +
+`doctor` 六查。
 
 ## 维护者日常
 

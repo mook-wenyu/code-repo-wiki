@@ -1,5 +1,14 @@
 # 项目状态简报 （AI自动维护，禁止贴代码）
 
+## 五十六、v43 发布就绪：Apache-2.0 LICENSE + Cargo 发布元数据 + 发布/文档门禁工作流（2026-08-09，本会话）
+- 修改的功能：①仓库根新增 LICENSE（Apache License 2.0 官方全文原样，来源 apache.org/licenses/LICENSE-2.0.txt 权威文本）；②Cargo.toml 发布元数据补齐（license=Apache-2.0 / repository / readme / keywords ≤5 / categories ≤5——crates.io 硬性必填 description+license，缺失即 400；keywords/categories 超限为硬错误；categories slug 须精确匹配 crates.io category_slugs）——Cargo.toml 属 config zone，改动清单已交付用户手动应用；③新增 .github/workflows/release.yml（tag v* 触发：crates.io 发布走 Trusted Publishing OIDC 免长期 token——首次发布须手动；GitHub Releases 二进制矩阵 linux/macos/windows 四目标 taiki-e 上传）；④CI 新增 lint-docs job（markdownlint-cli2 结构检查 + lychee 链接可达性）配套 .markdownlint-cli2.jsonc（中文文档豁免 MD013/033/036/024/041/060/012，CHANGELOG/STATUS 历史记录 CLI 排除）+ .lycheeignore（已知不可用网关端点与脱敏占位 URL）
+- 摸到的文件：LICENSE（新增）、Cargo.toml（元数据——用户手动应用）、.github/workflows/release.yml（新增）、.github/workflows/ci.yml（lint-docs job）、.markdownlint-cli2.jsonc（新增）、.lycheeignore（新增）、README.md（徽章行+License 段+CI 描述）、docs/index.md（LICENSE 链接）、docs/how-to/maintenance.md（发布节重写：元数据前置+category_slugs 注意+cargo package --list/--dry-run 步骤+Trusted Publishing 首次限制）、CHANGELOG.md（Unreleased 补 v43 三条）、docs/explanation/architecture.md（代码块语言标注）、AGENTS.md（尾部空行）
+- 是否改变了接口/契约：否（纯文档/CI/元数据；markdownlint 对既有文档零改动——0 issues；cargo check --tests 干净确认 LSP 陈旧报错非真问题）
+- 验证：markdownlint-cli2 本地 0 issues（13 文件）；外部链接清单人工核对（9 处：稳定链接可达、不可用端点/占位 URL 入 .lycheeignore）；cargo check --tests 0 error/warning；CI 门禁（clippy/doc/actionlint/markdownlint/lychee）待 push 后由 GitHub Actions 最终验证
+- 提交：未提交（主线统一提交，禁止 git commit）
+- 遗留/风险点：①release.yml 的 rust-lang/crates-io-auth-action@v1 与 taiki-e 参数仅经语法人工核对，首次 tag 触发时由 CI 实测（lint-workflow 会校验语法）；②crates.io 账号/首次手动 publish/Trusted Publishing 启用为 HITL 项（用户操作）；③v0.3.0 尚未打 tag（Cargo.toml 0.3.0 与最新 tag v0.2.0 漂移——发布时补）；④LLM 真实 API 端到端复验仍缺（DeepSeek 402 后未复验）
+- 下次最该做的事：用户应用 Cargo.toml 元数据改动 → push → 观察 CI 全绿（含新 lint-docs）→ 用户注册 crates.io 并首次手动 publish → 打 v0.3.0 tag 触发 release 工作流
+
 ## 五十五、删除补偿提前到主路径——mixed 场景（删除+修改并存）模块残留修复（2026-08-06，本会话）
 - 修改的功能：纯删除场景的模块级删除补偿（v21 验证轮 16085af 已修纯删除：存活文件并入变更集重生成）从「快照回填分支」内部提前到 run_generation_filtered 主路径——删除与修改并存（mixed）时 changed_insights 非空不进回填分支，而语义传播对被删文件（图中无节点，find_start_nodes 跳过）够不到其模块，src_m20.md 等模块页磁盘残留被删实体描述（v21 F 组遗留）。修复后无论 changed_insights 是否为空，deleted_files 对应的部分删除模块存活文件一律并入变更集走正常重生成；回填分支退化为仅处理「整模块全删 / 无实体变更」，保留 deleted_modules 剔除语义
 - 摸到的文件：src/generate/mod.rs（删除补偿逻辑前移+回填分支简化，~+40 行）、tests/test_incremental_large_fixture.rs（新增 test_delete_file_mixed_with_modification_regenerates_module：删 a.rs+改 solo.rs 断言 m20 模块重生成、磁盘页与 api.md 不残留 a_alpha、solo 新签名生效）

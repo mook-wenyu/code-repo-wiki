@@ -23,6 +23,7 @@
 
 - [README](../README.md) —— 30 秒了解 + 快速开始
 - [CHANGELOG](../CHANGELOG.md) —— 版本变更记录
+- [LICENSE](../LICENSE) —— Apache License 2.0
 - [GitHub 仓库](https://github.com/mook-wenyu/code-repo-wiki) —— 问题与 PR
 
 ## 文档约定

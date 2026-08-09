@@ -2,7 +2,7 @@
 
 ## 流水线总览
 
-```
+```text
 Source Files → ingest (tree-sitter AST 解析) → analysis (知识图谱 + 社区检测)
             → generate (LLM 卡片 + 文档) → output (Markdown/HTML) → Wiki/
             → search (FTS5 + embedding 索引) → text/semantic/hybrid 搜索

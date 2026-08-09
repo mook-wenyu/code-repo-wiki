@@ -1,0 +1,7 @@
+# lychee 忽略清单（链接检查豁免——非死链，均为文档故意引用）
+#
+# 1. 默认 LLM 网关端点：2026-08 实测不可用（生成端点 400/500），文档如实记录
+#    （docs/reference/config.md「已知问题」段），非文档错误
+# 2. 阿里云百炼 base_url 示例：文档中为脱敏占位（省略号隐藏账号区段），非真实地址
+llm-…maas.aliyuncs.com
+opencode.ai/zen/go/v1

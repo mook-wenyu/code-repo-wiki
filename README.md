@@ -1,5 +1,8 @@
 # Code Repo Wiki
 
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![CI](https://github.com/mook-wenyu/code-repo-wiki/actions/workflows/ci.yml/badge.svg)](https://github.com/mook-wenyu/code-repo-wiki/actions/workflows/ci.yml)
+
 自动为代码仓库生成**持续更新**的 Wiki 文档：模块页、API 参考、知识卡片，供人和 AI 助手阅读。
 
 零配置开箱即用 · 单二进制 · 支持 11 种语言 · 增量更新 · 可注册为 OpenCode 插件 / Claude / Codex MCP
@@ -92,5 +95,9 @@ code-repo-wiki generate
 ## 贡献
 
 - **构建**：`cargo build --release`；**测试**：`cargo test`（全量套件）；**静态检查**：`cargo clippy -- -D warnings` + `cargo doc --no-deps`
-- **CI**：ubuntu/windows 测试矩阵 + clippy/doc 门禁 + actionlint（工作流见 `.github/workflows/ci.yml`）
+- **CI**：ubuntu/windows 测试矩阵 + clippy/doc 门禁 + actionlint + markdownlint/lychee 文档门禁（工作流见 `.github/workflows/ci.yml`）
 - **发布流程**：版本号与 CHANGELOG 规范见 [docs/how-to/maintenance.md](docs/how-to/maintenance.md)
+
+## License
+
+[Apache License 2.0](LICENSE)
