@@ -1,5 +1,30 @@
 # 项目状态简报 （AI自动维护，禁止贴代码）
 
+## 五十八、v46 命令进度增强：LLM 逐项进度（2026-08-09，本会话）
+- 修改的功能：①`ProgressEvent` 增加 `current`/`total` 字段；②`generate`/`update`
+  的卡片生成与 Wiki 页生成两个 LLM 密集阶段输出任务单位进度
+  （`进度 [生成知识卡片] 3/12（62%）`——stderr、非 TTY 按阶段/10% 档/每 5 项
+  节流、TTY 行内刷新；对齐 Ubuntu CLI 规范与 clig.dev 通道纪律）；③
+  `--progress-json` 同步新增 current/total；④no-op 早退补齐 `done` 事件
+  （进度流终态完整，JSONL 消费者无需依赖 EOF）
+- 修复的问题：事件流百分比单调性——cards/wiki 阶段点原在 run_generation
+  之后发射（项级事件 60..90/90..98 与阶段点 60/90、output 95 冲突，
+  progress_test 单调断言失败）；修复=cards 60/wiki 90 阶段点移至生成前
+  发射 + wiki 项级区间收敛 90..95（系数 8→5，与 output 95 相接）
+- 摸到的文件：src/lib.rs（ProgressEvent+8 发射点+阶段点顺序）、
+  src/generate/mod.rs（run_generation/run_generation_filtered/generate_wiki_pages
+  签名+项级发射+too_many_arguments 例外说明）、src/generate/card.rs
+  （generate_all_cards 签名+项级发射）、src/main.rs（ProgressRenderState+
+  render_progress 纯函数+2 单测）、tests/progress_test.rs（项级断言）、
+  tests/test_cli_smoke.rs（stderr 进度断言）、README.md/cli.md/CHANGELOG.md
+- 是否改变了接口/契约：`--progress-json` 事件增加 current/total（null 兜底
+  向后兼容）；run_generation/run_generation_filtered/generate_all_cards/
+  generate_wiki_pages 签名增加 on_progress 参数（内部函数）
+- 验证：cargo test 全量全绿（无 FAILED）+ clippy --all-targets -D warnings
+  0 警告；progress_test 单调断言通过；smoke 进度断言通过（真实二进制：
+  stderr 有扫描/卡片/Wiki 阶段行、无 done 行、stdout 有完成摘要）
+- 提交：a957693（feat(progress)，9 文件 +297/-34）
+
 ## 五十七、v45 提示词工程 + 发布工作流修复 + 版本 0.5.0（2026-08-09，本会话）
 - 修改的功能：①4 个 system prompt（module_summary/architecture_overview/knowledge_card/wiki_page）工程化重构——`### 角色/任务/输出格式/约束` 分节+指令前置（OpenAI 官方+Lost in the Middle）；输出语言显式化（output_lang=zh→「简体中文」，非 zh 原样）；knowledge_card 新增「输出原始 JSON 对象本身——不要用 Markdown 代码块包裹」+可选字段省略不输出 null；wiki_page 新增「信息不足时的处理：写（信息不足）不要编造」（reduce-hallucinations 写法）——既有 anti-fabrication 契约字面全部保留；②release.yml 发布工作流修复——build-binaries 4 目标并发各自创建 Release 的竞态（taiki-e 反复 release not found 8-10 次重试失败）→ 新增 create-release job（gh release create --draft 先行+release-id 共享）消除竞态；macos 构建失败（系统 LibreSSL 与 openssl-sys 不兼容）→ brew install openssl@3 + PKG_CONFIG_PATH；新增 publish-release job（--draft=false 定稿）；③版本 0.4.0 → 0.5.0（用户手动应用 Cargo.toml——config zone 护栏，Cargo.lock 同步）CHANGELOG [0.5.0] 版本化
 - 摸到的文件：src/generate/prompt.rs（4 prompt 重构+编译修复 format! 隐式捕获改位置参数+新测试）、.github/workflows/release.yml（重写）、Cargo.toml/Cargo.lock（0.5.0）、CHANGELOG.md（[0.5.0]）、src/main.rs（v44 进度提示 stage_zh+完成摘要）、README.md+docs/reference/cli.md（v44 重排+search 默认值注明）、tests/test_cli_smoke.rs（v44 摘要断言）、.opencode/plans/（删除 5 个陈旧计划文件——用户工作区操作，v37 先例保持）
