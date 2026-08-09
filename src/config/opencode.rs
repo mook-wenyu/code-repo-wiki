@@ -22,33 +22,22 @@ use anyhow::{Context, Result};
 
 /// OpenCode 配置管理器
 pub struct OpenCodeConfig {
-    /// 全局 opencode.json 路径
+    /// 全局 opencode.json 路径（`~/.config/opencode/opencode.json`）
     pub config_path: PathBuf,
-    /// 项目根目录（插件文件相对此解析；测试中可注入任意临时目录）
+    /// 项目根目录（仅用于清理 v39 之前的旧版项目级插件产物）
     pub project_root: PathBuf,
 }
 
 impl OpenCodeConfig {
-    /// 创建管理器，自动查找 opencode.json
+    /// 创建管理器，配置路径固定为用户级全局 opencode.json
     ///
-    /// 搜索顺序：
-    /// 1. 项目根 `root` 下 `.opencode.json`
-    /// 2. `~/.config/opencode/opencode.json`
-    ///
-    /// v33 起接收注入的 `root`（--root 语义修复）：插件文件/配置查找
-    /// 全部相对项目根解析，不再依赖进程 cwd（v32 审查 HIGH：跨 cwd 运行
-    /// 会把插件装进 cwd 仓库，只有 hooks/.mcp.json 落对目标仓库）。
+    /// v39 起（官方文档+源码查证）：opencode 用户级配置根为
+    /// `~/.config/opencode`（全平台一致，含 Windows——xdg-basedir 无平台
+    /// 分支）；插件自动加载目录为配置根下 `plugins/`。因此插件文件与
+    /// 配置清理全部落在用户级（一次 install 全仓库 opencode 会话可用），
+    /// 不再读写项目根 `.opencode.json`——那是用户自建文件，不属于本工具。
     pub fn new(root: &crate::project::ProjectRoot) -> Result<Self> {
         let project_root = root.path().to_path_buf();
-        let project_config = project_root.join(".opencode.json");
-        if project_config.exists() {
-            return Ok(Self {
-                config_path: project_config,
-                project_root,
-            });
-        }
-
-        // 回退到全局配置
         let global_config = Self::config_dir()?.join("opencode.json");
         Ok(Self {
             config_path: global_config,
@@ -152,11 +141,17 @@ impl OpenCodeConfig {
     /// 以文件存在性为准：opencode 目录自动加载，配置文件不再承载注册信息。
     /// N10：官方加载器 glob 为 `{plugin,plugins}/*.{ts,js}`——单复数目录
     /// 都要查（此前只查 plugins/，用户手工放在 plugin/ 时误报未安装）。
+    ///
+    /// v39：插件已移至用户级配置根（`~/.config/opencode/plugins/`），
+    /// 安装状态以用户级文件存在性为准（项目级旧产物由迁移逻辑清理，
+    /// 不再视为已安装）。
     pub fn is_installed(&self) -> Result<bool> {
+        let config_root = self
+            .config_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("无法定位 OpenCode 配置根目录"))?;
         for dir in ["plugins", "plugin"] {
-            let plugin_file = self
-                .project_root
-                .join(".opencode")
+            let plugin_file = config_root
                 .join(dir)
                 .join("code-repo-wiki.ts");
             if plugin_file.exists() {
@@ -166,17 +161,52 @@ impl OpenCodeConfig {
         Ok(false)
     }
 
-    /// 将插件模板写入 `{project_root}/.opencode/plugins/code-repo-wiki.ts`
+    /// 清理 v39 之前的旧版项目级插件产物
     ///
-    /// v33 升级语义（用户拍板「带标记则升级」）：插件文件是 code-repo-wiki
+    /// v33-v38 把插件写入 `{project_root}/.opencode/{plugins,plugin}/`；
+    /// v39 起改用户级配置根。旧文件残留会被 opencode 项目级目录继续
+    /// 自动加载（且内容含旧 exe 路径），install/uninstall 时幂等清理：
+    /// 存在即删除并返回 true（供提示），不存在静默返回 false。
+    fn remove_legacy_project_plugin(&self) -> Result<bool> {
+        let mut removed = false;
+        for dir in ["plugins", "plugin"] {
+            let legacy = self
+                .project_root
+                .join(".opencode")
+                .join(dir)
+                .join("code-repo-wiki.ts");
+            match std::fs::remove_file(&legacy) {
+                Ok(()) => {
+                    tracing::info!("已清理旧版项目级插件: {}", legacy.display());
+                    removed = true;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(removed)
+    }
+
+    /// 将插件模板写入 `{config_root}/plugins/code-repo-wiki.ts`（用户级）
+    ///
+    /// v39：插件是「用户级内容」——装进 Agent 配置根目录
+    /// `~/.config/opencode/plugins/`（官方文档：该目录下 `{plugin,plugins}/*.{ts,js}`
+    /// 启动时自动加载），一次 install 全仓库 opencode 会话可用，不再写入
+    /// 项目 `.opencode/plugins/`。写入前清理 v39 之前的旧版项目级产物。
+    ///
+    /// 升级语义（用户拍板「带标记则升级」）：插件文件是 code-repo-wiki
     /// 专属产物（文件名即标记），内容与最新模板（注入当前 exe 绝对路径）
     /// 不同即覆盖升级（旧版本模板/二进制路径变化）；相同则跳过。
     /// 返回是否实际写入。模板经 include_str 内嵌编译（见下方实现注释：
     /// v33 修复自举缺陷——模板源不再依赖仓库内安装产物文件）。
     pub fn install_plugin_file(&mut self) -> Result<bool> {
+        if self.remove_legacy_project_plugin()? {
+            println!("  ✓ 已清理旧版项目级插件（v39 起插件改用户级安装）");
+        }
         let plugin_path = self
-            .project_root
-            .join(".opencode")
+            .config_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("无法定位 OpenCode 配置根目录"))?
             .join("plugins")
             .join("code-repo-wiki.ts");
         // t02（v16）：PATH 硬依赖根治——把模板中 execa 的二进制名替换为
@@ -194,8 +224,9 @@ impl OpenCodeConfig {
             // 模板内嵌编译（include_str）：插件模板只含 execa("code-repo-wiki")
             // 占位（下方注入 current_exe 绝对路径），不含任何编译期路径，
             // 因此发布安装/仓库移动后仍可生成。模板源固定为源码目录内
-            // src/config/plugin-template.ts——与安装产物 .opencode/plugins/
-            // 完全分离，uninstall 删除产物不影响编译与再次 install
+            // src/config/plugin-template.ts——与安装产物（用户级
+            // ~/.config/opencode/plugins/）完全分离，uninstall 删除产物
+            // 不影响编译与再次 install
             // （v38 修复：v33 注释声称已修复自举缺陷但 include_str 仍指向
             // 仓库内安装产物路径——真实环境 uninstall 删除产物后编译失败）
             let raw = include_str!("plugin-template.ts");
@@ -221,23 +252,28 @@ impl OpenCodeConfig {
         Ok(true)
     }
 
-    /// 删除插件文件 `.opencode/plugins/code-repo-wiki.ts`
+    /// 删除用户级插件文件（`plugins/` 与 `plugin/` 双目录，与官方自动加载
+    /// glob `{plugin,plugins}/*.{ts,js}` 及 [`Self::is_installed`] 对称），
+    /// 并清理 v39 之前的旧版项目级产物。
     ///
     /// 文件不存在时静默成功（幂等，与 uninstall_plugin 语义一致）。
     pub fn uninstall_plugin_file(&mut self) -> Result<()> {
-        let plugin_path = self
-            .project_root
-            .join(".opencode")
-            .join("plugins")
-            .join("code-repo-wiki.ts");
-        match std::fs::remove_file(&plugin_path) {
-            Ok(()) => {
-                tracing::info!("插件文件已删除: {}", plugin_path.display());
-                Ok(())
+        self.remove_legacy_project_plugin()?;
+        let config_root = self
+            .config_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("无法定位 OpenCode 配置根目录"))?;
+        for dir in ["plugins", "plugin"] {
+            let plugin_path = config_root.join(dir).join("code-repo-wiki.ts");
+            match std::fs::remove_file(&plugin_path) {
+                Ok(()) => {
+                    tracing::info!("插件文件已删除: {}", plugin_path.display());
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e.into()),
         }
+        Ok(())
     }
 
     /// 获取 OpenCode 配置的根目录 (~/.config/opencode/)
@@ -292,8 +328,20 @@ mod tests {
         (dir, path)
     }
 
-    /// 在临时目录创建插件文件（.opencode/plugins/code-repo-wiki.ts），返回 (目录, 文件路径)
+    /// 在临时目录创建用户级插件文件（{dir}/plugins/code-repo-wiki.ts——
+    /// v39 起插件装 Agent 配置根目录），返回文件路径
     fn setup_plugin_file(dir: &Path) -> PathBuf {
+        let plugin_dir = dir.join("plugins");
+        std::fs::create_dir_all(&plugin_dir).expect("创建插件目录失败");
+        let path = plugin_dir.join("code-repo-wiki.ts");
+        std::fs::write(&path, "export const RepoWikiPlugin = () => ({});").expect("写入插件文件失败");
+        path
+    }
+
+    /// 在临时目录创建 v39 之前的旧版项目级插件文件
+    /// （{dir}/.opencode/plugins/code-repo-wiki.ts——旧 install 产物），
+    /// 供迁移清理断言使用
+    fn setup_legacy_project_plugin(dir: &Path) -> PathBuf {
         let plugin_dir = dir.join(".opencode").join("plugins");
         std::fs::create_dir_all(&plugin_dir).expect("创建插件目录失败");
         let path = plugin_dir.join("code-repo-wiki.ts");
@@ -376,7 +424,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// is_installed 以插件文件存在性为准：文件存在 → true
+    /// is_installed 以插件文件存在性为准：用户级文件存在 → true
     #[test]
     fn test_is_installed_when_plugin_file_present() {
         let (dir, _) = setup_temp_config(None);
@@ -394,7 +442,7 @@ mod tests {
     #[test]
     fn test_is_installed_when_plugin_file_missing() {
         let (dir, _) = setup_temp_config(None);
-        // 临时目录没有 .opencode/plugins/code-repo-wiki.ts
+        // 临时配置根下没有 plugins/code-repo-wiki.ts
         let config = OpenCodeConfig {
             config_path: dir.join("opencode.json"),
             project_root: dir.clone(),
@@ -408,7 +456,7 @@ mod tests {
     #[test]
     fn test_is_installed_singular_plugin_dir() {
         let (dir, _) = setup_temp_config(None);
-        let plugin_dir = dir.join(".opencode").join("plugin");
+        let plugin_dir = dir.join("plugin");
         std::fs::create_dir_all(&plugin_dir).unwrap();
         std::fs::write(plugin_dir.join("code-repo-wiki.ts"), "export const RepoWikiPlugin = () => ({});").unwrap();
         let config = OpenCodeConfig {
@@ -416,6 +464,56 @@ mod tests {
             project_root: dir.clone(),
         };
         assert!(config.is_installed().unwrap());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v39：旧版项目级插件文件（.opencode/plugins/）不算已安装——安装
+    /// 状态以用户级配置根为准；旧文件由迁移逻辑清理
+    #[test]
+    fn test_is_installed_ignores_legacy_project_plugin() {
+        let (dir, _) = setup_temp_config(None);
+        setup_legacy_project_plugin(&dir);
+        let config = OpenCodeConfig {
+            config_path: dir.join("opencode.json"),
+            project_root: dir.clone(),
+        };
+        assert!(!config.is_installed().unwrap(), "旧版项目级插件不应视为已安装");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v39：install 前清理旧版项目级插件产物（迁移到用户级配置根）
+    #[test]
+    fn test_install_plugin_file_migrates_legacy_project_plugin() {
+        let (dir, _) = setup_temp_config(None);
+        let legacy = setup_legacy_project_plugin(&dir);
+        let mut config = OpenCodeConfig { config_path: dir.join("opencode.json"), project_root: dir.clone() };
+
+        let wrote = config.install_plugin_file().unwrap();
+        assert!(wrote, "迁移时应实际写入用户级插件文件");
+        assert!(!legacy.exists(), "旧版项目级插件文件应被清理");
+
+        let user_plugin = dir.join("plugins").join("code-repo-wiki.ts");
+        assert!(user_plugin.exists(), "用户级插件文件应写入");
+        assert!(config.is_installed().unwrap());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v39：uninstall 同时清理用户级插件与旧版项目级残留
+    #[test]
+    fn test_uninstall_plugin_file_removes_user_and_legacy() {
+        let (dir, _) = setup_temp_config(None);
+        let user_plugin = setup_plugin_file(&dir);
+        let legacy = setup_legacy_project_plugin(&dir);
+        let mut config = OpenCodeConfig { config_path: dir.join("opencode.json"), project_root: dir.clone() };
+
+        config.uninstall_plugin_file().unwrap();
+
+        assert!(!user_plugin.exists(), "用户级插件文件应删除");
+        assert!(!legacy.exists(), "旧版项目级插件文件应删除");
+        assert!(!config.is_installed().unwrap());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -468,6 +566,7 @@ mod tests {
 
     /// t02（v16）：install_plugin_file 注入当前可执行文件绝对路径——
     /// 插件不再依赖 PATH（exec 目标为注入路径而非 "code-repo-wiki" 字面量）
+    /// v39：落点为用户级配置根 {dir}/plugins/（dir=测试注入的临时配置根）
     #[test]
     fn test_install_plugin_file_injects_absolute_exe_path() {
         let (dir, _) = setup_temp_config(None);
@@ -476,7 +575,7 @@ mod tests {
         let wrote = config.install_plugin_file().unwrap();
         assert!(wrote, "首次安装应实际写入插件文件");
 
-        let plugin_path = dir.join(".opencode").join("plugins").join("code-repo-wiki.ts");
+        let plugin_path = dir.join("plugins").join("code-repo-wiki.ts");
         let content = std::fs::read_to_string(&plugin_path).unwrap();
 
         // 注入的路径 = 测试进程可执行文件（current_exe 语义），JSON 转义后嵌入
