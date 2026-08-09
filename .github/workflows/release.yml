@@ -44,10 +44,19 @@ jobs:
       - uses: actions/checkout@v4
       # Draft Release 先行创建：build-binaries 矩阵各 job 通过 release-id
       # 上传到同一个 Draft；全部上传完成后由 publish-release 转为正式。
+      # 注：gh release create 不支持 --json；且把命令放进 echo "$(...)" 会吞掉
+      # 失败退出码（bash -e 只看整条 echo 的退出码）——release_id 会静默为空，
+      # 下游 taiki-e/gh release edit 按 tag 查 Draft 一律 404。
+      # 改用 gh api POST（--jq .id 取 id），赋值独立一行让失败正确传播。
       - name: Create draft release
         id: create
         run: |
-          echo "release_id=$(gh release create "${{ github.ref_name }}" --draft --generate-notes --json id --jq .id)" >> "$GITHUB_OUTPUT"
+          RELEASE_ID="$(gh api --method POST repos/{owner}/{repo}/releases \
+            -f tag_name="${{ github.ref_name }}" \
+            -F draft=true \
+            -F generate_release_notes=true \
+            --jq .id)"
+          echo "release_id=$RELEASE_ID" >> "$GITHUB_OUTPUT"
         env:
           GH_TOKEN: ${{ github.token }}
 
@@ -111,8 +120,9 @@ jobs:
     needs: [create-release, build-binaries]
     runs-on: ubuntu-latest
     steps:
-      # 4 个目标二进制全部上传完成后，Draft → 正式发布
+      # 4 个目标二进制全部上传完成后，Draft → 正式发布。
+      # 按 id PATCH（gh release edit 按 tag 查 Draft 会 404——draft 不公开）
       - name: Publish release
-        run: gh release edit "${{ github.ref_name }}" --draft=false
+        run: gh api --method PATCH "repos/{owner}/{repo}/releases/${{ needs.create-release.outputs.release_id }}" -F draft=false
         env:
           GH_TOKEN: ${{ github.token }}
