@@ -80,6 +80,12 @@ fn test_pipeline_progress_events_monotonic_and_done() {
     assert_eq!(events.last().unwrap().stage, "done");
     assert_eq!(events.last().unwrap().percent, 100);
 
+    // v48：analyzing 阶段 25→27→30 单调补点（大仓图构建长黑屏期可见推进）
+    assert!(
+        events.iter().any(|e| e.stage == "analyzing" && e.percent == 27),
+        "应包含 analyzing 27% 进度事件（25→27→30 单调补点）"
+    );
+
     // v46：LLM 逐项进度——cards 阶段事件带 current/total 且递增到总数
     //（mock 响应非卡片 JSON，生成全失败但失败隔离下任务仍计数——事件照发）
     let card_evts: Vec<_> = events

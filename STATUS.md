@@ -782,3 +782,37 @@ knowing 全量 12 仓 mock 数据点齐（v29 9 + v30 3：rails 5239 实体/58 �
 - 修复：改用完整配置链 load_default_config(root)（项目级字段级合并覆盖用户级；两者皆无时自动创建用户级默认模板）；畸形配置降级「配置解析失败」提示并继续注入；测试 9/9（无配置自动创建模板+无提示断言、用户级 language=en 渲染 en 路径）
 - 实机验证（release 重装 .cargo/bin 后）：提示消失、渲染 zh（用户级值）、hook 幂等「已是最新」
 - 生产就绪盘点（3 lanes）：发布阻塞=缺 license/license-file/repository/keywords/categories + 无 LICENSE 文件（crates.io 400）；发布自动化缺=无 tag 触发/publish/Releases 二进制（cargo-dist 或 taiki-e）；版本漂移=0.3.0 未打 tag；LLM 真实验证缺口 pending（DeepSeek 402 后未复验）
+
+## v43 生产就绪发布链路（2026-08-10）
+
+- 许可证与发布元数据：Apache-2.0 LICENSE 全文写入 + Cargo.toml license/repository/keywords/categories；README 生产就绪重写（安装/快速开始/FAQ/自动维护链路）
+- 发布自动化：release.yml（tag 触发 + build-binaries 3 平台二进制 + publish-release 建 Draft + publish-crates-io Trusted Publishing）——首轮 CI 失败（linux/macos 缺 OpenSSL）→ 修复（ubuntu apt libssl-dev、macos brew openssl@3 + PKG_CONFIG_PATH）→ 三平台构建全绿
+- 版本 0.5.0：CHANGELOG [0.5.0] 版本化 + tag v0.5.0 + Release v0.5.0 上线（3 二进制 + crates.io v0.5.0 发布成功）
+- 交付全套教程：Trusted Publishing 网页配置（crates.io Settings）+ 首次手动 publish + tag 验证清单（官方文档逐项对齐）
+- 多轮发布修复：Draft 清理/重打 tag 到修复提交（linux/macos 构建失败修复后 tag 重建）——最终三平台构建 + crates.io 全绿
+
+## v44 命令进度提示（2026-08-10）
+
+- generate/update 文本模式接入进度事件流：分阶段进度行（stderr，`进度 [扫描源码] 10%`）+ 完成摘要（stdout，`✓ 生成完成: …`；no-op 保持契约行）；README 同步重构（安装/快速开始/FAQ/自动维护链路）
+- 验证：20/20 + 480 + 全量绿 + clippy 0
+
+## v45 提示词工程优化与 workflows 重构（2026-08-10）
+
+- 四个 system prompt（模块摘要/架构概览/知识卡片/Wiki 页）重构：指令前置 + `### 角色/任务/` 分节（OpenAI 官方最佳实践 + Lost in the Middle）；知识卡片输出原始 JSON；Wiki 页信息密度「三全一准」；anti-fabrication 约束
+- workflows 重构：release.yml 重写（tag 触发 + 3 平台二进制 + Trusted Publishing）；rust-toolchain.toml + CI 矩阵（ubuntu/windows）全绿
+- 版本 0.5.0 落地；删除 5 个陈旧计划文件（design-v32/33/35/36 + loop 技能残留——+287/-1711）
+
+## v46 LLM 逐项进度（2026-08-10）
+
+- 卡片生成与 Wiki 页生成两个 LLM 密集阶段改逐项进度：`进度 [生成知识卡片] 3/12（62%）`（任务单位 N/M；stderr；TTY 行内刷新、非 TTY 阶段/10% 档/每 5 项节流）；--progress-json 同步 current/total；no-op 早退补 done 事件
+- 进度事件流单调性修复：cards/wiki 阶段点移至生成前发射（消除与项级事件、output 95 的百分比回退）
+
+## v47 更新卡死四根因修复（2026-08-10）
+
+- 用户实测「update 卡住无输出」→ 四个根因全部修复：①非 TTY 进度行缺换行（与 tracing 日志粘行）②analyzing 25% 在 54s 特征聚类后才发射（长黑屏误判）→ 移至图构建前 ③HTTP send() 无首字节超时（端点黑洞无限挂起——实测一进程卡 16 小时）→ 90s 首字节超时，超时视为不可重试网络故障 ④v30 FileWatch 状态哨兵 "file-watch" 被当 git SHA 解析（unable to parse OID）→ 哨兵显式识别、git 仓库改记真实 HEAD
+- 版本 0.5.1（用户手动改 Cargo.toml）+ 真实 LLM 全链路复验（426s，107 文件/16 页/13 模块，进度 10→25→30→60→90→95→98% 全程可见）；提交 db34e32（11 文件 +232/-67）+ push
+
+## v48 大仓告警刷屏与黑屏期（2026-08-10）
+
+- Unity 项目 3143 文件首次 generate 实测反馈「25% 后不动」：①解析器合法 kind "var"（Go 包级变量）漏映射 → 90+ 条「未知实体类型」warn 同毫秒刷屏 → 补 var → Variable 映射；②循环依赖全量 Debug 打印无截断（跨模块同名字段/方法按名互连的巨型伪 SCC 可达数百节点、30K+ 字符刷屏）→ 新增 format_cycles 紧凑格式化（每链 ≤8 名称、总链数/节点数摘要）③analyzing 25% 与 chunking 30% 之间大仓分钟级无输出 → 补 analyzing 27% 事件（25→27→30 单调推进）
+- 验证：format_cycles 3 单测 + lib 486 全绿 + progress_test（含 27 断言）+ clippy 0；遗留：跨模块同名字段/方法伪边深修（调用边同文件优先匹配）列入后续

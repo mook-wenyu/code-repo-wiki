@@ -378,6 +378,10 @@ pub fn run_pipeline_with_progress(
     // 实测 54s（274 特征），若在之后发射则 10%→25% 之间长时间无进度，
     // 用户误判卡死（实测反馈）。
     on_progress(ProgressEvent { stage: "analyzing", percent: 25, current: None, total: None });
+    // v48：build_graph（含模块检测/聚类）在大仓库可达分钟级（如 3143 文件的
+    // Unity 项目）——25→30 之间补 27 事件，让「构建知识图谱」在长黑屏期内
+    // 仍有可见推进，避免再次误判卡死。
+    on_progress(ProgressEvent { stage: "analyzing", percent: 27, current: None, total: None });
     let mut graph = analysis::build_graph(&file_insights)?;
     attach_features(&mut graph, &config);
     timings.graph_ms = start.elapsed().as_millis() as u64 - timings.scan_parse_ms;

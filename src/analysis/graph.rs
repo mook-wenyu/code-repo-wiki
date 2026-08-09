@@ -160,7 +160,7 @@ pub fn build(insights: &[FileInsight]) -> Result<KnowledgeGraph> {
 
     let cycles = kg.detect_cycles();
     if !cycles.is_empty() {
-        warn!("检测到 {} 个循环依赖: {:?}", cycles.len(), cycles);
+        warn!("{}", format_cycles(&cycles));
     }
 
     // 模块检测接线:图构建完成后运行社区检测,结果写回 kg.modules。
@@ -232,7 +232,7 @@ fn kind_from_str(s: &str) -> NodeKind {
         "impl" => NodeKind::Impl,
         "type" => NodeKind::Type,
         "const" | "constant" | "static" => NodeKind::Constant,
-        "variable" | "let" | "property" => NodeKind::Variable,
+        "variable" | "let" | "property" | "var" => NodeKind::Variable,
         "interface" => NodeKind::Interface,
         "class" => NodeKind::Class,
         "macro" => NodeKind::Macro,
@@ -457,6 +457,37 @@ impl KnowledgeGraph {
     }
 }
 
+/// 循环依赖链的紧凑格式化（v48）
+///
+/// 巨型伪 SCC（跨模块同名字段/方法按名互连）可达数百节点，全量 Debug
+/// 打印会刷屏数万字符并淹没真实进度输出。每链最多展示
+/// `MAX_CYCLE_NAMES_PER_CHAIN` 个名称，超出以「…共 N 个」省略。
+const MAX_CYCLE_NAMES_PER_CHAIN: usize = 8;
+
+pub(crate) fn format_cycles(cycles: &[Vec<String>]) -> String {
+    if cycles.is_empty() {
+        return String::new();
+    }
+    let total_nodes: usize = cycles.iter().map(|c| c.len()).sum();
+    let mut out = format!("检测到 {} 个循环依赖（共 {} 个节点）: [", cycles.len(), total_nodes);
+    for (i, chain) in cycles.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        if chain.len() <= MAX_CYCLE_NAMES_PER_CHAIN {
+            out.push_str(&format!("{:?}", chain));
+        } else {
+            out.push_str(&format!(
+                "[{} 项: {:?}…]",
+                chain.len(),
+                &chain[..MAX_CYCLE_NAMES_PER_CHAIN]
+            ));
+        }
+    }
+    out.push(']');
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,6 +654,28 @@ mod tests {
         assert_eq!(cycles.len(), 1);
         assert!(cycles[0].contains(&"func_a".to_string()));
         assert!(cycles[0].contains(&"func_b".to_string()));
+    }
+
+    #[test]
+    fn test_format_cycles_empty() {
+        assert_eq!(format_cycles(&[]), "");
+    }
+
+    #[test]
+    fn test_format_cycles_short_chain_kept_inline() {
+        let s = format_cycles(&[vec!["a".into(), "b".into()], vec!["x".into()]]);
+        assert!(s.contains("2 个循环依赖（共 3 个节点）"));
+        assert!(s.contains("[\"a\", \"b\"]"));
+        assert!(!s.contains("项:"));
+    }
+
+    #[test]
+    fn test_format_cycles_long_chain_truncated() {
+        let chain: Vec<String> = (0..20).map(|i| format!("n{i}")).collect();
+        let s = format_cycles(&[chain]);
+        assert!(s.contains("1 个循环依赖（共 20 个节点）"));
+        assert!(s.contains("[20 项: [\"n0\", \"n1\", \"n2\", \"n3\", \"n4\", \"n5\", \"n6\", \"n7\"]…]"));
+        assert!(!s.contains("n8"));
     }
 }
 
