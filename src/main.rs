@@ -364,6 +364,22 @@ fn resolve_root(root: Option<&Path>) -> anyhow::Result<code_repo_wiki::project::
         None => code_repo_wiki::project::ProjectRoot::from_cwd(),
     }
 }
+/// 进度阶段英文标识 → 中文展示名（v44：文本模式进度行）。
+/// 阶段与 lib.rs run_pipeline_with_progress 的 on_progress 事件一一对应。
+fn stage_zh(stage: &str) -> &str {
+    match stage {
+        "scanning" => "扫描源码",
+        "analyzing" => "构建知识图谱",
+        "chunking" => "切分文档块",
+        "cards" => "生成知识卡片",
+        "wiki" => "生成 Wiki 页",
+        "output" => "渲染与写盘",
+        "index" => "更新搜索索引",
+        "done" => "完成",
+        other => other,
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     // t03 契约（v21 实证发现）：tracing_subscriber::fmt() 默认 writer 是
     // stdout——所有日志会混入业务 stdout，破坏外部 AI Coding Agent 的
@@ -383,6 +399,12 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Generate { config, output, force, progress_json, root } => {
             let root = resolve_root(root.as_deref())?;
+            // v44：文本模式也走进度事件流（run_pipeline_with_progress）——
+            // 阶段行输出到 stderr（tracing 日志流，不污染 stdout 业务输出，
+            // 对齐 clig.dev「messaging to stderr」约定；非 TTY/CI 下同样是
+            // 普通文本行，无动画）；完成摘要走 stdout（状态变更告知，AI
+            // 事实源可解析）。--progress-json 保持原样（插件流式解析）。
+            let started = std::time::Instant::now();
             let result = if progress_json {
                 // JSONL 进度输出：插件 wiki_generate 流式解析
                 code_repo_wiki::run_pipeline_with_progress(
@@ -393,15 +415,23 @@ fn main() -> anyhow::Result<()> {
                     },
                 )?
             } else {
-                code_repo_wiki::run_pipeline(
+                code_repo_wiki::run_pipeline_with_progress(
                     config.as_deref(), output.as_deref(), force, &root,
                     &code_repo_wiki::GenerationMode::Full,
+                    &|evt| {
+                        // 文本模式阶段行（stderr）；done 阶段由完成摘要行取代
+                        if evt.stage != "done" {
+                            tracing::info!("进度 [{}] {}%", stage_zh(evt.stage), evt.percent);
+                        }
+                    },
                 )?
             };
-            tracing::info!(
-                "生成完成: 扫描 {} 个文件, 发现 {} 个实体",
+            println!(
+                "✓ 生成完成: 扫描 {} 个文件 / {} 个实体 / {} 页文档（{}s）",
                 result.stats.files_scanned,
-                result.stats.total_entities
+                result.stats.total_entities,
+                result.documents.len(),
+                started.elapsed().as_secs()
             );
         }
         Commands::Update { config, output, force, progress_json, dry_run, root } => {
@@ -431,6 +461,10 @@ fn main() -> anyhow::Result<()> {
                 }
                 return Ok(());
             }
+            // v44：update 文本模式与 generate 同构——阶段行走 stderr，
+            // 完成摘要走 stdout（no-op 早退分支保持「无文件变更」契约行，
+            // 不打印摘要——见下方分支判断）
+            let started = std::time::Instant::now();
             let result = if progress_json {
                 // JSONL 进度输出：与 generate --progress-json 同构，供插件流式解析
                 code_repo_wiki::run_pipeline_with_progress(
@@ -444,11 +478,16 @@ fn main() -> anyhow::Result<()> {
                     },
                 )?
             } else {
-                code_repo_wiki::run_pipeline(
+                code_repo_wiki::run_pipeline_with_progress(
                     config.as_deref(), output.as_deref(), force, &root,
                     &code_repo_wiki::GenerationMode::Incremental {
                         watch_paths: Vec::new(),
                         change_kind: None,
+                    },
+                    &|evt| {
+                        if evt.stage != "done" {
+                            tracing::info!("进度 [{}] {}%", stage_zh(evt.stage), evt.percent);
+                        }
                     },
                 )?
             };
@@ -461,10 +500,11 @@ fn main() -> anyhow::Result<()> {
             if result.documents.is_empty() && result.stats.files_scanned == 0 {
                 println!("无文件变更，跳过更新（no-op）");
             } else {
-                tracing::info!(
-                    "增量更新完成: 扫描 {} 个文件, {} 个模块受影响",
+                println!(
+                    "✓ 增量更新完成: 扫描 {} 个文件 / {} 页文档（{}s）",
                     result.stats.files_scanned,
-                    result.stats.modules_detected
+                    result.documents.len(),
+                    started.elapsed().as_secs()
                 );
             }
 

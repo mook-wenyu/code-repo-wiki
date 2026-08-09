@@ -1,30 +1,12 @@
 # Code Repo Wiki
 
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![CI](https://github.com/mook-wenyu/code-repo-wiki/actions/workflows/ci.yml/badge.svg)](https://github.com/mook-wenyu/code-repo-wiki/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE) [![CI](https://github.com/mook-wenyu/code-repo-wiki/actions/workflows/ci.yml/badge.svg)](https://github.com/mook-wenyu/code-repo-wiki/actions/workflows/ci.yml)
 
 自动为代码仓库生成**持续更新**的 Wiki 文档：模块页、API 参考、知识卡片，供人和 AI 助手阅读。
 
 零配置开箱即用 · 单二进制 · 支持 11 种语言 · 增量更新 · 可注册为 OpenCode 插件 / Claude / Codex MCP
 
 ---
-
-## 它能做什么（30 秒了解）
-
-输入一个代码仓库，`code-repo-wiki generate` 产出 `.code-repo-wiki/` 目录：
-
-- 分析源码结构（tree-sitter AST + 知识图谱 + 社区检测自动划分模块）
-- 让 LLM 为每个模块生成知识卡片与文档页（API 参考含**真实文件与行号**）
-- 之后每次 `git commit` 自动增量更新（只重写受影响的模块页）
-
-真实产物示例（本项目自己生成的 `.code-repo-wiki/wiki/zh/api.md`）：
-
-```markdown
-## analysis
-
-- `pub fn detect_communities(graph: &KnowledgeGraph) -> Vec<Vec<NodeId>>` (函数, pub) — 文件级社区检测：返回 File 节点的社区划分（每社区一个 `Vec<NodeId>`） — src\analysis\community.rs:54
-- `MIN_DIRS_FOR_SUPERNODE` (常量) —  — src\analysis\community.rs:90
-```
 
 ## 快速开始
 
@@ -47,14 +29,38 @@ code-repo-wiki generate
 
 **可选配置**：默认零配置即可运行；需要自定义时使用 `config.toml`——用户级（Windows: `%USERPROFILE%\.code-repo-wiki\config.toml`；其他: `~/.code-repo-wiki/config.toml`，可用环境变量 `CODE_REPO_WIKI_HOME` 重定位；v41 起自动从旧目录一次性迁移）与项目级（仓库根 `config.toml`）字段级合并，详见[配置参考](docs/reference/config.md)。
 
-## 面向 AI 助手
+## 常用命令
 
-本项目把「可被 AI 高效使用」作为一等目标：
+| 命令 | 说明 |
+|---|---|
+| `generate` | 全量生成 Wiki（分阶段进度提示 + 完成摘要） |
+| `update` | 增量更新：无变更秒回，失败模块自动补偿重试，尾部自动 lint 复核 |
+| `watch` | 常驻监听，代码保存即自动更新（内置崩溃自愈） |
+| `search --query "关键词"` | 代码语义搜索——默认 hybrid 引擎 + top-k 10，**均可省略**；另有 `ast-search` 精确符号查找 |
+| `lint` | 九类健康检查（断链/过时/引用错位/LLM 编造） |
+| `doctor` / `status` | 环境健康检查 / Wiki 状态报告 |
+| `bench` | RepoDocBench 五维评测 + rubrics 准则评分 |
+| `export` | 一键导出静态 HTML 站点 |
+| `install` / `uninstall` | 一键集成 / 卸载（hook + 插件 + MCP + AGENTS.md） |
 
-- `code-repo-wiki search --query "关键词" --engine hybrid --top-k 10` —— 代码语义搜索（BM25 + 向量 + RRF 混合，默认 hybrid；另有 `ast-search` 精确符号查找）
-- 每次生成自动重写 `llms.txt` / `llms-full.txt` —— 按 Agent 上下文预算裁剪的仓库索引
-- `install` 向仓库根注入 AGENTS.md 引导块 —— AI 代理打开仓库即可按指引维护文档
-- 已注册的插件 / MCP 工具可供 OpenCode、Claude Code、Codex 会话直接调用（生成、搜索、查询、评测、lint 等）
+全部命令见 [CLI 命令参考](docs/reference/cli.md)。
+
+## 它能做什么（30 秒了解）
+
+输入一个代码仓库，`code-repo-wiki generate` 产出 `.code-repo-wiki/` 目录：
+
+- 分析源码结构（tree-sitter AST + 知识图谱 + 社区检测自动划分模块）
+- 让 LLM 为每个模块生成知识卡片与文档页（API 参考含**真实文件与行号**）
+- 之后每次 `git commit` 自动增量更新（只重写受影响的模块页）
+
+真实产物示例（本项目自己生成的 `.code-repo-wiki/wiki/zh/api.md`）：
+
+```markdown
+## analysis
+
+- `pub fn detect_communities(graph: &KnowledgeGraph) -> Vec<Vec<NodeId>>` (函数, pub) — 文件级社区检测：返回 File 节点的社区划分（每社区一个 `Vec<NodeId>`） — src\analysis\community.rs:54
+- `MIN_DIRS_FOR_SUPERNODE` (常量) —  — src\analysis\community.rs:90
+```
 
 ## 核心功能
 
@@ -69,6 +75,15 @@ code-repo-wiki generate
 | HTML 导出 | `export` 一键导出静态 HTML 站点 |
 | AI Agent 友好 | 自动生成 `llms.txt`/`llms-full.txt`（Agent 索引）、AGENTS.md 引导块；`install` 注册 OpenCode 插件 / Claude / Codex MCP（用户级全局） |
 | 质量评测 | `bench` RepoDocBench 五维评测 + rubrics 准则评分；`lint` 九类健康检查（断链/过时/引用错位/LLM 编造） |
+
+## 面向 AI 助手
+
+本项目把「可被 AI 高效使用」作为一等目标：
+
+- `code-repo-wiki search --query "关键词"` —— 代码语义搜索（BM25 + 向量 + RRF 混合，默认 hybrid；另有 `ast-search` 精确符号查找）
+- 每次生成自动重写 `llms.txt` / `llms-full.txt` —— 按 Agent 上下文预算裁剪的仓库索引
+- `install` 向仓库根注入 AGENTS.md 引导块 —— AI 代理打开仓库即可按指引维护文档
+- 已注册的插件 / MCP 工具可供 OpenCode、Claude Code、Codex 会话直接调用（生成、搜索、查询、评测、lint 等）
 
 ## 文档
 
@@ -95,9 +110,9 @@ code-repo-wiki generate
 ## 贡献
 
 - **构建**：`cargo build --release`；**测试**：`cargo test`（全量套件）；**静态检查**：`cargo clippy -- -D warnings` + `cargo doc --no-deps`
-- **CI**：ubuntu/windows 测试矩阵 + clippy/doc 门禁 + actionlint + markdownlint/lychee 文档门禁（工作流见 `.github/workflows/ci.yml`）
+- **CI**：ubuntu/windows 测试矩阵 + clippy/doc 门禁 + markdownlint/lychee 文档门禁 + actionlint（工作流见 `.github/workflows/ci.yml`）
 - **发布流程**：版本号与 CHANGELOG 规范见 [docs/how-to/maintenance.md](docs/how-to/maintenance.md)
 
 ## License
 
-[Apache License 2.0](LICENSE)
+Apache License 2.0 — 见 [LICENSE](LICENSE)。

@@ -573,6 +573,13 @@ fn test_update_command_smoke() {
         out.status.success(),
         "update 应成功退出，输出: {combined}"
     );
+    // v44：真实执行路径须打印完成摘要（stdout 状态告知；no-op 场景断言在
+    // test_update_noop_stdout_contract 反向保证）
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("✓ 增量更新完成"),
+        "update 真实执行应打印完成摘要，stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
     let _ = std::fs::remove_dir_all(&work_dir);
 }
 

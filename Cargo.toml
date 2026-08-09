@@ -1,6 +1,6 @@
 [package]
 name = "code-repo-wiki"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 description = "自动分析代码仓库结构，通过 LLM 生成结构化项目文档（Code Repo Wiki）"
 license = "Apache-2.0"

@@ -1,13 +1,19 @@
 name: Release
 
 # 发布工作流（tag v* 触发）：
-#   1. publish-crates-io —— crates.io 发布（Trusted Publishing，OIDC 免长期 token）
-#   2. build-binaries  —— GitHub Releases 二进制产物（矩阵：linux/macos/windows）
+#   1. create-release   —— 创建 Draft GitHub Release（--generate-notes）
+#   2. publish-crates-io —— crates.io 发布（Trusted Publishing，OIDC 免长期 token）
+#   3. build-binaries   —— 矩阵构建并上传二进制到 Draft（共享 release-id，
+#                          消除并发创建竞态——矩阵各 job 各自创建 Release 会
+#                          反复 "release not found"）
+#   4. publish-release  —— 全部二进制上传完成后 Draft → 正式发布
 #
 # 注意（首次发布）：
 #   - 新 crate 不能走 Trusted Publishing，首次必须手动 `cargo publish`
 #     （crates.io 账号验证邮箱 + cargo login 后手动执行一次）；
 #   - 之后 tag vX.Y.Z 推送即自动触发本工作流。
+#   - 仓库 Actions 写权限需为 Read and write（Settings → Actions → General →
+#     Workflow permissions），否则 GITHUB_TOKEN 无法创建/编辑 Release。
 
 on:
   push:
@@ -30,6 +36,21 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create.outputs.release_id }}
+    steps:
+      - uses: actions/checkout@v4
+      # Draft Release 先行创建：build-binaries 矩阵各 job 通过 release-id
+      # 上传到同一个 Draft；全部上传完成后由 publish-release 转为正式。
+      - name: Create draft release
+        id: create
+        run: |
+          echo "release_id=$(gh release create "${{ github.ref_name }}" --draft --generate-notes --json id --jq .id)" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   publish-crates-io:
     runs-on: ubuntu-latest
     steps:
@@ -37,7 +58,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install system deps (git2/openssl)
         run: sudo apt-get update && sudo apt-get install -y libssl-dev zlib1g-dev
-      # OIDC 交换 30 分钟短期 token（需 crates.io 侧启用 Trusted Publishing）
+      # OIDC 交换 30 分钟短期 token（需 crates.io 侧启用 Trusted Publishing：
+      # https://crates.io/settings/trusted-publishing → Add owner）
       - uses: rust-lang/crates-io-auth-action@v1
         id: auth
       - name: Publish to crates.io
@@ -46,6 +68,7 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
   build-binaries:
+    needs: create-release
     strategy:
       fail-fast: false
       matrix:
@@ -68,10 +91,28 @@ jobs:
       - name: Install system deps (git2/openssl)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libssl-dev zlib1g-dev
-      # 构建 + 上传 Release 资产（tag 推送时自动创建 Release，tar 用于 unix/zip 用于 windows）
+      # macos 自带 LibreSSL 与 openssl-sys 构建不兼容——
+      # 安装 Homebrew openssl@3 并以 PKG_CONFIG_PATH 暴露（keg-only 不自动链接）
+      - name: Install OpenSSL (macos)
+        if: runner.os == 'macOS'
+        run: |
+          brew install openssl@3
+          echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> "$GITHUB_ENV"
+      # 上传到 create-release 的 Draft（release-id 指定，消除并发创建竞态）
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: code-repo-wiki
           target: ${{ matrix.target }}
           tar: unix
           zip: windows
+          release-id: ${{ needs.create-release.outputs.release_id }}
+
+  publish-release:
+    needs: [create-release, build-binaries]
+    runs-on: ubuntu-latest
+    steps:
+      # 4 个目标二进制全部上传完成后，Draft → 正式发布
+      - name: Publish release
+        run: gh release edit "${{ github.ref_name }}" --draft=false
+        env:
+          GH_TOKEN: ${{ github.token }}

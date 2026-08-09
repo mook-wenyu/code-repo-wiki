@@ -4,8 +4,8 @@
 
 | 命令 | 用途 |
 |---|---|
-| `generate` | 全量生成 Wiki（`-o` 输出覆盖、`--force` 强制重写、`--progress-json`） |
-| `update` | 增量更新（git diff / 文件指纹；`--dry-run` 预览不执行） |
+| `generate` | 全量生成 Wiki（分阶段进度提示 + 完成摘要；`-o` 输出覆盖、`--force` 强制重写、`--progress-json` 机器可读进度） |
+| `update` | 增量更新（git diff / 文件指纹；分阶段进度提示 + 完成摘要；`--dry-run` 预览不执行） |
 | `watch` | 监听文件变更自动更新（内置崩溃自愈循环） |
 | `sync` | 以 Git 工作区内容同步指纹库（不触发 LLM） |
 | `status` | 查看 Wiki 状态（含语义索引 / LLM 状态行） |
@@ -15,7 +15,7 @@
 | `key` | 交互式配置 LLM API key（用户级，`--env` 用环境变量引用） |
 | `install` | 一键集成：用户级默认配置 + OpenCode 全局 MCP/插件 + AGENTS.md 引导 + git hooks（`--claude` 加用户级 ~/.claude.json MCP + CLAUDE.md、`--codex` 加 Codex 配置） |
 | `uninstall` | 移除全部集成（MCP 条目/插件/引导块/hooks；需 `--force`） |
-| `search` | 搜索代码实体（text/semantic/hybrid 三引擎；`--query/--engine/--top-k`） |
+| `search` | 搜索代码实体（text/semantic/hybrid 三引擎；`--query` 必填，`--engine` 默认 hybrid、`--top-k` 默认 10——均可省略；`--json` 机器可读） |
 | `ast-search` | AST 精确符号查找（文件+行号+签名） |
 | `card` | 知识卡片操作（generate/modify/supplement/rewrite） |
 | `note` | 知识沉淀记录（追加到 `_log.md`） |

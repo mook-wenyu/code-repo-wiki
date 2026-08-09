@@ -5,7 +5,34 @@
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-08-09
+## [0.5.0] - 2026-08-09
+
+### Added
+- **命令进度提示（v44）**：`generate`/`update` 文本模式接入进度事件流——分阶段
+  进度行输出到 stderr（`进度 [扫描源码] 10%`…，阶段与 lib.rs 事件一一对应），
+  完成摘要输出到 stdout（`✓ 生成完成: 扫描 N 个文件 / M 个实体 / K 页文档（Ts）`、
+  `✓ 增量更新完成: …`；no-op 早退保持「无文件变更，跳过更新（no-op）」契约行，
+  不打印摘要）——长任务不再静默，用户明确知道完成与否；
+- **提示词工程优化（v45）**：`generate/prompt.rs` 四个 system prompt
+  （模块摘要/架构概览/知识卡片/Wiki 页）重构——指令前置 + `### 角色/任务/
+  输出格式/约束` 分节（OpenAI 官方最佳实践 + Lost in the Middle 位置效应）；
+  知识卡片 prompt 新增「输出原始 JSON，不要 Markdown 代码块包裹」约束；
+  Wiki 页 prompt 新增「信息不足显式标注（信息不足）而非编造」防幻觉写法
+  （Anthropic reduce-hallucinations）；输出语言显式化（zh → 简体中文）；
+  既有真实性/引用契约字面全部保留（anti-fabrication 测试不破）；
+- **发布工作流修复（v45）**：`release.yml` 重写——新增 `create-release` job
+  （Draft Release 先行创建 + `--generate-notes`），`build-binaries` 矩阵经
+  `release-id` 上传到同一 Draft（消除并发各自创建 Release 的竞态——此前
+  矩阵 job 反复 "release not found"）；macos 构建修复（brew openssl@3 +
+  PKG_CONFIG_PATH——自带 LibreSSL 与 openssl-sys 不兼容）；新增
+  `publish-release` job（全部二进制上传完成后 Draft → 正式发布）；
+  仓库 Actions 写权限要求写入工作流注释（需 Read and write）
+
+### Changed
+- **版本号 0.4.0 → 0.5.0（v45）**：Cargo.toml/Cargo.lock 版本同步；
+- **README 结构重排（v44）**：新增「常用命令」速查表（快速开始之后），
+  「面向 AI 助手」移至核心功能之后，统一表格/代码块排版，search 示例
+  改省略写法（默认 hybrid + top-k 10 均可省略——cli.md 命令表同步注明默认值）
 
 ### Added
 - 生产可用性审计改进（v33）：embedding 模型版本化——`.search/embed_model.json`

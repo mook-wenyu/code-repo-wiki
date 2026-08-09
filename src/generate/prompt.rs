@@ -3,18 +3,20 @@ use crate::generate::llm::Message;
 use crate::model::{KnowledgeGraph, ModuleCluster};
 
 /// 生成模块摘要的系统 prompt
+///
+/// v45 提示词工程优化：指令前置 + ### 分节（OpenAI 官方最佳实践；
+/// Lost in the Middle 位置效应——指令放开头利用首部注意力）。
 fn module_summary_system_prompt(language: &str) -> String {
+    let output_lang = if language == "zh" { "简体中文" } else { language };
     format!(
-        r#"你是一个资深软件工程师，负责分析代码并生成模块摘要。
+        r#"### 角色
+你是一个资深软件工程师，负责分析代码并生成模块摘要。
 
-请按以下步骤**在内部**完成分析（不要输出思考过程，只输出最终结果）：
-1. 通读实体列表与导入语句，识别模块的核心职责与边界；
-2. 依据实体间调用/导入关系判断模块对外的依赖；
-3. 总结关键设计决策与模式；
-4. 输出以下结构。
+### 任务
+依据输入的实体列表、导入语句与关联文件，识别模块的核心职责、边界与对外依赖，
+并总结关键设计决策与模式。
 
-输出结构：
-
+### 输出格式
 ## 模块概述
 简要描述这个模块的职责和功能。
 
@@ -28,8 +30,10 @@ fn module_summary_system_prompt(language: &str) -> String {
 ## 设计要点
 关键的设计决策和模式。
 
-请用 {} 语言输出。"#,
-        language
+### 约束
+- 只基于输入信息作答；输入未提供的内容不要臆测。
+- 请用 {} 输出。"#,
+        output_lang
     )
 }
 
@@ -84,12 +88,19 @@ pub fn module_summary_prompt(
 }
 
 /// 生成架构概览的 system prompt
+///
+/// v45：指令前置 + ### 分节；模块真实性约束整段保留（契约字面不变）。
 fn architecture_overview_system_prompt(language: &str) -> String {
+    let output_lang = if language == "zh" { "简体中文" } else { language };
     format!(
-        r#"你是一个资深软件架构师，负责分析整个项目的模块结构并生成架构概览文档。
+        r#"### 角色
+你是一个资深软件架构师，负责分析整个项目的模块结构并生成架构概览文档。
 
-请基于输入的模块聚类信息和依赖关系，输出以下结构：
+### 任务
+基于输入的模块聚类信息和依赖关系，分析架构风格、模块划分、依赖关系与数据流，
+并推断关键架构决策。
 
+### 输出格式
 # 项目架构概览
 
 ## 架构风格
@@ -108,11 +119,12 @@ fn architecture_overview_system_prompt(language: &str) -> String {
 ## 架构决策
 可以从此架构中推断出的关键架构决策。
 
+### 约束
 **模块真实性约束（必须遵守）**：模块划分小节只列出输入模块聚类信息中给出的
 模块名，不得添加、改名或合并输入中不存在的模块。
 
-请用 {} 语言输出。保留 Markdown 格式。"#,
-        language
+请用 {} 输出。保留 Markdown 格式。"#,
+        output_lang
     )
 }
 
@@ -180,22 +192,26 @@ pub fn architecture_overview_prompt(
 }
 
 /// 生成 Knowledge Card 的 system prompt
+///
+/// v45：指令前置 + ### 分节；新增「输出原始 JSON」约束（避免 LLM 复制
+/// 示例中的 Markdown 代码块包裹，结构合规不押在措辞威胁上——示例仍在，
+/// 明确禁止包裹）；实体真实性约束整段保留（契约字面不变）。
 fn knowledge_card_system_prompt(language: &str) -> String {
+    let output_lang = if language == "zh" { "简体中文" } else { language };
     format!(
-        r#"你是一个代码分析专家，负责生成结构化的 Knowledge Card。
+        r#"### 角色
+你是一个代码分析专家，负责生成结构化的 Knowledge Card。
 Knowledge Card 是给 AI Agent 阅读的模块级结构化摘要。
 
-请按以下步骤**在内部**完成分析（不要输出思考过程，只输出最终 JSON）：
+### 任务
+按以下步骤**在内部**完成分析（不要输出思考过程，只输出最终 JSON）：
 1. 归纳模块职责与边界，形成一句话总结；
 2. 识别关键实体及其对外契约（可见性、职责）；
 3. 推断设计模式、技术栈与编码规范；
-4. 若输入中含"人工修改待同步"记录，将其内容纳入描述（不要删除记录本身）；
-5. 严格按 JSON 格式输出最终结果。
+4. 若输入中含"人工修改待同步"记录，将其内容纳入描述（不要删除记录本身）。
 
-**实体真实性约束（必须遵守）**：key_entities 只允许列出输入实体信息中真实存在的
-实体（名称与输入一致），不得编造不存在的实体；找不到时列表可以为空。
-
-请严格按以下 JSON 格式输出，不包含其他内容：
+### 输出格式
+严格按以下 JSON 格式输出（字段缺失时省略可选字段，不输出 null 占位）：
 
 ```json
 {{
@@ -211,8 +227,13 @@ Knowledge Card 是给 AI Agent 阅读的模块级结构化摘要。
 }}
 ```
 
-请用 {} 语言输出描述性字段。不要添加 Markdown 代码块标记之外的文字。"#,
-        language
+### 约束
+**实体真实性约束（必须遵守）**：key_entities 只允许列出输入实体信息中真实存在的
+实体（名称与输入一致），不得编造不存在的实体；找不到时列表可以为空。
+
+输出原始 JSON 对象本身——不要用 Markdown 代码块包裹，不要添加任何前后缀文字。
+描述性字段请用 {} 输出。"#,
+        output_lang
     )
 }
 
@@ -297,13 +318,21 @@ Knowledge Card 是给 AI Agent 阅读的模块级结构化摘要，使用固定 
 }
 
 /// 生成 Wiki Page 的 system prompt
+///
+/// v45：指令前置 + ### 分节；防幻觉补强（信息不足显式标注而非编造——
+/// Anthropic reduce-hallucinations 的「允许说不知道」写法）；输出语言显式化；
+/// 源码引用契约整段保留（契约字面不变）。
 fn wiki_page_system_prompt(language: &str) -> String {
+    let output_lang = if language == "zh" { "简体中文" } else { language };
     format!(
-        r#"你是一个技术文档写手，负责生成项目 Wiki 页面。
+        r#"### 角色
+你是一个技术文档写手，负责生成项目 Wiki 页面。
 Wiki 页面是给人类开发者阅读的叙述性文档。
 
-请基于模块信息和卡片摘要，生成以下格式的 Wiki 页面：
+### 任务
+基于模块信息和卡片摘要，按输出格式生成 Wiki 页面。
 
+### 输出格式
 # 模块名称
 
 ## 概述
@@ -320,7 +349,8 @@ Wiki 页面是给人类开发者阅读的叙述性文档。
 ## 使用方式
 简要说明如何使用这个模块。
 
-## 源码引用契约（必须遵守）
+### 约束
+**源码引用契约（必须遵守）**
 - 提及任何具体函数、结构体、文件时，必须携带真实存在的源码引用：
   `相对路径:行号`（如 `src/fs.rs:28`）或 `相对路径:起始行-结束行`（如 `src/fs.rs:28-45`），
   写在提及处所在行内。
@@ -328,8 +358,11 @@ Wiki 页面是给人类开发者阅读的叙述性文档。
   不得编造不存在的文件或行号。
 - 每个小节至少包含一条引用。
 
-请用 {} 语言输出。保持简洁、清晰。"#,
-        language
+**信息不足时的处理**：输入中没有依据的内容（如某实体用途不明、依赖不确定），
+在对应位置写「（信息不足）」并保持简洁，不要编造。
+
+请用 {} 输出。保持简洁、清晰。"#,
+        output_lang
     )
 }
 
@@ -530,6 +563,56 @@ mod tests {
             arch[0].content.contains("不得添加"),
             "架构 prompt 必须含模块真实性约束: {}",
             arch[0].content
+        );
+    }
+
+    /// v45 提示词工程优化契约：所有 system prompt 指令前置 + ### 分节；
+    /// 卡片 prompt 明确「输出原始 JSON」；wiki prompt 含信息不足处理。
+    #[test]
+    fn test_v45_prompt_engineering_structure() {
+        let chunk = make_test_chunk(&["src", "alpha"]);
+
+        // 分节结构：四个主要 system prompt 均含 ### 角色
+        let card = knowledge_card_prompt(&chunk, "zh", &[]);
+        assert!(card[0].content.contains("### 角色"), "卡片 prompt 应分节: {}", card[0].content);
+        let wiki = wiki_page_prompt(&chunk, "摘要", "zh", &[]);
+        assert!(wiki[0].content.contains("### 角色"), "wiki prompt 应分节: {}", wiki[0].content);
+        let arch = architecture_overview_prompt(&[], &KnowledgeGraph::default(), "zh");
+        assert!(arch[0].content.contains("### 角色"), "架构 prompt 应分节: {}", arch[0].content);
+        let summary = module_summary_prompt(&chunk, "zh");
+        assert!(summary[0].content.contains("### 角色"), "摘要 prompt 应分节: {}", summary[0].content);
+
+        // 卡片：输出原始 JSON（不包 Markdown 代码块）
+        assert!(
+            card[0].content.contains("输出原始 JSON"),
+            "卡片 prompt 必须明确原始 JSON 约束: {}",
+            card[0].content
+        );
+        assert!(
+            card[0].content.contains("不要用 Markdown 代码块包裹"),
+            "卡片 prompt 必须禁止代码块包裹: {}",
+            card[0].content
+        );
+
+        // wiki：信息不足显式标注（防幻觉——允许说不知道）
+        assert!(
+            wiki[0].content.contains("信息不足"),
+            "wiki prompt 必须含信息不足处理: {}",
+            wiki[0].content
+        );
+
+        // 输出语言显式化：zh → 简体中文
+        assert!(
+            card[0].content.contains("简体中文"),
+            "zh 语言必须显式化为简体中文: {}",
+            card[0].content
+        );
+        // 非 zh 语言原样保留
+        let card_en = knowledge_card_prompt(&chunk, "en", &[]);
+        assert!(
+            card_en[0].content.contains("请用 en 输出"),
+            "非 zh 语言原样: {}",
+            card_en[0].content
         );
     }
 
