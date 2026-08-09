@@ -5,9 +5,9 @@
 - 摸到的文件：LICENSE（新增）、Cargo.toml（元数据——用户手动应用）、.github/workflows/release.yml（新增）、.github/workflows/ci.yml（lint-docs job）、.markdownlint-cli2.jsonc（新增）、.lycheeignore（新增）、README.md（徽章行+License 段+CI 描述）、docs/index.md（LICENSE 链接）、docs/how-to/maintenance.md（发布节重写：元数据前置+category_slugs 注意+cargo package --list/--dry-run 步骤+Trusted Publishing 首次限制）、CHANGELOG.md（Unreleased 补 v43 三条）、docs/explanation/architecture.md（代码块语言标注）、AGENTS.md（尾部空行）
 - 是否改变了接口/契约：否（纯文档/CI/元数据；markdownlint 对既有文档零改动——0 issues；cargo check --tests 干净确认 LSP 陈旧报错非真问题）
 - 验证：markdownlint-cli2 本地 0 issues（13 文件）；外部链接清单人工核对（9 处：稳定链接可达、不可用端点/占位 URL 入 .lycheeignore）；cargo check --tests 0 error/warning；CI 门禁（clippy/doc/actionlint/markdownlint/lychee）待 push 后由 GitHub Actions 最终验证
-- 提交：未提交（主线统一提交，禁止 git commit）
-- 遗留/风险点：①release.yml 的 rust-lang/crates-io-auth-action@v1 与 taiki-e 参数仅经语法人工核对，首次 tag 触发时由 CI 实测（lint-workflow 会校验语法）；②crates.io 账号/首次手动 publish/Trusted Publishing 启用为 HITL 项（用户操作）；③v0.3.0 尚未打 tag（Cargo.toml 0.3.0 与最新 tag v0.2.0 漂移——发布时补）；④LLM 真实 API 端到端复验仍缺（DeepSeek 402 后未复验）
-- 下次最该做的事：用户应用 Cargo.toml 元数据改动 → push → 观察 CI 全绿（含新 lint-docs）→ 用户注册 crates.io 并首次手动 publish → 打 v0.3.0 tag 触发 release 工作流
+- 提交：a4af5bc（Cargo.toml+Cargo.lock 0.4.0——用户手动应用 config zone 后提交）；e811535（LICENSE+工作流+文档）；d3a6db5（CHANGELOG 版本化）——v43 全链路
+- 遗留/风险点：①release.yml 的 rust-lang/crates-io-auth-action@v1 与 taiki-e 参数仅经语法人工核对，首次 tag 触发时由 CI 实测（lint-workflow 会校验语法）；②crates.io 账号/首次手动 publish/Trusted Publishing 启用为 HITL 项（用户操作）；③版本漂移已解决（Cargo.toml+Cargo.lock=0.4.0，CHANGELOG [0.4.0] 已版本化，最新 tag 仍 v0.2.0——打 tag 时用 v0.4.0）；④LLM 真实 API 端到端复验仍缺（DeepSeek 402 后未复验）
+- 下次最该做的事：push → 观察 CI 全绿（含新 lint-docs）→ 用户注册 crates.io 并首次手动 publish → 打 v0.4.0 tag 触发 release 工作流
 
 ## 五十五、删除补偿提前到主路径——mixed 场景（删除+修改并存）模块残留修复（2026-08-06，本会话）
 - 修改的功能：纯删除场景的模块级删除补偿（v21 验证轮 16085af 已修纯删除：存活文件并入变更集重生成）从「快照回填分支」内部提前到 run_generation_filtered 主路径——删除与修改并存（mixed）时 changed_insights 非空不进回填分支，而语义传播对被删文件（图中无节点，find_start_nodes 跳过）够不到其模块，src_m20.md 等模块页磁盘残留被删实体描述（v21 F 组遗留）。修复后无论 changed_insights 是否为空，deleted_files 对应的部分删除模块存活文件一律并入变更集走正常重生成；回填分支退化为仅处理「整模块全删 / 无实体变更」，保留 deleted_modules 剔除语义
