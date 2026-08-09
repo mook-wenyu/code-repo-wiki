@@ -703,3 +703,9 @@ knowing 全量 12 仓 mock 数据点齐（v29 9 + v30 3：rails 5239 实体/58 �
 - Claude MCP 改用户级 `~/.claude.json` 顶层 mcpServers（User scope——command 绑定本机 exe 路径=用户级内容；不再写项目根 .mcp.json）；空 mcpServers 保留文件（OAuth 会话绝不动）
 - Codex MCP 已是用户级（~/.codex/config.toml）无需改；CLAUDE.md/AGENTS.md 保持项目级（官方「团队共享入 git」语义）
 - 提交 6dc47ed（插件 2 文件 +186/-59）+ 0a23fde（Claude MCP 6 文件 +106/-84）；全量 476 lib + 全部套件绿 + clippy 0
+
+## v40 README 结构优化（2026-08-10）
+
+- README 重写：新增「面向 AI 助手」节、已知问题压缩进 FAQ、贡献节重写（构建/测试/CI/发布）、Windows key 配置提示、可选配置说明
+- reviewer 门发现 3 项事实缺陷并全部修正：key 读取来源表述（项目级 config.toml 亦生效——llm.rs:350 核对）、产物示例改用当前 api.md 真实片段、config.md 锚点修正
+- 提交 c63a79f（23+/14-）；cargo check 干净
