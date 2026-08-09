@@ -1,8 +1,13 @@
 [package]
 name = "code-repo-wiki"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 description = "自动分析代码仓库结构，通过 LLM 生成结构化项目文档（Code Repo Wiki）"
+license = "Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/mook-wenyu/code-repo-wiki"
+keywords = ["documentation", "wiki", "llm", "code-analysis", "knowledge-graph"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
