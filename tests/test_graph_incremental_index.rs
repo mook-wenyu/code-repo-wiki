@@ -153,11 +153,12 @@ fn import_path_suffix_fallback() {
     ];
     let kg = build(&insights).unwrap();
     assert_eq!(count_edges_of_kind(&kg, EdgeKind::Imports), 1, "路径后缀回退应命中 helper.rs 的实体");
-    let run_id = find_node(&kg, "run");
+    // v52 T11：import 边源为所属 File 节点（文件级依赖单边），目标仍是实体
+    let main_file_id = find_node(&kg, "main.rs");
     let do_thing_id = find_node(&kg, "do_thing");
     let edge = kg
         .graph
-        .edges_connecting(run_id, do_thing_id)
+        .edges_connecting(main_file_id, do_thing_id)
         .next()
         .expect("回退边必须存在");
     assert_eq!(edge.weight().kind, EdgeKind::Imports);
@@ -183,9 +184,10 @@ fn import_name_match_precedes_path_fallback() {
     ];
     let kg = build(&insights).unwrap();
     assert_eq!(count_edges_of_kind(&kg, EdgeKind::Imports), 1, "name 命中即建边，不回退");
-    let run_id = find_node(&kg, "run");
+    // v52 T11：源为 File 节点 b.rs（文件级 import 单边）
+    let b_file_id = find_node(&kg, "b.rs");
     let helper_id = find_node(&kg, "helper");
-    assert_eq!(kg.graph.edges_connecting(run_id, helper_id).count(), 1);
+    assert_eq!(kg.graph.edges_connecting(b_file_id, helper_id).count(), 1);
 }
 
 /// 同文件内重复调用去重（seen 集合）：同一函数体三次调用同一 callee
@@ -265,11 +267,13 @@ fn import_resolves_only_processed_files() {
     ];
     let kg = build(&insights).unwrap();
     assert_eq!(count_edges_of_kind(&kg, EdgeKind::Imports), 1, "只有反向（目标已处理）import 建边");
-    let use_early = find_node(&kg, "use_early");
-    let use_late = find_node(&kg, "use_late");
+    // v52 T11：边源为 File 节点——f1 处理时 later_helper 未入 name_map（前向不建边），
+    // f3 处理时已入（反向建边）
+    let f1_file_id = find_node(&kg, "f1.rs");
+    let f3_file_id = find_node(&kg, "f3.rs");
     let later = find_node(&kg, "later_helper");
-    assert_eq!(kg.graph.edges_connecting(use_early, later).count(), 0, "前向 import 不建边");
-    assert_eq!(kg.graph.edges_connecting(use_late, later).count(), 1, "反向 import 建边");
+    assert_eq!(kg.graph.edges_connecting(f1_file_id, later).count(), 0, "前向 import 不建边");
+    assert_eq!(kg.graph.edges_connecting(f3_file_id, later).count(), 1, "反向 import 建边");
 }
 
 /// 共享 name_map 的 impl 边：trait 先处理入索引，后处理文件的 impl 实体

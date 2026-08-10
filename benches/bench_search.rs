@@ -10,6 +10,44 @@ use std::time::Instant;
 
 use code_repo_wiki::ingest::parser::FileInsight;
 
+/// bench 专用 MockEmbedder：按实体名前缀 f{m}_/g{m}_ 解析簇号，返回
+/// 20 维 one-hot 向量（第 m 位 1.0）——同簇实体余弦=1（权重 0.75 ≥ γ=0.4
+/// 成簇），跨簇余弦=0（权重 0.25 不合并）。
+///
+/// v52 T11 适配：单例过滤后纯结构聚类（Jaccard=0 → 权重 0.25 < 0.4）不再
+/// 产生特征，注入 semantic 通道恢复 bench 的"跨簇调用应产生特征"语义
+/// （与 tests/test_clustering.rs 的 MockEmbedder 同构）。
+struct ClusterEmbedder;
+
+impl code_repo_wiki::analysis::feature::Embedder for ClusterEmbedder {
+    fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+        // 输入形如 "f0_0 Function ..." / "g3_1 Function ..."：取前缀 f/g 后的簇号
+        let mut cluster = 0usize;
+        if let Some(rest) = text
+            .strip_prefix('f')
+            .or_else(|| text.strip_prefix('g'))
+        {
+            if let Some(digits) = rest.split('_').next() {
+                cluster = digits.parse::<usize>().unwrap_or(0);
+            }
+        }
+        let mut vec = vec![0.0f32; 20];
+        if cluster < 20 {
+            vec[cluster] = 1.0;
+        }
+        Ok(vec)
+    }
+    fn embed_batch(&self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
+        texts.iter().map(|t| self.embed(t)).collect()
+    }
+    fn cosine_similarity(&self, a: &[f32], b: &[f32]) -> f64 {
+        let dot: f64 = a.iter().zip(b).map(|(x, y)| (*x as f64) * (*y as f64)).sum();
+        let na: f64 = a.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
+        let nb: f64 = b.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
+        if na == 0.0 || nb == 0.0 { 0.0 } else { dot / (na * nb) }
+    }
+}
+
 /// 在临时目录构造 200 文件仓库（rust/python/js/go 各 50）并解析
 ///
 /// 调用方以 ProjectRoot::new(dir) 注入根（N8 清理：此前用 set_current_dir
@@ -281,9 +319,12 @@ fn bench_clustering_detection() {
     let names: Vec<&str> = modules.iter().map(|m| m.name.as_str()).collect();
     assert!(names.iter().any(|n| n.contains("m0")), "簇目录应进入模块名: {names:?}");
 
-    // 特征聚类（纯结构，无 embedding）
+    // 特征聚类（语义聚类，ClusterEmbedder 注入）
     let start = Instant::now();
-    let features = code_repo_wiki::analysis::feature::detect_features(&graph, None).unwrap();
+    // v52 T11 适配：纯结构（None）下簇内 Jaccard=0 → 权重 0.25 < γ=0.4 不合并、
+    // 单例过滤后为空；注入 ClusterEmbedder 走 semantic 通道（同簇 0.75 成簇）
+    let features =
+        code_repo_wiki::analysis::feature::detect_features(&graph, Some(&ClusterEmbedder)).unwrap();
     let feature_ms = start.elapsed().as_millis();
     // 每个跨簇调用边对应一个特征（至少 20 条跨簇调用应产生特征）
     assert!(

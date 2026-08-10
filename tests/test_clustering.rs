@@ -14,6 +14,32 @@ use std::path::Path;
 use code_repo_wiki::analysis;
 use code_repo_wiki::ingest;
 
+/// 集成测试专用 MockEmbedder：process/checksum 同簇、其余独立
+///
+/// v52 T11 回归修复：单例过滤后纯结构聚类（Jaccard=0 → 权重 0.25 < γ=0.4）
+/// 不再形成特征；注入 semantic 通道使 process↔checksum 权重 0.75 ≥ 0.4 成簇，
+/// 测试语义从"纯结构"修正为"语义聚类"（与 feature.rs 单测同构）。
+struct MockEmbedder;
+
+impl code_repo_wiki::analysis::feature::Embedder for MockEmbedder {
+    fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+        Ok(if text.starts_with("process") || text.starts_with("checksum") {
+            vec![1.0, 0.0]
+        } else {
+            vec![0.0, 1.0]
+        })
+    }
+    fn embed_batch(&self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
+        texts.iter().map(|t| self.embed(t)).collect()
+    }
+    fn cosine_similarity(&self, a: &[f32], b: &[f32]) -> f64 {
+        let dot: f64 = a.iter().zip(b).map(|(x, y)| (*x as f64) * (*y as f64)).sum();
+        let na: f64 = a.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
+        let nb: f64 = b.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
+        if na == 0.0 || nb == 0.0 { 0.0 } else { dot / (na * nb) }
+    }
+}
+
 /// 构造临时仓库：
 /// - src/a/ 内两个文件通过跨文件调用协作（lib.rs 调用 helper.rs 的函数）
 /// - src/b/ 独立文件，与 a 无任何依赖
@@ -67,7 +93,10 @@ fn test_community_detection_and_features() {
         let mut graph = analysis::build_graph(&insights)?;
         // features 由 lib 层 attach_features 填充（lib 私有函数），
         // 集成测试直接调用 analysis 层公开入口验证聚类本身
-        graph.features = code_repo_wiki::analysis::feature::detect_features(&graph, None)?;
+        // v52 T11 回归修复：纯结构聚类（None）权重 0.25 < γ=0.4 不合并、单例过滤后为空；
+        // 注入 MockEmbedder 走 semantic 通道（process↔checksum 权重 0.75）验证真实解析→图→特征全链路
+        graph.features =
+            code_repo_wiki::analysis::feature::detect_features(&graph, Some(&MockEmbedder))?;
 
         // 1. 模块检测：社区检测生效，模块名唯一且不含文件名
         assert!(
@@ -100,7 +129,7 @@ fn test_community_detection_and_features() {
         );
 
         // 2. 特征聚类：a 内的跨文件调用（process → checksum）应形成特征
-        //（纯结构聚类，无需 embedding）
+        //（语义聚类，MockEmbedder 注入）
         assert!(
             !graph.features.is_empty(),
             "a 目录的跨文件调用应形成特征"
