@@ -290,6 +290,8 @@ fn bench_setup_scripted(tag: &str, base_url: &str) -> (ProjectRoot, WikiConfig) 
             base_url: Some(format!("{base_url}/v1")),
             api_key: Some("test-key".into()),
             api_key_env: "NONE".into(),
+            thinking: None,
+            reasoning_effort: None,
         },
         ..Default::default()
     };

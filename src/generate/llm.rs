@@ -373,6 +373,13 @@ pub struct OpenAiProvider {
     max_retries: u32,
     max_tokens: Option<u32>,
     temperature: Option<f32>,
+    /// DeepSeek 系 thinking 模式（v50）：None=不发送；Some(true/false)=
+    /// 发送 `thinking: {"type":"enabled"/"disabled"}`（仅 chat 协议——
+    /// deepseek-v4 默认启用 thinking，批量生成慢约 5×，见 schema 注释）
+    thinking: Option<bool>,
+    /// DeepSeek 系 reasoning_effort（v50）："low"/"high"/"max"，与
+    /// thinking 配套发送（官方映射：v4-flash low→low、high→high、max→max）
+    reasoning_effort: Option<String>,
     call_count: std::sync::atomic::AtomicUsize,
 }
 
@@ -412,6 +419,10 @@ impl OpenAiProvider {
             max_retries: MAX_RETRIES,
             max_tokens: None,
             temperature: None,
+            // v50：thinking 相关参数从配置透传（仅 chat 协议使用——
+            // Responses 协议无对应参数，见 build_chat_body 注释）
+            thinking: config.thinking,
+            reasoning_effort: config.reasoning_effort.clone(),
             call_count: std::sync::atomic::AtomicUsize::new(0),
         })
     }
@@ -443,6 +454,20 @@ impl OpenAiProvider {
         }
         if let Some(temp) = self.temperature {
             body["temperature"] = serde_json::json!(temp);
+        }
+        // v50：DeepSeek 系 thinking 模式/推理强度（仅 chat/completions 协议）
+        //
+        // 官方参数（2026-08-10 抓取 api-docs.deepseek.com/guides/thinking_mode）：
+        //   thinking: {"type":"enabled"/"disabled"} + reasoning_effort: "low"/"high"/"max"
+        // thinking 默认启用且 effort=high；批量文档/卡片生成（低推理任务）
+        // 显式关闭可省约 5× 延迟（thinking 多 3.7× 输出 token——第三方实测）。
+        // Responses 协议无此参数（其 effort 走 output_config——本项目未使用，
+        // 见 build_responses_body 注释），Anthropic 协议无此参数。
+        if let Some(thinking) = self.thinking {
+            body["thinking"] = serde_json::json!({ "type": if thinking { "enabled" } else { "disabled" } });
+        }
+        if let Some(effort) = &self.reasoning_effort {
+            body["reasoning_effort"] = serde_json::json!(effort);
         }
         body
     }
@@ -945,6 +970,8 @@ mod tests {
             base_url: Some(format!("{}/v1", base_url)),
             api_key: Some("test-key".into()),
             api_key_env: "OPENAI_API_KEY".into(),
+            thinking: None,
+            reasoning_effort: None,
         }
     }
 
@@ -1025,6 +1052,43 @@ data: [DONE]
             Some(true),
             "生产路径必须请求流式响应（stream:true）"
         );
+    }
+
+    #[test]
+    fn test_build_chat_body_thinking_modes() {
+        // v50：thinking 三态 + reasoning_effort 透传（deepseek 官方参数：
+        // thinking: {"type":"enabled"/"disabled"} + reasoning_effort，
+        // 2026-08-10 抓取 api-docs.deepseek.com/guides/thinking_mode）
+        let base = OpenAiProvider::new(
+            &openai_config("http://localhost:1"),
+            OpenAiProtocol::Chat,
+        )
+        .unwrap();
+
+        // None：不发送（保持 provider 默认——deepseek-v4 默认启用 thinking）
+        let body = base.build_chat_body(&[], false, None);
+        assert!(body.get("thinking").is_none(), "None 不应发送 thinking");
+        assert!(
+            body.get("reasoning_effort").is_none(),
+            "None 不应发送 reasoning_effort"
+        );
+
+        // Some(false)：显式关闭（批量文档生成推荐——thinking 默认 high
+        // 使延迟慢约 5×）
+        let mut cfg = openai_config("http://localhost:1");
+        cfg.thinking = Some(false);
+        let provider = OpenAiProvider::new(&cfg, OpenAiProtocol::Chat).unwrap();
+        let body = provider.build_chat_body(&[], false, None);
+        assert_eq!(body["thinking"]["type"], "disabled");
+
+        // Some(true) + effort：显式启用并指定推理强度
+        let mut cfg = openai_config("http://localhost:1");
+        cfg.thinking = Some(true);
+        cfg.reasoning_effort = Some("high".into());
+        let provider = OpenAiProvider::new(&cfg, OpenAiProtocol::Chat).unwrap();
+        let body = provider.build_chat_body(&[], false, None);
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["reasoning_effort"], "high");
     }
 
     #[tokio::test]
@@ -1282,6 +1346,8 @@ data: [DONE]
             base_url: Some(base_url),
             api_key: Some("sk-ant-test".into()),
             api_key_env: "ANTHROPIC_API_KEY".into(),
+            thinking: None,
+            reasoning_effort: None,
         };
         let provider = AnthropicProvider::new(&config).unwrap();
         let messages = vec![Message::user("你好")];
@@ -1298,6 +1364,8 @@ data: [DONE]
             base_url: None,
             api_key: Some("sk-ant-test".into()),
             api_key_env: "ANTHROPIC_API_KEY".into(),
+            thinking: None,
+            reasoning_effort: None,
         };
         let provider = AnthropicProvider::new(&config).unwrap();
         assert_eq!(provider.call_count(), 0);
@@ -1329,6 +1397,8 @@ data: [DONE]
             base_url: Some(base_url),
             api_key: Some("sk-ant-test".into()),
             api_key_env: "ANTHROPIC_API_KEY".into(),
+            thinking: None,
+            reasoning_effort: None,
         };
         let provider = AnthropicProvider::new(&config).unwrap();
         let messages = vec![
@@ -1390,6 +1460,8 @@ data: [DONE]
             base_url: Some(format!("{}/v1", base_url)),
             api_key: Some("test-key".into()),
             api_key_env: "DEEPSEEK_API_KEY".into(),
+            thinking: None,
+            reasoning_effort: None,
         };
         let provider = OpenAiProvider::new(&config, OpenAiProtocol::Responses).unwrap();
         let chunks = provider.complete_stream(&[Message::user("你好")]).await.unwrap();
@@ -1416,6 +1488,8 @@ data: [DONE]
             base_url: Some(format!("{}/v1", base_url)),
             api_key: Some("test-key".into()),
             api_key_env: "DEEPSEEK_API_KEY".into(),
+            thinking: None,
+            reasoning_effort: None,
         };
         let provider = OpenAiProvider::new(&config, OpenAiProtocol::Responses).unwrap();
         let messages = vec![Message::system("你是助手"), Message::user("你好")];
@@ -1463,6 +1537,8 @@ data: [DONE]
             base_url: Some(format!("{}/v1", base_url)),
             api_key: Some("test-key".into()),
             api_key_env: "DEEPSEEK_API_KEY".into(),
+            thinking: None,
+            reasoning_effort: None,
         };
         let provider = OpenAiProvider::new(&config, OpenAiProtocol::Responses).unwrap();
         let chunks = provider.complete_stream(&[Message::user("你好")]).await.unwrap();
@@ -1495,6 +1571,8 @@ data: [DONE]
             base_url: Some(format!("{}/v1", base_url)),
             api_key: Some("test-key".into()),
             api_key_env: "DEEPSEEK_API_KEY".into(),
+            thinking: None,
+            reasoning_effort: None,
         };
         let provider = OpenAiProvider::new(&config, OpenAiProtocol::Responses).unwrap();
         let out = provider

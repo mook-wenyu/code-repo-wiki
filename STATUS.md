@@ -821,3 +821,12 @@ knowing 全量 12 仓 mock 数据点齐（v29 9 + v30 3：rails 5239 实体/58 �
 - 用户 Unity 大仓实测「analyzing 27% 后不动」→ 根因：module.rs 旧实现对每个社区调用 count_edges 三次（cohesion/coupling/expanded），每次遍历全图边两遍——O(社区数 × 边数)，数百目录 × 约 20 万边 × 5 遍 ≈ 数亿次迭代
 - 重构为单遍边聚合：File→社区/实体→File 归位索引一次遍历 + 单遍非 Contains 边累加各社区 internal/external——O(边 + 社区)；语义严格等价（等价性论证：跨界边对两端社区各计一次 external 与旧逐社区遍历一致）
 - 测试：6/6（test_cohesion/test_coupling 改用 detect 断言、新增聚合与暴力参照逐社区数值一致测试、300 目录×10 文件大图冒烟 0.02s）；lib 488 全绿 + clippy 0
+
+## v50 LLM 生成性能优化（2026-08-10）
+
+- 用户反馈「llm 太慢了」→ 3 lanes 深度检索（本地审计 10 发现 + 网络权威论文/官方文档）根因量化：①每次卡片调用输出 0.5-3K token 无上限（3138 文件 = 3138 次调用，输出生成是延迟线性主导项）；②**deepseek-v4 默认启用 thinking 且 effort=high**（官方文档确认）——批量低推理任务实测慢约 5×、输出 token 多约 3.7×；③并发 16 远低于 DeepSeek v4-flash 官方并发上限 2500，服务端批处理吞吐拐点约 128 并发（NVIDIA NIM 官方基准）；④wiki.rs 上层对一切 Err 无条件重试 3 次，黑洞首字节超时 90s 被放大到约 270s
+- 修复（用户拍板：thinking 做成可配置/卡片保持现状/并发 128/重试修复/每文件 1 卡片）：
+  - `[llm] thinking`（true/false）+ `reasoning_effort`（low/high/max）——openai-compatible chat 路径发送官方参数 `thinking: {"type":"enabled"/"disabled"}`（None=不发送，默认保持 provider 行为）
+  - LLM_MAX_CONCURRENT 16→128（拐点内最大化收益 + 429 退避兜底）
+  - complete_with_retry 简化：透传 llm.rs retry_with_backoff 重试结论（429/5xx/连接失败已重试；黑洞/业务 4xx 立即失败）——删除 CALL_RETRY_MAX
+- 验证：thinking 三态新测试 + 透传 2 测试 + lib 489 全绿 + bench 两套件 9/9 + clippy 0；文档（config.md 参考/CHANGELOG）；用户侧实测：Unity 项目 `update` 观察卡片阶段进度速率（配置 `thinking = false` 对比 5× 差距）

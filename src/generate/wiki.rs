@@ -160,40 +160,26 @@ pub const CITATION_RETRY_MAX: usize = 2;
 /// 与 CITATION_RETRY_MAX 合并进同一重试循环（上限取两者最大值）。
 pub const MERMAID_RETRY_MAX: usize = crate::output::mermaid_check::MERMAID_RETRY_MAX;
 
-/// 调用级失败重试上限（v22 修复）：瞬时网络错误（连接重置/超时/5xx）
-/// 重试最多 CALL_RETRY_MAX 次（含首次），间隔 500ms/1000ms 指数退避。
-/// 所有错误统一按可重试处理：持久错误（参数/鉴权 4xx）最多多等 1.5s
-/// 后仍原样返回给外层失败隔离——不吞错、不掩盖，与「重试语义只补偿
-/// 瞬时故障」的边界一致；校验类失败不在此处处理（走既有反馈循环）。
-const CALL_RETRY_MAX: usize = 3;
-
-/// 带退避的 LLM 调用重试
+/// 带退避的 LLM 调用重试（v50 简化：重试语义统一在 llm.rs 层）
 ///
-/// provider 泛型化（Mock 也走此路径）：mock/测试注入的失败因此最多
-/// 慢 1.5s，换来真实 provider 的瞬时错误自愈——长流水线中每模块一次
-/// 重试比整轮重跑便宜两个数量级。
+/// 原实现（v22）在此层对**一切** Err 无条件重试 3 次——但 llm.rs 的
+/// retry_with_backoff 已对可重试错误（429/5xx/reqwest 连接失败）重试
+/// 过 MAX_RETRIES 次，且对不可重试错误（黑洞首字节超时 90s、业务 4xx）
+/// 立即返回 Err。上层重复重试把黑洞最坏等待从 90s 放大到约 270s
+/// （v50 实测链：llm.rs 判不可重试 → wiki.rs 再等 3×90s），且 mock/
+/// 测试注入的失败也被白白重试。修复：上层直接透传 llm.rs 的重试结论。
+///
+/// provider 泛型化保留（Mock 也走此路径）；瞬时错误自愈能力完全由
+/// llm.rs 层提供，本函数仅保留包装（失败信息附模块上下文便于排查）。
 async fn complete_with_retry<P: LlmProvider>(
     provider: &P,
     messages: &[Message],
     module: &str,
 ) -> Result<String> {
-    let mut last_err = None;
-    for attempt in 0..CALL_RETRY_MAX {
-        match provider.complete(messages).await {
-            Ok(content) => return Ok(content),
-            Err(e) => {
-                tracing::warn!(
-                    "LLM 调用失败（第 {} 次重试）: {} {}",
-                    attempt + 1,
-                    module,
-                    e
-                );
-                last_err = Some(e);
-                tokio::time::sleep(std::time::Duration::from_millis(500 << attempt)).await;
-            }
-        }
-    }
-    Err(last_err.expect("CALL_RETRY_MAX 至少为 1"))
+    provider.complete(messages).await.map_err(|e| {
+        tracing::warn!("LLM 调用失败（{}）: {}", module, e);
+        e
+    })
 }
 
 impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
@@ -980,26 +966,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_complete_with_retry_recovers_after_transient_failure() {
-        // 首次失败、第二次成功：重试自愈，返回内容正确
-        let provider = FlakyProvider::new(1);
+    async fn test_complete_with_retry_passthrough_success() {
+        // v50：成功路径一次调用直接返回内容（上层无重试循环）
+        let provider = FlakyProvider::new(0);
         let content = complete_with_retry(&provider, &[], "src::test").await.unwrap();
         assert_eq!(content, "重试成功");
-        assert_eq!(provider.calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+        assert_eq!(provider.calls.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 
     #[tokio::test]
-    async fn test_complete_with_retry_gives_up_after_max_attempts() {
-        // 持续失败：重试耗尽后原样返回错误（不吞错、不掩盖）
+    async fn test_complete_with_retry_passthrough_failure() {
+        // v50：上层不再重复重试——llm.rs 的 retry_with_backoff 是唯一
+        // 重试层（429/5xx/连接失败已重试，黑洞首字节超时/业务 4xx 立即
+        // 透传）。上层重复重试会把 90s 黑洞放大到约 270s（v50 修复），
+        // 故失败仅记录 warn 后原样返回，调用恰好 1 次。
         let provider = FlakyProvider::new(10);
         let err = complete_with_retry(&provider, &[], "src::test")
             .await
             .unwrap_err();
         assert!(err.to_string().contains("模拟瞬时网络错误"));
-        assert_eq!(
-            provider.calls.load(std::sync::atomic::Ordering::Relaxed),
-            CALL_RETRY_MAX
-        );
+        assert_eq!(provider.calls.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 
     fn make_test_chunk() -> Chunk {

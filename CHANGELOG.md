@@ -8,6 +8,26 @@
 ## [0.5.1] - 2026-08-09
 
 ### Added
+- **LLM 思考模式可配置（v50）**：`[llm] thinking`（`true`/`false`）+ `[llm]
+  reasoning_effort`（`"low"/"high"/"max"`）——DeepSeek 系 thinking 模式开关，
+  仅 openai-compatible（chat/completions）路径生效。deepseek-v4 官方默认
+  启用思考且 effort=high，批量卡片/文档生成实测慢约 5×、输出 token 多约
+  3.7×——低推理任务在配置中 `thinking = false` 可获约 5× 提速（参数与官方
+  Thinking Mode 文档 2026-08-10 抓取核证：`thinking: {"type":"disabled"}`
+  + `reasoning_effort`）。
+
+### Changed
+- **LLM 并发上限 16 → 128（v50）**：依据权威查证——DeepSeek 官方限流为纯
+  并发数（v4-flash 账户级 2500），128 远低于上限；服务端连续批处理（Orca/
+  vLLM）吞吐拐点约 128 并发（NVIDIA NIM 官方基准：并发 100→250 吞吐持平而
+  TTFT 8s→88s），128 为拐点内最大化收益取值；超限由 429 退避兜底。
+- **上层重试语义统一（v50）**：`wiki.rs complete_with_retry` 原对**一切**
+  Err 无条件重试 3 次（黑洞首字节超时 90s 被放大到约 270s/调用，且 mock
+  注入失败也被白重试）——改为直接透传 `llm.rs retry_with_backoff` 的重试
+  结论（429/5xx/reqwest 连接失败已在该层重试；黑洞/业务 4xx 立即失败走
+  降级/补偿）。
+
+### Added
 - **LLM 逐项进度（v46）**：`generate`/`update` 的卡片生成与 Wiki 页生成两个 LLM
   密集阶段改为逐项进度——`进度 [生成知识卡片] 3/12（62%）`（任务单位 N/M，
   对齐 Ubuntu CLI 规范；stderr 输出，TTY 下行内刷新、非 TTY 按阶段/10% 档/

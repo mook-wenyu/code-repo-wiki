@@ -3,7 +3,17 @@ use serde::{Deserialize, Serialize};
 /// v22 硬编码常量：以下配置项属「算法内部细节 / 无调优需求 / 必填负担」，
 /// 从配置文件移除、以代码常量固定，减少用户配置心智负担（用户拍板：
 /// 推荐 10 项全部硬编码）。如需调整须改代码重新编译。
-pub const LLM_MAX_CONCURRENT: usize = 16;
+/// LLM 并发上限（v50：16 → 128）
+///
+/// 依据（2026-08-10 权威查证）：
+/// - DeepSeek 官方限流=纯并发数（v4-flash 账户级 2500），无 RPM/TPM——
+///   128 远低于上限；
+/// - 服务端连续批处理（Orca/vLLM）的吞吐拐点约 128 并发：拐点后并发
+///   只买延迟不买吞吐（NVIDIA NIM 官方基准：并发 100→250 吞吐 917→920
+///   持平而 TTFT 8s→88s）——128 是拐点内最大化收益的取值；
+/// - 超限由 llm.rs retry_with_backoff 的 429 全抖动退避兜底（失败计配额，
+///   退避优于重放——OpenAI 官方限流指南）。
+pub const LLM_MAX_CONCURRENT: usize = 128;
 /// None=模型默认，不随请求发送
 pub const EMBED_BATCH_SIZE: usize = 20;
 /// 索引目录，相对 output.dir
@@ -113,6 +123,25 @@ pub struct LlmSection {
     /// 从环境变量读取 API Key（当 api_key 为 None 时使用）
     #[serde(default = "default_llm_api_key_env")]
     pub api_key_env: String,
+    /// DeepSeek 系 thinking 模式开关（v50，可选）
+    ///
+    /// None = 不发送该参数（保持 provider 默认——deepseek-v4 官方默认
+    /// **启用** thinking 且 effort=high，批量文档生成实测慢约 5×、输出
+    /// token 多约 3.7×，是「LLM 太慢」的根因之一）；
+    /// Some(true) = 发送 `thinking: {"type":"enabled"}`；
+    /// Some(false) = 发送 `thinking: {"type":"disabled"}`。
+    ///
+    /// 仅 openai-compatible（chat/completions）路径生效；Responses 与
+    /// Anthropic 协议不支持该参数（llm.rs 注释说明）。值域/映射以
+    /// DeepSeek 官方 Thinking Mode 文档为准（2026-08-10 抓取核证）。
+    #[serde(default)]
+    pub thinking: Option<bool>,
+    /// DeepSeek 系推理强度（v50，可选）："low" / "high" / "max"
+    ///
+    /// 与 thinking 配套发送 `reasoning_effort` 字段；缺省不发送。
+    /// 官方映射：v4-flash low→low、high→high、max→max。
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
 }
 
 fn default_llm_model() -> String {
@@ -144,6 +173,11 @@ impl Default for LlmSection {
             base_url: Some("https://opencode.ai/zen/go/v1".to_string()),
             api_key: None,
             api_key_env: "OPENCODEGO2_API_KEY".to_string(),
+            // v50：默认 None——不发送 thinking 参数，保持 provider 默认
+            // （deepseek-v4 默认启用 thinking）。用户可在 config.toml
+            // 显式 `thinking = false` 关闭以获得约 5× 提速（见 schema 注释）。
+            thinking: None,
+            reasoning_effort: None,
         }
     }
 }
