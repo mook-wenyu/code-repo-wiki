@@ -110,8 +110,10 @@ pub fn detect_communities_with_resolution(graph: &KnowledgeGraph, resolution: f6
         .collect();
 
     // 实体 → 所属 File 映射（经 Contains 边反查）。
-    // 关键语义：Calls/Imports 边都挂在**实体节点**上（File 节点
-    // 只有 Contains 边），社区划分的单位是 File，必须先归位。
+    // 关键语义：Calls 边挂在实体节点上；Imports 边 v52 T11 起源可为
+    // **File 节点**（文件级 import 单边建模）或实体节点；File 节点只有
+    // Contains 边。社区划分的单位是 File，因此实体必须归位到所属文件：
+    // file_of(File)=自身、file_of(实体)=经 Contains 边反查，聚合语义兼容。
     let mut entity_to_file: HashMap<NodeId, NodeId> = HashMap::new();
     for edge in graph.graph.edge_references() {
         let kind = graph.graph.edge_weight(edge.id()).map(|e| e.kind.clone());

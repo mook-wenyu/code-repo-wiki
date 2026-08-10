@@ -92,7 +92,16 @@ pub fn build(insights: &[FileInsight]) -> Result<KnowledgeGraph> {
             .entry(path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default())
             .or_default()
             .push(file_id);
-        path_map.insert(dir_segments.clone(), file_id);
+        // v52 T11：File 节点优先于 module 中间节点；同目录多文件保留首个 File（确定性）。
+        // 插入顺序：ensure_module_chain（:216 附近）先插 module 中间节点（键=目录段），
+        // 此处后插 File——必须主动覆盖 module 节点，否则 File 永远进不了 path_map，
+        // 目录级 import 回退匹配失效。若已有条目已是 File 节点则保留（首个 File 胜出）。
+        match path_map.get(&dir_segments) {
+            Some(&existing) if g.node_weight(existing).is_some_and(|n| n.kind == NodeKind::File) => {}
+            _ => {
+                path_map.insert(dir_segments.clone(), file_id);
+            }
+        }
 
         let entity_ids: Vec<(Entity, NodeId)> = insight
             .entities
@@ -136,7 +145,7 @@ pub fn build(insights: &[FileInsight]) -> Result<KnowledgeGraph> {
             );
         }
 
-        build_import_edges(g, &insight.imports, &entity_ids, &name_map, &path_map);
+        build_import_edges(g, file_id, &insight.imports, &name_map, &path_map);
         build_impl_edges(g, &entity_ids, &name_map);
         // 收集 (实体, 节点, 函数体文本) —— 跨文件调用边需在全图实体
         // 构建完成后统一匹配（每个函数用其函数体文本找被调用函数名）
@@ -156,7 +165,9 @@ pub fn build(insights: &[FileInsight]) -> Result<KnowledgeGraph> {
         node.id = project_id;
     }
 
-    kg.graph = g.clone();
+    // v52 T11：g 是 kg.graph 的别名（:14 `let g = &mut kg.graph`），所有节点/边
+    // 均直接写入 kg.graph——原 `kg.graph = g.clone()` 是自克隆深拷贝（O(V+E) 冗余），
+    // 直接删除；此处在 g 最后一次使用（:157）之后。
 
     let cycles = kg.detect_cycles();
     if !cycles.is_empty() {
@@ -213,7 +224,8 @@ fn ensure_module_chain(
         cache.insert(prefix.clone(), id);
         // 增量索引（v32 8.2）：与原 collect_node_names 遍历语义一致
         name_map.entry(segments[i].clone()).or_default().push(id);
-        path_map.insert(prefix, id);
+        // v52 T11：module 中间节点不覆盖已存在的 File 节点——or_insert 保留首个。
+        path_map.entry(prefix.clone()).or_insert(id);
         parent = id;
     }
     parent
@@ -249,8 +261,8 @@ fn kind_from_str(s: &str) -> NodeKind {
 /// 不再每文件全图遍历重建（原实现 O(文件数²)，cal.com 实测 200s）。
 fn build_import_edges(
     g: &mut petgraph::stable_graph::StableDiGraph<CodeNode, CodeEdge>,
+    file_id: NodeId,
     imports: &[ImportStmt],
-    entities: &[(Entity, NodeId)],
     name_map: &HashMap<String, Vec<NodeId>>,
     path_map: &HashMap<Vec<String>, NodeId>,
 ) {
@@ -269,32 +281,40 @@ fn build_import_edges(
         }
 
         // name 匹配失败时尝试路径后缀匹配
+        // v52 T11：path_map 是 HashMap（迭代序非确定），原实现"命中即 break"在
+        // 同后缀多路径时命中目标跨运行随机，破坏确定性契约。改为收集全部命中、
+        // 按键排序后取最小键（Vec<String> 字典序），跨运行确定。
         if targets.is_empty() {
             let path_segments: Vec<String> = parts.iter().map(|s| s.to_string()).collect();
-            for (mp, &nid) in path_map.iter() {
-                if mp.ends_with(&path_segments) {
-                    targets.push(nid);
-                    break;
-                }
+            let mut hits: Vec<(Vec<String>, NodeId)> = path_map
+                .iter()
+                .filter(|(mp, _)| mp.ends_with(&path_segments))
+                .map(|(mp, &nid)| (mp.clone(), nid))
+                .collect();
+            hits.sort_by(|a, b| a.0.cmp(&b.0));
+            if let Some((_, nid)) = hits.into_iter().next() {
+                targets.push(nid);
             }
         }
 
-        for target_id in &targets {
-            for (_, eid) in entities {
-                if g.edges_connecting(*eid, *target_id).count() == 0 {
-                    g.add_edge(
-                        *eid,
-                        *target_id,
-                        CodeEdge {
-                            id: EdgeIndex::new(g.edge_count()),
-                            kind: EdgeKind::Imports,
-                            source: *eid,
-                            target: *target_id,
-                            weight: 0.8,
-                            location: Some((imp.line, imp.line)),
-                        },
-                    );
-                }
+        for target_id in targets {
+            // v52 T11：import 是文件级依赖——源从每个实体改为所属 File 节点
+            //（一条 import 语句对每个命中目标只建一条 File→目标 边），消除
+            // 实体级笛卡尔积导致的边爆炸（30 实体文件一条 import 原产生 30 条边）。
+            // community.rs 的 file_of 聚合天然兼容 File 源节点（File 取自身）。
+            if g.edges_connecting(file_id, target_id).count() == 0 {
+                g.add_edge(
+                    file_id,
+                    target_id,
+                    CodeEdge {
+                        id: EdgeIndex::new(g.edge_count()),
+                        kind: EdgeKind::Imports,
+                        source: file_id,
+                        target: target_id,
+                        weight: 0.8,
+                        location: Some((imp.line, imp.line)),
+                    },
+                );
             }
         }
     }
@@ -603,6 +623,147 @@ mod tests {
             .edge_indices()
             .any(|e| kg.graph.edge_weight(e).map(|w| w.kind == EdgeKind::Imports).unwrap_or(false));
         assert!(has_import);
+    }
+
+    /// v52 T11（test_engineer 缺口 (d)）：import 路径后缀匹配的 min-key 确定性。
+    /// 触发条件（已实测查证 graph.rs:269-298）：name 通道不命中（last part 不在
+    /// name_map）且 parts 是 path_map 键的后缀。目录段名必在 name_map（:226），
+    /// 故只能用 **file_stem 段**构造：src/x/mod/foo.rs 与 src/y/mod/foo.rs 的
+    /// 实体键分别为 ["src","x","mod","foo"]/["src","y","mod","foo"]（dir+stem，
+    /// :111-128），import "mod::foo"（parts=["mod","foo"]，last="foo" 不在
+    /// name_map——实体名 foo_fn/foo_fn2、file_name foo.rs、目录段 src/x/mod）
+    /// → 后缀命中两键 → 排序取最小键 ["src","x",...] → 边指向 x 的实体 foo_fn。
+    #[test]
+    fn test_import_suffix_match_takes_min_key() {
+        let insights = vec![
+            FileInsight {
+                path: PathBuf::from("src/x/mod/foo.rs"),
+                language: "rust".into(),
+                entities: vec![Entity {
+                    name: "foo_fn".into(),
+                    kind: "fn".into(),
+                    line_start: 1,
+                    line_end: 3,
+                    doc_comment: None,
+                    signature: Some("fn foo_fn()".into()),
+                    visibility: None,
+                }],
+                imports: vec![],
+                doc_comments: vec![],
+                source: String::new(),
+            },
+            FileInsight {
+                path: PathBuf::from("src/y/mod/foo.rs"),
+                language: "rust".into(),
+                entities: vec![Entity {
+                    name: "foo_fn2".into(),
+                    kind: "fn".into(),
+                    line_start: 1,
+                    line_end: 3,
+                    doc_comment: None,
+                    signature: Some("fn foo_fn2()".into()),
+                    visibility: None,
+                }],
+                imports: vec![],
+                doc_comments: vec![],
+                source: String::new(),
+            },
+            FileInsight {
+                path: PathBuf::from("src/api.rs"),
+                language: "rust".into(),
+                entities: vec![Entity {
+                    name: "api_run".into(),
+                    kind: "fn".into(),
+                    line_start: 1,
+                    line_end: 10,
+                    doc_comment: None,
+                    signature: Some("fn api_run()".into()),
+                    visibility: None,
+                }],
+                imports: vec![ImportStmt {
+                    source: "mod::foo".into(),
+                    alias: None,
+                    line: 1,
+                }],
+                doc_comments: vec![],
+                source: String::new(),
+            },
+        ];
+        let kg = build(&insights).unwrap();
+        let mut import_targets: Vec<String> = Vec::new();
+        for e in kg.graph.edge_indices() {
+            if kg.graph.edge_weight(e).map(|w| w.kind == EdgeKind::Imports).unwrap_or(false) {
+                let t = kg.graph.edge_weight(e).unwrap().target;
+                let n = kg.graph.node_weight(t).unwrap();
+                import_targets.push(n.name.clone());
+            }
+        }
+        assert_eq!(import_targets, vec!["foo_fn"], "后缀匹配应取最小键 x 目录的实体 foo_fn，实际: {:?}", import_targets);
+    }
+
+    /// v52 T11（test_engineer 缺口 (e) 修正版）：目录级 import 的确定性契约。
+    /// 已实测：目录段名（v1）在 name_map（:226）→ import "net::v1" 命中 name
+    /// 通道的 module 节点（name="v1"），后缀/File 优先分支被遮蔽（当前不可达，
+    /// 保留为防御逻辑）。本测试锚定**可观察行为**：目录级 import 稳定指向
+    /// module 节点且两次 build 结果一致（确定性，防 name_map 语义漂移回归）。
+    #[test]
+    fn test_path_map_directory_import_deterministic() {
+        let insights = vec![
+            FileInsight {
+                path: PathBuf::from("src/net/v1/mod.rs"),
+                language: "rust".into(),
+                entities: vec![Entity {
+                    name: "v1_fn".into(),
+                    kind: "fn".into(),
+                    line_start: 1,
+                    line_end: 3,
+                    doc_comment: None,
+                    signature: Some("fn v1_fn()".into()),
+                    visibility: None,
+                }],
+                imports: vec![],
+                doc_comments: vec![],
+                source: String::new(),
+            },
+            FileInsight {
+                path: PathBuf::from("src/api.rs"),
+                language: "rust".into(),
+                entities: vec![Entity {
+                    name: "api_run".into(),
+                    kind: "fn".into(),
+                    line_start: 1,
+                    line_end: 10,
+                    doc_comment: None,
+                    signature: Some("fn api_run()".into()),
+                    visibility: None,
+                }],
+                imports: vec![ImportStmt {
+                    source: "net::v1".into(),
+                    alias: None,
+                    line: 1,
+                }],
+                doc_comments: vec![],
+                source: String::new(),
+            },
+        ];
+        let kg1 = build(&insights).unwrap();
+        let kg2 = build(&insights).unwrap();
+        let mut targets1: Vec<String> = Vec::new();
+        let mut targets2: Vec<String> = Vec::new();
+        for e in kg1.graph.edge_indices() {
+            if kg1.graph.edge_weight(e).map(|w| w.kind == EdgeKind::Imports).unwrap_or(false) {
+                let t = kg1.graph.edge_weight(e).unwrap().target;
+                targets1.push(kg1.graph.node_weight(t).unwrap().name.clone());
+            }
+        }
+        for e in kg2.graph.edge_indices() {
+            if kg2.graph.edge_weight(e).map(|w| w.kind == EdgeKind::Imports).unwrap_or(false) {
+                let t = kg2.graph.edge_weight(e).unwrap().target;
+                targets2.push(kg2.graph.node_weight(t).unwrap().name.clone());
+            }
+        }
+        assert_eq!(targets1, targets2, "两次 build 目录级 import 目标应一致: {:?} vs {:?}", targets1, targets2);
+        assert!(!targets1.is_empty(), "目录级 import 应命中 module 节点: {:?}", targets1);
     }
 
     #[test]
