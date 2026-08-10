@@ -288,11 +288,35 @@ pub fn run_pipeline_with_progress(
     on_progress: &dyn Fn(ProgressEvent),
 ) -> anyhow::Result<AnalysisResult> {
     let config = load_config_with_output(config_path, output, root)?;
+    // v52 T08a：配置加载完成后即转调配置直传变体，流水线主干逻辑统一
+    // 收敛在 run_pipeline_with_config，避免两份主干漂移；配置来源差异
+    // （磁盘模板 vs 运行期内存配置）只存在于本函数这一层。
+    run_pipeline_with_config(config, force, root, mode, on_progress)
+}
+
+/// 运行完整的分析流水线，并在各阶段边界回调进度事件（配置直传变体）
+///
+/// 与 run_pipeline_with_progress 共享同一流水线主干，差别仅在配置来源：
+/// 本变体直接接收已加载的内存配置 WikiConfig，跳过磁盘模板的加载/合并/
+/// 脱敏流程。v52 T08a：bench manifest 运行期构造内存配置直传本变体，
+/// 避免磁盘模板脱敏后关键字段（如 api key）丢失导致评测注入配置不生效。
+/// 事件点：scanning 10 / analyzing 25（图构建前，v47 提前）/ chunking 30 /
+/// cards 60（生成前）/ wiki 90（生成前）/ output 95 / index 98 / done 100，
+/// 对应扫描、分析、生成、渲染、索引、保存阶段。
+pub fn run_pipeline_with_config(
+    config: config::schema::WikiConfig,
+    force: bool,
+    root: &project::ProjectRoot,
+    mode: &GenerationMode,
+    on_progress: &dyn Fn(ProgressEvent),
+) -> anyhow::Result<AnalysisResult> {
     // v36 D4：单实例运行锁——并发 generate/update/watch 会把状态/索引/
     // 产物互相覆盖（最后写入者胜）。锁作用域=本次生成全程（Drop 释放），
     // 崩溃残留由报错指引人工删除（不自动清，见 fs.rs acquire_run_lock）。
     let _run_lock = crate::fs::acquire_run_lock(&config)?;
-    let _span = tracing::info_span!("pipeline", config = %config_path.map(|p| p.display().to_string()).unwrap_or_else(|| "默认链".into()));
+    // 配置直传变体内无 config_path 字段，路径信息由调用方（加载侧）记录，
+    // 此处仅保留追踪层级。
+    let _span = tracing::info_span!("pipeline");
     let _enter = _span.enter();
     let start = std::time::Instant::now();
     // v32 8.1：分段计时收集（各阶段边界打点；chunk/card/wiki 内部段在

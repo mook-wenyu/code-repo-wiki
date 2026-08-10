@@ -68,8 +68,18 @@ impl OpencodeMcp {
     /// - 本 server 已存在但 command 不同 → 整体替换该条目（升级）
     /// - 顶层非 JSON 对象 → 显式报错（N12 规则：数组/标量是损坏配置）
     pub fn install(&self, server: &str, command: &[String]) -> Result<bool> {
-        let content = std::fs::read_to_string(&self.config_path)
-            .unwrap_or_else(|_| "{}".to_string());
+        let content = match std::fs::read_to_string(&self.config_path) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => "{}".to_string(),
+            Err(e) => {
+                // v52 T08a：读失败（权限/占用/损坏）时显式中止——静默当空对象
+                // 会让后续写回**覆盖含 OAuth 会话的用户配置**（凭据丢失）。
+                anyhow::bail!(
+                    "读取 {} 失败（已中止写回，避免覆盖现有配置）: {e}",
+                    self.config_path.display()
+                );
+            }
+        };
         let mut value: serde_json::Value = serde_json::from_str(&content)
             .with_context(|| format!("解析 opencode 配置失败: {}", self.config_path.display()))?;
         if !value.is_object() {
@@ -201,7 +211,16 @@ impl ClaudeMcp {
         command: &str,
         args: &[String],
     ) -> Result<bool> {
-        let content = std::fs::read_to_string(&self.path).unwrap_or_default();
+        // v52 T08a：.claude.json 承载 OAuth 会话——非 NotFound 读失败（权限/占用/损坏）
+        // 不得静默当空对象后原子覆盖（与 opencode.json 同语义，见 OpencodeMcp::install）
+        let content = match std::fs::read_to_string(&self.path) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => "{}".to_string(),
+            Err(e) => anyhow::bail!(
+                "读取 Claude 用户配置失败（已中止写回，避免覆盖现有配置）: {}: {e}",
+                self.path.display()
+            ),
+        };
         let mut value: serde_json::Value = if content.trim().is_empty() {
             serde_json::Value::Object(Default::default())
         } else {
@@ -552,6 +571,37 @@ mod tests {
         write(&path, "[1, 2, 3]");
         let mcp = OpencodeMcp { config_path: path.clone() };
         assert!(mcp.install("code-repo-wiki", &["x".to_string()]).is_err());
+    }
+
+    /// v52 T08a：配置文件读失败（权限/占用/损坏）必须显式中止——
+    /// 静默当空对象会让后续写回覆盖含 OAuth 会话的用户配置
+    #[test]
+    fn opencode_install_aborts_on_unreadable_config() {
+        // config_path 指向目录：read_to_string 对目录必然 Err（Windows 权限模拟不可靠）
+        let dir = std::env::temp_dir().join(format!("rw_mcp_unreadable_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = OpencodeMcp { config_path: dir.clone() };
+        let err = cfg.install("test-server", &["echo".to_string(), "hi".to_string()]).unwrap_err();
+        assert!(err.to_string().contains("已中止写回"), "应显式中止并说明原因: {err}");
+        assert!(dir.is_dir(), "目录本身不应被写坏");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// v52 T08a：.claude.json 读失败（权限/占用/损坏）必须显式中止——
+    /// 静默当空对象会让后续写回覆盖含 OAuth 会话的用户配置（与
+    /// opencode_install_aborts_on_unreadable_config 同语义）
+    #[test]
+    fn claude_install_aborts_on_unreadable_config() {
+        // path 指向目录：read_to_string 对目录必然 Err（Windows 权限模拟不可靠）
+        let dir = std::env::temp_dir().join(format!("rw_claude_unreadable_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mcp = ClaudeMcp { path: dir.clone() };
+        let err = mcp
+            .install("test-server", "echo", &["hi".to_string()])
+            .unwrap_err();
+        assert!(err.to_string().contains("已中止写回"), "应显式中止并说明原因: {err}");
+        assert!(dir.is_dir(), "目录本身不应被写坏");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

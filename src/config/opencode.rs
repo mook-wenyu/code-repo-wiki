@@ -51,8 +51,18 @@ impl OpenCodeConfig {
     /// 历史遗留的无效 `plugins` 键（opencode 1.18.10 解析会报
     /// `Unrecognized key` 错误）。配置不存在时静默创建空对象。
     pub fn install_plugin(&mut self) -> Result<()> {
-        let content = std::fs::read_to_string(&self.config_path)
-            .unwrap_or_else(|_| "{}".to_string());
+        let content = match std::fs::read_to_string(&self.config_path) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => "{}".to_string(),
+            Err(e) => {
+                // v52 T08a：读失败（权限/占用/损坏）时显式中止——静默当空对象
+                // 会让后续写回**覆盖含 OAuth 会话的用户配置**（凭据丢失）。
+                anyhow::bail!(
+                    "读取 opencode.json 失败（已中止写回，避免覆盖现有配置）: {}: {e}",
+                    self.config_path.display()
+                );
+            }
+        };
         let mut value: serde_json::Value = serde_json::from_str(&content)
             .with_context(|| format!("解析配置文件失败: {}", self.config_path.display()))?;
         // N12：顶层必须是 JSON 对象——数组/标量/字符串配置本身就是
@@ -394,6 +404,20 @@ mod tests {
         assert!(value.get("plugins").is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v52 T08a：配置文件读失败（权限/占用/损坏）必须显式中止——
+    /// 静默当空对象会让后续写回覆盖含 OAuth 会话的用户配置
+    #[test]
+    fn test_install_plugin_aborts_on_unreadable_config() {
+        // config_path 指向目录：read_to_string 对目录必然 Err（Windows 权限模拟不可靠）
+        let dir = std::env::temp_dir().join(format!("rw_opencode_unreadable_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = OpenCodeConfig { config_path: dir.clone(), project_root: dir.clone() };
+        let err = cfg.install_plugin().unwrap_err();
+        assert!(err.to_string().contains("已中止写回"), "应显式中止并说明原因: {err}");
+        assert!(dir.is_dir(), "目录本身不应被写坏");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// uninstall 清理无效 plugins 键且保留其他合法键

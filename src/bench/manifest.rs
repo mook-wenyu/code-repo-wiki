@@ -162,7 +162,14 @@ pub fn run_manifest(
 
     // 模板配置落盘（run_pipeline 从文件加载；output 覆盖由调用方传参）
     let template_path = work_dir.join("template-config.toml");
-    std::fs::write(&template_path, toml::to_string_pretty(template_config)?)
+    // v52 T08a：模板配置含用户真实凭据——直接序列化会以明文落盘到可预测
+    // 临时路径（Unix /tmp umask 022 下世界可读、可被预置文件钓鱼）。
+    // 写盘模板脱敏（llm/embed api_key 置空，WikiConfig: Clone）；运行期
+    // 凭据由下方从内存配置合并回加载结果，不依赖磁盘模板（见 run 循环）。
+    let mut sanitized = template_config.clone();
+    sanitized.llm.api_key = None;
+    sanitized.embed.api_key = None;
+    std::fs::write(&template_path, toml::to_string_pretty(&sanitized)?)
         .with_context(|| "写模板配置文件失败")?;
 
     let mut repos = Vec::with_capacity(entries.len());
@@ -233,12 +240,22 @@ pub fn run_manifest(
         // 每仓库独立产物目录：work_dir/<name>-out/（覆盖模板 output.dir）
         let out_dir = work_dir.join(format!("{}-out", entry.name));
         let root = ProjectRoot::new(repo_path);
-        let res = crate::run_pipeline(
+        // 运行期配置：磁盘模板已脱敏（api_key 置空），从模板文件加载后把内存
+        // 配置的真实凭据合并回加载结果——评测进程使用真实 key，磁盘产物
+        // 不含凭据（v52 T08a 修复：旧实现运行侧 key 丢失导致真实 LLM 跑分失败）
+        let mut config = crate::load_config_with_output(
             Some(&template_path),
             Some(&out_dir),
+            &root,
+        )?;
+        config.llm.api_key = template_config.llm.api_key.clone();
+        config.embed.api_key = template_config.embed.api_key.clone();
+        let res = crate::run_pipeline_with_config(
+            config,
             true, // force：清单跑分语义=全量重建后测量
             &root,
             &crate::GenerationMode::Full,
+            &|_| {},
         );
         let result = match res {
             Ok(_) => {
@@ -458,6 +475,22 @@ mod tests {
         let md = render_manifest_markdown(&report);
         assert!(md.contains("| repo-a |"), "矩阵应含 repo-a 行: {md}");
         assert!(md.contains("**失败**"), "矩阵应含失败标注: {md}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// v52 T08a：写盘模板配置必须脱敏——api_key 不得以明文落盘
+    #[test]
+    fn test_manifest_template_sanitizes_api_key() {
+        let base = std::env::temp_dir().join(format!("rw_manifest_sanitize_{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let work_dir = base.join("work");
+        let mut template = WikiConfig::default();
+        template.llm.api_key = Some("sk-test-secret-123456".into());
+        let entries = vec![];
+        let report = run_manifest(&entries, &template, &work_dir).unwrap();
+        assert!(report.repos.is_empty(), "空清单评测应正常完成");
+        let content = std::fs::read_to_string(work_dir.join("template-config.toml")).unwrap();
+        assert!(!content.contains("sk-test-secret-123456"), "api_key 不得明文落盘: {content}");
         let _ = std::fs::remove_dir_all(&base);
     }
 }

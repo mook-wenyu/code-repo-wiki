@@ -191,7 +191,7 @@ fn render_card_body(card: &KnowledgeCard) -> String {
                 "  <li><strong>{}</strong> ({}) — {}</li>\n",
                 escape_html(&entity.name),
                 escape_html(&entity.kind),
-                entity.doc.as_deref().unwrap_or("")
+                escape_html(entity.doc.as_deref().unwrap_or(""))
             ));
         }
         body.push_str("</ul>\n");
@@ -323,6 +323,9 @@ fn wrap_html(title: &str, body: &str, css_href: &str) -> String {
 fn md_to_html(markdown: &str) -> String {
     use pulldown_cmark::{CodeBlockKind, Event, Tag, TagEnd};
 
+    // v52 T08a：pulldown-cmark 0.12 无 ENABLE_RAW_HTML 开关（HTML 解析为默认行为），
+    // 且 push_html 对 Event::Html/InlineHtml 原样透传——XSS 防护在事件级转义
+    //（下方 Event::Html/InlineHtml 分支），此处保持全特性。
     let options = Options::all();
     let parser = Parser::new_ext(markdown, options);
     let mut html_output = String::new();
@@ -344,6 +347,12 @@ fn md_to_html(markdown: &str) -> String {
                     "<div class=\"mermaid\">\n{}\n</div>\n",
                     escape_html(&buf)
                 ));
+            }
+            // v52 T08a：raw HTML 事件原样透传（pulldown-cmark 0.12 html.rs:122-123
+            // 直接 write 不转义）——源码 doc 注释/LLM 输出中的 <script> 等会直接
+            // 注入导出页面。显式转义为实体，阻断 XSS。
+            Event::Html(text) | Event::InlineHtml(text) => {
+                html_output.push_str(&escape_html(&text));
             }
             other => {
                 // 逐事件委托默认渲染（含 mermaid 外的普通围栏）
@@ -451,6 +460,14 @@ mod tests {
         assert!(result.contains("<p>"), "应该生成 p 标签");
         assert!(result.contains("<strong>"), "应该生成 strong 标签");
         assert!(result.contains("world"), "应该保留文本内容");
+    }
+
+    /// v52 T08a：raw HTML 注入防护——<script> 等原始 HTML 不再透传
+    #[test]
+    fn test_md_to_html_escapes_raw_html() {
+        let html = md_to_html("<script>alert(1)</script>");
+        assert!(!html.contains("<script>"), "原始 <script> 不应透传: {html}");
+        assert!(html.contains("&lt;script&gt;"), "应转义为实体: {html}");
     }
 
     #[test]
