@@ -25,7 +25,12 @@ pub const SEARCH_INDEX_DIR: &str = ".search";
 pub const SEARCH_DEFAULT_ENGINE: SearchEngineType = SearchEngineType::Hybrid;
 pub const SEARCH_DEFAULT_TOP_K: usize = 10;
 /// RRF 融合常数 k（控制排序权重衰减）
-pub const SEARCH_RRF_K: f64 = 60.0;
+///
+/// P2-7：60.0 是 SIGIR'09 原文默认（面向多路融合的共识投票）；本工具
+/// 是两路（text BM25 + semantic 向量）融合，2025 检索共识建议两路场景
+/// 20-40——k 越小排名头部权重越陡（强命中更突出）。取 40.0（区间中值，
+/// 兼顾强命中突出与候选覆盖）。v30 哲学：算法细节硬编码，不设配置项。
+pub const SEARCH_RRF_K: f64 = 40.0;
 /// BFS 传播变更影响的最大深度
 pub const IMPACT_MAX_DEPTH: usize = 3;
 /// v30 硬编码常量：傻瓜式全自动（用户拍板「彻底硬编码删字段」）——

@@ -177,6 +177,10 @@ impl SemanticSearch for SemanticEngine {
                 results.push((node, (1.0 - row.distance) as f32));
             }
         }
+        // P1-4：knn 扩样语义返回「阈值内全部候选」（可 > limit），调用方
+        // 必须截断到请求的 top_k——否则 semantic 单引擎搜索结果超出
+        // 用户指定的返回数量（hybrid 路径被 RRF top_k 截断掩盖）
+        results.truncate(limit);
         Ok(results)
     }
 
@@ -421,6 +425,28 @@ mod tests {
 
         let results = engine.search("q", 10).unwrap();
         assert!(results.is_empty());
+    }
+
+    /// P1-4：语义搜索返回条数不超过请求的 top_k——knn 扩样语义返回
+    /// 「阈值内全部候选」（可 > limit），调用方截断后才遵守 top_k 契约
+    #[test]
+    fn test_semantic_search_respects_top_k() {
+        let base_url = spawn_pseudo_embed_server();
+        let rt = test_runtime();
+        let embedder = embedder_with_server(&base_url, &rt);
+        let mut engine = SemanticEngine::open(tmp_path("topk"), embedder, rt.clone()).unwrap();
+
+        // 三个互相独立（不同关键词）但都过 0.3 阈值的实体——
+        // 查询命中全部 3 条时 limit=2 必须截断为 2 条
+        let items = vec![
+            (make_node("alpha", "src/a.rs"), "fn alpha()".to_string()),
+            (make_node("beta", "src/b.rs"), "fn beta()".to_string()),
+            (make_node("gamma", "src/c.rs"), "fn gamma()".to_string()),
+        ];
+        engine.index_batch(&items).unwrap();
+
+        let results = engine.search("alpha", 2).unwrap();
+        assert!(results.len() <= 2, "top_k=2 不得返回更多: {:?}", results);
     }
 
     #[test]

@@ -21,17 +21,27 @@ pub struct SearchHit {
 /// 标准 RRF：score = Σ k/(k+rank)，rank 为各引擎内部排名（0 起）。
 /// 注意：此前实现混入"引擎序号×10"的偏移（rank + engine_rank*10），
 /// 导致同一文档在不同引擎的排名权重被引擎顺序污染——已修正为标准实现。
+///
+/// k 语义（P2-7）：k 越小排名头部权重越陡（强命中更突出），越大越平滑
+/// （共识投票化）。SIGIR'09 原文 k=60 面向多路融合；两路（text+semantic）
+/// 融合 2025 共识建议 20-40——默认值见 config::schema::SEARCH_RRF_K。
+/// 候选深度与最终 top_k 分离：RRF 接收各引擎已截断的 top 候选（调用方
+/// 传入），融合后按 top_k 截断。
 pub fn rrf_merge(results: &[Vec<SearchHit>], top_k: usize, k: f64) -> Vec<SearchHit> {
     use std::collections::HashMap;
     // (名称, 文件路径) → 累计 RRF 分数。去重键必须含 file_path：同名函数
     // 在不同文件（不同模块）是不同实体，仅按名称去重会把它们折叠成一条
     // 结果，语义检索的"定位"价值被破坏（N2 修复）。
-    let mut scores: HashMap<(String, String), (f64, CodeNode)> = HashMap::new();
+    let mut scores: HashMap<(String, String, usize), (f64, CodeNode)> = HashMap::new();
     for list in results {
         for (rank, hit) in list.iter().enumerate() {
             let key = (
                 hit.node.name.clone(),
                 hit.node.file_path.clone().unwrap_or_default(),
+                // P2-2：同文件同名实体（重载/多 impl 方法）按行范围区分——
+                // 仅 (name, file_path) 会折叠重载为一条结果，语义检索的
+                // "定位到具体定义"价值被破坏
+                hit.node.line_range.map(|(s, _)| s).unwrap_or(0),
             );
             let entry = scores.entry(key).or_insert_with(|| (0.0, hit.node.clone()));
             // 标准 RRF: k / (k + rank)
@@ -44,7 +54,14 @@ pub fn rrf_merge(results: &[Vec<SearchHit>], top_k: usize, k: f64) -> Vec<Search
             callers: vec![], callees: vec![],
         })
         .collect();
-    merged.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    // P2-1：同分条目按 NodeId 稳定排序（tie-break 唯一且跨运行确定）——
+    // 否则同分顺序由 HashMap 迭代序决定，同一查询两次结果顺序漂移
+    merged.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.node.id.index().cmp(&b.node.id.index()))
+    });
     merged.truncate(top_k);
     merged
 }
@@ -69,6 +86,7 @@ pub fn semantic_results_to_hits(results: Vec<(CodeNode, f32)>) -> Vec<SearchHit>
 mod tests {
     use super::*;
     use crate::model::{NodeKind, NodeId};
+    use petgraph::stable_graph::NodeIndex;
 
     fn make_node(name: &str) -> CodeNode {
         CodeNode {
@@ -117,6 +135,51 @@ mod tests {
         ];
         let result = rrf_merge(&[text, semantic], 5, 60.0);
         assert_eq!(result.len(), 2, "同名不同文件的实体不应被折叠");
+    }
+
+    /// P2-2：同文件同名实体（重载/多 impl 方法）按行范围区分——
+    /// 两引擎命中同文件同名的不同定义必须保留两条结果
+    #[test]
+    fn test_rrf_merge_keeps_same_file_same_name_different_line() {
+        let mut a = make_node("foo");
+        a.file_path = Some("src/a.rs".into());
+        a.line_range = Some((10, 30));
+        let mut b = make_node("foo");
+        b.file_path = Some("src/a.rs".into());
+        b.line_range = Some((40, 60));
+        let text = vec![
+            SearchHit { node: a.clone(), score: 1.0, source: "text".into(), callers: vec![], callees: vec![] },
+        ];
+        let semantic = vec![
+            SearchHit { node: b, score: 0.9, source: "semantic".into(), callers: vec![], callees: vec![] },
+        ];
+        let result = rrf_merge(&[text, semantic], 5, 40.0);
+        assert_eq!(result.len(), 2, "同文件同名的重载定义不应被折叠: {:?}", result);
+    }
+
+    /// P2-1：同分条目按 NodeId 稳定排序——两次调用顺序一致
+    #[test]
+    fn test_rrf_merge_tie_break_deterministic() {
+        let mut a = make_node("a");
+        a.id = NodeIndex::new(3);
+        let mut b = make_node("b");
+        b.id = NodeIndex::new(1);
+        let mut c = make_node("c");
+        c.id = NodeIndex::new(2);
+        // 三文档各占独立引擎列表（各自 rank 0）→ RRF 分数相同（40/(40+0)=1.0），
+        // 构成真正的同分场景——排序由 tie-break（NodeId 升序）决定
+        let hits: Vec<Vec<SearchHit>> = vec![
+            vec![SearchHit { node: a, score: 1.0, source: "text".into(), callers: vec![], callees: vec![] }],
+            vec![SearchHit { node: b, score: 1.0, source: "text".into(), callers: vec![], callees: vec![] }],
+            vec![SearchHit { node: c, score: 1.0, source: "text".into(), callers: vec![], callees: vec![] }],
+        ];
+        let r1 = rrf_merge(&hits, 5, 40.0);
+        let r2 = rrf_merge(&hits.clone(), 5, 40.0);
+        let names1: Vec<&str> = r1.iter().map(|h| h.node.name.as_str()).collect();
+        let names2: Vec<&str> = r2.iter().map(|h| h.node.name.as_str()).collect();
+        assert_eq!(names1, names2, "同分条目顺序必须跨运行稳定");
+        // NodeId 升序：b(1) c(2) a(3)
+        assert_eq!(names1, vec!["b", "c", "a"], "tie-break 应按 NodeId 升序");
     }
 
     /// 双引擎交叉排名：同一文档在两引擎排名不同时，融合排序只由各引擎

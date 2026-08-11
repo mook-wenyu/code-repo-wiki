@@ -173,7 +173,12 @@ impl SearchStore {
         }
         // 列集合约束：英文词落在 name/signature/source 原列，CJK 2-gram
         // 落在 tokens 列，单 MATCH 表达式统一命中。
-        let match_expr = format!("{{name signature source tokens}} : ({})", terms.join(" OR "));
+        // P1-3：词条双引号包裹——FTS5 保留运算符（OR/AND/NOT/NEAR）作裸词
+        // 是语法错误，搜名为 "or" 的符号会整查询报错（此前被兜底转空结果
+        // 静默零命中）；双引号是 FTS5 字面量转义，任何词安全，免维护保留词表。
+        // extract_keywords 已剥离引号/括号/逻辑词分隔，词内不会含 `"`。
+        let quoted: Vec<String> = terms.iter().map(|t| format!("\"{}\"", t)).collect();
+        let match_expr = format!("{{name signature source tokens}} : ({})", quoted.join(" OR "));
 
         // FTS5 MATCH 查询，bm25() 返回负数（越小越相关）
         let sql = format!(
@@ -282,6 +287,32 @@ mod tests {
         let results = store.search_fts("authenticate", 5).unwrap();
         assert!(!results.is_empty());
         assert_eq!(results[0].0.name, "authenticate");
+    }
+
+    /// P1-3：FTS5 保留词（or/and）作查询词须命中字面量而非语法错误静默空结果
+    #[test]
+    fn test_fts_reserved_word_query() {
+        let (store, _) = SearchStore::open(tmp_db_path("fts_reserved")).unwrap();
+        let items = vec![
+            (make_node("or", "src/or.rs"), "fn or()".to_string()),
+            (make_node("and", "src/and.rs"), "fn and()".to_string()),
+            (make_node("normal", "src/normal.rs"), "fn normal()".to_string()),
+        ];
+        store.insert_entities_batch(&items).unwrap();
+
+        // 裸词 or/and 是 FTS5 保留运算符：MATCH 语法错误被兜底转空结果
+        let results = store.search_fts("or", 5).unwrap();
+        assert_eq!(results.len(), 1, "保留词 or 应命中字面量实体");
+        assert_eq!(results[0].0.name, "or");
+
+        // "and" 同为保留运算符：不报错且命中字面量实体
+        let and_results = store.search_fts("and", 5).unwrap();
+        assert_eq!(and_results.len(), 1, "保留词 and 应命中字面量实体");
+        assert_eq!(and_results[0].0.name, "and");
+
+        // 混合查询：双引号包裹不破坏 OR 连接语义
+        let mixed = store.search_fts("or normal", 5).unwrap();
+        assert_eq!(mixed.len(), 2);
     }
 
     #[test]
