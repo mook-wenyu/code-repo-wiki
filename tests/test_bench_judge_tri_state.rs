@@ -17,8 +17,9 @@
 //!   调用中 3 次平局必然使 flip_rate ≥ 0.30 > 0.20（三态判定计数
 //!   约束：非平局全同向时 flip 恰好等于 tie 数），升级 OR 条件的
 //!   flip 分支会抢先触发；该边界只能由单元测试 module_tie_rate 覆盖。
-//! - uncertain 重试「更换选项顺序」存在实现缺陷（重试轮与首轮 prompt
-//!   相同），见 test_rubric_uncertain_retry_swaps_variant（#[ignore]）。
+//! - uncertain 重试更换选项顺序（option_variant 按 attempts 推进，
+//!   重试轮与首轮 prompt 不同）——T05 已修复并解除 #[ignore]，
+//!   test_rubric_uncertain_retry_swaps_variant 现正常执行。
 
 use std::collections::VecDeque;
 use std::io::{Read, Write};
