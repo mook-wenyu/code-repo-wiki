@@ -28,6 +28,21 @@ pub struct OpenCodeConfig {
     pub project_root: PathBuf,
 }
 
+/// 向插件模板注入当前可执行文件的绝对路径（占位符替换）。
+///
+/// 模板中 execa 首参占位字面量为 `execa("code-repo-wiki"`；替换为
+/// `execa(<exe_json>`（exe_json 为 JSON 字符串字面量，Windows 反斜杠/引号安全）。
+/// 占位符未命中（模板改版/字面量变化）时显式报错——绝不静默输出
+/// PATH 依赖的插件（v16 已修复的缺陷不得以「替换未命中」形式回归）。
+fn inject_exe_path(template: &str, exe_json: &str) -> Result<String> {
+    let placeholder = "execa(\"code-repo-wiki\"";
+    let replaced = template.replace(placeholder, &format!("execa({exe_json}"));
+    if replaced == template {
+        anyhow::bail!("插件模板占位符缺失（未找到 {placeholder:?}），请同步更新 plugin-template.ts 与替换逻辑");
+    }
+    Ok(replaced)
+}
+
 impl OpenCodeConfig {
     /// 创建管理器，配置路径固定为用户级全局 opencode.json
     ///
@@ -240,10 +255,7 @@ impl OpenCodeConfig {
             // （v38 修复：v33 注释声称已修复自举缺陷但 include_str 仍指向
             // 仓库内安装产物路径——真实环境 uninstall 删除产物后编译失败）
             let raw = include_str!("plugin-template.ts");
-            raw.replace(
-                "execa(\"code-repo-wiki\"",
-                &format!("execa({exe_json}"),
-            )
+            inject_exe_path(raw, &exe_json)?
         };
 
         // v33：内容比对决定升级或跳过（幂等跳过 = 内容完全一致）
@@ -617,5 +629,36 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// inject_exe_path 命中占位符：替换为注入串且占位符不残留
+    #[test]
+    fn test_inject_exe_path_hits_placeholder() {
+        let template = r#"import { execa } from "execa";
+export const RepoWikiPlugin = () => {
+    execa("code-repo-wiki", ["--version"]);
+};"#;
+        let exe_json = r#""C:\\tools\\code-repo-wiki.exe""#;
+        let result = inject_exe_path(template, exe_json).unwrap();
+        assert!(
+            result.contains(&format!("execa({exe_json}")),
+            "结果应包含注入串: {result}"
+        );
+        assert!(
+            !result.contains("execa(\"code-repo-wiki\""),
+            "占位符不应残留: {result}"
+        );
+    }
+
+    /// inject_exe_path 占位符缺失（模板改版/字面量变化）时显式报错——
+    /// 绝不静默输出 PATH 依赖的插件
+    #[test]
+    fn test_inject_exe_path_missing_placeholder_errors() {
+        let template = r#"import { execa } from "execa";
+export const RepoWikiPlugin = () => {
+    execa("some-other-tool", ["--version"]);
+};"#;
+        let err = inject_exe_path(template, r#""/usr/local/bin/code-repo-wiki""#).unwrap_err();
+        assert!(err.to_string().contains("占位符缺失"), "错误应说明占位符缺失: {err}");
     }
 }

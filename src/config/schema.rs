@@ -76,6 +76,18 @@ pub struct WikiSection {
     pub guide: WikiGuideSection,
 }
 
+/// 生成引导档位：
+/// - `comprehensive`（默认）：全量生成，notes 引导注记全部注入；
+/// - `concise`：精简引导——notes 每条截断至 160 字符、最多注入 3 条
+///   （不丢模块/不丢页面，只精简「引导注记」本身；pages/priority 语义不变）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum GuideTier {
+    #[default]
+    Comprehensive,
+    Concise,
+}
+
 /// v32 9.1 生成引导（[wiki.guide]）：
 /// - `pages`：要生成的模块页路径前缀白名单（空=全部模块）。匹配按
 ///   模块路径前缀（如 "src/net" 匹配 "src/net/tcp.rs" 模块页）；未匹配
@@ -92,6 +104,39 @@ pub struct WikiGuideSection {
     pub priority: Vec<String>,
     #[serde(default)]
     pub notes: Vec<String>,
+    /// 生成引导档位（v32 T08b）：缺省 comprehensive=全量现行为零破坏；
+    /// concise 只精简引导注记本身（不丢模块/不丢页面）。
+    #[serde(default)]
+    pub tier: GuideTier,
+}
+
+/// 按档位裁剪引导注记：comprehensive 原样返回；concise 每条截断至
+/// 160 字符、最多 3 条（超出附加省略说明）。不改变 pages/priority 语义。
+pub fn trim_guide_notes(tier: GuideTier, notes: &[String]) -> Vec<String> {
+    match tier {
+        GuideTier::Comprehensive => notes.to_vec(),
+        GuideTier::Concise => {
+            let mut out: Vec<String> = notes
+                .iter()
+                .take(3)
+                .map(|n| {
+                    let trimmed: String = n.chars().take(160).collect();
+                    if trimmed.chars().count() < n.chars().count() {
+                        format!("{}…", trimmed)
+                    } else {
+                        trimmed
+                    }
+                })
+                .collect();
+            if notes.len() > 3 {
+                out.push(format!(
+                    "（其余 {} 条引导注记已省略——concise 档位）",
+                    notes.len() - 3
+                ));
+            }
+            out
+        }
+    }
 }
 
 fn default_language() -> String {

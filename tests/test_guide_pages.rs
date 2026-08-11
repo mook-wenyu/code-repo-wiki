@@ -11,7 +11,8 @@
 use std::path::Path;
 
 use code_repo_wiki::config::schema::{
-    LlmProviderType, LlmSection, WikiConfig, WikiGuideSection, WikiSection,
+    GuideTier, LlmProviderType, LlmSection, WikiConfig, WikiGuideSection, WikiSection,
+    trim_guide_notes,
 };
 
 /// 测试目录唯一序号（v19 教训：共享 std::process::id 目录会并发冲突——
@@ -94,6 +95,7 @@ fn test_guide_pages_filters_unmatched_modules() {
         pages: vec!["src/a".into()],
         priority: vec![],
         notes: vec![],
+        tier: GuideTier::default(),
     };
     let (repo, root, config_path) = setup(guide);
     let result = code_repo_wiki::run_pipeline(
@@ -139,6 +141,7 @@ fn test_guide_pages_empty_match_errors() {
         pages: vec!["nonexistent/module".into()],
         priority: vec![],
         notes: vec![],
+        tier: GuideTier::default(),
     };
     let (repo, root, config_path) = setup(guide);
     let err = code_repo_wiki::run_pipeline(
@@ -166,6 +169,7 @@ fn test_guide_priority_orders_pages() {
         pages: vec!["src/a".into(), "src/b".into()],
         priority: vec!["src/b".into(), "src/a".into()],
         notes: vec![],
+        tier: GuideTier::default(),
     };
     let (repo, root, config_path) = setup(guide);
     let result = code_repo_wiki::run_pipeline(
@@ -229,6 +233,7 @@ fn test_guide_pages_keeps_existing_unmatched_pages() {
                 pages: vec!["src/a".into()],
                 priority: vec![],
                 notes: vec![],
+                tier: GuideTier::default(),
             },
         },
         llm: LlmSection {
@@ -266,6 +271,7 @@ fn test_guide_incremental_skips_unmatched_without_error() {
         pages: vec!["src/a".into()],
         priority: vec![],
         notes: vec![],
+        tier: GuideTier::default(),
     };
     let (repo, root, config_path) = setup(guide);
     code_repo_wiki::run_pipeline(
@@ -304,4 +310,36 @@ pub fn beta() -> &'static str { "beta2" }
         "增量不应生成白名单外模块 src/b 的文档"
     );
     let _ = std::fs::remove_dir_all(&repo);
+}
+
+/// T08b：concise 档位裁剪引导注记——5 条取前 3 条、超长截断至 160 字符
+/// +省略号并附省略说明；comprehensive 原样返回（零破坏）
+#[test]
+fn test_trim_guide_notes_concise_truncates() {
+    // concise：5 条 → 取前 3 条，超长截断至 160 字符+省略号，附省略说明
+    let long: String = "长".repeat(200);
+    let notes: Vec<String> = vec![long.clone(), "短".into(), "a".into(), "b".into(), "c".into()];
+    let out = trim_guide_notes(GuideTier::Concise, &notes);
+    assert_eq!(out.len(), 4); // 3 条 + 省略说明
+    assert_eq!(out[0].chars().count(), 161); // 160 + 省略号
+    assert!(out[0].ends_with('…'));
+    assert_eq!(out[1], "短");
+    assert!(out[3].contains("已省略"));
+    // comprehensive：原样返回
+    let full = trim_guide_notes(GuideTier::Comprehensive, &notes);
+    assert_eq!(full.len(), 5);
+    assert_eq!(full[0], long);
+}
+
+/// T08b：tier 键缺省→Comprehensive（serde 零破坏），显式 concise 可解析，
+/// round-trip 序列化保持档位
+#[test]
+fn test_guide_tier_serde_zero_break() {
+    // 缺 tier 键 → Comprehensive（零破坏）；显式 concise → Concise；round-trip 保持
+    let cfg: WikiGuideSection = toml::from_str("pages = []").unwrap();
+    assert_eq!(cfg.tier, GuideTier::Comprehensive);
+    let cfg2: WikiGuideSection = toml::from_str("tier = \"concise\"").unwrap();
+    assert_eq!(cfg2.tier, GuideTier::Concise);
+    let rt = toml::to_string(&cfg2).unwrap();
+    assert!(rt.contains("tier = \"concise\""));
 }

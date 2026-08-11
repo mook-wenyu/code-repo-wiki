@@ -5,7 +5,16 @@
 
 # 本地轨迹/计划（本地 issue tracker 约定）
 .scratch/
-.swarm/evidence/
+.scratch-v48/
+
+# swarm 会话状态（计划/上下文/证据/临时产物，全量不入库；本地 issue tracker 约定）
+.swarm/
+
+# v37 改名前的旧产物目录（历史仓库升级后可能泄漏）
+.repo-wiki/
+
+# 根级语义索引（--search-index 或默认根目录索引的 .search/ 产物）
+.search/
 
 # 仓库根 wiki/ 是 mock 测试泄漏产物（真实产物按 config output.dir 生成，
 # 本仓库为 .code-repo-wiki/）；整体不入库，防全量测试产物再次混入提交

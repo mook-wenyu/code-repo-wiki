@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::Result;
 
-use crate::config::schema::WikiConfig;
+use crate::config::schema::{trim_guide_notes, WikiConfig};
 use crate::generate::chunk::Chunk;
 use crate::generate::llm::{LlmProvider, Message};
 use crate::generate::prompt;
@@ -245,8 +245,10 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
         }
 
         let language = &config.wiki.language;
-        let mut messages =
-            prompt::wiki_page_prompt(chunk, card_summary, language, &config.wiki.guide.notes);
+        // T08b：concise 档位精简引导注记（每条截断至 160 字符 + 最多 3 条；
+        // 不改变 pages/priority 语义，不丢模块与页面）
+        let guide_notes = trim_guide_notes(config.wiki.guide.tier, &config.wiki.guide.notes);
+        let mut messages = prompt::wiki_page_prompt(chunk, card_summary, language, &guide_notes);
         let mut content = String::new();
         let mut last_invalid = Vec::new();
         let mut last_mermaid = Vec::new();
@@ -255,6 +257,8 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
         // 引用与 Mermaid 校验共享同一循环（上限取两者最大值——当前均为 2），
         // 每次调用后两类校验都执行，任一失败都注入对应反馈。
         let retry_max = CITATION_RETRY_MAX.max(MERMAID_RETRY_MAX);
+        // T08b：模板占位符残留检测与引用/Mermaid 校验并列（同循环、同反馈、同收尾）
+        let mut last_residue = Vec::new();
         for attempt in 0..=retry_max {
             self.call_count.fetch_add(1, Ordering::Relaxed);
             // v22 修复：调用级失败（连接重置/超时/5xx 等瞬时错误）原先
@@ -288,7 +292,8 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
                 }
             };
             last_mermaid = crate::output::mermaid_check::validate_mermaid_blocks(&content);
-            if last_invalid.is_empty() && last_mermaid.is_empty() {
+            last_residue = crate::output::residue_check::scan_template_residue(&content);
+            if last_invalid.is_empty() && last_mermaid.is_empty() && last_residue.is_empty() {
                 break;
             }
             if !last_invalid.is_empty() {
@@ -307,6 +312,14 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
                     chunk.module_path.join("::")
                 );
             }
+            if !last_residue.is_empty() {
+                tracing::warn!(
+                    "Wiki 页面模板占位符残留（第 {} 次，残留 {} 处）: {}",
+                    attempt + 1,
+                    last_residue.len(),
+                    chunk.module_path.join("::")
+                );
+            }
             // 重试机会已用完：跳出循环走收尾路径
             if attempt == retry_max {
                 break;
@@ -321,6 +334,11 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
                     crate::output::mermaid_check::mermaid_retry_feedback(&last_mermaid),
                 ));
             }
+            if !last_residue.is_empty() {
+                messages.push(Message::user(
+                    crate::output::residue_check::residue_retry_feedback(&last_residue),
+                ));
+            }
         }
 
         // 引用校验：重试耗尽仍无效 → 失败（不产出无引用的页面）
@@ -329,6 +347,15 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
                 "Wiki 页面引用校验失败（重试 {} 次仍无效，共 {} 条无效引用）: {}",
                 retry_max,
                 last_invalid.len(),
+                chunk.module_path.join("::")
+            );
+        }
+        // 残留校验：重试耗尽仍残留 → 失败（占位符无法降级，不产出含 {{ 的页面）
+        if !last_residue.is_empty() {
+            anyhow::bail!(
+                "Wiki 页面模板占位符残留（重试 {} 次仍残留，共 {} 处）: {}",
+                retry_max,
+                last_residue.len(),
                 chunk.module_path.join("::")
             );
         }
@@ -675,6 +702,7 @@ pub async fn complete_with_mermaid_guard_free<P: LlmProvider>(
     use std::sync::atomic::Ordering;
     let mut content = String::new();
     let mut last_mermaid = Vec::new();
+    let mut last_residue = Vec::new();
 
     for attempt in 0..=MERMAID_RETRY_MAX {
         if let Some(c) = call_count {
@@ -682,7 +710,8 @@ pub async fn complete_with_mermaid_guard_free<P: LlmProvider>(
         }
         content = provider.complete(&messages).await?;
         last_mermaid = crate::output::mermaid_check::validate_mermaid_blocks(&content);
-        if last_mermaid.is_empty() {
+        last_residue = crate::output::residue_check::scan_template_residue(&content);
+        if last_mermaid.is_empty() && last_residue.is_empty() {
             return Ok(content);
         }
         tracing::warn!(
@@ -690,12 +719,36 @@ pub async fn complete_with_mermaid_guard_free<P: LlmProvider>(
             attempt + 1,
             last_mermaid.len()
         );
+        if !last_residue.is_empty() {
+            tracing::warn!(
+                "{label} 模板占位符残留（第 {} 次，残留 {} 处）",
+                attempt + 1,
+                last_residue.len()
+            );
+        }
         if attempt == MERMAID_RETRY_MAX {
             break;
         }
-        messages.push(Message::user(
-            crate::output::mermaid_check::mermaid_retry_feedback(&last_mermaid),
-        ));
+        // 空 mermaid 列表时无语法错误可反馈，跳过以避免与残留反馈自相矛盾（与 generate_wiki_page 对齐）
+        if !last_mermaid.is_empty() {
+            messages.push(Message::user(
+                crate::output::mermaid_check::mermaid_retry_feedback(&last_mermaid),
+            ));
+        }
+        if !last_residue.is_empty() {
+            messages.push(Message::user(
+                crate::output::residue_check::residue_retry_feedback(&last_residue),
+            ));
+        }
+    }
+
+    // 残留无法降级：重试耗尽仍残留 → 失败（与 generate_wiki_page 语义一致）
+    if !last_residue.is_empty() {
+        anyhow::bail!(
+            "{label} 模板占位符残留（重试 {} 次仍残留，共 {} 处）",
+            MERMAID_RETRY_MAX,
+            last_residue.len()
+        );
     }
 
     tracing::warn!("{label} Mermaid 重试耗尽（{} 个坏块），降级为 text 块", last_mermaid.len());
