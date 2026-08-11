@@ -196,11 +196,18 @@ pub fn module_description_prompt(
     } else {
         entity_names.join(", ")
     };
+    // P1-20：语言词按 language 动态——en 项目收到「一句中文」要求会产出
+    // 中文职责描述混入英文页面（architecture_overview 同款 output_lang 模式）
+    let lang_word = match language {
+        "zh" => "中文",
+        "en" => "英文",
+        other => other,
+    };
+    let limit = if language == "zh" { 30 } else { 60 };
     vec![
         Message::system(format!(
-            "你是代码架构分析专家。请用一句中文（{} 字以内）概括给定模块的职责。\
-             只输出职责描述本身，不要前缀、引号或换行。",
-            if language == "zh" { 30 } else { 60 }
+            "你是代码架构分析专家。请用一句{lang_word}（{limit} 字以内）概括给定模块的职责。\
+             只输出职责描述本身，不要前缀、引号或换行。"
         )),
         Message::user(format!(
             "模块名: {module_name}\n包含实体: {entities}\n\n请输出该模块的一句话职责描述。"

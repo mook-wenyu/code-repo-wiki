@@ -174,13 +174,20 @@ pub fn degrade_mermaid_blocks(content: &str, issues: &[MermaidIssue]) -> String 
             continue;
         }
         if fence_is_mermaid(line) {
-            // 围栏行：判断是否坏块。块号 = 此前出现的 mermaid 起始围栏数。
-            // 坏块：记录错误消息并跳过围栏行（注释 + text 围栏在块体首行输出）。
-            // 好块：围栏原样输出。
-            let block_index = count_mermaid_fences_before(content, i);
-            if let Some(issue) = issues.iter().find(|i| i.block_index == block_index) {
-                pending_degrade = Some(issue.message.clone());
-                continue;
+            // 围栏行：判断是否坏块。块号 = 此前出现的非空 Mermaid 块数（extract 同口径）。
+            // P1-16：空块（起始围栏后下一行即闭合）在 extract 中无块号，若直接按计数匹配
+            // 会误吞下一坏块的序号——先跳过空块。坏块：记录错误消息并跳过围栏行
+            // （注释 + text 围栏在块体首行输出）；好块：围栏原样输出。
+            let is_empty_block = content
+                .lines()
+                .nth(i + 1)
+                .map_or(false, |l| l.trim_start().starts_with("```"));
+            if !is_empty_block {
+                let block_index = count_mermaid_fences_before(content, i);
+                if let Some(issue) = issues.iter().find(|i| i.block_index == block_index) {
+                    pending_degrade = Some(issue.message.clone());
+                    continue;
+                }
             }
         }
         out.push_str(line);
@@ -200,13 +207,36 @@ pub fn degrade_mermaid_blocks(content: &str, issues: &[MermaidIssue]) -> String 
     out
 }
 
-/// 统计第 `fence_line` 行之前出现的 mermaid 起始围栏数（=该行的块号）
+/// 统计 fence_line 前出现的 Mermaid 块序号（与 extract_mermaid_blocks 同口径）：
+/// 空块（起始围栏后下一行即闭合，end_line==start_line 被 extract 跳过）不计入。
+/// P1-16：此前按围栏行计数会把空块计入，[坏块,空块,坏块] 序列中第二个坏块
+/// 的块号错位（issues 无对应序号）而错当好块输出，产物残留坏 Mermaid。
 fn count_mermaid_fences_before(content: &str, fence_line: usize) -> usize {
-    content
-        .lines()
-        .take(fence_line)
-        .filter(|l| fence_is_mermaid(l))
-        .count()
+    let mut count = 0;
+    let mut in_fence = false;
+    let mut has_content = false; // 当前块是否已见非空内容行
+    for (i, line) in content.lines().enumerate() {
+        if i >= fence_line {
+            break;
+        }
+        let trimmed = line.trim_start();
+        if in_fence {
+            if trimmed.starts_with("```") {
+                // 块闭合：非空块才计数（extract 的 end_line > start_line 判据）
+                if has_content {
+                    count += 1;
+                }
+                in_fence = false;
+                has_content = false;
+            } else {
+                has_content = true;
+            }
+        } else if fence_is_mermaid(line) {
+            in_fence = true;
+            has_content = false;
+        }
+    }
+    count
 }
 
 /// 错误消息单行化（HTML 注释内不允许换行，防注释逃逸）
@@ -284,6 +314,18 @@ mod tests {
         let content = "```mermaid\nflowchart LR\nA --> B\n```\n";
         let degraded = degrade_mermaid_blocks(content, &[]);
         assert_eq!(degraded, content, "无坏块时输出应与输入一致");
+    }
+
+    /// P1-16 回归锚：[坏块, 空块, 坏块]——空块不计入块号，第二个坏块仍被降级
+    #[test]
+    fn test_degrade_skips_empty_block_in_indexing() {
+        let content = "```mermaid\nthis is broken!!!\n```\n\n```mermaid\n```\n\n```mermaid\nalso broken!!!\n```\n";
+        let issues = validate_mermaid_blocks(content);
+        assert_eq!(issues.len(), 2, "空块跳过，两个坏块报出: {:?}", issues.iter().map(|i| i.block_index).collect::<Vec<_>>());
+        let degraded = degrade_mermaid_blocks(content, &issues);
+        assert_eq!(degraded.matches("mermaid parse failed").count(), 2, "两个坏块都应降级: {}", degraded);
+        assert!(degraded.contains("also broken!!!"), "坏块内容保留（信息不丢失）");
+        assert!(!degraded.contains("```mermaid\nalso broken"), "第二个坏块不得残留 mermaid 围栏");
     }
 
     #[test]

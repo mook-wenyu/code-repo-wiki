@@ -6,7 +6,7 @@ use futures::future::join_all;
 
 use crate::config::schema::WikiConfig;
 use crate::generate::chunk::Chunk;
-use crate::generate::llm::{LlmProvider, Provider};
+use crate::generate::llm::{LlmProvider, Message, Provider};
 use crate::generate::prompt;
 use crate::model::{EntitySummary, KnowledgeCard};
 
@@ -115,14 +115,27 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
 
         self.call_count.fetch_add(1, Ordering::Relaxed);
 
-        let messages = prompt::knowledge_card_prompt(
+        // P2-10：卡片 JSON 解析失败时重试一次——LLM 输出可能带 Markdown 围栏
+        // 或尾随散文（extract_json 只取首{尾}，切片内残留即解析失败）。失败后追加约束消息重调，最多 2 次。
+        let mut messages = prompt::knowledge_card_prompt(
             chunk,
             &self.language,
             pending_manual_edits,
         );
-        let response = self.provider.complete(&messages).await?;
-
-        let mut card = parse_card_response(&response, chunk)?;
+        let mut response = self.provider.complete(&messages).await?;
+        let mut card = match parse_card_response(&response, chunk) {
+            Ok(c) => c,
+            Err(first_err) => {
+                messages.push(Message::user(
+                    "你上一次的输出无法解析为合法 JSON（可能包含 Markdown 代码块围栏或尾随解释文本）。\
+                     请只输出 JSON 对象本体：不要任何 ``` 围栏、不要 markdown 标记、不要解释、不要尾随内容。".to_string(),
+                ));
+                response = self.provider.complete(&messages).await?;
+                parse_card_response(&response, chunk).map_err(|second_err| {
+                    anyhow::anyhow!("卡片 JSON 重试仍解析失败（首次: {}；重试: {}）", first_err, second_err)
+                })?
+            }
+        };
         if !pending_manual_edits.is_empty() {
             card.pending_manual_edits = pending_manual_edits.to_vec();
         }
@@ -814,5 +827,37 @@ mod tests {
         fn call_count(&self) -> usize {
             0
         }
+    }
+
+    /// P2-10：首次返回非法 JSON（带围栏+散文），重试返回合法——重试成功且调用 2 次
+    struct FlakyJsonProvider {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    impl crate::generate::llm::LlmProvider for FlakyJsonProvider {
+        async fn complete(&self, _messages: &[Message]) -> Result<String> {
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if n == 0 {
+                Ok("```json\n{\"summary\": \"首次\"}\n```\n额外解释文本 { \"x\": 1 }".to_string())
+            } else {
+                Ok("{\"summary\": \"重试成功\", \"key_entities\": []}".to_string())
+            }
+        }
+        fn call_count(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_generate_card_retries_on_json_parse_failure() {
+        let (config, dir) = card_fixture("retry", "src", "# src\n\n## 摘要\n旧内容");
+        let provider = FlakyJsonProvider {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let generator = CardGenerator::new(&provider, config, 1, "zh".into());
+        let chunk = make_test_chunk();
+        let card = generator.generate_card(&chunk, &[]).await.unwrap();
+        assert_eq!(card.summary, "重试成功", "重试后应解析成功");
+        assert_eq!(provider.call_count(), 2, "首次失败+重试=2 次调用");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

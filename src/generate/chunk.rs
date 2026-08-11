@@ -74,6 +74,14 @@ pub fn chunk_by_module(
         .map(|m| (m.name.as_str(), m.node_ids.iter().copied().collect()))
         .collect();
 
+    // P2-20：节点 → 模块 反向索引（单遍构建 O(V)）——依赖分析不再对每个
+    // 模块双层扫描（原 O(模块数 × 节点数 × 出边数)），改为每模块单遍扫出边、
+    // 反向索引 O(1) 定位目标模块（总 O(V + E × 模块数)）。
+    let node_to_module: std::collections::HashMap<NodeIndex, &str> = module_node_ids
+        .iter()
+        .flat_map(|(name, ids)| ids.iter().map(move |id| (*id, *name)))
+        .collect();
+
     for module in modules {
         // 收集该模块中所有 File 节点的路径
         let module_file_paths: HashSet<&PathBuf> = module
@@ -124,25 +132,23 @@ pub fn chunk_by_module(
 
         let module_path: Vec<String> = module.name.split("::").map(|s| s.to_string()).collect();
 
-        // 计算实际依赖：从本模块节点出发，通过 Imports 边到达其他模块的节点
-        // module_node_ids 是 HashMap，迭代序随机——deps 必须排序，
-        // 否则卡片 frontmatter 的 dependencies 顺序跨次漂移（确定性评测失败）
-        let mut deps: Vec<String> = Vec::new();
-        for (&other_name, other_set) in &module_node_ids {
-            if other_name == module.name {
-                continue;
-            }
-            let has_dep = module.node_ids.iter().any(|nid| {
-                graph.graph.edges(*nid).any(|e| {
-                    let kind = &graph.graph[e.id()].kind;
-                    kind == &EdgeKind::Imports && other_set.contains(&e.target())
-                })
-            });
-            if has_dep {
-                deps.push(other_name.to_string());
+        // 计算实际依赖：从本模块节点出发，通过 Imports 边到达其他模块的节点。
+        // BTreeSet 天然有序去重——取代原 deps.sort()，确定性契约不变（卡片
+        // frontmatter 的 dependencies 顺序跨次稳定，评测不漂移）
+        let mut deps: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        for nid in &module.node_ids {
+            for e in graph.graph.edges(*nid) {
+                if graph.graph[e.id()].kind != EdgeKind::Imports {
+                    continue;
+                }
+                if let Some(&target_mod) = node_to_module.get(&e.target()) {
+                    if target_mod != module.name.as_str() {
+                        deps.insert(target_mod);
+                    }
+                }
             }
         }
-        deps.sort();
+        let deps: Vec<String> = deps.into_iter().map(|s| s.to_string()).collect();
 
         chunks.push(Chunk {
             module_path,

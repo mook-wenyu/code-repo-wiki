@@ -179,16 +179,30 @@ pub fn extract_citations(content: &str) -> Vec<Citation> {
 ///
 /// 从 validate_citations 提取的共享判定（v14 B 组：文件级与区间级两级
 /// 校验共用，避免区间校验重复文件读取逻辑）。
-fn check_citation_file_level(root: &Path, citation: &Citation) -> Option<String> {
+fn check_citation_file_level(
+    root: &Path,
+    citation: &Citation,
+    line_counts: &mut std::collections::HashMap<std::path::PathBuf, Option<usize>>,
+) -> Option<String> {
     // .. 段可逃逸项目根（../src/x.rs）或跳过目录层级（src/../lib.rs），
     // 即使目标文件真实存在也按无效处理——引用路径必须位于项目根内
     if citation.path.split(['/', '\\']).any(|seg| seg == "..") {
         return Some("路径含越界段 ..".to_string());
     }
     let abs = root.join(&citation.path);
-    let total_lines = std::fs::read_to_string(&abs)
-        .map(|s| s.lines().count())
-        .ok();
+    // P3-5：同一次校验中同一文件的多条引用只读一次——大文件+多条引用
+    // 时避免逐条整文件 read_to_string（O(引用数×文件大小) → O(文件数×文件大小)）；
+    // None 也缓存（文件不存在/不可读的结果复用，不再重复 IO）
+    let total_lines = match line_counts.get(&abs) {
+        Some(&n) => n,
+        None => {
+            let n = std::fs::read_to_string(&abs)
+                .map(|s| s.lines().count())
+                .ok();
+            line_counts.insert(abs, n);
+            n
+        }
+    };
     match total_lines {
         None => Some("引用文件不存在或不可读".to_string()),
         Some(n) if citation.end > n => {
@@ -203,10 +217,12 @@ fn check_citation_file_level(root: &Path, citation: &Citation) -> Option<String>
 /// root 为项目根（相对路径的解析基准）；文件读取失败（非 UTF-8、
 /// 权限等）按无效处理——引用目标必须可读才可验证。
 pub fn validate_citations(root: &Path, content: &str) -> Vec<InvalidCitation> {
+    let mut line_counts: std::collections::HashMap<std::path::PathBuf, Option<usize>> =
+        std::collections::HashMap::new();
     extract_citations(content)
         .into_iter()
         .filter_map(|citation| {
-            check_citation_file_level(root, &citation)
+            check_citation_file_level(root, &citation, &mut line_counts)
                 .map(|reason| InvalidCitation { citation, reason })
         })
         .collect()
@@ -251,11 +267,20 @@ pub fn validate_citations_against_entities(
     content: &str,
     entity_ranges: &EntityRanges,
 ) -> Vec<InvalidCitation> {
-    let mut invalid = validate_citations(root, content);
-    let file_level_valid: Vec<Citation> = extract_citations(content)
-        .into_iter()
-        .filter(|c| check_citation_file_level(root, c).is_none())
-        .collect();
+    // P3-5：文件级 + 区间级两级校验共用一份行数缓存——先逐引用做文件级
+    // 校验（同文件只 read_to_string 一次），无效引用进 invalid，有效引用
+    // 进 file_level_valid 供区间校验；与 validate_citations 的判定逻辑
+    // 等价，但避免两遍遍历各自重复读取文件
+    let mut line_counts: std::collections::HashMap<std::path::PathBuf, Option<usize>> =
+        std::collections::HashMap::new();
+    let mut invalid = Vec::new();
+    let mut file_level_valid: Vec<Citation> = Vec::new();
+    for citation in extract_citations(content) {
+        match check_citation_file_level(root, &citation, &mut line_counts) {
+            Some(reason) => invalid.push(InvalidCitation { citation, reason }),
+            None => file_level_valid.push(citation),
+        }
+    }
     for citation in file_level_valid {
         let key = crate::incremental::norm_sep(&citation.path);
         if let Some(ranges) = entity_ranges.get(&key)
