@@ -185,7 +185,8 @@ fn architecture_overview_user_prompt(modules: &[ModuleCluster], graph: &Knowledg
 /// 架构/概览基于各模块职责描述输出，而非只有模块名+节点数）
 ///
 /// 输入 = 模块名 + 实体名列表（≤30，LLM 据此判断职责边界），
-/// 输出约束 = 一句话、≤30 字、只输出描述文本本身（无前缀/引号/换行）。
+/// 输出约束 = 一句话、按 language 中文 30 字以内或英文 60 字以内（P1-20）、
+/// 只输出描述文本本身（无前缀/引号/换行）。
 pub fn module_description_prompt(
     module_name: &str,
     entity_names: &[String],

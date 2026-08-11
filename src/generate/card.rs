@@ -396,8 +396,9 @@ fn parse_card_response(response: &str, chunk: &Chunk) -> Result<KnowledgeCard> {
     let json_str = extract_json(response);
 
     // T08b：模板占位符残留检测——LLM 把提示模板占位符（{{...}}）泄漏进卡片
-    // JSON 字段值时显式告警（卡片无重试循环，重试策略见 12.7；此处只检测不阻断，
-    // 与字段缺失容错语义一致——不因单个字段损坏丢弃整张卡片）
+    // JSON 字段值时显式告警（此处只检测不阻断，与字段缺失容错语义一致——
+    // 不因单个字段损坏丢弃整张卡片；解析失败由上游 generate_card 追加约束
+    // 消息重试一次（P2-10），重试仍失败才返回错误）
     let residues = crate::output::residue_check::scan_template_residue(json_str);
     if !residues.is_empty() {
         tracing::warn!(
