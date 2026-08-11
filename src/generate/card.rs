@@ -277,7 +277,8 @@ pub fn read_card(config: &WikiConfig, module: &str) -> Result<Option<String>> {
 }
 
 /// 读取参考文件并拼接为参考材料段落（空列表跳过拼接）
-fn read_references(references: &[PathBuf]) -> Result<String> {
+/// T05：bench 裁判复用——crate 内共享，参考材料语义一致
+pub(crate) fn read_references(references: &[PathBuf]) -> Result<String> {
     let mut block = String::new();
     for path in references {
         let content = std::fs::read_to_string(path)?;

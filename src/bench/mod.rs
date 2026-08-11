@@ -620,15 +620,19 @@ struct DocInfoLlmOutcome {
 /// v32（6.2）：Doc Info 信息性裁判 prompt——要求 0-10 评分；
 /// 页面过少/与模块无关时允许输出 uncertain（证据不足显式声明，
 /// 不猜测——与 rubric 三态同协议）
-fn doc_info_judge_prompt(module: &str, summary: &str) -> Vec<crate::generate::llm::Message> {
+fn doc_info_judge_prompt(module: &str, summary: &str, references: &str) -> Vec<crate::generate::llm::Message> {
     vec![
         crate::generate::llm::Message::system(
             "你是 Wiki 文档信息性裁判。判断模块文档页是否提供了关于该模块的实质信息（职责/实体/关系/用法示例）。只输出 JSON：{\"score\": 0-10}。若页面内容过少或与模块无关，输出 {\"verdict\": \"uncertain\"}，不要猜测。",
         ),
-        crate::generate::llm::Message::user(format!(
-            "模块：{}\n\n--- 页面内容 ---\n{}",
-            module, summary
-        )),
+        crate::generate::llm::Message::user(if references.is_empty() {
+            format!("模块：{}\n\n--- 页面内容 ---\n{}", module, summary)
+        } else {
+            format!(
+                "模块：{}\n\n--- 页面内容 ---\n{}\n\n## 参考材料（人工对照，评判信息性时优先参考）\n{}",
+                module, summary, references
+            )
+        }),
     ]
 }
 
@@ -660,6 +664,7 @@ fn parse_doc_info_score(content: &str) -> DocInfoVerdict {
 fn measure_doc_info_llm(
     config: &WikiConfig,
     pages: &[(PathBuf, String)],
+    references: &str,
 ) -> DocInfoLlmOutcome {
     let provider = match crate::generate::create_provider(config) {
         Ok(p) => p,
@@ -688,7 +693,7 @@ fn measure_doc_info_llm(
         // FR-102 三态协议：uncertain 重试一次，仍不确定计 abstain
         let mut uncertain_retried = false;
         loop {
-            let messages = doc_info_judge_prompt(&module, &summary);
+            let messages = doc_info_judge_prompt(&module, &summary, references);
             match rt
                 .block_on(provider.complete_with_budget(&messages, Some(BENCH_MAX_OUTPUT_TOKENS)))
             {
@@ -996,8 +1001,12 @@ pub fn run_bench(
     config: &WikiConfig,
     repo_name: &str,
     judge: bool,
+    references: &[std::path::PathBuf],
 ) -> Result<BenchReport> {
     let start = Instant::now();
+    // T05：参考材料入口读一次（空 Vec → 空串不注入；读失败 propagate，
+    // 与 card 命令同语义）
+    let references = crate::generate::card::read_references(references)?;
 
     let scan_start = Instant::now();
     let pages = collect_wiki_pages(config.output_dir());
@@ -1006,7 +1015,7 @@ pub fn run_bench(
 
     let mut doc_info = measure_doc_info(&pages);
     // v32（6.2 FR-101）：Doc Information LLM 判定维度与文本统计并存
-    let llm_info = measure_doc_info_llm(config, &pages);
+    let llm_info = measure_doc_info_llm(config, &pages, &references);
     doc_info.llm_judged = llm_info.judged;
     doc_info.llm_score = llm_info.score;
     doc_info.llm_judged_modules = llm_info.judged_modules;
@@ -1028,7 +1037,7 @@ pub fn run_bench(
     };
     // v14 C 组：维度 7 Rubric（docs_tree 缺失/LLM 不可用 → None 不中断）
     let rubric = if judge {
-        measure_rubrics(config, root)?
+        measure_rubrics(config, root, &references)?
     } else {
         None
     };
@@ -1064,8 +1073,12 @@ pub fn run_rubrics_only(
     root: &ProjectRoot,
     config: &WikiConfig,
     repo_name: &str,
+    references: &[std::path::PathBuf],
 ) -> Result<BenchReport> {
     let start = Instant::now();
+    // T05：参考材料入口读一次（空 Vec → 空串不注入；读失败 propagate，
+    // 与 card 命令同语义）
+    let references = crate::generate::card::read_references(references)?;
 
     let scan_start = Instant::now();
     let pages = collect_wiki_pages(config.output_dir());
@@ -1074,7 +1087,7 @@ pub fn run_rubrics_only(
 
     let mut doc_info = measure_doc_info(&pages);
     // v32（6.2 FR-101）：rubrics-only 模式同样跑 Doc Info LLM 判定
-    let llm_info = measure_doc_info_llm(config, &pages);
+    let llm_info = measure_doc_info_llm(config, &pages, &references);
     doc_info.llm_judged = llm_info.judged;
     doc_info.llm_score = llm_info.score;
     doc_info.llm_judged_modules = llm_info.judged_modules;
@@ -1094,7 +1107,7 @@ pub fn run_rubrics_only(
     };
 
     let tqs = measure_tqs(config)?;
-    let rubric = measure_rubrics(config, root)?;
+    let rubric = measure_rubrics(config, root, &references)?;
 
     Ok(BenchReport {
         repo_name: repo_name.to_string(),
@@ -1586,7 +1599,7 @@ const RUBRIC_AGGREGATION_LEVEL: &str = "叶子级 3 次多数投票（争议升�
 /// root 为被测仓库根（README/docs 收集基准）；产物证据从 config.output_dir().display()
 /// 读取（overview + api + 模块页标题，截断控制 token 成本）。
 /// LLM 不可用或 docs_tree 缺失时返回 None（"失败只告警"，不中断评测）。
-fn measure_rubrics(config: &WikiConfig, root: &ProjectRoot) -> Result<Option<RubricReport>> {
+fn measure_rubrics(config: &WikiConfig, root: &ProjectRoot, references: &str) -> Result<Option<RubricReport>> {
     // 1. docs_tree 收集：README + docs/*.md（仓库意图的权威来源；
     //    缺失时无法推导需求，跳过本维度——不是文档质量问题）
     let mut docs_text = String::new();
@@ -1708,6 +1721,7 @@ fn measure_rubrics(config: &WikiConfig, root: &ProjectRoot) -> Result<Option<Rub
                 &leaf.requirement,
                 &evidence,
                 option_variant(&leaf.requirement, attempts),
+                references,
             );
             attempts += 1;
             // 同生成轮：判定输出短但需完整 message（推理型模型预算吞没
@@ -1823,7 +1837,7 @@ fn rubric_merge_prompt(trees: &[Vec<RubricNode>]) -> Vec<crate::generate::llm::M
 /// v32（6.1 FR-102）：三态协议——uncertain 表示 LLM 主动声明证据
 /// 不足以判定（区别于解析/调用失败的管线 abstain）；uncertain 由
 /// 调用方重试一次，仍不确定才记 abstain（不计入分母）。
-fn rubric_judge_prompt(requirement: &str, evidence: &str, reverse_options: bool) -> Vec<crate::generate::llm::Message> {
+fn rubric_judge_prompt(requirement: &str, evidence: &str, reverse_options: bool, references: &str) -> Vec<crate::generate::llm::Message> {
     let options = if reverse_options {
         "\"unsatisfied\" 或 \"satisfied\""
     } else {
@@ -1834,10 +1848,14 @@ fn rubric_judge_prompt(requirement: &str, evidence: &str, reverse_options: bool)
     );
     vec![
         crate::generate::llm::Message::system(system),
-        crate::generate::llm::Message::user(format!(
-            "需求：{}\n\n--- 文档产物摘要 ---\n{}",
-            requirement, evidence
-        )),
+        crate::generate::llm::Message::user(if references.is_empty() {
+            format!("需求：{}\n\n--- 文档产物摘要 ---\n{}", requirement, evidence)
+        } else {
+            format!(
+                "需求：{}\n\n--- 文档产物摘要 ---\n{}\n\n## 参考材料（人工对照，评判符合性时优先参考）\n{}",
+                requirement, evidence, references
+            )
+        }),
     ]
 }
 
@@ -2751,7 +2769,7 @@ mod tests {
         std::fs::write(root.path().join("src").join("b.rs"), "pub fn beta(x: u32) -> u32 { x + 100 }\n").unwrap();
         commit_all(root.path(), "change beta");
 
-        let report = run_rubrics_only(&root, &config, "demo").unwrap();
+        let report = run_rubrics_only(&root, &config, "demo", &[]).unwrap();
         assert_eq!(report.update_recall.commits_scanned, 0, "rubrics-only 不执行回放");
         assert_eq!(report.update_recall.correctly_updated, 0);
         assert_eq!(report.time.generate_ms, 0, "无生成耗时");
@@ -3166,6 +3184,49 @@ mod tests {
         assert!(md_on.contains("加权总分 S: 0.700"), "应输出加权总分: {md_on}");
         assert!(md_on.contains("abstain 叶子"), "应输出 abstain 指标: {md_on}");
         assert!(md_on.contains("多数投票"), "应输出叶子判定协议: {md_on}");
+    }
+
+    /// T05：Doc Info 裁判参考材料注入——非空时 user 消息含参考段，
+    /// 空串时不注入（裁判无参考时不凭空引入上下文）
+    #[test]
+    fn test_doc_info_judge_prompt_reference_injection() {
+        let with_ref = doc_info_judge_prompt("mod", "summary", "人工参考文档内容");
+        let joined: String = with_ref
+            .iter()
+            .filter(|m| m.role == "user")
+            .map(|m| m.content.clone())
+            .collect();
+        assert!(joined.contains("## 参考材料"), "非空参考应注入参考段: {joined}");
+        assert!(joined.contains("人工参考文档内容"), "参考内容应出现在 prompt: {joined}");
+
+        let without_ref = doc_info_judge_prompt("mod", "summary", "");
+        let joined_empty: String = without_ref
+            .iter()
+            .filter(|m| m.role == "user")
+            .map(|m| m.content.clone())
+            .collect();
+        assert!(!joined_empty.contains("## 参考材料"), "空参考不应注入参考段: {joined_empty}");
+    }
+
+    /// T05：Rubric 裁判参考材料注入——同上协议（非空注入/空串不注入）
+    #[test]
+    fn test_rubric_judge_prompt_reference_injection() {
+        let with_ref = rubric_judge_prompt("req", "evidence", false, "人工对照要求");
+        let joined: String = with_ref
+            .iter()
+            .filter(|m| m.role == "user")
+            .map(|m| m.content.clone())
+            .collect();
+        assert!(joined.contains("## 参考材料"), "非空参考应注入参考段: {joined}");
+        assert!(joined.contains("人工对照要求"), "参考内容应出现在 prompt: {joined}");
+
+        let without_ref = rubric_judge_prompt("req", "evidence", false, "");
+        let joined_empty: String = without_ref
+            .iter()
+            .filter(|m| m.role == "user")
+            .map(|m| m.content.clone())
+            .collect();
+        assert!(!joined_empty.contains("## 参考材料"), "空参考不应注入参考段: {joined_empty}");
     }
 
     /// 方案甲：计数检索排序——命中数多者排前，无命中页不返回，

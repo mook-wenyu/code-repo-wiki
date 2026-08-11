@@ -269,6 +269,10 @@ enum Commands {
         /// 快速评测（v28 t09 验证轮的标准形态）
         #[arg(long)]
         rubrics_only: bool,
+        /// 参考文件路径（可重复传 --reference，可选）——注入 LLM 裁判
+        /// （Doc Info/Rubric）作为对照材料，防止凭空打分（T05）
+        #[arg(long)]
+        reference: Vec<PathBuf>,
     },
     /// 清单批量跑分（v21 E 组）：对清单中每个仓库执行 Coverage/
     /// Doc Info/lint/Time 四快维度，输出仓库×维度矩阵。
@@ -949,7 +953,7 @@ fn main() -> anyhow::Result<()> {
             let root = resolve_root(root.as_deref())?;
             code_repo_wiki::run_card_command(config.as_deref(), &root, &action)?;
         }
-        Commands::Bench { root, repo_name, config, json, judge, rubrics_only, repodoc } => {
+        Commands::Bench { root, repo_name, config, json, judge, rubrics_only, repodoc, reference } => {
             // 评测基准（U10）：五维自动评测。root 必填（评测对象仓库根），
             // root 经 resolve_root 校验目录存在性（N7）。config 缺省走默认
             // 配置链（E 组：项目级 → 全局 → 创建全局）；repo_name 缺省取
@@ -971,9 +975,9 @@ fn main() -> anyhow::Result<()> {
             // v32（6.4）：--repodoc 隐含 judge=true（五维含 TQS LLM 裁判）
             let judge = judge || repodoc;
             let report = if rubrics_only {
-                code_repo_wiki::bench::run_rubrics_only(&root, &cfg, &repo_name)?
+                code_repo_wiki::bench::run_rubrics_only(&root, &cfg, &repo_name, &reference)?
             } else {
-                code_repo_wiki::bench::run_bench(&root, &cfg, &repo_name, judge)?
+                code_repo_wiki::bench::run_bench(&root, &cfg, &repo_name, judge, &reference)?
             };
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
