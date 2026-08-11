@@ -1175,6 +1175,32 @@ mod tests {
         }
     }
 
+    /// max_concurrency=0 是配置错误：Semaphore::new(0) 无许可会导致
+    /// acquire 永久挂起，构造器必须显式拒绝（T04b）。
+    #[test]
+    fn test_openai_rejects_zero_concurrency() {
+        let mut cfg = openai_config("http://127.0.0.1:1");
+        cfg.max_concurrency = Some(0);
+        let err = OpenAiProvider::new(&cfg, OpenAiProtocol::Responses)
+            .err()
+            .expect("max_concurrency=0 应被构造器拒绝")
+            .to_string();
+        assert!(err.contains("必须为正整数"), "错误信息应引导配置修正: {err}");
+    }
+
+    /// Anthropic 同款拒绝（T04b 三处统一）
+    #[test]
+    fn test_anthropic_rejects_zero_concurrency() {
+        let mut cfg = openai_config("http://127.0.0.1:1");
+        cfg.provider = LlmProviderType::Anthropic;
+        cfg.max_concurrency = Some(0);
+        let err = AnthropicProvider::new(&cfg)
+            .err()
+            .expect("max_concurrency=0 应被构造器拒绝")
+            .to_string();
+        assert!(err.contains("必须为正整数"), "错误信息应引导配置修正: {err}");
+    }
+
     // ============ 原有测试 ============
 
     #[tokio::test]

@@ -387,4 +387,17 @@ mod tests {
         let sim = EmbeddingEngine::cosine_similarity(&a, &b);
         assert!((sim - 0.0).abs() < 1e-6);
     }
+
+    /// max_concurrency=0 是配置错误：Semaphore::new(0) 永久挂起（T04b）
+    #[test]
+    fn test_embedding_engine_rejects_zero_concurrency() {
+        let mut cfg = EmbedSection::default();
+        cfg.max_concurrency = Some(0);
+        let handle = tokio::runtime::Runtime::new().unwrap().handle().clone();
+        let err = EmbeddingEngine::new(&cfg, handle)
+            .err()
+            .expect("max_concurrency=0 应被构造器拒绝")
+            .to_string();
+        assert!(err.contains("必须为正整数"), "错误信息应引导配置修正: {err}");
+    }
 }
