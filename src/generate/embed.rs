@@ -235,6 +235,64 @@ impl Embedder for EmbeddingEngine {
     }
 }
 
+/// 本地嵌入器：基于 fastembed（ONNX Runtime）在本地生成向量，
+/// 免 API key、无网络依赖（模型文件由 fastembed 首次使用时下载并缓存）。
+/// 与 EmbeddingEngine（远程 API）共享 Embedder trait——调用方无感知切换。
+pub struct LocalEmbedder {
+    model: fastembed::EmbeddingModel,
+}
+
+impl LocalEmbedder {
+    /// 按模型名构造本地嵌入器；未知模型名返回错误（不静默兜底）。
+    pub fn new(model: &str) -> Result<Self> {
+        let model = match model {
+            "bge-small-zh-v1.5" => fastembed::EmbeddingModel::BGESmallZHV15,
+            "bge-small-en-v1.5" => fastembed::EmbeddingModel::BGESmallENV15,
+            "bge-m3" => fastembed::EmbeddingModel::BGEM3,
+            "multilingual-e5-small" => fastembed::EmbeddingModel::MultilingualE5Small,
+            _ => anyhow::bail!("不支持的本地嵌入模型: {model}（可选：bge-small-zh-v1.5/bge-small-en-v1.5/bge-m3/multilingual-e5-small）"),
+        };
+        Ok(Self { model })
+    }
+}
+
+impl LocalEmbedder {
+    /// 批次嵌入：fastembed 同步 API（无 tokio 依赖），维度不足 0 校验。
+    /// 与 EmbeddingEngine::embed_batch 同契约：返回同序 Vec<Vec<f32>>。
+    fn embed_batch_sync(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        if texts.is_empty() {
+            return Ok(vec![]);
+        }
+        // TextInitOptions::new 按模型名构造；cache_dir 用系统默认缓存目录
+        // （fastembed get_cache_dir：Linux/macOS ~/.cache/fastembed、Windows %LOCALAPPDATA%/fastembed）
+        let options = fastembed::TextInitOptions::new(self.model.clone());
+        let mut model = fastembed::TextEmbedding::try_new(options)
+            .with_context(|| "初始化本地嵌入模型失败（首次运行需联网下载模型）")?;
+        // embed 需要 &mut self（ONNX session 内部状态）；batch_size=None 全量嵌入
+        let embeddings = model
+            .embed(texts, None)
+            .with_context(|| "本地嵌入失败")?;
+        Ok(embeddings)
+    }
+}
+
+impl Embedder for LocalEmbedder {
+    fn embed(&self, text: &str) -> Result<Vec<f32>> {
+        self.embed_batch_sync(&[text.to_string()])?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("本地嵌入返回空结果"))
+    }
+
+    fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        self.embed_batch_sync(texts)
+    }
+
+    fn cosine_similarity(&self, a: &[f32], b: &[f32]) -> f64 {
+        EmbeddingEngine::cosine_similarity(a, b) as f64
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

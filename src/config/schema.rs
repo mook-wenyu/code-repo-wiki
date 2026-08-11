@@ -266,6 +266,17 @@ pub enum LlmProviderType {
     Mock,
 }
 
+/// 嵌入提供方：远程 API 或本地 ONNX 推理
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EmbedProvider {
+    /// 远程 API（OpenAI 兼容 /v1/embeddings）
+    #[default]
+    Remote,
+    /// 本地 ONNX 推理（fastembed，免 API key、免网络）
+    Local,
+}
+
 /// 嵌入模型配置（v30：enabled 开关已硬编码恒开启——无 Key 环境由
 /// 运行时降级处理，见 lib.rs attach_features 与 build_search_index；
 /// 字段级 serde 默认=Default 阵营，缺键即用默认可用组合）
@@ -284,6 +295,12 @@ pub struct EmbedSection {
     /// embed_batch 分批发往 API 的并发信号量上限；None 时引擎用内置默认 4。
     #[serde(default)]
     pub max_concurrency: Option<u32>,
+    /// 嵌入提供方：remote（远程 API，默认）| local（fastembed 本地推理，免 API key）
+    #[serde(default)]
+    pub provider: EmbedProvider,
+    /// 本地嵌入模型名（provider=local 时生效）；默认 bge-small-zh-v1.5
+    #[serde(default = "default_embed_local_model")]
+    pub local_model: String,
 }
 
 fn default_embed_model() -> String {
@@ -301,6 +318,10 @@ fn default_embed_api_key_env() -> String {
     "BAILIAN_API_KEY".to_string()
 }
 
+fn default_embed_local_model() -> String {
+    String::from("bge-small-zh-v1.5")
+}
+
 impl Default for EmbedSection {
     fn default() -> Self {
         // v29 用户确认的实际可用配置：阿里百炼兼容端点。schema 缺省与模板
@@ -314,6 +335,8 @@ impl Default for EmbedSection {
             api_key: None,
             api_key_env: "BAILIAN_API_KEY".to_string(),
             max_concurrency: None,
+            provider: EmbedProvider::default(),
+            local_model: default_embed_local_model(),
         }
     }
 }
