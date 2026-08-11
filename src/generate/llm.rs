@@ -505,7 +505,11 @@ impl OpenAiProvider {
             // P2-8：并发上限来自配置（None=默认 16）；tokio Semaphore::new
             // 许可数上限约 2^61，u32 配置值远低于此（card.rs 已有先例）
             semaphore: Arc::new(tokio::sync::Semaphore::new(
-                config.max_concurrency.unwrap_or(16) as usize,
+                {
+                    let mc = config.max_concurrency.unwrap_or(16);
+                    anyhow::ensure!(mc > 0, "max_concurrency 必须为正整数（当前 0）");
+                    mc as usize
+                }
             )),
         })
     }
@@ -826,7 +830,11 @@ impl AnthropicProvider {
             call_count: std::sync::atomic::AtomicUsize::new(0),
             // P2-8：并发上限来自配置（None=默认 16）
             semaphore: Arc::new(tokio::sync::Semaphore::new(
-                config.max_concurrency.unwrap_or(16) as usize,
+                {
+                    let mc = config.max_concurrency.unwrap_or(16);
+                    anyhow::ensure!(mc > 0, "max_concurrency 必须为正整数（当前 0）");
+                    mc as usize
+                }
             )),
         })
     }

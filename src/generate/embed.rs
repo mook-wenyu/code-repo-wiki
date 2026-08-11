@@ -34,7 +34,11 @@ impl EmbeddingEngine {
             config: config.clone(),
             call_count: AtomicUsize::new(0),
             semaphore: Arc::new(tokio::sync::Semaphore::new(
-                config.max_concurrency.unwrap_or(4) as usize,
+                {
+                    let mc = config.max_concurrency.unwrap_or(4);
+                    anyhow::ensure!(mc > 0, "max_concurrency 必须为正整数（当前 0）");
+                    mc as usize
+                }
             )),
             rt,
         })
