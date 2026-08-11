@@ -255,7 +255,7 @@ fn test_rubric_uncertain_retry_abstains_e2e() {
     ];
     let (judge_calls, _, base_url) = spawn_scripted(responses);
     let (root, config) = bench_setup("rub_abstain", &base_url, true, false);
-    let report = run_rubrics_only(&root, &config, "demo").unwrap();
+    let report = run_rubrics_only(&root, &config, "demo", &[]).unwrap();
     let rubric = report.rubric.expect("rubric 应执行（README + LLM 可用）");
     assert_eq!(rubric.leaf_count, 1, "1 个叶子");
     assert_eq!(rubric.abstain_leaves, 1, "重试后仍 uncertain 应记 abstain");
@@ -285,7 +285,7 @@ fn test_rubric_uncertain_retry_recovers_e2e() {
     ];
     let (judge_calls, _, base_url) = spawn_scripted(responses);
     let (root, config) = bench_setup("rub_recover", &base_url, true, false);
-    let report = run_rubrics_only(&root, &config, "demo").unwrap();
+    let report = run_rubrics_only(&root, &config, "demo", &[]).unwrap();
     let rubric = report.rubric.expect("rubric 应执行（README + LLM 可用）");
     assert_eq!(rubric.satisfied_leaves, 1, "重试后 3 票 satisfied 应判满足");
     assert_eq!(rubric.abstain_leaves, 0);
@@ -319,7 +319,7 @@ fn test_rubric_uncertain_retry_swaps_variant() {
     ];
     let (_, prompts, base_url) = spawn_scripted(responses);
     let (root, config) = bench_setup("rub_variant", &base_url, true, false);
-    let report = run_rubrics_only(&root, &config, "demo").unwrap();
+    let report = run_rubrics_only(&root, &config, "demo", &[]).unwrap();
     report.rubric.expect("rubric 应执行（README + LLM 可用）");
     let ps = prompts.lock().unwrap();
     assert!(ps.len() >= 2, "至少应有两次判定调用（首轮 + 重试轮）: {}", ps.len());
@@ -344,7 +344,7 @@ fn test_tqs_no_escalation_below_thresholds_e2e() {
     responses.extend(vec![tie; 2]);
     let (_, _, base_url) = spawn_scripted(responses);
     let (root, config) = bench_setup("tqs_base", &base_url, false, true);
-    let report = run_rubrics_only(&root, &config, "demo").unwrap();
+    let report = run_rubrics_only(&root, &config, "demo", &[]).unwrap();
     let tqs = report.tqs.expect("TQS 应执行（snapshot + 产物页 + LLM 可用）");
     assert_eq!(tqs.judged_modules, 1);
     assert_eq!(tqs.repeats, 5, "tie 0.2/flip 0.2 均不超阈值，不应升级");
@@ -370,7 +370,7 @@ fn test_tqs_escalates_on_high_tie_rate_e2e() {
     }
     let (_, _, base_url) = spawn_scripted(responses);
     let (root, config) = bench_setup("tqs_esc", &base_url, false, true);
-    let report = run_rubrics_only(&root, &config, "demo").unwrap();
+    let report = run_rubrics_only(&root, &config, "demo", &[]).unwrap();
     let tqs = report.tqs.expect("TQS 应执行（snapshot + 产物页 + LLM 可用）");
     assert_eq!(tqs.judged_modules, 1);
     assert_eq!(

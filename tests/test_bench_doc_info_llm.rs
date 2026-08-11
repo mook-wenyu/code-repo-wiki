@@ -199,7 +199,7 @@ fn test_render_markdown_doc_info_llm_branches() {
 fn test_run_rubrics_only_doc_info_llm_abstains_with_mock() {
     let llm = LlmSection { provider: LlmProviderType::Mock, ..Default::default() };
     let (root, config) = bench_setup("mock_abstain", llm);
-    let report = run_rubrics_only(&root, &config, "demo").unwrap();
+    let report = run_rubrics_only(&root, &config, "demo", &[]).unwrap();
     let doc_info = &report.doc_info;
     assert!(doc_info.llm_judged, "mock provider 可用，判定应执行（judged=true）");
     assert_eq!(doc_info.llm_judged_modules, 0, "mock 响应不含 score → 无成功判定页");
@@ -226,7 +226,7 @@ fn test_run_rubrics_only_doc_info_degraded_without_llm() {
         ..Default::default()
     };
     let (root, config) = bench_setup("degraded", llm);
-    let report = run_rubrics_only(&root, &config, "demo").unwrap();
+    let report = run_rubrics_only(&root, &config, "demo", &[]).unwrap();
     let doc_info = &report.doc_info;
     assert!(!doc_info.llm_judged, "LLM 不可用应降级 judged=false");
     assert_eq!(doc_info.llm_score, 0.0);
@@ -327,7 +327,7 @@ fn test_doc_info_llm_retry_abstain_average_e2e() {
         MockResponse { status: 200, body: sse_response(content) }
     });
     let (root, config) = bench_setup_scripted("e2e_retry", &base_url);
-    let report = run_rubrics_only(&root, &config, "demo").unwrap();
+    let report = run_rubrics_only(&root, &config, "demo", &[]).unwrap();
     let d = &report.doc_info;
     assert!(d.llm_judged, "provider 可用应执行判定");
     assert_eq!(d.llm_judged_modules, 2, "b/c 两页判定成功（a 页 abstain）");

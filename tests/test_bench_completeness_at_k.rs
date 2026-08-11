@@ -218,7 +218,7 @@ fn test_e2e_hit_same_module_directory_level() {
         "pub fn tcp_fn(x: u32) -> u32 { x }",
     );
 
-    let report = run_rubrics_only(&root, &config, "demo").unwrap();
+    let report = run_rubrics_only(&root, &config, "demo", &[]).unwrap();
     let c = &report.completeness;
     assert!(c.judged, "索引存在应执行判定");
     assert_eq!(c.total_entities, 1, "应解析出 tcp_fn 一个实体");
@@ -265,7 +265,7 @@ fn test_e2e_miss_cross_module_entry() {
         "pub fn alpha(x: u32) -> u32 { x }",
     );
 
-    let report = run_rubrics_only(&root, &config, "demo").unwrap();
+    let report = run_rubrics_only(&root, &config, "demo", &[]).unwrap();
     let c = &report.completeness;
     assert!(c.judged, "索引存在应执行判定");
     assert_eq!(c.total_entities, 1);
@@ -304,7 +304,7 @@ fn test_e2e_miss_when_module_page_absent() {
         "pub fn tcp_fn(x: u32) -> u32 { x }",
     );
 
-    let report = run_rubrics_only(&root, &config, "demo").unwrap();
+    let report = run_rubrics_only(&root, &config, "demo", &[]).unwrap();
     let c = &report.completeness;
     assert!(c.judged, "索引存在仍执行判定");
     assert_eq!(c.total_entities, 1);
@@ -331,7 +331,7 @@ fn test_e2e_degrades_when_index_file_missing_dir_exists() {
     // 只建 .search 目录，不建 text_index.db
     std::fs::create_dir_all(config.output_dir().join(SEARCH_INDEX_DIR)).unwrap();
 
-    let report = run_rubrics_only(&root, &config, "demo").unwrap();
+    let report = run_rubrics_only(&root, &config, "demo", &[]).unwrap();
     let c = &report.completeness;
     assert!(!c.judged, "索引文件缺失应降级跳过（judged=false），即使 .search 目录存在");
     assert_eq!(c.total_entities, 1, "实体统计仍给出（与 coverage 同源）");
@@ -360,7 +360,7 @@ fn test_e2e_degrades_when_no_index_dir() {
     );
     // 不建任何索引相关目录
 
-    let report = run_rubrics_only(&root, &config, "demo").unwrap();
+    let report = run_rubrics_only(&root, &config, "demo", &[]).unwrap();
     let c = &report.completeness;
     assert!(!c.judged, "索引缺失应降级跳过");
     assert_eq!(c.ratio, 0.0, "降级时不虚报命中率");
