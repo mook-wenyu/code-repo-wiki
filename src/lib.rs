@@ -1271,7 +1271,7 @@ fn update_search_index_incremental(
                             tracing::warn!(
                                 "embedding 模型变化（标记 {:?} → 配置 {}），回退全量重建语义索引（新旧模型向量空间不兼容）",
                                 stored_model,
-                                config.embed.model
+                                effective_embed_model(config)
                             );
                             let all_items = collect_index_items(graph, &source_map);
                             semantic_engine.clear()?;
