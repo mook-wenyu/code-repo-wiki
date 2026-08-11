@@ -215,12 +215,12 @@ fn insights_cache_size_reports() {
 /// → 相对化（候选修复方向：相对化前剥离 ./ 前缀或过滤 CurDir 组件，
 /// 本文件只记录行为，不改 src）。
 ///
-/// 影响（FileWatch 策略）：未相对化的路径一路透传到 changed_files；影响
-/// 传播起点匹配（impact.rs find_start_nodes）是子串匹配
-/// （norm_sep(file_path).contains(norm_sep(changed_path))），`./src/foo.rs`
-/// 作为 changed_path 对 `src/foo.rs` 恒不命中 → 该路径不参与传播。功能上
-/// 由指纹比对兜底（指纹命中的 insight.path 是相对形态，传播不受损），
-/// 即当前行为无功能损失，但存在路径形态隐患。
+    /// 场景：FileWatch 增量传入 `./` 前缀路径（watch_paths 透传未相对化）。
+    /// T02（cb56f6c）起 find_start_nodes 是精确路径匹配（norm_sep 后按路径段
+    /// 比较：fp==cfp || fp.starts_with(cfp/))，`./src/foo.rs` 作为 changed_path
+    /// 对 `src/foo.rs` 节点恒不命中 → 该路径不参与传播。功能上由指纹比对兜底
+    /// （指纹命中的 insight.path 是相对形态，传播不受损），即当前行为无功能
+    /// 损失，但存在路径形态隐患（本测试记录该行为）。
 #[test]
 fn watch_path_dot_slash_prefix_boundary() {
     let repo = std::env::temp_dir().join(format!("code_repo_wiki_dot_prefix_{}", std::process::id()));
@@ -311,18 +311,22 @@ fn watch_path_dot_slash_prefix_boundary() {
         dot_result.affected_modules
     );
 
-    // 对照组：相对化成功形态（lib.rs 相对化后的结果）→ 传播命中
+    // 对照组：与 insight.path 形态一致的绝对路径 → 精确匹配命中 → 传播生效
+    // （T02 cb56f6c：find_start_nodes 从子串匹配改精确匹配（fp==cfp ||
+    // fp.starts_with(cfp/))——相对路径 changed 无法命中绝对路径节点；
+    // 真实流水线 insight.path 是相对形态（ingest/mod.rs:50 strip_prefix），
+    // 与本测试的绝对形态构造不同，此处用绝对路径验证「形态一致即命中」）
     let ok_result = code_repo_wiki::incremental::run_incremental_update_at(
         &root,
         &[insight],
         &graph,
         &config,
-        &[PathBuf::from("src/foo.rs")],
+        &[src_file.clone()],
     )
     .expect("增量分析失败");
     assert!(
         !ok_result.affected_modules.is_empty(),
-        "相对化成功形态应命中影响传播（对照，证明 ./ 前缀是传播不命中的原因）"
+        "形态一致（绝对路径）应命中影响传播（对照，证明 ./ 前缀与形态不一致是传播不命中的原因）"
     );
 
     let _ = std::fs::remove_dir_all(&repo);
