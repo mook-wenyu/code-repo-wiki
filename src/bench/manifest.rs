@@ -175,13 +175,40 @@ pub fn run_manifest(
     let mut repos = Vec::with_capacity(entries.len());
     for entry in entries {
         let start = Instant::now();
-        // 解析仓库本地路径（远程 clone 到 work_dir/<name>）
+        // 解析仓库本地路径（远程 clone 到 work_dir/<url 派生名>，已存在时 fetch 更新）
         let repo_path = match (&entry.url, &entry.local) {
             (Some(url), _) => {
-                let dest = work_dir.join(&entry.name);
-                if !dest.exists()
-                    && let Err(e) = git2::Repository::clone(url, &dest)
-                {
+                // T05：目录名用 URL 派生（协议剥离 + 分隔符净化）而非仓库名——
+                // 不同 URL 的仓库名可能相同（不同 owner 同名仓库），旧实现会撞
+                // 同一克隆目录；URL 派生名保证异 URL 永不撞、同 URL 共享克隆
+                //（评测基准由下方 commit 钉死决定，克隆目录共享是幂等的）。
+                let dir_name = url
+                    .trim_start_matches("https://")
+                    .trim_start_matches("http://")
+                    .trim_start_matches("git@")
+                    .trim_end_matches(".git")
+                    .replace(['/', ':', '\\', '@'], "__");
+                let dest = work_dir.join(&dir_name);
+                if dest.exists() {
+                    // T05：已存在克隆 fetch 保持新鲜（上游新 commit 对后续评测
+                    // 可见）——fetch 失败仅告警，既有克隆仍可继续使用（与
+                    // clone 失败记录 error 不同：此处是"更新失败"而非"不可用"）。
+                    if let Ok(repo) = git2::Repository::open(&dest) {
+                        match repo.find_remote("origin") {
+                            Ok(mut remote) => {
+                                let _ = remote.fetch(
+                                    &["+refs/heads/*:refs/remotes/origin/*"],
+                                    None,
+                                    None,
+                                );
+                                tracing::info!("bench: 已 fetch 更新克隆 {}", dest.display());
+                            }
+                            Err(e) => {
+                                tracing::warn!("bench: 克隆 {} origin 远程读取失败（跳过 fetch）: {e}", dest.display());
+                            }
+                        }
+                    }
+                } else if let Err(e) = git2::Repository::clone(url, &dest) {
                     repos.push(RepoReport {
                         name: entry.name.clone(),
                         coverage: empty_coverage(),

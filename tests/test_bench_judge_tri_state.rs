@@ -297,14 +297,14 @@ fn test_rubric_uncertain_retry_recovers_e2e() {
     let _ = std::fs::remove_dir_all(root.path());
 }
 
-/// 已知缺陷（v32 6.1）：uncertain 重试未更换选项顺序。
+/// v32 6.1 缺陷回归锚（T05 批次 1）：uncertain 重试更换选项顺序。
 ///
-/// option_variant 的 call_idx 取 votes.len()，而 uncertain 分支 continue
-/// 不推进 votes——重试轮与首轮的 satisfied/unsatisfied 选项顺序相同，
-/// 与 judge_leaf 注释「下轮换 variant 重试」及任务验证要点不符
-/// （FR-102 契约语义「重试一次、仍不确定记 abstain」不受影响）。
-/// 修复（重试轮使用推进的调用计数）后移除此 #[ignore]。
-#[ignore = "已知缺陷：uncertain 重试未更换选项顺序（call_idx=votes.len() 在 continue 时不推进）"]
+/// 早期实现 option_variant 的 call_idx 取 votes.len()，而 uncertain 分支
+/// continue 不推进 votes——重试轮与首轮的 satisfied/unsatisfied 选项顺序
+/// 相同，与 judge_leaf 注释「下轮换 variant 重试」不符。
+/// 现行实现改用独立 attempts 计数（option_variant(&requirement, attempts)
+/// 后自增），重试轮变体可切换；本测试解除 ignore 进入常规回归，
+/// 防止该修复回退。
 #[test]
 fn test_rubric_uncertain_retry_swaps_variant() {
     let responses: Vec<String> = vec![

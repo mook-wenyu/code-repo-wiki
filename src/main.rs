@@ -951,7 +951,7 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Bench { root, repo_name, config, json, judge, rubrics_only, repodoc } => {
             // 评测基准（U10）：五维自动评测。root 必填（评测对象仓库根），
-            // ProjectRoot::new 会校验目录存在性（N7）。config 缺省走默认
+            // root 经 resolve_root 校验目录存在性（N7）。config 缺省走默认
             // 配置链（E 组：项目级 → 全局 → 创建全局）；repo_name 缺省取
             // root 目录名。
             // Update Recall 回放前有工作区干净检查（安全闸，事故教训），
@@ -960,7 +960,7 @@ fn main() -> anyhow::Result<()> {
             // 评测成本控制（clap conflicts_with 已保证与 --judge 互斥）。
             // --repodoc（v32 6.4 FR-101）：RepoDocBench 对齐五维报告，
             // 强制 LLM 裁判（judge 提升）并在文本模式前置五维摘要。
-            let root = code_repo_wiki::project::ProjectRoot::new(root);
+            let root = resolve_root(Some(&root))?;
             let cfg = code_repo_wiki::load_config_rooted(config.as_deref(), &root)?;
             let repo_name = repo_name.unwrap_or_else(|| {
                 root.path()
@@ -973,7 +973,7 @@ fn main() -> anyhow::Result<()> {
             let report = if rubrics_only {
                 code_repo_wiki::bench::run_rubrics_only(&root, &cfg, &repo_name)?
             } else {
-                code_repo_wiki::bench::run_bench(config.as_deref(), &root, &cfg, &repo_name, judge)?
+                code_repo_wiki::bench::run_bench(&root, &cfg, &repo_name, judge)?
             };
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);

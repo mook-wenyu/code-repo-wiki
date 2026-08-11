@@ -292,6 +292,11 @@ pub struct TqsReport {
     /// 自稳定性口径替代）。
     #[serde(default)]
     pub delta_kappa: f64,
+    /// T05：AB/BA 判定的 2×2 混淆矩阵（rater1=AB 顺序、rater2=BA 顺序、
+    /// 类别={A 胜, B 胜}）——kappa_cohen 的输入表落报告，判定一致分布可审计。
+    /// 行序 [A 胜, B 胜] × 列序 [A 胜, B 胜]。
+    #[serde(default)]
+    pub kappa_table: [[usize; 2]; 2],
     /// t04：有效模块数 = 新旧文档都存在的模块总数（2606.00093 item 8
     /// coverage；judged_modules 仅计判定成功数，failed 模块不计入）
     #[serde(default)]
@@ -749,7 +754,7 @@ fn measure_lint(output_dir: &Path, root: &ProjectRoot) -> LintReport {
 /// 边界：非 git 仓库返回空集（recall = 1.0 空集约定）；commit 不足 20 个
 /// 按实际数量回放；checkout 失败（脏工作区/文件冲突）跳过该 commit 并告警。
 fn measure_update_recall(
-    config_path: Option<&Path>,
+    config: &WikiConfig,
     root: &ProjectRoot,
 ) -> Result<UpdateRecallReport> {
     let repo = match git2::Repository::open(root.path()) {
@@ -875,7 +880,19 @@ fn measure_update_recall(
             };
             matches!(prev_tree.as_ref().zip(cur_tree.as_ref()), Some((a, b)) if {
                 match repo.diff_tree_to_tree(Some(a), Some(b), None) {
-                    Ok(d) => d.deltas().len() > 0,
+                    Ok(d) => d
+                        .deltas()
+                        // T05：排除 .code-repo-wiki/ 产物自身——评测仓库跟踪产物
+                        // 时（AGENTS.md 约定产物入 git）更新 commit 只有产物变更，
+                        // 不算"源码变更"，避免虚增 with_changes 稀释召回率分母
+                        .filter(|delta| {
+                            delta
+                                .old_file()
+                                .path()
+                                .and_then(|p| p.to_str())
+                                .is_none_or(|p| !p.starts_with(".code-repo-wiki/"))
+                        })
+                        .count() > 0,
                     Err(e) => {
                         tracing::warn!("bench: commit {commit_id} diff 计算失败，按有变更计入: {e}");
                         true
@@ -888,15 +905,20 @@ fn measure_update_recall(
         }
 
         // 增量更新（mock provider）：documents 非空 = 触发重生成
-        let result = crate::run_pipeline(
-            config_path,
-            None,
+        // T05：回放强制 mock——评测语义是"增量链路是否触发重生成"，
+        // 与 LLM 质量无关；用户配置含真实 key 时旧实现会触网烧钱。
+        // 内存副本只改 provider，其余字段（scope/输出路径等）保持评测配置。
+        let mut replay_config = config.clone();
+        replay_config.llm.provider = crate::config::schema::LlmProviderType::Mock;
+        let result = crate::run_pipeline_with_config(
+            replay_config,
             false,
             root,
             &crate::GenerationMode::Incremental {
                 watch_paths: Vec::new(),
                 change_kind: None,
             },
+            &|_| {},
         );
         match result {
             Ok(res) if !res.documents.is_empty() => {
@@ -963,13 +985,13 @@ impl Drop for HeadRestoreGuard<'_> {
 
 /// 运行自动层评测，返回报告
 ///
-/// `config_path` 为目标仓库的配置文件路径（增量回放复用同一份配置，
+/// 增量回放强制 mock provider（T05：评测语义是"增量链路是否触发重生成"，
+/// 与 LLM 质量无关——用户配置含真实 key 时旧实现会触网烧钱）。
 /// 注意：回放会 checkout 目标仓库的 git commit——这是评测语义的一部分，
 /// 运行前请确认工作区无未提交改动（脏工作区会跳过对应 commit）。
 /// `judge` 为 true 时追加 TQS 裁判打分维度（需 LLM API key；快照缺失
 /// 或 LLM 不可用时该维度返回 None，不中断其他维度）。
 pub fn run_bench(
-    config_path: Option<&Path>,
     root: &ProjectRoot,
     config: &WikiConfig,
     repo_name: &str,
@@ -994,7 +1016,7 @@ pub fn run_bench(
     let lint = measure_lint(config.output_dir(), root);
 
     let gen_start = Instant::now();
-    let update_recall = measure_update_recall(config_path, root)?;
+    let update_recall = measure_update_recall(config, root)?;
     let generate_ms = gen_start.elapsed().as_millis() as u64;
     // v32 8.1：回放生成后读取分段计时（无回放/文件缺失 → None 不渲染）
     let timings = read_last_timings(config.output_dir());
@@ -1369,6 +1391,7 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
         judge_model: config.llm.model.clone(),
         // t04（Phase 1）：判定级可靠性指标与协议声明
         kappa_cohen: kappa_cohen_from_table(&kappa_table),
+        kappa_table,
         flip_rate: flip_sum / judged as f64,
         position_flip_rate: pos_flip_sum / judged as f64,
         delta_kappa: kappa_like - kappa,
@@ -2365,6 +2388,13 @@ pub fn render_markdown(report: &BenchReport) -> String {
             tqs.agreement_breakdown[2],
             tqs.tie_rate
         ));
+        // T05：2×2 混淆矩阵落报告——kappa_cohen 输入表可审计（行=AB 顺序
+        // 判定、列=BA 顺序判定；[A 胜, B 胜]）
+        out.push_str(&format!(
+            "- 混淆矩阵（AB×BA 判定一致表；行=[A 胜,B 胜], 列=[A 胜,B 胜]）: [[{}, {}], [{}, {}]]\n",
+            tqs.kappa_table[0][0], tqs.kappa_table[0][1],
+            tqs.kappa_table[1][0], tqs.kappa_table[1][1]
+        ));
         out.push_str(&format!(
             "- 判定尺度: {}\n- 聚合层级: {}\n- tie/abstain 处理: {}\n",
             tqs.judgment_scale, tqs.aggregation_level, tqs.tie_handling
@@ -2694,7 +2724,7 @@ mod tests {
     /// 增量召回：有变更的 commit 应全部触发重生成（mock 下正确更新）
     #[test]
     fn test_update_recall_with_changes() {
-        let (root, config_path, _config) = bench_repo("recall");
+        let (root, config_path, config) = bench_repo("recall");
         commit_all(root.path(), "init");
         crate::run_pipeline(Some(&config_path), None, false, &root, &crate::GenerationMode::Full).unwrap();
 
@@ -2702,7 +2732,7 @@ mod tests {
         std::fs::write(root.path().join("src").join("b.rs"), "pub fn beta(x: u32) -> u32 { x + 100 }\n").unwrap();
         commit_all(root.path(), "change beta");
 
-        let report = measure_update_recall(Some(&config_path), &root).unwrap();
+        let report = measure_update_recall(&config, &root).unwrap();
         assert_eq!(report.commits_scanned, 2, "应回放 2 个 commit");
         assert_eq!(report.commits_with_changes, 1, "第 2 个 commit 有变更");
         assert_eq!(report.correctly_updated, 1, "变更 commit 应正确触发重生成");
@@ -2871,6 +2901,7 @@ mod tests {
                 tie_handling: "exclude".into(),
                 tie_rate: 0.0,
                 agreement_breakdown: [10, 10, 0],
+                kappa_table: Default::default(),
             }),
             rubric: None,
             completeness: CompletenessReport {
@@ -2999,6 +3030,7 @@ mod tests {
             tie_handling: "三态判定；失败模块排除".into(),
             tie_rate: 0.1,
             agreement_breakdown: [8, 9, 3],
+            kappa_table: Default::default(),
         });
         let md_on = render_markdown(&report);
         assert!(md_on.contains("判定模块: 2"), "应输出判定模块数: {md_on}");
