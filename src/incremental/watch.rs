@@ -396,8 +396,10 @@ mod tests {
         assert!(!should_ignore(p), "src/bin 是合法源码目录，不得忽略: {:?}", p);
     }
 
-    /// F2 回归锚：Windows 盘符路径的根级判定不受 Prefix 段影响
-    /// （D:\repo\dist\… 的 dist 必须忽略；D:\repo\src\bin\… 的 bin 不忽略）
+    /// F2 回归锚：Windows 盘符路径的根级判定不受 Prefix 段影响。
+    /// 仅 Windows 平台有效——Unix 上 "D:\\repo\\..." 是单个 Normal 段，
+    /// 根级判定语义不同（reviewer 实证跨平台缺陷，加 cfg 门控）
+    #[cfg(windows)]
     #[test]
     fn test_should_ignore_windows_drive_paths() {
         assert!(should_ignore(Path::new("D:\\repo\\dist\\bundle.js")), "Windows 根级 dist 应忽略");

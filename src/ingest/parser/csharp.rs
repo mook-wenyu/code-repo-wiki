@@ -366,3 +366,17 @@ public class C {
         assert!(result.entities.iter().any(|e| e.name == "Changed" && e.kind == "event"),
             "事件应解析: {:?}", result.entities);
     }
+
+    /// F3 回归锚：多声明事件 `public event EventHandler A, B;` 的每个
+    /// 声明名都必须提取（旧文本末词提取只取 B、A 静默丢失）
+    #[test]
+    fn test_csharp_multi_declarator_event() {
+        let source = r#"public class C {
+    public event EventHandler A, B;
+}
+"#;
+        let proc = CSharpProcessor::new().unwrap();
+        let result = proc.parse(source, Path::new("test.cs")).unwrap();
+        assert!(result.entities.iter().any(|e| e.name == "A" && e.kind == "event"), "A 应解析为 event: {:?}", result.entities);
+        assert!(result.entities.iter().any(|e| e.name == "B" && e.kind == "event"), "B 应解析为 event: {:?}", result.entities);
+    }
