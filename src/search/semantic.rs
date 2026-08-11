@@ -17,9 +17,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use tokio::runtime::Runtime;
 
-use crate::generate::embed::EmbeddingEngine;
+use crate::analysis::feature::Embedder;
 use crate::model::CodeNode;
 use crate::search::vecdb::VecDb;
 
@@ -50,17 +49,16 @@ pub trait SemanticSearch {
 /// 自身只做 embedding 生成与 CodeNode 序列化。
 pub struct SemanticEngine {
     db: VecDb,
-    embedder: Arc<EmbeddingEngine>,
-    rt: Arc<Runtime>,
+    embedder: Arc<dyn Embedder>,
 }
 
 impl SemanticEngine {
     /// 打开或创建语义搜索数据库
     ///
     /// vec0 虚表延迟到首次插入时创建（维度首次探测）。
-    pub fn open(path: impl AsRef<Path>, embedder: Arc<EmbeddingEngine>, rt: Arc<Runtime>) -> Result<Self> {
+    pub fn open(path: impl AsRef<Path>, embedder: Arc<dyn Embedder>) -> Result<Self> {
         let db = VecDb::open(path)?;
-        Ok(Self { db, embedder, rt })
+        Ok(Self { db, embedder })
     }
 
     // ============ 固有方法（薄封装，委托 trait 实现） ============
@@ -115,8 +113,8 @@ impl SemanticSearch for SemanticEngine {
     fn index(&mut self, node: &CodeNode, source_code: &str) -> Result<()> {
         let text = Self::index_text(node, source_code);
         let vector = self
-            .rt
-            .block_on(self.embedder.embed(&text))
+            .embedder
+            .embed(&text)
             .context("生成 embedding 失败")?;
         let node_json = serde_json::to_string(node).context("序列化 CodeNode 失败")?;
         let file = node.file_path.as_deref().unwrap_or("").to_string();
@@ -133,8 +131,8 @@ impl SemanticSearch for SemanticEngine {
             .map(|(node, source)| Self::index_text(node, source))
             .collect();
         let vectors = self
-            .rt
-            .block_on(self.embedder.embed_batch(&texts))
+            .embedder
+            .embed_batch(&texts)
             .context("批量生成 embedding 失败")?;
 
         // 组装 (file_path, node_json, vector) 三元组一次性入库
@@ -161,7 +159,7 @@ impl SemanticSearch for SemanticEngine {
         if self.db.entry_count()? == 0 {
             return Ok(Vec::new());
         }
-        let q_vec = self.rt.block_on(self.embedder.embed(query))?;
+        let q_vec = self.embedder.embed(query)?;
         let query_json = vec_to_json(&q_vec);
         // 阈值换算：相似度 0.3 ↔ 距离 0.7（vecdb 常量，见模块头）
         let rows = self
@@ -215,6 +213,7 @@ fn vec_to_json(v: &[f32]) -> String {
 mod tests {
     use super::*;
     use crate::config::schema::{EmbedProvider, EmbedSection};
+    use crate::generate::embed::EmbeddingEngine;
     use crate::model::{NodeId, NodeKind};
     use std::collections::HashMap;
     use std::io::{Read, Write};
@@ -222,11 +221,12 @@ mod tests {
     use std::sync::Mutex;
     use tokio::runtime::Runtime;
 
+
     fn test_runtime() -> Arc<Runtime> {
         Arc::new(Runtime::new().unwrap())
     }
 
-    fn mock_embedder() -> Arc<EmbeddingEngine> {
+    fn mock_embedder() -> Arc<dyn Embedder> {
         let config = EmbedSection {
 
             model: "text-embedding-3-small".into(),
@@ -238,10 +238,11 @@ mod tests {
             local_model: "bge-small-zh-v1.5".into(),
         };
         Arc::new(EmbeddingEngine::new(&config, test_runtime().handle().clone()).unwrap())
+            as Arc<dyn Embedder>
     }
 
     /// 构造指向本地 mock 的 Embedding 引擎（base_url 带 /v1 前缀）
-    fn embedder_with_server(base_url: &str, rt: &Arc<Runtime>) -> Arc<EmbeddingEngine> {
+    fn embedder_with_server(base_url: &str, rt: &Arc<Runtime>) -> Arc<dyn Embedder> {
         let config = EmbedSection {
 
             model: "text-embedding-3-small".into(),
@@ -253,6 +254,7 @@ mod tests {
             local_model: "bge-small-zh-v1.5".into(),
         };
         Arc::new(EmbeddingEngine::new(&config, rt.handle().clone()).unwrap())
+            as Arc<dyn Embedder>
     }
 
     fn tmp_path(label: &str) -> std::path::PathBuf {
@@ -382,13 +384,13 @@ mod tests {
 
     #[test]
     fn test_semantic_new() {
-        let engine = SemanticEngine::open(tmp_path("new"), mock_embedder(), test_runtime()).unwrap();
+        let engine =         SemanticEngine::open(tmp_path("new"), mock_embedder()).unwrap();
         assert_eq!(engine.entry_count(), 0);
     }
 
     #[test]
     fn test_search_empty() {
-        let engine = SemanticEngine::open(tmp_path("empty"), mock_embedder(), test_runtime()).unwrap();
+        let engine =         SemanticEngine::open(tmp_path("empty"), mock_embedder()).unwrap();
         assert!(engine.search("test", 10).unwrap().is_empty());
     }
 
@@ -399,7 +401,7 @@ mod tests {
         let base_url = spawn_pseudo_embed_server();
         let rt = test_runtime();
         let embedder = embedder_with_server(&base_url, &rt);
-        let mut engine = SemanticEngine::open(tmp_path("rank"), embedder, rt.clone()).unwrap();
+        let mut engine = SemanticEngine::open(tmp_path("rank"), embedder).unwrap();
 
         let items = vec![
             (make_node("alpha", "src/a.rs"), "fn alpha()".to_string()),
@@ -423,7 +425,7 @@ mod tests {
         let base_url = spawn_pseudo_embed_server();
         let rt = test_runtime();
         let embedder = embedder_with_server(&base_url, &rt);
-        let mut engine = SemanticEngine::open(tmp_path("thr"), embedder, rt.clone()).unwrap();
+        let mut engine = SemanticEngine::open(tmp_path("thr"), embedder).unwrap();
 
         let items = vec![
             (make_node("x1", "src/x1.rs"), "x1 unrelated".to_string()),
@@ -442,7 +444,7 @@ mod tests {
         let base_url = spawn_pseudo_embed_server();
         let rt = test_runtime();
         let embedder = embedder_with_server(&base_url, &rt);
-        let mut engine = SemanticEngine::open(tmp_path("topk"), embedder, rt.clone()).unwrap();
+        let mut engine = SemanticEngine::open(tmp_path("topk"), embedder).unwrap();
 
         // 三个实体都与查询 "alpha" 相似度 ≥0.3（alpha 1.0、beta 0.707、
         // delta 0.707）——候选 3 条 > limit=2，truncate 必须真实截断；
@@ -463,7 +465,7 @@ mod tests {
         let base_url = spawn_pseudo_embed_server();
         let rt = test_runtime();
         let embedder = embedder_with_server(&base_url, &rt);
-        let mut engine = SemanticEngine::open(tmp_path("rm"), embedder, rt.clone()).unwrap();
+        let mut engine = SemanticEngine::open(tmp_path("rm"), embedder).unwrap();
 
         let items = vec![
             (make_node("a1", "src/a.rs"), "fn a1()".to_string()),
@@ -482,7 +484,7 @@ mod tests {
         let base_url = spawn_pseudo_embed_server();
         let rt = test_runtime();
         let embedder = embedder_with_server(&base_url, &rt);
-        let mut engine = SemanticEngine::open(tmp_path("clr"), embedder, rt.clone()).unwrap();
+        let mut engine = SemanticEngine::open(tmp_path("clr"), embedder).unwrap();
         engine.index_batch(&[(make_node("a", "src/a.rs"), "fn a()".to_string())]).unwrap();
         assert_eq!(engine.entry_count(), 1);
 
@@ -496,7 +498,7 @@ mod tests {
         let base_url = spawn_pseudo_embed_server();
         let rt = test_runtime();
         let embedder = embedder_with_server(&base_url, &rt);
-        let mut engine = SemanticEngine::open(tmp_path("dim"), embedder, rt.clone()).unwrap();
+        let mut engine = SemanticEngine::open(tmp_path("dim"), embedder).unwrap();
         assert_eq!(engine.table_dimension().unwrap(), None, "空库（表未创建）应返回 None");
 
         engine

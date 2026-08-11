@@ -275,6 +275,9 @@ pub enum EmbedProvider {
     Remote,
     /// 本地 ONNX 推理（fastembed，免 API key、免网络）
     Local,
+    /// Mock 通道（测试用）：与 Remote 同路径——HTTP 请求指向本地 mock server
+    /// 或失败降级；配置兼容 v50 前 `provider = "mock"` 的既有测试模板。
+    Mock,
 }
 
 /// 嵌入模型配置（v30：enabled 开关已硬编码恒开启——无 Key 环境由

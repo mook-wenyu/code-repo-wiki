@@ -1067,12 +1067,8 @@ fn embed_model_mismatch(config: &config::schema::WikiConfig) -> bool {
 /// 特征聚类失败只告警不中断主流程（特征是附加信息，不影响生成主链路）。
 fn attach_features(graph: &mut model::KnowledgeGraph, config: &config::schema::WikiConfig) {
     let embedder: Option<std::sync::Arc<dyn analysis::feature::Embedder>> =
-        match generate::embed::EmbeddingEngine::new(&config.embed, get_global_runtime().handle().clone()) {
-        Ok(e) => {
-            // 显式经中间 let 触发 unsize coercion（Option 内不自动转换）
-            let engine: std::sync::Arc<dyn analysis::feature::Embedder> = std::sync::Arc::new(e);
-            Some(engine)
-        }
+        match generate::embed::build_embedder(&config.embed, get_global_runtime().handle().clone()) {
+        Ok(e) => Some(e),
         Err(e) => {
             tracing::warn!("特征聚类 Embedding 初始化失败，降级为纯结构聚类: {e}");
             None
@@ -1120,17 +1116,16 @@ fn build_search_index(
     // 旧实现先删后初始化，key 缺失时旧索引已丢且引导误导
     //（"请启用 embed"掩盖了真实原因是 key 未配置）。
     // 失败时保留旧索引（可回退旧语义结果），并在引导中区分两种失败。
-    match generate::embed::EmbeddingEngine::new(&config.embed, get_global_runtime().handle().clone()) {
+    match generate::embed::build_embedder(&config.embed, get_global_runtime().handle().clone()) {
         Ok(embedder) => {
             let _ = std::fs::remove_file(&semantic_path);
-            let embedder = std::sync::Arc::new(embedder);
             // 运行期失败（key 缺失/网络不可达）同样降级保留旧索引，不得
             // `?` 中断主流程——与上方初始化失败的降级语义一致（v30 前
             // embed.enabled=false 时整段跳过，无此失败路径；恒启用后
             // 必须把两类失败都按"附加能力"对待）。
             // v32 10.1：降级同时写标记（search/status 显式提示），
             // 成功则清标记。
-            match search::semantic::SemanticEngine::open(&semantic_path, embedder, get_global_runtime().clone()) {
+            match search::semantic::SemanticEngine::open(&semantic_path, embedder) {
                 Ok(mut semantic_engine) => match semantic_engine.index_batch(&items) {
                     Ok(()) => {
                         tracing::info!("语义索引构建完成: {} 个实体已向量化", items.len());
@@ -1219,10 +1214,9 @@ fn update_search_index_incremental(
     // 失败，增量语义更新在用户不知情时整段跳过（与全量路径 :702/:707 的
     // warn 语义对齐：保留旧索引可观测，不静默）。
     if semantic_path.exists() {
-        match generate::embed::EmbeddingEngine::new(&config.embed, get_global_runtime().handle().clone()) {
-            Ok(embedder) => {
-                let embedder = std::sync::Arc::new(embedder);
-                match search::semantic::SemanticEngine::open(&semantic_path, embedder.clone(), get_global_runtime().clone()) {
+            match generate::embed::build_embedder(&config.embed, get_global_runtime().handle().clone()) {
+                Ok(embedder) => {
+                match search::semantic::SemanticEngine::open(&semantic_path, embedder.clone()) {
                     Ok(mut semantic_engine) => {
                         // v33：embedding 模型版本化——同维度模型升级强制全量重建。
                         // 维度探测（U04/D2）只覆盖维度变化；同维度模型（维度相同）
@@ -1241,7 +1235,7 @@ fn update_search_index_incremental(
                             let probe_dim = if items.is_empty() {
                                 None
                             } else {
-                                match get_global_runtime().block_on(embedder.embed(&items[0].1)) {
+                                match embedder.embed(&items[0].1) {
                                     Ok(v) => Some(v.len()),
                                     Err(e) => {
                                         tracing::warn!("embedding 维度探测失败，跳过维度重建检查: {}", e);
@@ -1438,9 +1432,8 @@ pub fn execute_search(
             if !semantic_path.exists() {
                 anyhow::bail!("语义索引不存在——未配置嵌入 key（embed.api_key_env）或索引未构建，请配置后重新运行 `code-repo-wiki generate`");
             }
-            let embedder = generate::embed::EmbeddingEngine::new(&config.embed, get_global_runtime().handle().clone())?;
-            let embedder = std::sync::Arc::new(embedder);
-            let semantic_engine = search::semantic::SemanticEngine::open(&semantic_path, embedder, get_global_runtime().clone())?;
+            let embedder = generate::embed::build_embedder(&config.embed, get_global_runtime().handle().clone())?;
+            let semantic_engine = search::semantic::SemanticEngine::open(&semantic_path, embedder)?;
             let results = semantic_engine.search(query, top_k)?;
             Ok(search::hybrid::semantic_results_to_hits(results))
         }
@@ -1457,11 +1450,10 @@ pub fn execute_search(
             // 用户配置了 embed 却永远收不到语义结果且无任何提示）
             let semantic_engine: Option<Box<dyn search::semantic::SemanticSearch>> =
                 if semantic_path.exists() {
-                    match generate::embed::EmbeddingEngine::new(&config.embed, get_global_runtime().handle().clone()) {
+                    match generate::embed::build_embedder(&config.embed, get_global_runtime().handle().clone()) {
                         Ok(e) => match search::semantic::SemanticEngine::open(
                             &semantic_path,
-                            Arc::new(e),
-                            get_global_runtime().clone(),
+                            e,
                         ) {
                             Ok(engine) => Some(Box::new(engine) as Box<dyn search::semantic::SemanticSearch>),
                             Err(e) => {

@@ -235,6 +235,21 @@ impl Embedder for EmbeddingEngine {
     }
 }
 
+/// 按配置 provider 构造嵌入器（统一入口，替代调用点直接 new EmbeddingEngine）：
+/// - Remote/Mock：HTTP 通道（EmbeddingEngine；Mock 为测试模板兼容，请求指向 mock server）
+/// - Local：本地 fastembed 通道（LocalEmbedder，免 API key）
+pub fn build_embedder(
+    config: &EmbedSection,
+    rt: tokio::runtime::Handle,
+) -> Result<std::sync::Arc<dyn crate::analysis::feature::Embedder>> {
+    match config.provider {
+        crate::config::schema::EmbedProvider::Local => {
+            Ok(std::sync::Arc::new(LocalEmbedder::new(&config.local_model)?))
+        }
+        _ => Ok(std::sync::Arc::new(EmbeddingEngine::new(config, rt)?)),
+    }
+}
+
 /// 本地嵌入器：基于 fastembed（ONNX Runtime）在本地生成向量，
 /// 免 API key、无网络依赖（模型文件由 fastembed 首次使用时下载并缓存）。
 /// 与 EmbeddingEngine（远程 API）共享 Embedder trait——调用方无感知切换。
