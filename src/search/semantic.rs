@@ -214,7 +214,7 @@ fn vec_to_json(v: &[f32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::schema::EmbedSection;
+    use crate::config::schema::{EmbedProvider, EmbedSection};
     use crate::model::{NodeId, NodeKind};
     use std::collections::HashMap;
     use std::io::{Read, Write};
@@ -234,6 +234,8 @@ mod tests {
             api_key_env: "OPENAI_API_KEY".into(),
             base_url: Some("http://localhost:9999/v1".into()),
             max_concurrency: None,
+            provider: EmbedProvider::Remote,
+            local_model: "bge-small-zh-v1.5".into(),
         };
         Arc::new(EmbeddingEngine::new(&config, test_runtime().handle().clone()).unwrap())
     }
@@ -247,6 +249,8 @@ mod tests {
             api_key_env: "OPENAI_API_KEY".into(),
             base_url: Some(format!("{}/v1", base_url)),
             max_concurrency: None,
+            provider: EmbedProvider::Remote,
+            local_model: "bge-small-zh-v1.5".into(),
         };
         Arc::new(EmbeddingEngine::new(&config, rt.handle().clone()).unwrap())
     }

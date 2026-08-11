@@ -54,9 +54,12 @@ pub fn write_file_atomic(path: &Path, content: &str) -> Result<()> {
 // run_pipeline_with_progress 入口以 create_new 原子获取，作用域=单次
 // 生成全程，Drop 时释放（正常退出/错误传播都会走 Drop）。
 //
-// 崩溃残留（进程被杀，锁文件遗留）：报错信息明确指引人工删除——
-// 不自动清理：自动清会把「另一实例正在生成中」误判为残留，反而引入
-// 真并发窗口。
+// 崩溃残留（进程被杀，锁文件遗留）：自动清理——读取锁内 PID 做进程
+// 活性检测，进程不存在则视为残留锁删除重试。取舍：自动清理存在把
+// 「另一实例正在生成」误判为残留的风险，但真实故障场景（外部强杀
+// TerminateProcess/任务管理器结束，Drop 不执行）会留下永久锁导致
+// watch/git hook 持续失败（实测 67 次锁冲突），活性检测把风险窗口
+// 收窄到「PID 恰好被复用且同目录并发」的极小概率，收益大于风险。
 
 /// 运行锁：持有期间其他实例的生成入口被拒绝；Drop 释放
 #[derive(Debug)]
@@ -73,26 +76,100 @@ impl Drop for RunLock {
 }
 
 /// 原子获取运行锁：.state/run.lock 不存在则创建（写入当前进程 PID 供
-/// 排查），存在则报错——报错信息包含锁路径与处理指引。
+/// 排查），存在则做残留判定——锁内 PID 无对应进程（或 PID 缺失/不可
+/// 解析）视为残留锁删除重试一次；PID 存活视为真并发报错。
 pub fn acquire_run_lock(config: &crate::config::schema::WikiConfig) -> Result<RunLock> {
     let state_dir = config.output_dir().join(".state");
     std::fs::create_dir_all(&state_dir)
         .with_context(|| format!("创建状态目录失败: {}", state_dir.display()))?;
     let path = state_dir.join("run.lock");
-    match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+    // 自愈重试一次：首次 create_new 失败（残留）→ 清理 → 二次创建；
+    // 二次仍失败则报真并发（活 PID 场景）
+    acquire_run_lock_inner(&path, &process_alive)
+}
+
+/// 锁获取核心：is_alive 注入使测试不依赖真实进程表
+fn acquire_run_lock_inner(
+    path: &std::path::Path,
+    is_alive: &dyn Fn(u32) -> bool,
+) -> Result<RunLock> {
+    match std::fs::OpenOptions::new().write(true).create_new(true).open(path) {
         Ok(mut f) => {
             use std::io::Write;
-            // 写入 PID 供「锁是谁留下的」排查；失败仅告警（锁本身已建立）
+            // PID 写入失败改显式错误：无 PID 的锁无法做残留判定（下次
+            // 冲突要么误删真并发锁要么永久卡死），故移除刚创建的锁并报错
             if let Err(e) = writeln!(f, "{}", std::process::id()) {
-                eprintln!("code-repo-wiki: 运行锁 PID 写入失败（不影响锁）: {e}");
+                let _ = std::fs::remove_file(path);
+                anyhow::bail!("运行锁 PID 写入失败（锁已移除，可重试）: {e}");
             }
-            Ok(RunLock { path })
+            Ok(RunLock { path: path.to_path_buf() })
         }
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => anyhow::bail!(
-            "另一 code-repo-wiki 实例正在运行（锁文件: {}）。确认无残留实例后可删除该文件重试",
-            path.display()
-        ),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            // 冲突：读取锁内容做残留判定
+            let content = match std::fs::read_to_string(path) {
+                Ok(c) => c,
+                // 读失败（竞态删除/权限）：保守报错指引人工处理，不自愈
+                Err(e) => anyhow::bail!(
+                    "运行锁读取失败（可能另一实例正在释放），锁文件: {}。错误: {e}",
+                    path.display()
+                ),
+            };
+            let pid: Option<u32> = content.trim().parse().ok();
+            match pid {
+                // PID 存活 → 真并发
+                Some(pid) if is_alive(pid) => anyhow::bail!(
+                    "另一 code-repo-wiki 实例正在运行（PID {pid}，锁文件: {}）。该进程结束后可重试",
+                    path.display()
+                ),
+                // PID 无进程或不可解析（空/半写锁）→ 残留，删除后重试一次
+                _ => {
+                    std::fs::remove_file(path).with_context(|| {
+                        format!("删除残留锁失败（可能刚被释放）: {}", path.display())
+                    })?;
+                    match std::fs::OpenOptions::new().write(true).create_new(true).open(path) {
+                        Ok(mut f) => {
+                            use std::io::Write;
+                            if let Err(e) = writeln!(f, "{}", std::process::id()) {
+                                let _ = std::fs::remove_file(path);
+                                anyhow::bail!("运行锁 PID 写入失败（锁已移除，可重试）: {e}");
+                            }
+                            Ok(RunLock { path: path.to_path_buf() })
+                        }
+                        Err(e) => Err(e).with_context(|| {
+                            format!("获取运行锁失败（自愈重试后仍被占用）: {}", path.display())
+                        }),
+                    }
+                }
+            }
+        }
         Err(e) => Err(e).with_context(|| format!("获取运行锁失败: {}", path.display())),
+    }
+}
+
+/// 进程活性检测：pid 对应进程存在返回 true
+#[cfg(unix)]
+fn process_alive(pid: u32) -> bool {
+    // kill(pid, 0) 不发送信号仅探活：0 → 存在；-1 且 errno=ESRCH → 不存在；
+    // EPERM → 进程存在但无权限（视为存活）
+    let r = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    r == 0 || (r == -1 && std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH))
+}
+
+/// 进程活性检测：pid 对应进程存在返回 true
+#[cfg(windows)]
+fn process_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_INVALID_PARAMETER};
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if !h.is_null() {
+            CloseHandle(h);
+            true
+        } else {
+            // ERROR_INVALID_PARAMETER → PID 不存在；其他错误（权限等）
+            // 保守视为存在（无法确认死亡就不自愈，避免真并发窗口）
+            GetLastError() != ERROR_INVALID_PARAMETER
+        }
     }
 }
 
@@ -139,6 +216,63 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("正在运行"), "应报并发错误: {msg}");
         assert!(msg.contains("run.lock"), "报错应含锁路径: {msg}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 残留锁（死 PID）自愈：锁内 PID 无进程 → 删除重试成功
+    #[test]
+    fn test_run_lock_stale_dead_pid_selfheals() {
+        let dir = temp_path("lock_stale", "");
+        let _config = lock_config(&dir);
+        let path = dir.join(".state/run.lock");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "99999999\n").unwrap(); // 极大 PID 必然无进程
+        let lock = acquire_run_lock_inner(&path, &|_| false).unwrap();
+        assert!(path.exists());
+        drop(lock);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 真并发（活 PID）报错：注入 is_alive=true
+    #[test]
+    fn test_run_lock_live_pid_reports_concurrency() {
+        let dir = temp_path("lock_live", "");
+        let _config = lock_config(&dir);
+        let path = dir.join(".state/run.lock");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "1\n").unwrap();
+        let err = acquire_run_lock_inner(&path, &|_| true).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("正在运行"), "应报并发错误: {msg}");
+        assert!(msg.contains("PID 1"), "报错应含 PID: {msg}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 空锁文件（PID 缺失）自愈删除重试
+    #[test]
+    fn test_run_lock_empty_file_selfheals() {
+        let dir = temp_path("lock_empty", "");
+        let _config = lock_config(&dir);
+        let path = dir.join(".state/run.lock");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "").unwrap();
+        let lock = acquire_run_lock_inner(&path, &|_| true).unwrap();
+        assert!(path.exists());
+        drop(lock);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 半写锁文件（PID 不可解析）自愈删除重试
+    #[test]
+    fn test_run_lock_half_written_selfheals() {
+        let dir = temp_path("lock_half", "");
+        let _config = lock_config(&dir);
+        let path = dir.join(".state/run.lock");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "12x").unwrap(); // 半写：PID 前缀不可解析
+        let lock = acquire_run_lock_inner(&path, &|_| true).unwrap();
+        assert!(path.exists());
+        drop(lock);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
