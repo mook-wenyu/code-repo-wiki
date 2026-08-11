@@ -21,6 +21,9 @@ const KINDS: &[KindRule] = &[
     KindRule::with_sig("method_declaration", "function", '{'),
     // U09：Java 构造器补齐（constructor_declaration 此前未映射，构造器被遗漏）
     KindRule::with_sig("constructor_declaration", "function", '{'),
+    // P3-3：@interface（注解类型）此前未映射——注解声明是 Java 公共 API
+    // 的一部分（Spring 注解等），缺失导致注解类型不进文档/图谱
+    KindRule::with_sig("annotation_type_declaration", "interface", '{'),
 ];
 
 /// Java 差异点实现：语法常量、kinds 映射表（纯映射分支）、
@@ -167,5 +170,18 @@ interface Runnable {
             .map(|e| e.name.as_str())
             .collect();
         assert!(!ctors.is_empty(), "构造器应解析为 function: {:?}", result.entities);
+    }
+
+    /// P3-3：Java @interface（注解类型）此前未映射，补齐映射后应解析为 interface
+    #[test]
+    fn test_java_annotation_type_parsed() {
+        let source = r#"@interface MyAnno {
+    String value();
+}
+"#;
+        let proc = JavaProcessor::new().unwrap();
+        let result = proc.parse(source, Path::new("MyAnno.java")).unwrap();
+        assert!(result.entities.iter().any(|e| e.name == "MyAnno" && e.kind == "interface"),
+            "注解类型应解析: {:?}", result.entities);
     }
 }

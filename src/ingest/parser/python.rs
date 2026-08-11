@@ -97,7 +97,9 @@ impl PythonProcessor {
     fn associate_docstrings(source: &str, entities: &mut [Entity]) {
         let lines: Vec<&str> = source.lines().collect();
         for e in entities.iter_mut() {
-            for i in e.line_start..lines.len().min(e.line_start + 5) {
+            // P0-7：docstring 在声明行的下一行——循环必须从 line_start+1 起扫，
+            // 否则首轮取到声明行本身（非 docstring）立即 break，docstring 永不关联
+            for i in (e.line_start + 1)..lines.len().min(e.line_start + 6) {
                 let t = lines[i - 1].trim();
                 let found = if t.starts_with("\"\"\"") {
                     let doc = t.trim_start_matches("\"\"\"").trim_end_matches("\"\"\"").to_string();
@@ -165,5 +167,24 @@ def helper():
         assert!(result.entities.iter().any(|e| e.name == "MAX_SIZE" && e.kind == "constant"), "MAX_SIZE 应解析: {:?}", result.entities);
         assert!(result.entities.iter().any(|e| e.name == "API_BASE" && e.kind == "constant"), "API_BASE 应解析");
         assert!(!result.entities.iter().any(|e| e.name == "local_cache"), "函数内赋值不应误报为常量: {:?}", result.entities);
+    }
+
+    /// P0-7：docstring 关联回归——从声明行下一行起扫，docstring 正确挂到实体
+    #[test]
+    fn test_python_docstring_associated() {
+        let source = r#"class Person:
+    """A person with a name."""
+    pass
+
+def greet(name: str) -> str:
+    """Greets a person."""
+    return f"hi {name}"
+"#;
+        let proc = PythonProcessor::new().unwrap();
+        let result = proc.parse(source, Path::new("test.py")).unwrap();
+        let person = result.entities.iter().find(|e| e.name == "Person").expect("Person 应解析");
+        assert_eq!(person.doc_comment.as_deref(), Some("A person with a name."));
+        let greet = result.entities.iter().find(|e| e.name == "greet").expect("greet 应解析");
+        assert_eq!(greet.doc_comment.as_deref(), Some("Greets a person."));
     }
 }

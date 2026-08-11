@@ -24,18 +24,27 @@ fn is_binary_extension(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// 内置噪音目录：第三方依赖与构建产物（全量扫描时的边界——不依赖 .gitignore，
-/// 许多项目未规范编写。命中目录整棵跳过，防止 node_modules/target 等爆炸）。
-/// pub：文件监听（watch.rs）共用同一清单，扫与听保持一致边界。
+/// 任意深度剪枝的噪音目录（依赖/缓存/构建产物，嵌套出现也剪）：
+/// node_modules/target/.git 等项目普遍依赖目录，出现在任意层级都应跳过。
 pub const NOISE_DIRS: &[&str] = &[
     "node_modules", ".venv", "venv", "vendor", "Pods", "Library",
-    "target", "dist", "build", "out", ".next", ".nuxt", ".output",
-    "coverage", ".cache", "__pycache__", ".pytest_cache", ".mypy_cache",
-    "bower_components", ".git", "obj", "bin",
+    "target", ".next", ".nuxt", ".output", "coverage", ".cache",
+    "__pycache__", ".pytest_cache", ".mypy_cache", "bower_components",
+    ".git",
 ];
 
-fn is_noise_dir(name: &str) -> bool {
-    NOISE_DIRS.contains(&name)
+/// 仅根级剪枝的构建输出目录（P1-14 修复）：
+///
+/// dist/build/out/bin/obj 是**常见合法源码目录名**——Rust 标准布局
+/// src/bin/*.rs 会被任意深度匹配的 bin 整棵跳过（入口文件全丢）、
+/// C/C++ 项目的 out/build 目录也可能含手写源码。这些只在仓库根
+/// （深度 1）出现时按构建产物处理，嵌套出现视为普通源码目录。
+pub const ROOT_ONLY_NOISE_DIRS: &[&str] = &["dist", "build", "out", "bin", "obj"];
+
+/// 噪音目录判定：任意深度清单直接命中；根级清单仅 entry.depth()==1 时命中
+/// （depth 0=仓库根自身，1=根的直接子目录——构建产物通常在根级出现）
+fn is_noise_dir(name: &str, at_root_level: bool) -> bool {
+    NOISE_DIRS.contains(&name) || (at_root_level && ROOT_ONLY_NOISE_DIRS.contains(&name))
 }
 
 /// 文件系统遍历器：全量遍历 + 内置过滤（v30+：无 include/exclude 配置，
@@ -67,10 +76,16 @@ impl Scanner {
             .standard_filters(true)
             .filter_entry(|entry| {
                 // 目录名命中噪音清单时整棵剪枝（标准过滤器已跳 .git/隐藏目录，
-                // 这里补充显式清单：node_modules/target/dist 等常见依赖与构建产物）
-                !entry
-                    .file_type()
-                    .is_some_and(|ft| ft.is_dir() && is_noise_dir(&entry.file_name().to_string_lossy()))
+                // 这里补充显式清单：node_modules/target 等任意深度依赖与构建产物；
+                // dist/build/out/bin/obj 等仅根级剪枝——src/bin 等合法源码目录
+                // 不被误杀，P1-14）
+                let is_dir = entry.file_type().is_some_and(|ft| ft.is_dir());
+                if !is_dir {
+                    return true;
+                }
+                // depth：0=根自身，1=根的直接子目录（构建产物判定锚点）
+                let at_root_level = entry.depth() == 1;
+                !is_noise_dir(&entry.file_name().to_string_lossy(), at_root_level)
             })
             .build();
         let mut files = Vec::new();
@@ -189,6 +204,30 @@ mod tests {
         // 上限之内正常返回
         let files = scanner.scan_with_limit(10).unwrap();
         assert_eq!(files.len(), 4);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// P1-14 回归锚：src/bin 是合法源码目录，根级 bin 才是噪音——
+    /// 扫描 src/bin 下文件不被跳过，根级 bin/ 被剪枝
+    #[test]
+    fn test_noise_dirs_root_anchored() {
+        let dir = scratch("rootnoise");
+        std::fs::create_dir_all(dir.join("src/bin")).unwrap();
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::create_dir_all(dir.join("dist")).unwrap();
+        std::fs::write(dir.join("src/bin/main.rs"), "fn main() {}").unwrap();
+        std::fs::write(dir.join("bin/gen.rs"), "fn gen() {}").unwrap();
+        std::fs::write(dir.join("dist/bundle.rs"), "fn bundle() {}").unwrap();
+        std::fs::write(dir.join("src/main.rs"), "fn main() {}").unwrap();
+
+        let scanner = Scanner::new(&dir);
+        let files = scanner.scan().unwrap();
+        let names: Vec<String> = files.iter().map(|p| p.to_string_lossy().replace('\\', "/")).collect();
+        assert!(names.iter().any(|n| n.ends_with("src/bin/main.rs")), "src/bin 是合法源码目录不应被剪: {names:?}");
+        assert!(names.iter().any(|n| n.ends_with("src/main.rs")), "src 顶层源码应保留: {names:?}");
+        assert!(!names.iter().any(|n| n.starts_with("bin/")), "根级 bin/ 应被剪枝: {names:?}");
+        assert!(!names.iter().any(|n| n.starts_with("dist/")), "根级 dist/ 应被剪枝: {names:?}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

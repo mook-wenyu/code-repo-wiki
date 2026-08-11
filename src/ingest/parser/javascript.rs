@@ -38,8 +38,12 @@ impl SharedProcessor for JavaScriptProcessor {
     fn handle_special(node: Node, bytes: &[u8], entities: &mut Vec<Entity>, imports: &mut Vec<ImportStmt>) {
         match node.kind() {
             "variable_declarator" => {
-                let name = node.child_by_field_name("name").and_then(|n| n.utf8_text(bytes).ok());
-                if let Some(name) = name {
+                // P1-15：解构（const {x,y} = obj）不产出实体——"{x, y}" 是伪
+                // 实体名；仅 identifier 形态（const fn = ... / const x = ...）记录
+                let name_node = node.child_by_field_name("name");
+                if name_node.is_some_and(|n| n.kind() == "identifier")
+                    && let Some(name) = name_node.and_then(|n| n.utf8_text(bytes).ok())
+                {
                     // 检查是否为箭头函数（const fn = () => {}）
                     let is_arrow = node.child_by_field_name("value")
                         .map(|v| v.kind() == "arrow_function").unwrap_or(false);
@@ -196,6 +200,19 @@ const greet = name => `hello ${name}`;
         assert_eq!(add.kind, "function");
         let greet = result.entities.iter().find(|e| e.name == "greet").unwrap();
         assert_eq!(greet.kind, "function");
+    }
+
+    /// P1-15：JS 解构不得产出伪实体名
+    #[test]
+    fn test_js_destructuring_no_entity() {
+        let source = r#"const { a, b } = obj;
+const [c, d] = arr;
+const fn = (x) => x * 2;
+"#;
+        let proc = JavaScriptProcessor::new().unwrap();
+        let result = proc.parse(source, Path::new("test.js")).unwrap();
+        assert!(!result.entities.iter().any(|e| e.name.contains('{') || e.name.contains('}') || e.name.contains('[') || e.name.contains(']')), "解构不得产出伪实体名: {:?}", result.entities);
+        assert!(result.entities.iter().any(|e| e.name == "fn" && e.kind == "function"), "箭头函数仍归类 function");
     }
 
     #[test]

@@ -34,6 +34,12 @@ const KINDS: &[KindRule] = &[
     KindRule::with_sig("constructor_declaration", "function", '{'),
     KindRule::plain("property_declaration", "property"),
     KindRule::plain("namespace_declaration", "mod"),
+    // P3-3：delegate/event 此前未映射——委托类型与事件是 C# 公共 API 的
+    // 核心成员（事件驱动代码的结构入口），缺失导致不进文档/图谱。
+    // event_declaration（带 accessors 的事件）有 name 字段走表提取；
+    // event_field_declaration（简单事件字段）无 name 字段，走 handle_special
+    KindRule::with_sig("delegate_declaration", "delegate", '('),
+    KindRule::plain("event_declaration", "event"),
 ];
 
 /// C# 差异点实现：语法常量、kinds 映射表（纯映射分支）、
@@ -49,7 +55,57 @@ impl SharedProcessor for CSharpProcessor {
 
     fn handle_special(node: Node, bytes: &[u8], entities: &mut Vec<Entity>, imports: &mut Vec<ImportStmt>) {
         match node.kind() {
+            "event_field_declaration" => {
+                // P3-3：简单事件字段（`public event EventHandler Changed;`）的节点
+                // 类型，无 name 字段（node-types.json 实证 fields:{}）——record_by_rule
+                // 提取不到 name 会静默丢弃，必须在此按文本提取事件名
+                if let Ok(text) = node.utf8_text(bytes) {
+                    // "public event EventHandler Changed" → 按空白/分号切分，
+                    // 过滤修饰符与 event/类型关键字，取最后一个标识符
+                    let name = text
+                        .split(|c: char| c.is_whitespace() || c == ';')
+                        .filter(|s| !s.is_empty())
+                        .last()
+                        .unwrap_or("")
+                        .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                        .to_string();
+                    if !name.is_empty() {
+                        entities.push(Entity {
+                            name, kind: "event".to_string(),
+                            line_start: node.start_position().row + 1,
+                            line_end: node.end_position().row + 1,
+                            doc_comment: None, signature: None, visibility: None,
+                        });
+                    }
+                }
+            }
             "field_declaration" => {
+                // P3-3：`public event EventHandler Changed;` 的节点是 field_declaration
+                // （event 是修饰符，tree-sitter-csharp 不产生独立 event 节点）——
+                // 检测声明文本是否以 event 开头，识别为事件实体而非普通字段
+                let is_event = node.utf8_text(bytes).is_ok_and(|t| {
+                    t.trim_start().starts_with("event") || t.trim_start().starts_with("public event")
+                });
+                if is_event {
+                    // 事件声明：提取事件名（"event EventHandler Changed" 的最后标识符）
+                    if let Ok(text) = node.utf8_text(bytes) {
+                        let name = text
+                            .split(|c: char| c.is_whitespace() || c == ';')
+                            .filter(|s| !s.is_empty() && *s != "event" && *s != "public")
+                            .last()
+                            .unwrap_or("")
+                            .to_string();
+                        if !name.is_empty() {
+                            entities.push(Entity {
+                                name, kind: "event".to_string(),
+                                line_start: node.start_position().row + 1,
+                                line_end: node.end_position().row + 1,
+                                doc_comment: None, signature: None, visibility: None,
+                            });
+                        }
+                    }
+                    return;
+                }
                 // t07：tree-sitter-c-sharp 0.23 的字段声明是
                 // field_declaration → variable_declaration → variable_declarator
                 // 三层结构——旧实现只在 field_declaration 的直接子节点里找
@@ -311,4 +367,20 @@ namespace Test.Unity
         for lifecycle in ["Awake", "Start", "Update", "Move"] {
             assert!(result.entities.iter().any(|e| e.name == lifecycle && e.kind == "function"), "方法 {lifecycle} 应解析");
         }
+    }
+
+    /// P3-3：C# delegate/event 此前未映射，补齐映射后应解析为 delegate/event
+    #[test]
+    fn test_csharp_delegate_and_event_parsed() {
+        let source = r#"public delegate void Handler(int x);
+public class C {
+    public event EventHandler Changed;
+}
+"#;
+        let proc = CSharpProcessor::new().unwrap();
+        let result = proc.parse(source, Path::new("test.cs")).unwrap();
+        assert!(result.entities.iter().any(|e| e.name == "Handler" && e.kind == "delegate"),
+            "委托类型应解析: {:?}", result.entities);
+        assert!(result.entities.iter().any(|e| e.name == "Changed" && e.kind == "event"),
+            "事件应解析: {:?}", result.entities);
     }

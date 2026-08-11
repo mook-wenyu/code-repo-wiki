@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use notify::RecursiveMode;
 use notify_debouncer_full::{new_debouncer, DebouncedEvent, DebounceEventResult};
 
-use crate::ingest::scanner::NOISE_DIRS;
+use crate::ingest::scanner::{NOISE_DIRS, ROOT_ONLY_NOISE_DIRS};
 use crate::ingest::parser::SUPPORTED_EXTENSIONS;
 
 /// 冷却窗口常量（v31 C-07）：连续编辑期间合并事件，安静 `COOLDOWN_QUIET_MS`
@@ -317,16 +317,28 @@ fn should_report(path: &Path, include_exts: &[String]) -> bool {
     !should_ignore(path) && matches_include(path, include_exts)
 }
 
-/// 判断路径是否位于噪音目录（与 scanner::NOISE_DIRS 同清单：
-/// 第三方依赖与构建产物，事件不必上报）
+/// 判断路径是否位于噪音目录（与 scanner 同清单语义，P1-14 同步）：
+/// 任意深度清单（node_modules/target/.git 等）命中任意路径段即忽略；
+/// 根级清单（dist/build/out/bin/obj）仅在路径第 2 段（仓库根的直接
+/// 子目录）命中——src/bin 等合法源码目录的深层 bin 段不误杀。
 fn should_ignore(path: &Path) -> bool {
-    path.components().any(|c| {
+    let mut depth = 0;
+    for c in path.components() {
         if let Some(s) = c.as_os_str().to_str() {
-            NOISE_DIRS.contains(&s)
-        } else {
-            false
+            // 深度语义：Root 段计 0，仓库名段计 1，其后首段计 2——
+            // 根级目录 = 深度 2（如 /repo/dist/ 的 dist）
+            if NOISE_DIRS.contains(&s) {
+                return true;
+            }
+            // 根级目录 = 精确深度 2（/repo/dist/ 的 dist；src/bin 的 bin 段
+            // depth=3 不命中——src/bin 是合法源码目录，P1-14）
+            if depth == 2 && ROOT_ONLY_NOISE_DIRS.contains(&s) {
+                return true;
+            }
         }
-    })
+        depth += 1;
+    }
+    false
 }
 
 /// 检查路径的扩展名是否在支持语言列表内
@@ -372,6 +384,13 @@ mod tests {
     fn test_should_not_ignore_src_dir() {
         let p = Path::new("/repo/src/main.rs");
         assert!(!should_ignore(p));
+    }
+
+    /// P1-14 回归锚：src/bin 是合法源码目录，深层 bin 段不忽略
+    #[test]
+    fn test_should_not_ignore_src_bin() {
+        let p = Path::new("/repo/src/bin/tool.rs");
+        assert!(!should_ignore(p), "src/bin 是合法源码目录，不得忽略: {:?}", p);
     }
 
     #[test]
