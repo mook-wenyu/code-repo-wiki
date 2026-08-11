@@ -66,7 +66,7 @@ fn temp_config(tag: &str) -> (WikiConfig, std::path::PathBuf) {
     (WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() }, dir)
 }
 
-/// 边界①：全空 chunks → Ok(空卡片列表)、零失败、零 LLM 调用
+/// 边界①：全空 chunks → Ok(与 chunks 对齐的全 None 占位)、零失败、零 LLM 调用
 #[tokio::test]
 async fn all_empty_chunks_yield_empty_cards_and_no_failures() {
     let (config, dir) = temp_config("all_empty");
@@ -77,7 +77,9 @@ async fn all_empty_chunks_yield_empty_cards_and_no_failures() {
         .generate_all_cards(&[make_empty_chunk("zzz_a"), make_empty_chunk("zzz_b")], &HashMap::new(), &|_| {})
         .await
         .unwrap();
-    assert!(cards.is_empty(), "全空 chunk 应产出空卡片列表");
+    // P1-1 对齐语义：全空 chunk 返回长度 = chunks 长度、全 None 位
+    assert_eq!(cards.len(), 2, "对齐语义：长度恒 = chunks 长度");
+    assert!(cards.iter().all(|c| c.is_none()), "全空 chunk 占 None 位，不产出卡片");
     assert!(
         generator.failed_modules().is_empty(),
         "全空 chunk 不得记入 failed_modules: {:?}",
@@ -107,8 +109,11 @@ async fn mixed_interleave_success_empty_failure_attributes_correctly() {
         )
         .await
         .unwrap();
-    assert_eq!(cards.len(), 1, "成功卡片保留（空 chunk 与失败模块不产出）");
-    assert_eq!(cards[0].module_name, "src", "成功卡片归因正确，不得被空 chunk 错位截断");
+    // P1-1 对齐语义：长度恒 = chunks 长度（空 chunk/失败占 None 位），成功卡在索引 0
+    assert_eq!(cards.len(), 3, "对齐语义：长度恒 = chunks 长度");
+    assert!(cards[0].as_ref().is_some(), "成功卡片保留在正确索引位");
+    assert_eq!(cards[0].as_ref().unwrap().module_name, "src", "成功卡片归因正确，不得被空 chunk 错位截断");
+    assert!(cards[1].is_none() && cards[2].is_none(), "空 chunk 与失败模块均占 None 位");
     assert_eq!(
         generator.failed_modules(),
         vec!["other"],
@@ -129,7 +134,8 @@ async fn empty_chunk_interleaved_with_failure_and_success() {
         .generate_all_cards(&[make_empty_chunk("zzz"), make_test_chunk()], &HashMap::new(), &|_| {})
         .await
         .unwrap();
-    assert!(cards1.is_empty(), "失败模块不产出卡片");
+    assert_eq!(cards1.len(), 2, "对齐语义：长度恒 = chunks 长度");
+    assert!(cards1.iter().all(|c| c.is_none()), "空 chunk 与失败模块均不产出卡片");
     assert_eq!(
         gen1.failed_modules(),
         vec!["src"],
@@ -145,8 +151,9 @@ async fn empty_chunk_interleaved_with_failure_and_success() {
         .generate_all_cards(&[make_empty_chunk("zzz"), make_test_chunk()], &HashMap::new(), &|_| {})
         .await
         .unwrap();
-    assert_eq!(cards2.len(), 1, "成功卡片不得静默丢失");
-    assert_eq!(cards2[0].module_name, "src");
+    assert_eq!(cards2.len(), 2, "对齐语义：长度恒 = chunks 长度");
+    assert!(cards2[0].is_none(), "空 chunk 占 None 位");
+    assert_eq!(cards2[1].as_ref().unwrap().module_name, "src", "成功卡片在正确索引位，不得错位");
     assert!(
         gen2.failed_modules().is_empty(),
         "无真实失败时不记 failed_modules: {:?}",
