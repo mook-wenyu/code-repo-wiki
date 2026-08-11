@@ -32,10 +32,23 @@ const KINDS: &[KindRule] = &[
 /// 公共 walk/fallback 触发/FileInsight 组装走 SharedProcessor 默认实现。
 impl SharedProcessor for TypeScriptProcessor {
     fn language() -> &'static str { "TypeScript" }
-    /// P0-6：.tsx 含 JSX 语法，用 TS 语法解析必然 has_error=true 导致实体全丢。
-    /// TSX 语法是 TS 的超集（tree-sitter-typescript 官方说明），单一语法覆盖
-    /// .ts/.tsx 两扩展。0.23.2 语言 crate 的 TSX 常量名为 LANGUAGE_TSX。
-    fn grammar() -> Language { tree_sitter_typescript::LANGUAGE_TSX.into() }
+    fn grammar() -> Language { tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into() }
+
+    /// F1（reviewer 实证）：TS/TSX 是两种方言而非超集关系——
+    /// .ts 泛型箭头 `<T>(x: T) => x` 与类型断言 `<Foo>expr` 在 TSX 语法下
+    /// 按 JSX 解析、缺闭合吞到 EOF、实体全丢。按扩展名分派：
+    /// .tsx→TSX（含 JSX）、.ts→TS（含 type_assertion）。
+    fn grammar_for_path(path: &std::path::Path) -> Language {
+        let is_tsx = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("tsx"));
+        if is_tsx {
+            tree_sitter_typescript::LANGUAGE_TSX.into()
+        } else {
+            Self::grammar()
+        }
+    }
 
     fn kinds() -> &'static [KindRule] {
         KINDS
@@ -142,6 +155,21 @@ export function Greeting({ name }: Props) {
         let result = proc.parse(source, Path::new("test.tsx")).unwrap();
         assert!(result.entities.iter().any(|e| e.name == "Greeting" && e.kind == "function"), "Greeting 应解析: {:?}", result.entities);
         assert!(result.entities.iter().any(|e| e.name == "Props" && e.kind == "interface"), "Props 应解析: {:?}", result.entities);
+    }
+
+    /// F1 回归锚：.ts 的泛型箭头与类型断言必须用 TS 方言解析（TSX 会
+    /// 按 JSX 吞到 EOF 丢实体）
+    #[test]
+    fn test_ts_generic_arrow_and_assertion_not_eaten() {
+        let source = r#"export const identity = <T>(x: T): T => x;
+const asserted = <string>value;
+export function after(): number { return 1; }
+"#;
+        let proc = TypeScriptProcessor::new().unwrap();
+        let result = proc.parse(source, Path::new("test.ts")).unwrap();
+        assert!(result.entities.iter().any(|e| e.name == "identity" && e.kind == "function"), "泛型箭头应解析为 function: {:?}", result.entities);
+        assert!(result.entities.iter().any(|e| e.name == "after"), "类型断言后的函数不得被 JSX 吞掉: {:?}", result.entities);
+        assert!(result.entities.iter().any(|e| e.name == "asserted"), "类型断言变量应解析");
     }
 
     /// P1-15：TS 箭头函数归类 function（非 variable）；解构不产出实体

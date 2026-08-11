@@ -129,6 +129,15 @@ pub trait SharedProcessor: Sized {
     fn language() -> &'static str;
     /// tree-sitter 语法常量（语言差异点）
     fn grammar() -> Language;
+    /// 按文件路径选择语法（默认 = grammar()）。
+    ///
+    /// 单一语言多语法的场景（TypeScript：.ts 用 TS 方言、.tsx 用 TSX 方言）
+    /// 覆盖此方法——TSX 是 TS 的超集**不成立**（reviewer 实证 tree-sitter
+    /// define-grammar.js：TS 方言含 type_assertion 无 JSX，TSX 相反），
+    /// .ts 的泛型箭头 `<T>(x: T) => x` 在 TSX 下按 jsx 解析缺闭合吞到 EOF。
+    fn grammar_for_path(_path: &std::path::Path) -> Language {
+        Self::grammar()
+    }
     /// kind 映射表（差异点数据化）：命中的节点由 record_by_rule 统一提取
     fn kinds() -> &'static [KindRule];
     /// 无法数据化的节点处理钩子（动态 kind / 子节点遍历 / 导入解析）
@@ -142,13 +151,13 @@ pub trait SharedProcessor: Sized {
     ///
     /// 骨架与原各语言 walk 逐字一致：命中 kinds() 表走 record_by_rule，
     /// 未命中走 handle_special（等价于原 match 分支的聚合）。
-    fn extract(source: &str) -> (Vec<Entity>, Vec<ImportStmt>) {
+    fn extract(source: &str, path: &std::path::Path) -> (Vec<Entity>, Vec<ImportStmt>) {
         let bytes = source.as_bytes();
         let mut entities = Vec::new();
         let mut imports = Vec::new();
 
         let mut parser = Parser::new();
-        if parser.set_language(&Self::grammar()).is_err() {
+        if parser.set_language(&Self::grammar_for_path(path)).is_err() {
             let (mut e, i) = Self::fallback(source);
             fill_visibilities(source, &mut e);
             return (e, i);
@@ -199,7 +208,7 @@ pub trait SharedProcessor: Sized {
         if source.is_empty() {
             return Ok(FileInsight { path: path.to_path_buf(), language: language.into(), entities: vec![], imports: vec![], doc_comments: vec![], source: source.to_string() });
         }
-        let (entities, imports) = Self::extract(source);
+        let (entities, imports) = Self::extract(source, path);
         Ok(FileInsight { path: path.to_path_buf(), language: language.into(), entities, imports, doc_comments: vec![], source: source.to_string() })
     }
 }

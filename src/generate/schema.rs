@@ -42,10 +42,11 @@ pub fn extract_create_table_blocks(sql: &str) -> Vec<&str> {
 /// 在指定项目根下收集 .sql 文件（独立全量遍历：SQL 建模是附加能力，
 /// 不经 scanner 的支持语言过滤——scanner 只产出可解析语言文件）
 pub fn collect_sql_files_at(root: &ProjectRoot) -> Result<Vec<PathBuf>> {
-    use crate::ingest::scanner::NOISE_DIRS;
+    use crate::ingest::scanner::{NOISE_DIRS, ROOT_ONLY_NOISE_DIRS};
     let mut out = Vec::new();
-    let mut stack = vec![root.path().to_path_buf()];
-    while let Some(dir) = stack.pop() {
+    // 栈元素 (目录, Normal 段深度)：深度 0 = 仓库根自身，1 = 直接子目录
+    let mut stack = vec![(root.path().to_path_buf(), 0usize)];
+    while let Some((dir, depth)) = stack.pop() {
         let read = match std::fs::read_dir(&dir) {
             Ok(r) => r,
             Err(_) => continue,
@@ -53,12 +54,17 @@ pub fn collect_sql_files_at(root: &ProjectRoot) -> Result<Vec<PathBuf>> {
         for entry in read.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                // 噪音目录整棵跳过（与 scanner 同一边界）
+                // 噪音目录整棵跳过（与 scanner 同一边界，F5）：
+                // 任意深度清单直接命中；根级清单（dist/build/out/bin/obj）
+                // 仅深度 1（根的直接子目录）命中——src/bin 合法源码目录不误杀
                 let name = entry.file_name().to_string_lossy().into_owned();
-                if NOISE_DIRS.contains(&name.as_str()) || name.starts_with('.') {
+                if NOISE_DIRS.contains(&name.as_str())
+                    || (depth == 0 && ROOT_ONLY_NOISE_DIRS.contains(&name.as_str()))
+                    || name.starts_with('.')
+                {
                     continue;
                 }
-                stack.push(path);
+                stack.push((path, depth + 1));
             } else if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("sql")) {
                 out.push(path);
             }

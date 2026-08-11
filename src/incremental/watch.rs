@@ -317,26 +317,29 @@ fn should_report(path: &Path, include_exts: &[String]) -> bool {
     !should_ignore(path) && matches_include(path, include_exts)
 }
 
-/// 判断路径是否位于噪音目录（与 scanner 同清单语义，P1-14 同步）：
+/// 判断路径是否位于噪音目录（与 scanner 同清单语义，P1-14/F2 同步）：
 /// 任意深度清单（node_modules/target/.git 等）命中任意路径段即忽略；
-/// 根级清单（dist/build/out/bin/obj）仅在路径第 2 段（仓库根的直接
-/// 子目录）命中——src/bin 等合法源码目录的深层 bin 段不误杀。
+/// 根级清单（dist/build/out/bin/obj）仅命中「仓库根的直接子目录」段。
+///
+/// F2（reviewer 实证）：深度锚定必须与路径组件类型无关——Windows 盘符
+/// 路径 D:\repo\dist\… 的 components 含 Prefix("D:") 与 RootDir，按组件计数
+/// 的 depth 会偏移导致根级判定恒失败。改为只遍历 Normal 段（目录/文件名），
+/// 第 0 段是仓库名、第 1 段即仓库根的直接子目录（src/bin 的 bin 在第 2 段，
+/// 不命中——src/bin 是合法源码目录）。
 fn should_ignore(path: &Path) -> bool {
-    let mut depth = 0;
+    let mut normal_index = 0;
     for c in path.components() {
-        if let Some(s) = c.as_os_str().to_str() {
-            // 深度语义：Root 段计 0，仓库名段计 1，其后首段计 2——
-            // 根级目录 = 深度 2（如 /repo/dist/ 的 dist）
-            if NOISE_DIRS.contains(&s) {
-                return true;
-            }
-            // 根级目录 = 精确深度 2（/repo/dist/ 的 dist；src/bin 的 bin 段
-            // depth=3 不命中——src/bin 是合法源码目录，P1-14）
-            if depth == 2 && ROOT_ONLY_NOISE_DIRS.contains(&s) {
-                return true;
-            }
+        // 只统计 Normal（目录/文件）段：Prefix(盘符)/RootDir(根) 不参与
+        let std::path::Component::Normal(seg) = c else { continue };
+        let Some(s) = seg.to_str() else { continue };
+        if NOISE_DIRS.contains(&s) {
+            return true;
         }
-        depth += 1;
+        // 第 1 个 Normal 段 = 仓库根的直接子目录（第 0 段是仓库名）
+        if normal_index == 1 && ROOT_ONLY_NOISE_DIRS.contains(&s) {
+            return true;
+        }
+        normal_index += 1;
     }
     false
 }
@@ -391,6 +394,15 @@ mod tests {
     fn test_should_not_ignore_src_bin() {
         let p = Path::new("/repo/src/bin/tool.rs");
         assert!(!should_ignore(p), "src/bin 是合法源码目录，不得忽略: {:?}", p);
+    }
+
+    /// F2 回归锚：Windows 盘符路径的根级判定不受 Prefix 段影响
+    /// （D:\repo\dist\… 的 dist 必须忽略；D:\repo\src\bin\… 的 bin 不忽略）
+    #[test]
+    fn test_should_ignore_windows_drive_paths() {
+        assert!(should_ignore(Path::new("D:\\repo\\dist\\bundle.js")), "Windows 根级 dist 应忽略");
+        assert!(!should_ignore(Path::new("D:\\repo\\src\\bin\\tool.rs")), "Windows src/bin 是合法源码目录，不得忽略");
+        assert!(should_ignore(Path::new("D:\\repo\\target\\debug\\main.rs")), "Windows target 任意深度仍忽略");
     }
 
     #[test]

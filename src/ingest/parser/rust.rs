@@ -142,7 +142,7 @@ impl LanguageProcessor for RustProcessor {
         if source.is_empty() {
             return Self::parse_file(source, path);
         }
-        let (entities, imports) = Self::extract(source);
+        let (entities, imports) = Self::extract(source, path);
         // Rust 特有行为保留：tree-sitter 提取为空时再跑一次 fallback
         // （原实现重复调用 fallback(source) 两次，此处收敛为一次，输出不变）
         if entities.is_empty() && !source.trim().is_empty() {

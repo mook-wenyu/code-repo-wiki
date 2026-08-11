@@ -56,61 +56,43 @@ impl SharedProcessor for CSharpProcessor {
     fn handle_special(node: Node, bytes: &[u8], entities: &mut Vec<Entity>, imports: &mut Vec<ImportStmt>) {
         match node.kind() {
             "event_field_declaration" => {
-                // P3-3：简单事件字段（`public event EventHandler Changed;`）的节点
-                // 类型，无 name 字段（node-types.json 实证 fields:{}）——record_by_rule
-                // 提取不到 name 会静默丢弃，必须在此按文本提取事件名
-                if let Ok(text) = node.utf8_text(bytes) {
-                    // "public event EventHandler Changed" → 按空白/分号切分，
-                    // 过滤修饰符与 event/类型关键字，取最后一个标识符
-                    let name = text
-                        .split(|c: char| c.is_whitespace() || c == ';')
-                        .filter(|s| !s.is_empty())
-                        .last()
-                        .unwrap_or("")
-                        .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-                        .to_string();
-                    if !name.is_empty() {
-                        entities.push(Entity {
-                            name, kind: "event".to_string(),
-                            line_start: node.start_position().row + 1,
-                            line_end: node.end_position().row + 1,
-                            doc_comment: None, signature: None, visibility: None,
-                        });
+                // P3-3/F3：简单事件字段（`public event EventHandler Changed;`）的
+                // 节点类型，无 name 字段（node-types.json 实证 fields:{}）——
+                // record_by_rule 提取不到 name 会静默丢弃。下钻
+                // variable_declaration→variable_declarator 逐项取 name，
+                // 覆盖多声明事件 `public event EventHandler A, B;`（F3：
+                // 文本末词提取只取 B、A 静默丢失）。
+                let mut efd_cursor = node.walk();
+                for decl in node.children(&mut efd_cursor) {
+                    if decl.kind() != "variable_declaration" {
+                        continue;
                     }
-                }
-            }
-            "field_declaration" => {
-                // P3-3：`public event EventHandler Changed;` 的节点是 field_declaration
-                // （event 是修饰符，tree-sitter-csharp 不产生独立 event 节点）——
-                // 检测声明文本是否以 event 开头，识别为事件实体而非普通字段
-                let is_event = node.utf8_text(bytes).is_ok_and(|t| {
-                    t.trim_start().starts_with("event") || t.trim_start().starts_with("public event")
-                });
-                if is_event {
-                    // 事件声明：提取事件名（"event EventHandler Changed" 的最后标识符）
-                    if let Ok(text) = node.utf8_text(bytes) {
-                        let name = text
-                            .split(|c: char| c.is_whitespace() || c == ';')
-                            .filter(|s| !s.is_empty() && *s != "event" && *s != "public")
-                            .last()
-                            .unwrap_or("")
-                            .to_string();
-                        if !name.is_empty() {
+                    let mut decl_cursor = decl.walk();
+                    for child in decl.children(&mut decl_cursor) {
+                        if child.kind() != "variable_declarator" {
+                            continue;
+                        }
+                        if let Some(name) = Self::node_name(&child, bytes) {
                             entities.push(Entity {
-                                name, kind: "event".to_string(),
-                                line_start: node.start_position().row + 1,
-                                line_end: node.end_position().row + 1,
+                                name: name.to_string(), kind: "event".to_string(),
+                                line_start: child.start_position().row + 1,
+                                line_end: child.end_position().row + 1,
                                 doc_comment: None, signature: None, visibility: None,
                             });
                         }
                     }
-                    return;
                 }
-                // t07：tree-sitter-c-sharp 0.23 的字段声明是
+            }
+            "field_declaration" => {
+                // t07：tree-sitter-c-sharp 0.23 的普通字段声明是
                 // field_declaration → variable_declaration → variable_declarator
                 // 三层结构——旧实现只在 field_declaration 的直接子节点里找
                 // variable_declarator，中间多出的 variable_declaration 层使
                 // **字段恒不提取**（Unity 项目的 SerializeField 字段全部丢失）。
+                // 事件字段（public event …）在 0.23 是独立节点
+                // event_field_declaration（无 name 字段），由 handle_special
+                // 上方分支处理，不走此分支（F4：删除与 node-types 矛盾的
+                // is_event 前缀检测死代码）。
                 // 改为两层遍历（variable_declaration 下可有多个 declarator，
                 // 如 `int a, b;`）；tree-sitter 0.25 无 descendants API，用
                 // 显式两层 children 遍历。
