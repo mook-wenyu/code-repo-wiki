@@ -313,8 +313,9 @@ mod tests {
     }
 
     /// 关键词 → 确定性伪向量（统一 3 维）：
-    /// - 已知关键词（alpha/beta/gamma）：固定向量，相似度受控
-    ///   （alpha↔beta≈0.707、alpha↔gamma=-1.0），用于验证排序正确性；
+    /// - 已知关键词（alpha/beta/gamma/delta）：固定向量，相似度受控
+    ///   （alpha↔beta≈0.707、alpha↔gamma=-1.0、alpha↔delta≈0.707），
+    ///   用于验证排序正确性与 top_k 截断；
     /// - 未知关键词：按首次出现顺序分配 3 维单位基向量（同词同向量、
     ///   异词正交），用于确定性验证 0.3 阈值过滤。
     fn pseudo_vector(keyword: &str, seen: &mut HashMap<String, usize>) -> Vec<f32> {
@@ -322,6 +323,9 @@ mod tests {
             "alpha" => vec![1.0, 0.0, 0.0],
             "beta" => vec![std::f32::consts::FRAC_1_SQRT_2, std::f32::consts::FRAC_1_SQRT_2, 0.0],
             "gamma" => vec![-1.0, 0.0, 0.0],
+            // T03 弱锚点修复：delta 与 alpha 相似度 0.707（过 0.3 阈值）——
+            // 供 top_k 截断测试构造「3 条候选全过阈值」场景
+            "delta" => vec![0.5, 0.5, 0.0],
             _ => {
                 let next = seen.len();
                 let idx = *seen.entry(keyword.to_string()).or_insert(next);
@@ -436,17 +440,18 @@ mod tests {
         let embedder = embedder_with_server(&base_url, &rt);
         let mut engine = SemanticEngine::open(tmp_path("topk"), embedder, rt.clone()).unwrap();
 
-        // 三个互相独立（不同关键词）但都过 0.3 阈值的实体——
-        // 查询命中全部 3 条时 limit=2 必须截断为 2 条
+        // 三个实体都与查询 "alpha" 相似度 ≥0.3（alpha 1.0、beta 0.707、
+        // delta 0.707）——候选 3 条 > limit=2，truncate 必须真实截断；
+        // 若删除 semantic.rs search 的 truncate(limit)，此处返回 3 条断言失败
         let items = vec![
             (make_node("alpha", "src/a.rs"), "fn alpha()".to_string()),
             (make_node("beta", "src/b.rs"), "fn beta()".to_string()),
-            (make_node("gamma", "src/c.rs"), "fn gamma()".to_string()),
+            (make_node("delta", "src/d.rs"), "fn delta()".to_string()),
         ];
         engine.index_batch(&items).unwrap();
 
         let results = engine.search("alpha", 2).unwrap();
-        assert!(results.len() <= 2, "top_k=2 不得返回更多: {:?}", results);
+        assert_eq!(results.len(), 2, "top_k=2 必须精确截断: {:?}", results);
     }
 
     #[test]
