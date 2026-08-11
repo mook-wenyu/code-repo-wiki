@@ -188,7 +188,7 @@ pub async fn run_generation(
         .await?;
     // 特征追溯回填（演进计划 T3.3）：模块实体与特征实体的交集 → 特征名
     backfill_features(&mut cards, &chunks, graph);
-    tracing::info!("生成进度: 60% - 知识卡片生成完成，共 {} 个卡片", cards.len());
+    tracing::info!("生成进度: 60% - 知识卡片生成完成，共 {} 个卡片", cards.iter().flatten().count());
     let card_ms = card_start.elapsed().as_millis() as u64;
 
     // 4. 按语言独立生成 Wiki 页面（并行，演进计划 T3.1；卡片仅主语言生成一次，
@@ -216,7 +216,7 @@ pub async fn run_generation(
     };
 
     Ok(GenerationOutput {
-        cards,
+        cards: cards.iter().flatten().cloned().collect(),
         documents,
         generation_stats: stats,
         timings: crate::GenerationTimings {
@@ -463,7 +463,7 @@ pub async fn run_generation_filtered(
     };
 
     Ok(GenerationOutput {
-        cards,
+        cards: cards.iter().flatten().cloned().collect(),
         documents,
         generation_stats: stats,
         timings: crate::GenerationTimings {
@@ -505,7 +505,7 @@ fn build_entity_ranges(insights: &[FileInsight]) -> crate::output::citation::Ent
 /// 特征名列表写入卡片（render_knowledge_card 渲染"特征追溯"节），
 /// 提供"功能 → 实现它的模块"的可追溯视图（RepoSummary 的 traceability）。
 /// 特征实体名经 graph 反查 NodeId 得到；不经过 LLM，杜绝幻觉。
-fn backfill_features(cards: &mut [KnowledgeCard], chunks: &[Chunk], graph: &KnowledgeGraph) {
+fn backfill_features(cards: &mut [Option<KnowledgeCard>], chunks: &[Chunk], graph: &KnowledgeGraph) {
     if graph.features.is_empty() || cards.is_empty() {
         return;
     }
@@ -522,7 +522,9 @@ fn backfill_features(cards: &mut [KnowledgeCard], chunks: &[Chunk], graph: &Know
             (f.name.clone(), names)
         })
         .collect();
-    for (card, chunk) in cards.iter_mut().zip(chunks) {
+    for (card_opt, chunk) in cards.iter_mut().zip(chunks) {
+        // P1-1：失败/空 chunk 的卡片位是 None——特征回填跳过，不产生错位写入
+        let Some(card) = card_opt else { continue };
         let entity_names: std::collections::HashSet<&str> =
             chunk.entities.iter().map(|e| e.name.as_str()).collect();
         let mut matched: Vec<String> = feature_entities
@@ -552,7 +554,7 @@ fn backfill_features(cards: &mut [KnowledgeCard], chunks: &[Chunk], graph: &Know
 async fn generate_wiki_pages<P: LlmProvider>(
     wiki_gen: &WikiGenerator<'_, P>,
     chunks: &[Chunk],
-    cards: &[KnowledgeCard],
+    cards: &[Option<KnowledgeCard>],
     config: &WikiConfig,
     max_concurrent: usize,
     root: &crate::project::ProjectRoot,
@@ -572,7 +574,12 @@ async fn generate_wiki_pages<P: LlmProvider>(
         let mut lang_cfg = config.clone();
         lang_cfg.wiki.language = lang.clone();
         for (i, chunk) in chunks.iter().enumerate() {
-            let card_summary = cards.get(i).map(|c| c.summary.clone()).unwrap_or_default();
+            // P1-1：卡片位 None（空 chunk/失败）→ 摘要为空串，页面照常生成（None 占位保证索引一一对应，不再前移错位）
+            let card_summary = cards
+                .get(i)
+                .and_then(|c| c.as_ref())
+                .map(|c| c.summary.clone())
+                .unwrap_or_default();
             let semaphore = semaphore.clone();
             let lang_cfg = lang_cfg.clone();
             let done = done.clone();
@@ -655,7 +662,7 @@ async fn generate_global_documents(
     graph: &KnowledgeGraph,
     config: &WikiConfig,
     root: &crate::project::ProjectRoot,
-    cards: &[KnowledgeCard],
+    cards: &[Option<KnowledgeCard>],
     documents: &mut Vec<WikiDocument>,
     affected: &GlobalDocAffected,
     has_deleted_files: bool,
@@ -669,10 +676,10 @@ async fn generate_global_documents(
         // ——但纯删除场景例外（has_deleted_files）：删除属接口级变化，即使本次没有
         // 模块被重生成（孤立文件全删），架构/概览也必须重生成，否则回填旧版继续
         // 列出已删模块（v21 验证轮修复）。
-        if !cards.is_empty() || has_deleted_files {
+        if cards.iter().any(|c| c.is_some()) || has_deleted_files {
             // generate_architecture / generate_overview 需要 GenerationOutput 快照（内部只用 cards 构建引用列表）
             let output_snapshot = GenerationOutput {
-                cards: cards.to_vec(),
+                cards: cards.iter().flatten().cloned().collect(),
                 documents: documents.clone(),
                 generation_stats: GenerationStats::default(),
                 timings: crate::GenerationTimings::default(),
@@ -717,7 +724,7 @@ async fn generate_global_documents(
         // 快照不可用（首次增量/快照损坏）→ 回退生成，保证页面存在性
         tracing::info!("全局文档快照回填不可用，回退重新生成");
         let output_snapshot = GenerationOutput {
-            cards: cards.to_vec(),
+            cards: cards.iter().flatten().cloned().collect(),
             documents: documents.clone(),
             generation_stats: GenerationStats::default(),
             timings: crate::GenerationTimings::default(),

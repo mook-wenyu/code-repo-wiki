@@ -142,32 +142,30 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
     ///    记录随生成回填到新卡片，保证不丢）；
     /// 2. extra_edits：本次运行新检测到的人工修改（模块名 → 记录文本），
     ///    由上层（lib.rs 从状态指纹比对结果）组装传入。
+    /// 返回与 chunks **一一对齐**的卡片容器（P1-1 修复）：空 chunk → None、
+    /// 生成失败 → None（失败仍记 failed_modules）、成功 → Some(card)。
+    /// 上层按 chunk 索引取卡（wiki 页摘要/特征回填），None 不再导致错位。
     pub async fn generate_all_cards(
         &self,
         chunks: &[Chunk],
         extra_edits: &std::collections::HashMap<String, Vec<String>>,
         on_progress: &dyn Fn(crate::ProgressEvent),
-    ) -> Result<Vec<KnowledgeCard>> {
+    ) -> Result<Vec<Option<KnowledgeCard>>> {
         let mut handles = Vec::with_capacity(chunks.len());
         // v46：LLM 逐卡进度——总任务数=非空 chunk 数；并发完成计数
         //（fetch_add 线程安全；单线程 runtime 轮询下依然成立）
         let done = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let total = chunks.iter().filter(|c| !c.is_empty()).count() as u32;
 
-        // task_modules 与 handles 同源收集：循环内仅对非空 chunk push，
-        // 下方 zip 时二者长度/顺序 1:1，空 chunk 跳过不会造成失败归因错位
-        let mut task_modules: Vec<String> = Vec::with_capacity(chunks.len());
         for chunk in chunks {
             // v31 修复（C-03）：空 chunk 是确定性「无内容」而非生成失败——
             // 跳过不产生 Err、不记 failed_modules（污染会使 should_skip_noop
             // 永久失效并引发无关模块补偿重试）。真实 LLM 失败仍由 Err 分支记录。
-            // module 名与 handles 同源收集（下方 zip 与 task_modules 1:1 对齐，
-            // 空 chunk 跳过不会造成失败归因错位或结果截断）。
+            // 空 chunk 不产生任务：合并段按 chunk.is_empty() 占 None 对齐全索引
             if chunk.is_empty() {
                 continue;
             }
             let module = chunk.module_path.join("::");
-            task_modules.push(module.clone());
             // 旧卡片读取失败按失败隔离语义降级（单卡不中断整体生成），
             // 但显式告警——静默丢人工修改记录会让人工修改保护失效
             let mut pending = match self.recover_pending_manual_edits(&module) {
@@ -206,25 +204,29 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
             });
         }
 
-        let results = join_all(handles).await;
-        let cards: Vec<KnowledgeCard> = task_modules
-            .into_iter()
-            .zip(results)
-            .filter_map(|(module, r)| {
-                match r {
-                    Ok(card) => Some(card),
-                    Err(e) => {
-                        // 失败隔离：记录失败的模块名（T3.2），不中断其他模块生成
-                        tracing::warn!("Knowledge Card 生成失败，跳过 {}: {}", module, e);
-                        if let Ok(mut failed) = self.failed.lock() {
-                            failed.push(module);
-                        }
-                        None
+        let mut results = join_all(handles).await.into_iter();
+        // P1-1：与 chunks 全索引对齐——空 chunk 占 None（无任务）、失败卡也占
+        // None（仅记 failed_modules），上层 cards.get(i) 按 chunk 索引取卡不再错位。
+        // results 顺序 = 非空 chunk 顺序，迭代器推进（zip 会因空 chunk 错位）
+        let mut cards: Vec<Option<KnowledgeCard>> = Vec::with_capacity(chunks.len());
+        for chunk in chunks {
+            if chunk.is_empty() {
+                cards.push(None);
+                continue;
+            }
+            match results.next() {
+                Some(Ok(card)) => cards.push(Some(card)),
+                Some(Err(e)) => {
+                    // 失败隔离：记录失败的模块名（T3.2），不中断其他模块生成
+                    tracing::warn!("Knowledge Card 生成失败，跳过 {}: {}", chunk.module_path.join("::"), e);
+                    if let Ok(mut failed) = self.failed.lock() {
+                        failed.push(chunk.module_path.join("::"));
                     }
+                    cards.push(None);
                 }
-            })
-            .collect();
-
+                None => cards.push(None),
+            }
+        }
         Ok(cards)
     }
 
@@ -692,9 +694,9 @@ mod tests {
 
         let cards = generator.generate_all_cards(&[chunk], &extra, &|_| {}).await.unwrap();
         assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].pending_manual_edits.len(), 2, "旧记录 + 新记录应合并为 2 条");
-        assert!(cards[0].pending_manual_edits.iter().any(|n| n.contains("旧记录")));
-        assert!(cards[0].pending_manual_edits.iter().any(|n| n.contains("新修改")));
+        assert_eq!(cards[0].as_ref().unwrap().pending_manual_edits.len(), 2, "旧记录 + 新记录应合并为 2 条");
+        assert!(cards[0].as_ref().unwrap().pending_manual_edits.iter().any(|n| n.contains("旧记录")));
+        assert!(cards[0].as_ref().unwrap().pending_manual_edits.iter().any(|n| n.contains("新修改")));
 
         // 去重：同一条记录同时存在于磁盘与 extra 时只保留一份
         let cards2 = generator.generate_all_cards(
@@ -703,9 +705,9 @@ mod tests {
             &|_| {},
         ).await.unwrap();
         assert!(
-            cards2[0].pending_manual_edits.len() <= 2,
+            cards2[0].as_ref().unwrap().pending_manual_edits.len() <= 2,
             "重复记录应被去重: {:?}",
-            cards2[0].pending_manual_edits
+            cards2[0].as_ref().unwrap().pending_manual_edits
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -735,7 +737,7 @@ mod tests {
         let cards = generator.generate_all_cards(&[chunk], &extra, &|_| {}).await.unwrap();
         assert_eq!(cards.len(), 1, "旧卡片读失败不应中断整批生成");
         assert_eq!(
-            cards[0].pending_manual_edits,
+            cards[0].as_ref().unwrap().pending_manual_edits,
             vec!["人工修改待同步: wiki/zh/src.md 内容摘要: 新修改".to_string()],
             "旧记录读取失败降级为空，只携带本次 extra 记录"
         );
@@ -746,7 +748,8 @@ mod tests {
     /// v31 C-03 防回归：管线入口已剔除空 chunk（chunks/cards/wiki/backfill
     /// 全链路 1:1 对齐）——generate_all_cards 收到非空 chunk 数组；
     /// 空 chunk 交错在中间时（[空, 失败] 与 [空, 成功]）失败归因必须
-    /// 正确落在真实失败模块名下、成功卡片不得静默丢失、不得记入空模块。
+    /// 正确落在真实失败模块名下、成功卡片不得静默丢失、不得记入空模块；
+    /// cards 长度与 chunks 对齐（空 chunk / 失败均占 None 位）。
     #[tokio::test]
     async fn test_generate_all_cards_skips_empty_chunks_records_real_failures() {
         // 构造空 chunk（管线入口过滤后不应到达生成循环；此处验证交错对齐）
@@ -756,7 +759,9 @@ mod tests {
         empty.imports = Vec::new();
         let provider = Provider::Mock(MockProvider::new());
 
-        // ① [空, 真实失败]：失败必须记在真实模块 src 名下，而非空模块 zzz
+        // ① [空, 真实失败]：失败必须记在真实模块 src 名下，而非空模块 zzz；
+        // 新语义（P1-1）：cards 与 chunks 全索引对齐——空 chunk 占 None 位，
+        // 失败也占 None 位，长度恒 = chunks 长度
         let failing = FailingProvider;
         let (config, dir) = card_fixture("interleave-fail", "src", "# src\n\n## 摘要\n旧内容");
         let fail_gen = CardGenerator::new(&failing, config, 1, "zh".into());
@@ -764,24 +769,26 @@ mod tests {
             .generate_all_cards(&[empty.clone(), make_test_chunk()], &std::collections::HashMap::new(), &|_| {})
             .await
             .unwrap();
-        assert!(cards.is_empty(), "失败模块不产出卡片");
+        assert_eq!(cards.len(), 2, "对齐语义：空 chunk 也占位（None）");
+        assert!(cards.iter().all(|c| c.is_none()), "空 chunk 与失败模块均不产出卡片");
         assert_eq!(
             fail_gen.failed_modules(),
             vec!["src"],
-            "失败必须归因到真实失败模块（空 chunk 已被入口剔除，不参与对齐）: {:?}",
+            "失败必须归因到真实失败模块（空 chunk 不参与失败归因）: {:?}",
             fail_gen.failed_modules()
         );
         let _ = std::fs::remove_dir_all(&dir);
 
-        // ② [空, 成功]：成功卡片保留且摘要正确（无错位截断）
+        // ② [空, 成功]：成功卡片保留在正确索引位（None 占位不压缩，P1-1 对齐语义）
         let (config2, dir2) = card_fixture("interleave-ok", "src", "# src\n\n## 摘要\n旧内容");
         let gen2 = CardGenerator::new(&provider, config2, 1, "zh".into());
         let cards2 = gen2
             .generate_all_cards(&[empty, make_test_chunk()], &std::collections::HashMap::new(), &|_| {})
             .await
             .unwrap();
-        assert_eq!(cards2.len(), 1, "成功卡片不得静默丢失");
-        assert_eq!(cards2[0].module_name, "src");
+        assert_eq!(cards2.len(), 2, "对齐语义：长度恒 = chunks 长度");
+        assert!(cards2[0].is_none(), "空 chunk 占位 None");
+        assert_eq!(cards2[1].as_ref().unwrap().module_name, "src", "成功卡片在正确索引位，不得错位");
         assert!(gen2.failed_modules().is_empty(), "无真实失败时不记 failed_modules");
         let _ = std::fs::remove_dir_all(&dir2);
     }
