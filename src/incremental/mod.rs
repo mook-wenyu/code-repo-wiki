@@ -355,27 +355,15 @@ fn run_file_watch_incremental(
         propagate_impact_semantic(&changed_for_impact, &entity_changes, graph, crate::config::schema::IMPACT_MAX_DEPTH)
     };
 
-    // 保存新状态
-    // 同上（票 03）：FileWatch 中途存盘同样合并旧状态保护字段；
-    // 复用前面已加载的 state（Option），不存在二次 load 静默失败路径。
-    // v47：提交标记=git HEAD（有 git 时）——哨兵会导致：①下次实体级
-    // 分类无基准（每次 update 全量回退，实测 OID 报错）；②no-op 快速
-    // 跳过判定失效（HEAD != "file-watch" 恒不跳过）。非 git 仓库
-    // （watch 场景）才落哨兵。
-    let commit_marker = crate::incremental::diff::git_head_oid(root.path())
-        .unwrap_or_else(|_| FILE_WATCH_SENTINEL.to_string());
-    if let Ok(mut new_state) = GenerationState::from_insights(root, insights, &commit_marker) {
-        if let Some(old_state) = &state {
-            new_state.preserve_protection(old_state);
-        }
-        if let Err(e) = new_state.save(state_dir) {
-            tracing::warn!("保存生成状态失败: {}", e);
-        }
-    }
-
+    // 中途存盘已移除：分析阶段推进 file_fingerprints/last_commit_hash 会使
+    // 生成崩溃后下次 update 指纹比对检不出变更（changed_files 空 → 静默
+    // 跳过 → 产物永久失配）。磁盘状态停留上次成功状态，保护字段天然保留；
+    // 生成成功后由 lib.rs:617 save_generation_state 统一推进。
     tracing::info!("FileWatch 增量分析完成: {} 个模块受影响", affected_modules.len());
     // FileWatch 的删除判定 = 变更集中存在磁盘上已不存在的路径（删除事件）
-    let has_deleted = changed_files.iter().any(|p| !p.exists());
+    // 与上方 exists_at_root 同基准（root.path() 前缀）：changed_files 为
+    // 相对路径，裸判 exists 落在进程 cwd 上，cwd 漂移会误判删除
+    let has_deleted = changed_files.iter().any(|p| !root.path().join(p).exists());
     Ok((changed_files, affected_modules, entity_changes, has_deleted))
 }
 
@@ -538,10 +526,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 票 03：中途存盘必须保留旧状态保护字段（LLM 生成失败场景的防回归）。
-    /// 构造带 protected_docs/doc_fingerprints 的旧状态 → 跑 FileWatch 增量
-    /// （其内部 from_insights + preserve_protection 后落盘）→ 断言磁盘状态
-    /// 保护字段仍在（生成失败后下次运行保护不丢）。
+    /// 票 03 回归锚（P0-5 配套）：分析阶段不写盘推进指纹/commit。
+    /// 存盘块已删除，状态推进由 lib.rs:617 save_generation_state 统一负责；
+    /// 保护字段由磁盘旧状态天然承载。
     #[test]
     fn test_file_watch_midway_save_preserves_protection() {
         let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_watch_protect_{}", std::process::id()));
@@ -560,7 +547,7 @@ mod tests {
         old.doc_fingerprints = std::collections::HashMap::from([("wiki/zh/manual.md".to_string(), "fp".to_string())]);
         old.save(&state_dir).unwrap();
 
-        // 触发 FileWatch 增量（内容变更 → 中途存盘路径执行）
+        // 触发 FileWatch 增量（内容变更 → 指纹比对命中；分析不写盘）
         std::fs::write(src.join("a.rs"), "v2").unwrap();
         let changed = src.join("b.rs");
         let graph = KnowledgeGraph::default();
@@ -570,6 +557,10 @@ mod tests {
         let saved = GenerationState::load(&state_dir).unwrap();
         assert_eq!(saved.protected_docs, vec!["wiki/zh/manual.md"], "中途存盘不得清空保护集");
         assert_eq!(saved.doc_fingerprints.get("wiki/zh/manual.md").map(String::as_str), Some("fp"));
+        // 分析阶段不得推进指纹/commit：磁盘状态须与旧值一致
+        // （P0-5：崩溃后下次 update 用旧指纹比对，才能正确检出本次变更）
+        assert_eq!(saved.last_commit_hash, old.last_commit_hash, "分析不得推进 last_commit_hash");
+        assert_eq!(saved.file_fingerprints, old.file_fingerprints, "分析不得推进文件指纹（旧状态含 a.rs 的 v1 指纹）");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

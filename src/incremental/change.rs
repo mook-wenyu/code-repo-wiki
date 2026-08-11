@@ -105,7 +105,7 @@ pub fn no_entity_change_files(
 
 /// 在指定项目根下对 Git diff 做实体级变化分类
 ///
-/// git 仓库定位基准显式注入（与 analyze_git_diff 同源，root 由
+/// git 仓库定位基准显式注入（与 git 仓库定位同源，root 由
 /// run_incremental_update_at 统一传入）：不再依赖进程 cwd。
 pub fn classify_entity_changes_at(
     root: &crate::project::ProjectRoot,

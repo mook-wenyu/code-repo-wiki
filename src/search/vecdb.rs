@@ -210,15 +210,19 @@ impl VecDb {
             anyhow::bail!("空向量无法入库（维度为 0）");
         }
         self.ensure_table(dim)?;
+        // sqlite-vec 0.1.9 的 vec0Update_InsertRowidStep 支持省略 rowid 自动分配
+        // （vec0 表声明 rowid INTEGER PRIMARY KEY AUTOINCREMENT）。增量路径
+        // remove_by_file 只删部分行，剩余行的 rowid 可能与显式 rowid
+        // （按 enumerate 序号）撞车导致主键冲突；省略 rowid 后由虚表自增
+        // 分配，消除冲突。
         let mut stmt = self.conn.prepare(&format!(
-            "INSERT INTO {VECTOR_TABLE}(rowid, embedding, file_path, node_json) \
-             VALUES (?1, ?2, ?3, ?4)"
+            "INSERT INTO {VECTOR_TABLE}(embedding, file_path, node_json) \
+             VALUES (?1, ?2, ?3)"
         ))?;
-        for (i, (file_path, node_json, vector)) in items.iter().enumerate() {
+        for (file_path, node_json, vector) in items.iter() {
             // vec0 的 embedding 列接受 JSON 数组字符串（探针验证：'[1,0,0]' 直接可用）
             let json = vector_to_json(vector);
             stmt.execute(rusqlite::params![
-                (i + 1) as i64,
                 json,
                 crate::incremental::norm_sep(file_path),
                 node_json,
@@ -453,5 +457,43 @@ mod tests {
         assert!(db.knn("[1,0,0]", 10, MAX_COSINE_DISTANCE).unwrap().is_empty());
         assert_eq!(db.remove_by_file("src/a.rs").unwrap(), 0);
         db.clear().unwrap(); // 表不存在时静默成功
+    }
+
+    #[test]
+    fn test_insert_batch_after_partial_removal() {
+        // 「第二次运行」范式回归锚（P0-1）：增量路径必须测非空表场景。
+        // 增量流程（lib.rs 的 remove_by_file → index_batch）在表非空时
+        // 删旧行再插新行，剩余行的 rowid 是不连续的残值。旧实现按
+        // enumerate 序号显式写 rowid（1..N 每批重启），残留 rowid 与
+        // 新批显式 rowid 撞车 → SQLITE_CONSTRAINT_PRIMARYKEY；现实现
+        // 省略 rowid 由 vec0 自增分配（见 insert_batch 注释），本场景
+        // 必须通过——任何回归到显式 rowid 的实现都会被此测试拦下。
+        let db = VecDb::open(tmp_db("incr")).unwrap();
+
+        // 首批 5 条：其中 2 条共用同一 file_path（模拟单文件多实体，
+        // remove_by_file 一次删整组，与增量路径的删旧行语义一致）
+        let mut items = make_items();
+        items.push(("src/shared.rs".into(), r#"{"name":"delta"}"#.into(), vec![0.0, 0.0, 1.0]));
+        items.push(("src/shared.rs".into(), r#"{"name":"epsilon"}"#.into(), vec![0.5, 0.5, 0.0]));
+        db.insert_batch(&items).unwrap();
+        assert_eq!(db.entry_count().unwrap(), 5);
+
+        // 增量第一步：文件级变化删除旧行（2 条同路径一并删除）
+        let removed = db.remove_by_file("src/shared.rs").unwrap();
+        assert_eq!(removed, 2);
+        assert_eq!(db.entry_count().unwrap(), 3);
+
+        // 增量第二步：再次 insert_batch 3 条新路径（表非空 + rowid 残值）
+        let second: Vec<(String, String, Vec<f32>)> = (0..3)
+            .map(|i| (format!("src/next{i}.rs"), format!(r#"{{"name":"next{i}"}}"#), vec![0.2, 0.8, 0.0]))
+            .collect();
+        db.insert_batch(&second).unwrap();
+
+        // 全表查询（max_distance=2.0 放行全部，同既有测试范式）：6 条且含新增路径
+        let rows = db.knn("[1,0,0]", 10, 2.0).unwrap();
+        assert_eq!(rows.len(), 6, "非空表 remove 后 insert_batch 必须成功且行数正确");
+        assert!(rows.iter().any(|r| r.node_json.contains("next0")));
+        assert!(rows.iter().any(|r| r.node_json.contains("next2")));
+        assert_eq!(db.entry_count().unwrap(), 6);
     }
 }

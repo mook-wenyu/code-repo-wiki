@@ -123,8 +123,12 @@ pub fn propagate_impact_semantic(
     result
 }
 
-/// 按文件路径（子串匹配）找到图中的起点节点
+/// 按文件路径（精确匹配）找到图中的起点节点
 ///
+/// 匹配以路径段为界：节点 file_path 等于变更路径，或以「变更路径 +
+/// '/'」开头（目录级变更兼容，changed_files 理论为文件级，但保留
+/// 目录前缀语义避免误伤既有行为）。子串匹配会把 "src/a.ts" 的变更
+/// 误判到 "src/a.tsx" 节点（a.ts 与 a.tsx 是不同文件），必须避免。
 /// 路径先经 norm_sep 归一化（git 正斜杠 vs Windows 反斜杠），
 /// 否则 Windows 上 git diff 路径永远匹配不到图中的节点。
 fn find_start_nodes(file_paths: &[String], graph: &KnowledgeGraph) -> Vec<NodeId> {
@@ -138,7 +142,13 @@ fn find_start_nodes(file_paths: &[String], graph: &KnowledgeGraph) -> Vec<NodeId
                 .as_ref()
                 .map(|fp| {
                     let fp = super::norm_sep(fp);
-                    normalized.iter().any(|cfp| fp.contains(cfp.as_str()))
+                    // 精确匹配：fp/cfp 均已 norm_sep 归一化，正斜杠一致，
+                    // 可直接比较；trim 尾部 '/' 后按路径段比较（"src/a.ts"
+                    // 不再命中 "src/a.tsx"，"src/a" 目录变更仍命中其下文件）。
+                    normalized.iter().any(|cfp| {
+                        let cfp = cfp.trim_end_matches('/');
+                        fp == cfp || fp.starts_with(&format!("{cfp}/"))
+                    })
                 })
                 .unwrap_or(false)
         })
@@ -430,5 +440,46 @@ mod tests {
         // 去重：同一受影响名重复出现只反查一次
         let files2 = module_files(&["net".into(), "net".into()], &graph);
         assert_eq!(files2.len(), 1);
+    }
+
+    /// P2-16 回归锚：路径匹配必须按段精确/目录前缀，而非子串——
+    /// 旧 contains 子串匹配会把 src/a.ts 的变更误判到 src/a.tsx 节点
+    /// （a.ts 是 a.tsx 的子串）；目录前缀变更（src/）仍须命中其下文件
+    /// （find_start_nodes 的 fp.starts_with(cfp + "/") 语义）。
+    #[test]
+    fn test_impact_exact_path_no_substring_false_positive() {
+        let mut g = StableDiGraph::<CodeNode, CodeEdge>::new();
+        let ts = g.add_node(CodeNode {
+            id: NodeId::new(0),
+            kind: NodeKind::Module,
+            name: "a_ts".into(),
+            file_path: Some("src/a.ts".into()),
+            line_range: None,
+            doc_comment: None,
+            signature: None, visibility: None,
+            module_path: vec!["a_ts".into()],
+        });
+        let tsx = g.add_node(CodeNode {
+            id: NodeId::new(1),
+            kind: NodeKind::Module,
+            name: "a_tsx".into(),
+            file_path: Some("src/a.tsx".into()),
+            line_range: None,
+            doc_comment: None,
+            signature: None, visibility: None,
+            module_path: vec!["a_tsx".into()],
+        });
+        let graph = KnowledgeGraph { graph: g, modules: vec![], features: Vec::new() };
+
+        // 仅变更 src/a.ts：不得命中 src/a.tsx 节点
+        let changed = vec![PathBuf::from("src/a.ts")];
+        let affected = propagate_impact(&changed, &graph, 3);
+        assert_eq!(affected, vec!["a_ts".to_string()], "a.ts 变更只影响 a.ts 所在模块，不得波及 a.tsx");
+
+        // 目录前缀兼容：变更 src/ 命中 src/a.ts 节点（fp.starts_with("src/")）
+        let changed_dir = vec![PathBuf::from("src/")];
+        let affected_dir = propagate_impact(&changed_dir, &graph, 3);
+        assert!(affected_dir.contains(&"a_ts".to_string()), "目录级变更应命中其下文件节点: {:?}", affected_dir);
+        assert!(affected_dir.contains(&"a_tsx".to_string()), "src/ 下所有节点都应命中");
     }
 }
