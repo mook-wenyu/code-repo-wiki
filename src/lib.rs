@@ -1040,13 +1040,25 @@ fn read_embed_model(config: &config::schema::WikiConfig) -> Option<String> {
         .and_then(|v| v.get("model")?.as_str().map(|s| s.to_string()))
 }
 
+/// 当前生效的 embedding 模型名（按 provider 区分）
+///
+/// Local 用 local_model（本地 ONNX 模型名），Remote/Mock 用 model——
+/// 语义索引标记必须记录真实参与索引的模型，否则本地换模型（同维度
+/// 如 e5-small 384 与 bge-small-en 384）会静默混用旧向量空间（v33 机制）。
+fn effective_embed_model(config: &config::schema::WikiConfig) -> &str {
+    match config.embed.provider {
+        config::schema::EmbedProvider::Local => config.embed.local_model.as_str(),
+        _ => config.embed.model.as_str(),
+    }
+}
+
 /// 记录当前 embedding 模型名（只在全量重建语义索引成功后调用）
 ///
 /// 失败仅告警：标记缺失会让下次增量再次走全量重建（保守正确，
 /// 且全量重建会再次尝试写标记，幂等收敛）。
 fn write_embed_model(config: &config::schema::WikiConfig) {
     let path = embed_model_marker(config);
-    let content = serde_json::json!({ "model": config.embed.model }).to_string();
+    let content = serde_json::json!({ "model": effective_embed_model(config) }).to_string();
     if let Err(e) = crate::fs::write_file_atomic(&path, &content) {
         tracing::warn!("embedding 模型标记写入失败（下次增量将回退全量重建）: {}", e);
     }
@@ -1057,7 +1069,7 @@ fn write_embed_model(config: &config::schema::WikiConfig) {
 /// 标记缺失/损坏一律视为不匹配（旧版本构建的索引模型未知，保守重建），
 /// 重建成功后写入新标记自愈收敛。纯文件比对、无网络依赖，可单测。
 fn embed_model_mismatch(config: &config::schema::WikiConfig) -> bool {
-    read_embed_model(config).as_deref() != Some(config.embed.model.as_str())
+    read_embed_model(config).as_deref() != Some(effective_embed_model(config))
 }
 
 /// 实体级特征聚类接线（演进计划 T1.2b）
@@ -1624,6 +1636,17 @@ mod tests {
         assert!(embed_model_mismatch(&config), "损坏标记应视为不匹配");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_effective_embed_model_by_provider() {
+        let mut cfg = config::schema::WikiConfig::default();
+        cfg.embed.provider = config::schema::EmbedProvider::Local;
+        cfg.embed.local_model = "bge-small-zh-v1.5".into();
+        cfg.embed.model = "qwen3-text".into();
+        assert_eq!(effective_embed_model(&cfg), "bge-small-zh-v1.5");
+        cfg.embed.provider = config::schema::EmbedProvider::Remote;
+        assert_eq!(effective_embed_model(&cfg), "qwen3-text");
     }
 
     /// v32 8.1：分段计时序列化往返与写盘/读取（缺省字段补零、损坏文件不 panic）

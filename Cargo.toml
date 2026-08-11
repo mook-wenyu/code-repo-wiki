@@ -45,11 +45,16 @@ sqlite-vec = "0.1.9"
 # 本地嵌入（T04a）：fastembed 纯 ONNX 推理免 API key；default-features=false 避免拉入
 # candle/图像栈，ort-download-binaries-native-tls 为最小推理集（bge 量化版无需 qwen3 feature）；
 # hf-hub-native-tls 提供模型下载（try_new 受 #[cfg(feature="hf-hub")] 门控，缺之编译报 E0599）
-fastembed = { version = "5", default-features = false, features = ["ort-download-binaries-native-tls", "hf-hub-native-tls"] }
+fastembed = { version = "5", default-features = false, features = ["ort-download-binaries-native-tls", "hf-hub-native-tls"], optional = true }
 # Mermaid 语法校验（G2 校验-重试-降级循环的权威解析器）：
 # 纯 Rust、无浏览器依赖，对齐 mermaid@11.15.0 语法基线；
 # 错误消息人类可读（t03 POC 实测 "Unterminated node label" 等），可直接作为 LLM 重试反馈
 merman-core = "0.7"
+
+[features]
+# T04-C：本地嵌入为可选特性——纯远程用户不编译 ort/tokenizers 大依赖树
+# （默认构建零增量；cargo build --features local-embed 启用）
+local-embed = ["dep:fastembed"]
 
 # 进程活性检测（锁残留自愈，13.1）：Unix kill(pid,0) 无信号探活；
 # Windows OpenProcess 存在性探测。target 限定避免无谓编译。
