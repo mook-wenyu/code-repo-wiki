@@ -292,6 +292,7 @@ fn bench_setup_scripted(tag: &str, base_url: &str) -> (ProjectRoot, WikiConfig) 
             api_key_env: "NONE".into(),
             thinking: None,
             reasoning_effort: None,
+            max_concurrency: None,
         },
         ..Default::default()
     };

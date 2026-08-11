@@ -1,4 +1,5 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
@@ -12,6 +13,8 @@ pub struct EmbeddingEngine {
     client: reqwest::Client,
     config: EmbedSection,
     call_count: AtomicUsize,
+    /// 并发信号量（P2-8）：embed_batch 分批发往 API 的并发上限（默认 4）
+    semaphore: Arc<tokio::sync::Semaphore>,
     /// 全局 tokio Runtime 句柄（同步 Embedder 实现经其驱动 async 请求）
     rt: tokio::runtime::Handle,
 }
@@ -30,6 +33,9 @@ impl EmbeddingEngine {
             client,
             config: config.clone(),
             call_count: AtomicUsize::new(0),
+            semaphore: Arc::new(tokio::sync::Semaphore::new(
+                config.max_concurrency.unwrap_or(4) as usize,
+            )),
             rt,
         })
     }
@@ -61,99 +67,127 @@ impl EmbeddingEngine {
         let api_key = self.resolve_api_key()?;
         let url = format!("{}/embeddings", self.resolve_base_url());
 
-        let mut all_embeddings = Vec::with_capacity(texts.len());
+        // P2-8：并发信号量——整批嵌入占一个许可（批次间并发属 T01-e 范围）
+        let _permit = self
+            .semaphore
+            .acquire()
+            .await
+            .map_err(|_| anyhow::anyhow!("并发信号量已关闭"))?;
 
-        for chunk in texts.chunks(crate::config::schema::EMBED_BATCH_SIZE) {
-            let body = serde_json::json!({
-                "model": self.config.model,
-                "input": chunk,
-            });
+        // P2-13：批次间并发——embedding 请求是纯网络 IO（无共享状态），
+        // 串行等待每批 RTT 让大仓批量嵌入分钟级阻塞。buffer_unordered(4)
+        // 并发发送、按 chunk 索引收集，保持结果顺序与串行一致。
+        const EMBED_CONCURRENCY: usize = 4;
+        let chunks: Vec<&[String]> = texts.chunks(crate::config::schema::EMBED_BATCH_SIZE).collect();
+        let mut results: Vec<Option<Result<Vec<Vec<f32>>>>> = (0..chunks.len()).map(|_| None).collect();
+        let model = self.config.model.clone();
+
+        use futures::StreamExt;
+        let mut stream = futures::stream::iter(chunks.iter().enumerate().map(|(idx, chunk)| {
+            let client = self.client.clone();
+            let url = url.clone();
+            let api_key = api_key.clone();
+            let model = model.clone();
+            async move {
+                let body = serde_json::json!({ "model": model, "input": chunk });
 
             // N16：embedding 请求接入统一重试骨架（与 LLM 通道一致：429/5xx/
             // 超时/连接失败按指数退避重试，其余 4xx 立即失败）。每轮重试重建
             // 请求（闭包捕获 body/url/key 的引用）。
             // v47：retry_with_backoff 输出放宽为 anyhow（send 阶段首字节超时
             // 保护）；此处直接包一层 Ok(...) 保持 anyhow 语义。
-            let resp = crate::generate::llm::retry_with_backoff(
-                crate::generate::llm::MAX_RETRIES,
-                || {
-                    let body = &body;
-                    let url = &url;
-                    let api_key = &api_key;
-                    let client = &self.client;
-                    async move {
-                        client
-                            .post(url)
-                            .bearer_auth(api_key)
-                            .json(body)
-                            .send()
-                            .await
-                            .map_err(anyhow::Error::from)
-                    }
-                },
-            )
-            .await
-            .with_context(|| "Embedding API 请求失败")?;
+                let resp = crate::generate::llm::retry_with_backoff(
+                    crate::generate::llm::MAX_RETRIES,
+                    || {
+                        let body = &body;
+                        let url = &url;
+                        let api_key = &api_key;
+                        let client = &client;
+                        async move {
+                            client
+                                .post(url)
+                                .bearer_auth(api_key)
+                                .json(body)
+                                .send()
+                                .await
+                                .map_err(anyhow::Error::from)
+                        }
+                    },
+                )
+                .await
+                .with_context(|| "Embedding API 请求失败")?;
 
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let text = resp.text().await.unwrap_or_default();
-                anyhow::bail!("Embedding API 返回错误 ({}): {}", status, text);
+                if !resp.status().is_success() {
+                    let status = resp.status();
+                    let text = resp.text().await.unwrap_or_default();
+                    anyhow::bail!("Embedding API 返回错误 ({}): {}", status, text);
+                }
+                Ok::<_, anyhow::Error>((idx, resp))
             }
+        }))
+        .buffer_unordered(EMBED_CONCURRENCY);
 
+        // 按索引收集（buffer_unordered 完成序与提交序不同，必须重排）
+        while let Some(item) = stream.next().await {
+            let (idx, resp) = item?;
             self.call_count.fetch_add(1, Ordering::Relaxed);
 
-            let data: serde_json::Value = resp
-                .json()
-                .await
-                .context("解析 Embedding API 响应 JSON 失败")?;
+                let data: serde_json::Value = resp
+                    .json()
+                    .await
+                    .context("解析 Embedding API 响应 JSON 失败")?;
 
-            let embeddings = data["data"]
-                .as_array()
-                .context("Embedding 响应缺少 data 字段")?
-                .iter()
-                .map(|item| {
-                    let arr = item["embedding"]
-                        .as_array()
-                        .context("嵌入向量缺失")?;
-                    // B6：元素必须全为数字——filter_map 静默丢弃非数字元素会
-                    // 让向量降维而不报错（同批一致变短时维度校验也捕获不到），
-                    // 模型输出异常必须显式失败而非产出残缺向量
-                    arr.iter()
-                        .map(|v| {
-                            v.as_f64()
-                                .map(|f| f as f32)
-                                .with_context(|| "嵌入向量包含非数字元素（模型输出异常，拒绝静默丢弃）")
-                        })
-                        .collect::<Result<Vec<f32>>>()
-                })
-                .collect::<Result<Vec<_>>>()?;
+                let embeddings = data["data"]
+                    .as_array()
+                    .context("Embedding 响应缺少 data 字段")?
+                    .iter()
+                    .map(|item| {
+                        let arr = item["embedding"]
+                            .as_array()
+                            .context("嵌入向量缺失")?;
+                        // B6：元素必须全为数字——filter_map 静默丢弃非数字元素会
+                        // 让向量降维而不报错（同批一致变短时维度校验也捕获不到），
+                        // 模型输出异常必须显式失败而非产出残缺向量
+                        arr.iter()
+                            .map(|v| {
+                                v.as_f64()
+                                    .map(|f| f as f32)
+                                    .with_context(|| "嵌入向量包含非数字元素（模型输出异常，拒绝静默丢弃）")
+                            })
+                            .collect::<Result<Vec<f32>>>()
+                    })
+                    .collect::<Result<Vec<_>>>()?;
 
-            // N5 修复：响应校验——data 条数必须与请求批次一致，且同批
-            // 向量维度必须一致。此前只校验"字段存在"，条数不足时
-            // 索引错位（下游 zip 静默丢弃多余/缺失）、维度不一致时
-            // 向量库维度校验失败但错误发生在数据已被吞之后。
-            if embeddings.len() != chunk.len() {
-                anyhow::bail!(
-                    "Embedding 响应数量不匹配：请求 {} 条，返回 {} 条",
-                    chunk.len(),
-                    embeddings.len()
-                );
-            }
-            if let Some(first) = embeddings.first() {
-                let dim = first.len();
-                if let Some(bad) = embeddings.iter().find(|v| v.len() != dim) {
+                // N5 修复：响应校验——data 条数必须与请求批次一致，且同批
+                // 向量维度必须一致。此前只校验"字段存在"，条数不足时
+                // 索引错位（下游 zip 静默丢弃多余/缺失）、维度不一致时
+                // 向量库维度校验失败但错误发生在数据已被吞之后。
+                if embeddings.len() != chunks[idx].len() {
                     anyhow::bail!(
-                        "Embedding 响应维度不一致：{} 维与 {} 维并存",
-                        dim,
-                        bad.len()
+                        "Embedding 响应数量不匹配：请求 {} 条，返回 {} 条",
+                        chunks[idx].len(),
+                        embeddings.len()
                     );
                 }
-            }
+                if let Some(first) = embeddings.first() {
+                    let dim = first.len();
+                    if let Some(bad) = embeddings.iter().find(|v| v.len() != dim) {
+                        anyhow::bail!(
+                            "Embedding 响应维度不一致：{} 维与 {} 维并存",
+                            dim,
+                            bad.len()
+                        );
+                    }
+                }
 
-            all_embeddings.extend(embeddings);
+            results[idx] = Some(Ok(embeddings));
         }
 
+        // 顺序收集（原串行语义：索引升序合并；缺失即内部错误）
+        let mut all_embeddings = Vec::with_capacity(texts.len());
+        for r in results {
+            all_embeddings.extend(r.ok_or_else(|| anyhow::anyhow!("嵌入批次结果缺失"))??);
+        }
         Ok(all_embeddings)
     }
 

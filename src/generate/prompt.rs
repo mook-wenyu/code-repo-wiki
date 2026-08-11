@@ -46,7 +46,10 @@ fn module_summary_user_prompt(chunk: &Chunk) -> String {
 
     if !chunk.entities.is_empty() {
         parts.push("\n## 实体列表".to_string());
-        for entity in &chunk.entities {
+        // P1-2：上下文预算——实体清单全量拼入会让大模块（数百实体）的
+        // prompt 超长（API 400 或输出截断），按预算截断并注记总数
+        const ENTITY_LIST_LIMIT: usize = 120;
+        for entity in chunk.entities.iter().take(ENTITY_LIST_LIMIT) {
             let doc = entity
                 .doc_comment
                 .as_deref()
@@ -57,19 +60,44 @@ fn module_summary_user_prompt(chunk: &Chunk) -> String {
                 entity.name, entity.kind, doc, entity.line_start, entity.line_end
             ));
         }
+        if chunk.entities.len() > ENTITY_LIST_LIMIT {
+            parts.push(format!(
+                "- …共 {} 个实体，仅列出前 {} 个",
+                chunk.entities.len(),
+                ENTITY_LIST_LIMIT
+            ));
+        }
     }
 
     if !chunk.imports.is_empty() {
         parts.push("\n## 导入语句".to_string());
-        for import in &chunk.imports {
+        // P1-2：导入语句同样按预算截断（与实体清单同策略）
+        const IMPORT_LIST_LIMIT: usize = 80;
+        for import in chunk.imports.iter().take(IMPORT_LIST_LIMIT) {
             parts.push(format!("- {}", import.source));
+        }
+        if chunk.imports.len() > IMPORT_LIST_LIMIT {
+            parts.push(format!(
+                "- …共 {} 条导入语句，仅列出前 {} 条",
+                chunk.imports.len(),
+                IMPORT_LIST_LIMIT
+            ));
         }
     }
 
     if !chunk.file_paths.is_empty() {
         parts.push("\n## 关联文件".to_string());
-        for path in &chunk.file_paths {
+        // P1-2：关联文件按预算截断
+        const FILE_LIST_LIMIT: usize = 40;
+        for path in chunk.file_paths.iter().take(FILE_LIST_LIMIT) {
             parts.push(format!("- {}", path.display()));
+        }
+        if chunk.file_paths.len() > FILE_LIST_LIMIT {
+            parts.push(format!(
+                "- …共 {} 个关联文件，仅列出前 {} 个",
+                chunk.file_paths.len(),
+                FILE_LIST_LIMIT
+            ));
         }
     }
 

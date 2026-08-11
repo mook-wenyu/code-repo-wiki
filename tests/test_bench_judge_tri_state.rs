@@ -223,6 +223,7 @@ fn bench_setup(tag: &str, base_url: &str, with_readme: bool, with_tqs: bool) -> 
             api_key_env: "NONE".into(),
             thinking: None,
             reasoning_effort: None,
+            max_concurrency: None,
         },
         ..Default::default()
     };

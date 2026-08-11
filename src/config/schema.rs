@@ -187,6 +187,13 @@ pub struct LlmSection {
     /// 官方映射：v4-flash low→low、high→high、max→max。
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+    /// LLM 调用并发上限（P2-8 配套，可选）
+    ///
+    /// 批量生成/评测并行调用 LLM 时的并发信号量上限。DeepSeek 官方
+    /// 动态账户级并发（超限 429），官方实践建议 8-16 起步；None 时
+    /// Provider 用内置默认（OpenAi/Anthropic 均为 16）。
+    #[serde(default)]
+    pub max_concurrency: Option<u32>,
 }
 
 fn default_llm_model() -> String {
@@ -223,6 +230,7 @@ impl Default for LlmSection {
             // 显式 `thinking = false` 关闭以获得约 5× 提速（见 schema 注释）。
             thinking: None,
             reasoning_effort: None,
+            max_concurrency: None,
         }
     }
 }
@@ -266,6 +274,11 @@ pub struct EmbedSection {
     pub api_key: Option<String>,
     #[serde(default = "default_embed_api_key_env")]
     pub api_key_env: String,
+    /// Embedding 调用并发上限（P2-8 配套，可选）
+    ///
+    /// embed_batch 分批发往 API 的并发信号量上限；None 时引擎用内置默认 4。
+    #[serde(default)]
+    pub max_concurrency: Option<u32>,
 }
 
 fn default_embed_model() -> String {
@@ -295,6 +308,7 @@ impl Default for EmbedSection {
             ),
             api_key: None,
             api_key_env: "BAILIAN_API_KEY".to_string(),
+            max_concurrency: None,
         }
     }
 }

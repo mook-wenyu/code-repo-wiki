@@ -24,7 +24,8 @@ model = "deepseek-v4-flash"
 base_url = "https://opencode.ai/zen/go/v1"
 #api_key = ""
 api_key_env = "OPENCODEGO2_API_KEY"
-# 并发 LLM 调用数与温度等已硬编码（v22 简化：见 schema.rs 顶部常量）
+# 并发 LLM 调用上限可配：max_concurrency（缺省 16；超出上限的调用排队等待，
+# 防触发服务端动态限流——P2-8）；温度等其余参数已硬编码（v22 简化）
 
 [embed]
 # 语义搜索与实体级特征聚类的向量来源（开关已硬编码恒启用；无 Key 环境
@@ -33,4 +34,4 @@ model = "qwen3.7-text-embedding"
 base_url = "https://llm-q0265e4he9m0qs23.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
 #api_key = ""
 api_key_env = "BAILIAN_API_KEY"
-# batch_size 已硬编码（v22 简化：见 schema.rs 顶部常量）
+# 批量嵌入并发可配：embed.max_concurrency（缺省 4）；batch_size 已硬编码

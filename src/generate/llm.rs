@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -53,7 +54,7 @@ pub trait LlmProvider: Send + Sync {
     }
     async fn complete_stream(&self, messages: &[Message]) -> Result<Vec<String>> {
         let _ = messages;
-        Err(anyhow::anyhow!("streaming not supported"))
+        Err(anyhow::anyhow!("当前 Provider 未实现流式调用（complete_stream）"))
     }
     /// 带输出预算上限的完整（非流式）调用。
     ///
@@ -128,19 +129,36 @@ impl LlmProvider for Provider {
 /// 统一的重试上限（总尝试次数），OpenAiProvider/AnthropicProvider 均从该常量取值
 pub(crate) const MAX_RETRIES: u32 = 3;
 
-/// 指数退避：500ms * 2^attempt + 随机抖动 0-250ms。
-/// 抖动用系统时钟纳秒取模实现，避免为单点功能引入 rand 依赖。
+/// 指数退避（full jitter，P2-8）：sleep = random(0, min(cap, base·2^attempt))。
+///
+/// 2026 共识（OpenAI Rate Limits 指南/DeepSeek 文档）：等值抖动（等宽区间加
+/// 固定基数）在批量并行重试时同步化风险高，full jitter 期望值更低且防惊群；
+/// 退避必须设 cap 防止无限增长。抖动用系统时钟纳秒取模实现，避免引入 rand。
+/// 429 响应若携带 Retry-After 头，retry_with_backoff 会以该值为退避下限。
+const BACKOFF_BASE_MS: u64 = 500;
+/// 退避上限：单次重试等待不超过 8s（指数增长 500ms→1s→2s→4s→8s 封顶）
+const BACKOFF_CAP_MS: u64 = 8_000;
+
 fn backoff_delay(attempt: u32) -> Duration {
-    let base = 500u64 * 2u64.pow(attempt);
+    // full jitter：上限 = min(cap, base·2^attempt)，随机落在 [0, 上限)
+    let max_ms = BACKOFF_BASE_MS
+        .checked_mul(1u64 << attempt.min(4))
+        .unwrap_or(BACKOFF_CAP_MS)
+        .min(BACKOFF_CAP_MS);
     let jitter = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| u64::from(d.subsec_nanos()) % 251)
+        .map(|d| u64::from(d.subsec_nanos()) % max_ms)
         .unwrap_or(0);
-    Duration::from_millis(base + jitter)
+    Duration::from_millis(jitter)
 }
 
 /// 可重试的 HTTP 状态码白名单：429 限流 + 5xx 服务端错误；
 /// 其余 4xx 业务错误（400/401/403/404/422 等）不在白名单内，立即失败。
+///
+/// 429 与 503 同路径处理（P2-8 决策）：503（供应商过载）在 CLI 单进程场景
+/// 下与 429 一样值得重试——本工具无跨请求状态，circuit breaker 是长服务
+/// 架构（网关/常驻进程）的优化，引入会违背 KISS/YAGNI；重试预算由
+/// MAX_RETRIES=3 封顶，日志记录每次重试原因（可观测性已覆盖）。
 fn is_retryable_status(status: reqwest::StatusCode) -> bool {
     status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
 }
@@ -163,9 +181,15 @@ where
     Fut: std::future::Future<Output = anyhow::Result<reqwest::Response>> + Send,
 {
     let mut last_error = None;
+    // P2-8：服务端 Retry-After 给出的退避下限（429 携带时记录，5xx 不读该头）
+    let mut next_retry_after: Option<Duration> = None;
     for attempt in 0..max_retries {
         if attempt > 0 {
-            let delay = backoff_delay(attempt - 1);
+            // 退避 = max(full_jitter 退避, 服务端 Retry-After 下限)；两者皆为
+            // 单次延迟，不做累加（每次重试重新采样）
+            let delay = next_retry_after
+                .map(|r| backoff_delay(attempt - 1).max(r))
+                .unwrap_or_else(|| backoff_delay(attempt - 1));
             tracing::info!(
                 "LLM 请求重试（第 {}/{} 次），退避 {}ms",
                 attempt + 1,
@@ -177,14 +201,30 @@ where
         match send_fn().await {
             Ok(resp) if is_retryable_status(resp.status()) => {
                 let status = resp.status();
+                // P2-8：429 响应若携带 Retry-After 头（OpenAI 必有、DeepSeek
+                // 可能返回），以其秒数为退避下限——服务端给定的节流窗口
+                // 优先于本地估算；5xx 不读该头（服务端不承诺恢复时间）。
+                let retry_after = if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                    resp.headers()
+                        .get(reqwest::header::RETRY_AFTER)
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.trim().parse::<u64>().ok())
+                } else {
+                    None
+                };
                 let text = resp.text().await.unwrap_or_default();
+                last_error = Some(anyhow::anyhow!("API 返回错误 ({}): {}", status, text));
+                if let Some(secs) = retry_after.as_ref() {
+                    // Retry-After 存在则作为下次退避的下限（u64 为 Copy）
+                    next_retry_after = Some(Duration::from_secs(*secs));
+                }
                 tracing::warn!(
-                    "LLM API 返回可重试状态 {}（第 {} 次尝试）: {}",
+                    "LLM API 返回可重试状态 {}（第 {} 次尝试）{}: {}",
                     status,
                     attempt + 1,
+                    retry_after.map(|s| format!("，Retry-After {}s", s)).unwrap_or_default(),
                     text.chars().take(2000).collect::<String>()
                 );
-                last_error = Some(anyhow::anyhow!("API 返回错误 ({}): {}", status, text));
             }
             Ok(resp) => return Ok(resp),
             Err(e) if is_retryable_network(&e) => {
@@ -252,7 +292,16 @@ fn parse_sse_stream(
 ///
 /// SSE 行解析复用 parse_sse_stream 的语义（`data: ` 前缀 + 提取闭包），
 /// 逐行增量处理；跨 chunk 的残行保留到下一块。
+///
+/// 返回二元组 (chunks, finish_reason)：chunks 为提取的文本增量，
+/// finish_reason 为终止原因（chat: choices[0].finish_reason；Anthropic:
+/// message_delta 的 delta.stop_reason；Responses: response.incomplete 事件）。
+/// P0-8 截断检测：调用方据终止原因（length/max_tokens/incomplete）显式
+/// 报错，不再把被截断的残缺内容当完整产物消费。
 const SSE_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// P2-9：SSE 单行长度上限——异常端点/恶意响应可让 buf 无限增长拖垮内存
+const MAX_SSE_LINE_BYTES: usize = 1_048_576; // 1MiB
 
 /// send 阶段总超时（仅到首字节）
 ///
@@ -281,11 +330,13 @@ async fn collect_sse(
     resp: reqwest::Response,
     line_prefix: &str,
     extract: impl Fn(&serde_json::Value) -> Option<String>,
-) -> Result<Vec<String>> {
+    finish_extract: impl Fn(&serde_json::Value) -> Option<String>,
+) -> Result<(Vec<String>, Option<String>)> {
     use futures::StreamExt;
     let mut stream = resp.bytes_stream();
     let mut buf: Vec<u8> = Vec::new();
     let mut chunks = Vec::new();
+    let mut finish_reason: Option<String> = None;
 
     // v16 B 组：流式消费的可观测性——长生成场景（分钟级）若无日志，
     // 用户无法区分"模型还在产出"与"卡死无响应"。记录流开始与结束
@@ -310,6 +361,12 @@ async fn collect_sse(
             }
         };
         buf.extend_from_slice(&item);
+        if buf.len() > MAX_SSE_LINE_BYTES {
+            anyhow::bail!(
+                "SSE 单行超过 {} 字节上限（疑似端点异常），中止消费",
+                MAX_SSE_LINE_BYTES
+            );
+        }
         // 按行切分处理，保留未完成的尾部残行
         let mut consumed = 0usize;
         for (idx, b) in buf.iter().enumerate() {
@@ -321,9 +378,13 @@ async fn collect_sse(
             if !line.is_empty()
                 && let Some(json_str) = line.strip_prefix(line_prefix)
                 && let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str)
-                && let Some(text) = extract(&val)
             {
-                chunks.push(text);
+                if let Some(text) = extract(&val) {
+                    chunks.push(text);
+                }
+                if let Some(reason) = finish_extract(&val) {
+                    finish_reason = Some(reason);
+                }
             }
             consumed = idx + 1;
         }
@@ -334,9 +395,13 @@ async fn collect_sse(
         let line = String::from_utf8_lossy(&buf);
         if let Some(json_str) = line.trim().strip_prefix(line_prefix)
             && let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str)
-            && let Some(text) = extract(&val)
         {
-            chunks.push(text);
+            if let Some(text) = extract(&val) {
+                chunks.push(text);
+            }
+            if let Some(reason) = finish_extract(&val) {
+                finish_reason = Some(reason);
+            }
         }
     }
     tracing::info!(
@@ -344,7 +409,7 @@ async fn collect_sse(
         chunks.len(),
         chunks.iter().map(|c| c.len()).sum::<usize>()
     );
-    Ok(chunks)
+    Ok((chunks, finish_reason))
 }
 
 /// OpenAI 协议形态（v17 t02 拆分：协议按 provider 类型显式绑定）
@@ -381,6 +446,8 @@ pub struct OpenAiProvider {
     /// thinking 配套发送（官方映射：v4-flash low→low、high→high、max→max）
     reasoning_effort: Option<String>,
     call_count: std::sync::atomic::AtomicUsize,
+    /// 并发信号量（P2-8）：批量并行调用时的并发上限，防触发服务端动态限流
+    semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 impl OpenAiProvider {
@@ -410,6 +477,17 @@ impl OpenAiProvider {
             .build()
             .context("创建 HTTP 客户端失败")?;
 
+        // P2-11：thinking/reasoning_effort 仅 chat/completions 协议有效——
+        // Responses 协议无对应参数（官方 Responses 用 output_config），
+        // 用户按文档配置的 5× 提速开关在 Responses 下静默失效，必须显式警告
+        if protocol == OpenAiProtocol::Responses
+            && (config.thinking.is_some() || config.reasoning_effort.is_some())
+        {
+            tracing::warn!(
+                "配置了 thinking/reasoning_effort，但当前 provider 使用 Responses 协议——该参数仅 chat/completions 协议生效（被静默忽略）"
+            );
+        }
+
         Ok(Self {
             client,
             api_key,
@@ -424,6 +502,11 @@ impl OpenAiProvider {
             thinking: config.thinking,
             reasoning_effort: config.reasoning_effort.clone(),
             call_count: std::sync::atomic::AtomicUsize::new(0),
+            // P2-8：并发上限来自配置（None=默认 16）；tokio Semaphore::new
+            // 许可数上限约 2^61，u32 配置值远低于此（card.rs 已有先例）
+            semaphore: Arc::new(tokio::sync::Semaphore::new(
+                config.max_concurrency.unwrap_or(16) as usize,
+            )),
         })
     }
 }
@@ -522,6 +605,12 @@ impl LlmProvider for OpenAiProvider {
     async fn complete_stream(&self, messages: &[Message]) -> Result<Vec<String>> {
         self.call_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // P2-8：并发信号量——超出上限的调用等待（信号量在并发调用间共享）
+        let _permit = self
+            .semaphore
+            .acquire()
+            .await
+            .map_err(|_| anyhow::anyhow!("并发信号量已关闭"))?;
         match self.protocol {
             OpenAiProtocol::Chat => self.chat_complete_stream(messages, None).await,
             OpenAiProtocol::Responses => self.responses_complete_stream(messages, None).await,
@@ -537,6 +626,12 @@ impl LlmProvider for OpenAiProvider {
     ) -> Result<String> {
         self.call_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // P2-8：并发信号量——超出上限的调用等待（信号量在并发调用间共享）
+        let _permit = self
+            .semaphore
+            .acquire()
+            .await
+            .map_err(|_| anyhow::anyhow!("并发信号量已关闭"))?;
         let chunks = match self.protocol {
             OpenAiProtocol::Chat => self.chat_complete_stream(messages, max_output_tokens).await?,
             OpenAiProtocol::Responses => {
@@ -582,13 +677,29 @@ impl OpenAiProvider {
             anyhow::bail!("API 返回错误 ({}): {}", status, text);
         }
 
-        // chat/completions SSE：data: 行内 choices[0].delta.content
-        collect_sse(resp, "data: ", |v| {
-            v["choices"][0]["delta"]["content"]
-                .as_str()
-                .map(|s| s.to_string())
-        })
-        .await
+        // chat/completions SSE：data: 行内 choices[0].delta.content；
+        // 终止原因 choices[0].finish_reason（"stop"/"length"）——P0-8 截断检测
+        let (chunks, finish_reason) = collect_sse(
+            resp,
+            "data: ",
+            |v| {
+                v["choices"][0]["delta"]["content"]
+                    .as_str()
+                    .map(|s| s.to_string())
+            },
+            |v| {
+                v["choices"][0]["finish_reason"]
+                    .as_str()
+                    .map(|s| s.to_string())
+            },
+        )
+        .await?;
+        // P0-8：finish_reason=length 表示输出被 max_tokens 截断——显式报错，
+        // 调用方（卡片/页面重试协议）按失败处理，不再把残缺内容当完整产物
+        if finish_reason.as_deref() == Some("length") {
+            anyhow::bail!("模型输出被 max_tokens 截断（finish_reason=length），请增大输出预算或简化输入后重试");
+        }
+        Ok(chunks)
     }
 
     /// Responses API 协议路径（openai provider 的协议，v17 B4）
@@ -634,15 +745,37 @@ impl OpenAiProvider {
         }
 
         // Responses SSE：语义化事件流——data: 行内 type=response.output_text.delta
-        // 事件的 delta 字段（无 [DONE] 终止符，以流结束为终止，collect_sse 兼容）
-        collect_sse(resp, "data: ", |v| {
-            if v["type"].as_str() == Some("response.output_text.delta") {
-                v["delta"].as_str().map(|s| s.to_string())
-            } else {
-                None
-            }
-        })
-        .await
+        // 事件的 delta 字段；截断检测用 type=response.incomplete 事件（reason 为
+        // max_output_tokens 等）；response.completed 为正常终止——P0-8
+        let (chunks, finish_reason) = collect_sse(
+            resp,
+            "data: ",
+            |v| {
+                if v["type"].as_str() == Some("response.output_text.delta") {
+                    v["delta"].as_str().map(|s| s.to_string())
+                } else {
+                    None
+                }
+            },
+            |v| {
+                if v["type"].as_str() == Some("response.incomplete") {
+                    Some("length".to_string())
+                } else {
+                    None
+                }
+            },
+        )
+        .await?;
+        if chunks.is_empty() {
+            anyhow::bail!("模型返回空响应（Responses 流无任何输出文本）");
+        }
+        // P0-8：response.incomplete 事件表示输出被 max_output_tokens 截断
+        // （finish_extract 已映射为 "length"）——与 chat/anthropic 路径同语义，
+        // 显式报错，不再把部分内容当完整产物
+        if finish_reason.as_deref() == Some("length") {
+            anyhow::bail!("模型输出被截断（response.incomplete），请增大 max_output_tokens 或简化输入后重试");
+        }
+        Ok(chunks)
     }
 }
 
@@ -660,6 +793,8 @@ pub struct AnthropicProvider {
     max_tokens: Option<u32>,
     temperature: Option<f32>,
     call_count: std::sync::atomic::AtomicUsize,
+    /// 并发信号量（P2-8）：批量并行调用时的并发上限，防触发服务端动态限流
+    semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 impl AnthropicProvider {
@@ -689,13 +824,17 @@ impl AnthropicProvider {
             max_tokens: None,
             temperature: None,
             call_count: std::sync::atomic::AtomicUsize::new(0),
+            // P2-8：并发上限来自配置（None=默认 16）
+            semaphore: Arc::new(tokio::sync::Semaphore::new(
+                config.max_concurrency.unwrap_or(16) as usize,
+            )),
         })
     }
 }
 
 impl AnthropicProvider {
     /// 构建 messages API 请求体：system 消息分离到顶层字段、
-    /// 非 system 消息进 messages、max_tokens 未配置时默认 4096；
+    /// 非 system 消息进 messages、max_tokens 未配置时默认 8192（P2-14：4096 会截断长 wiki 页/评测输出）；
     /// stream 决定是否追加流式标记
     fn build_messages_body(
         &self,
@@ -720,8 +859,9 @@ impl AnthropicProvider {
 
         let mut body = serde_json::json!({
             "model": self.model,
-            // 显式覆盖优先，回退构造时的 max_tokens（默认 4096）
-            "max_tokens": max_tokens_override.or(self.max_tokens).unwrap_or(4096),
+            // 显式覆盖优先，回退构造时的 max_tokens（Anthropic API 必填
+            // max_tokens；默认 8192——4096 截断长 wiki 页/评测输出，P2-14）
+            "max_tokens": max_tokens_override.or(self.max_tokens).unwrap_or(8192),
             "messages": anthropic_messages,
         });
         if let Some(s) = system {
@@ -741,6 +881,13 @@ impl LlmProvider for AnthropicProvider {
     async fn complete_stream(&self, messages: &[Message]) -> Result<Vec<String>> {
         self.call_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        // P2-8：并发信号量——超出上限的调用等待
+        let _permit = self
+            .semaphore
+            .acquire()
+            .await
+            .map_err(|_| anyhow::anyhow!("并发信号量已关闭"))?;
 
         let url = format!("{}/messages", self.base_url);
         let body = self.build_messages_body(messages, true, None);
@@ -764,15 +911,34 @@ impl LlmProvider for AnthropicProvider {
             anyhow::bail!("Anthropic API 返回错误 ({}): {}", status, text);
         }
 
-        // Anthropic SSE：data: 行内 type=content_block_delta 事件的 delta.text
-        collect_sse(resp, "data: ", |v| {
-            if v["type"] == "content_block_delta" {
-                v["delta"]["text"].as_str().map(|s| s.to_string())
-            } else {
-                None
-            }
-        })
-        .await
+        // Anthropic SSE：data: 行内 type=content_block_delta 事件的 delta.text；
+        // 终止原因 type=message_delta 事件的 delta.stop_reason（"end_turn" 正常 /
+        // "max_tokens" 截断）——P0-8
+        let (chunks, finish_reason) = collect_sse(
+            resp,
+            "data: ",
+            |v| {
+                if v["type"] == "content_block_delta" {
+                    v["delta"]["text"].as_str().map(|s| s.to_string())
+                } else {
+                    None
+                }
+            },
+            |v| {
+                if v["type"] == "message_delta" {
+                    v["delta"]["stop_reason"].as_str().map(|s| s.to_string())
+                } else {
+                    None
+                }
+            },
+        )
+        .await?;
+        // P0-8：stop_reason=max_tokens 表示输出被 max_tokens 截断——显式报错，
+        // 不把残缺内容当完整产物
+        if finish_reason.as_deref() == Some("max_tokens") {
+            anyhow::bail!("模型输出被 max_tokens 截断（stop_reason=max_tokens），请增大 max_tokens 或简化输入后重试");
+        }
+        Ok(chunks)
     }
 
     // complete 走 trait 默认实现（complete_stream 收集拼接）——
@@ -784,6 +950,13 @@ impl LlmProvider for AnthropicProvider {
     ) -> Result<String> {
         self.call_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        // P2-8：并发信号量——超出上限的调用等待
+        let _permit = self
+            .semaphore
+            .acquire()
+            .await
+            .map_err(|_| anyhow::anyhow!("并发信号量已关闭"))?;
 
         let url = format!("{}/messages", self.base_url);
         let body = self.build_messages_body(messages, true, max_output_tokens);
@@ -807,15 +980,33 @@ impl LlmProvider for AnthropicProvider {
             anyhow::bail!("Anthropic API 返回错误 ({}): {}", status, text);
         }
 
-        // Anthropic SSE：data: 行内 type=content_block_delta 事件的 delta.text
-        let chunks = collect_sse(resp, "data: ", |v| {
-            if v["type"] == "content_block_delta" {
-                v["delta"]["text"].as_str().map(|s| s.to_string())
-            } else {
-                None
-            }
-        })
+        // Anthropic SSE：data: 行内 type=content_block_delta 事件的 delta.text；
+        // 终止原因 type=message_delta 事件的 delta.stop_reason（"end_turn" 正常 /
+        // "max_tokens" 截断）——P0-8
+        let (chunks, finish_reason) = collect_sse(
+            resp,
+            "data: ",
+            |v| {
+                if v["type"] == "content_block_delta" {
+                    v["delta"]["text"].as_str().map(|s| s.to_string())
+                } else {
+                    None
+                }
+            },
+            |v| {
+                if v["type"] == "message_delta" {
+                    v["delta"]["stop_reason"].as_str().map(|s| s.to_string())
+                } else {
+                    None
+                }
+            },
+        )
         .await?;
+        // P0-8：stop_reason=max_tokens 表示输出被 max_tokens 截断——显式报错，
+        // 不把残缺内容当完整产物（预算路径同语义）
+        if finish_reason.as_deref() == Some("max_tokens") {
+            anyhow::bail!("模型输出被 max_tokens 截断（stop_reason=max_tokens），请增大 max_tokens 或简化输入后重试");
+        }
         Ok(chunks.concat())
     }
 
@@ -972,6 +1163,7 @@ mod tests {
             api_key_env: "OPENAI_API_KEY".into(),
             thinking: None,
             reasoning_effort: None,
+            max_concurrency: None,
         }
     }
 
@@ -1191,6 +1383,58 @@ data: [DONE]
         assert_eq!(attempts.load(Ordering::Relaxed), 2);
     }
 
+    /// P2-8：429 响应携带 Retry-After 头时，退避下限尊重服务端节流窗口
+    /// （不早于 Retry-After 秒重试）。spawn_mock_server 响应头硬编码无自定义
+    /// 能力，用裸 TcpListener 手动写原始响应（与慢流测试同款模式）。
+    ///
+    /// 连接 1 返回 429 + Retry-After: 1；连接 2 返回 200 SSE。两连接共享同一
+    /// listener（for 循环持续 accept），按连接序号区分响应。
+    #[tokio::test]
+    async fn test_retry_respects_retry_after_header() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_server = attempts.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let attempts_server = attempts_server.clone();
+                std::thread::spawn(move || {
+                    let _req = read_request(&mut stream);
+                    let n = attempts_server.fetch_add(1, Ordering::Relaxed);
+                    if n == 0 {
+                        // 第一次：429 + Retry-After: 1（服务端节流窗口 1s）
+                        let resp = "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nRetry-After: 1\r\nContent-Length: 15\r\nConnection: close\r\n\r\n{\"error\":\"rate\"}";
+                        let _ = stream.write_all(resp.as_bytes());
+                    } else {
+                        // 第二次：200 + SSE 成功流
+                        let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"重试后成功\"}}]}\n\ndata: [DONE]\n\n";
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            sse.len(),
+                            sse
+                        );
+                        let _ = stream.write_all(resp.as_bytes());
+                    }
+                    let _ = stream.flush();
+                });
+            }
+        });
+
+        let provider = OpenAiProvider::new(&openai_config(&base_url), OpenAiProtocol::Chat).unwrap();
+        let start = std::time::Instant::now();
+        let reply = provider.complete(&[Message::user("你好")]).await.unwrap();
+        let elapsed = start.elapsed();
+
+        assert_eq!(reply, "重试后成功");
+        assert_eq!(attempts.load(Ordering::Relaxed), 2, "应重试一次");
+        assert!(
+            elapsed >= std::time::Duration::from_secs(1),
+            "Retry-After=1s 必须作为退避下限（重试等待不早于 1s）: {:?}",
+            elapsed
+        );
+    }
+
     #[tokio::test]
     async fn test_no_retry_on_401() {
         // 401 不在可重试白名单内：立即失败，断言仅 1 次请求
@@ -1348,6 +1592,7 @@ data: [DONE]
             api_key_env: "ANTHROPIC_API_KEY".into(),
             thinking: None,
             reasoning_effort: None,
+            max_concurrency: None,
         };
         let provider = AnthropicProvider::new(&config).unwrap();
         let messages = vec![Message::user("你好")];
@@ -1366,6 +1611,7 @@ data: [DONE]
             api_key_env: "ANTHROPIC_API_KEY".into(),
             thinking: None,
             reasoning_effort: None,
+            max_concurrency: None,
         };
         let provider = AnthropicProvider::new(&config).unwrap();
         assert_eq!(provider.call_count(), 0);
@@ -1399,6 +1645,7 @@ data: [DONE]
             api_key_env: "ANTHROPIC_API_KEY".into(),
             thinking: None,
             reasoning_effort: None,
+            max_concurrency: None,
         };
         let provider = AnthropicProvider::new(&config).unwrap();
         let messages = vec![
@@ -1425,7 +1672,7 @@ data: [DONE]
         assert_eq!(version_header.1, "2023-06-01");
         let body: serde_json::Value = serde_json::from_str(&req.body).unwrap();
         assert_eq!(body["model"], "claude-test");
-        assert_eq!(body["max_tokens"].as_u64(), Some(4096), "max_tokens 未配置时默认 4096");
+        assert_eq!(body["max_tokens"].as_u64(), Some(8192), "max_tokens 未配置时默认 8192（P2-14：4096 截断长输出）");
         // system 消息分离到顶层 system 字段
         assert_eq!(body["system"], "你是助手");
         let msgs = body["messages"].as_array().unwrap();
@@ -1462,6 +1709,7 @@ data: [DONE]
             api_key_env: "DEEPSEEK_API_KEY".into(),
             thinking: None,
             reasoning_effort: None,
+            max_concurrency: None,
         };
         let provider = OpenAiProvider::new(&config, OpenAiProtocol::Responses).unwrap();
         let chunks = provider.complete_stream(&[Message::user("你好")]).await.unwrap();
@@ -1478,7 +1726,7 @@ data: [DONE]
             *captured_server.lock().unwrap() = Some(req);
             MockResponse {
                 status: 200,
-                body: "data: {\"type\":\"response.completed\"}\n\n".into(),
+                body: "data: {\"type\":\"response.output_text.delta\",\"delta\":\"正常\"}\n\ndata: {\"type\":\"response.completed\"}\n\n".into(),
             }
         });
 
@@ -1490,6 +1738,7 @@ data: [DONE]
             api_key_env: "DEEPSEEK_API_KEY".into(),
             thinking: None,
             reasoning_effort: None,
+            max_concurrency: None,
         };
         let provider = OpenAiProvider::new(&config, OpenAiProtocol::Responses).unwrap();
         let messages = vec![Message::system("你是助手"), Message::user("你好")];
@@ -1539,6 +1788,7 @@ data: [DONE]
             api_key_env: "DEEPSEEK_API_KEY".into(),
             thinking: None,
             reasoning_effort: None,
+            max_concurrency: None,
         };
         let provider = OpenAiProvider::new(&config, OpenAiProtocol::Responses).unwrap();
         let chunks = provider.complete_stream(&[Message::user("你好")]).await.unwrap();
@@ -1573,6 +1823,7 @@ data: [DONE]
             api_key_env: "DEEPSEEK_API_KEY".into(),
             thinking: None,
             reasoning_effort: None,
+            max_concurrency: None,
         };
         let provider = OpenAiProvider::new(&config, OpenAiProtocol::Responses).unwrap();
         let out = provider
@@ -1586,5 +1837,108 @@ data: [DONE]
         let body: serde_json::Value = serde_json::from_str(&req.body).unwrap();
         assert_eq!(body["max_output_tokens"].as_u64(), Some(16384), "预算应写入 max_output_tokens");
         assert_eq!(body["stream"].as_bool(), Some(true), "带预算路径仍走流式");
+    }
+
+    /// P0-8 截断检测：chat 协议 finish_reason=length → 显式报错（不再把
+    /// 截断的残缺内容当完整产物写盘）
+    #[tokio::test]
+    async fn test_stream_truncation_chat_detected() {
+        let base_url = spawn_mock_server(move |_req| MockResponse {
+            status: 200,
+            body: "data: {\"choices\":[{\"delta\":{\"content\":\"部分内容\"}}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n".into(),
+        });
+
+        let config = LlmSection {
+            provider: LlmProviderType::OpenAI,
+            model: "deepseek-v4-flash".into(),
+            base_url: Some(format!("{}/v1", base_url)),
+            api_key: Some("test-key".into()),
+            api_key_env: "DEEPSEEK_API_KEY".into(),
+            thinking: None,
+            reasoning_effort: None,
+            max_concurrency: None,
+        };
+        let provider = OpenAiProvider::new(&config, OpenAiProtocol::Chat).unwrap();
+        let result = provider.complete(&[Message::user("你好")]).await;
+
+        assert!(result.is_err(), "finish_reason=length 必须报错而非静默返回残缺内容");
+        let err = format!("{:?}", result.err().unwrap());
+        assert!(err.contains("截断"), "错误消息应说明截断: {err}");
+    }
+
+    /// P0-8 截断检测：Anthropic stop_reason=max_tokens → 显式报错
+    #[tokio::test]
+    async fn test_stream_truncation_anthropic_detected() {
+        let base_url = spawn_mock_server(move |_req| MockResponse {
+            status: 200,
+            body: "data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"部分内容\"}}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"}}\n\n".into(),
+        });
+
+        let config = LlmSection {
+            provider: LlmProviderType::Anthropic,
+            model: "claude-test".into(),
+            base_url: Some(base_url),
+            api_key: Some("sk-ant-test".into()),
+            api_key_env: "ANTHROPIC_API_KEY".into(),
+            thinking: None,
+            reasoning_effort: None,
+            max_concurrency: None,
+        };
+        let provider = AnthropicProvider::new(&config).unwrap();
+        let result = provider.complete(&[Message::user("你好")]).await;
+
+        assert!(result.is_err(), "stop_reason=max_tokens 必须报错");
+        let err = format!("{:?}", result.err().unwrap());
+        assert!(err.contains("截断"), "错误消息应说明截断: {err}");
+    }
+
+    /// P0-8 截断检测：finish_reason=stop 正常终止 → 返回完整内容
+    #[tokio::test]
+    async fn test_stream_normal_finish_stop_ok() {
+        let base_url = spawn_mock_server(move |_req| MockResponse {
+            status: 200,
+            body: "data: {\"choices\":[{\"delta\":{\"content\":\"正常内容\"}}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".into(),
+        });
+
+        let config = LlmSection {
+            provider: LlmProviderType::OpenAI,
+            model: "deepseek-v4-flash".into(),
+            base_url: Some(format!("{}/v1", base_url)),
+            api_key: Some("test-key".into()),
+            api_key_env: "DEEPSEEK_API_KEY".into(),
+            thinking: None,
+            reasoning_effort: None,
+            max_concurrency: None,
+        };
+        let provider = OpenAiProvider::new(&config, OpenAiProtocol::Chat).unwrap();
+        let reply = provider.complete(&[Message::user("你好")]).await.unwrap();
+        assert_eq!(reply, "正常内容", "正常终止应返回完整内容");
+    }
+
+    /// P0-8 截断检测：Responses 协议 response.incomplete 事件 → 显式报错
+    /// （此前事件被检测但从未消费，截断流静默当完整产物——reviewer 阻塞项）
+    #[tokio::test]
+    async fn test_stream_truncation_responses_detected() {
+        let base_url = spawn_mock_server(move |_req| MockResponse {
+            status: 200,
+            body: "data: {\"type\":\"response.output_text.delta\",\"delta\":\"部分内容\"}\n\ndata: {\"type\":\"response.incomplete\",\"reason\":\"max_output_tokens\"}\n\n".into(),
+        });
+
+        let config = LlmSection {
+            provider: LlmProviderType::OpenAI,
+            model: "deepseek-v4-flash".into(),
+            base_url: Some(format!("{}/v1", base_url)),
+            api_key: Some("test-key".into()),
+            api_key_env: "DEEPSEEK_API_KEY".into(),
+            thinking: None,
+            reasoning_effort: None,
+            max_concurrency: None,
+        };
+        let provider = OpenAiProvider::new(&config, OpenAiProtocol::Responses).unwrap();
+        let result = provider.complete(&[Message::user("你好")]).await;
+
+        assert!(result.is_err(), "response.incomplete 必须报错而非静默返回部分内容");
+        let err = format!("{:?}", result.err().unwrap());
+        assert!(err.contains("截断"), "错误消息应说明截断: {err}");
     }
 }
