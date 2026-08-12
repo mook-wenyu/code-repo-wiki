@@ -124,6 +124,7 @@ async fn test_mcp_initialize_lists_tools_and_calls() {
     .await;
     let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
     assert!(text.contains("hello_world"), "wiki_ast_search 应找到符号: {text}");
+    assert!(text.contains("扫描耗时"), "wiki_ast_search 应附带扫描耗时成本提示: {text}");
 
     // 5. tools/call status：配置可加载（未生成 wiki → 未就绪提示）
     let resp = rpc_call(
@@ -366,6 +367,8 @@ async fn test_mcp_status_uses_root_and_shows_degradation() {
     .await;
     let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
     assert!(text.contains("hello_world"), "search 应命中索引实体: {text}");
+    assert!(text.contains("score="), "search 命中应含 score 字段: {text}");
+    assert!(text.contains("callers="), "search 命中应含 callers 字段: {text}");
     let tail = text.lines().last().map(str::trim).unwrap_or("");
     assert_eq!(
         tail,

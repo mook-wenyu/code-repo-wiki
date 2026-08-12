@@ -44,48 +44,53 @@ impl RepoWikiMcp {
 
 // ============ 工具定义（#[tool_router] 块内，方法可访问 self 配置） ============
 
-/// 搜索请求参数
+/// Search request parameters
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct SearchRequest {
-    /// 搜索关键词，如 "config 加载"
+    /// Search keywords, e.g. "config load"
     query: String,
-    /// 返回结果数量（默认取配置 search.default_top_k）
+    /// Number of results to return (default: config search.default_top_k; clamped to 1..=50)
     top_k: Option<usize>,
-    /// 搜索引擎: text / semantic / hybrid（默认取配置文件 default_engine）
+    /// Search engine: text / semantic / hybrid (default: config default_engine)
     engine: Option<String>,
 }
 
-/// AST 查找请求参数
+/// AST symbol lookup request parameters
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct AstSearchRequest {
-    /// 要查找的符号名（函数/结构体/trait/类等）
+    /// Symbol name to look up (function / struct / trait / class, etc.)
     symbol: String,
-    /// 源语言（rust/python/go/...）；省略时按文件扩展名自动推断
+    /// Source language (rust/python/go/...); auto-inferred from file extension if omitted
     language: Option<String>,
 }
 
-/// 读页面请求参数
+/// Read wiki page request parameters
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct ReadPageRequest {
-    /// 页面文件名（不含 .md），如 src_config、architecture、overview、api
+    /// Page file name (without .md), e.g. src_config, architecture, overview, api
     page: String,
-    /// 语言目录（默认取配置 wiki.language）
+    /// Language directory (default: config wiki.language)
     lang: Option<String>,
 }
 
-/// 读卡片请求参数
+/// Read knowledge card request parameters
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct ReadCardRequest {
-    /// 卡片名（模块名），如 src_config、crate_net
+    /// Card name (module name), e.g. src_config, crate_net
     card: String,
-    /// 语言目录（默认取配置 wiki.language）
+    /// Language directory (default: config wiki.language)
     lang: Option<String>,
 }
 
 #[tool_router(router = tool_router)]
 impl RepoWikiMcp {
-    /// 搜索代码实体：按关键词返回匹配的函数/结构体/类及文件位置（text/semantic/hybrid 引擎）
-    #[tool(name = "wiki_search", description = "搜索代码实体：按关键词返回匹配的函数/结构体/类及文件位置（text/semantic/hybrid 引擎，与 CLI code-repo-wiki search 等价；需先运行 code-repo-wiki generate 构建搜索索引）")]
+    /// Search code entities: keyword search over the pre-built code index
+    #[tool(
+        name = "wiki_search",
+        title = "Search code index",
+        description = "Purpose: keyword search over the pre-built code index (text / semantic / hybrid engines). Returns ranked hits with signature, file:lines, score, and callers/callees (hybrid engine only).\nWhen to use: to locate where a function, struct, class, or trait is defined or referenced by fuzzy keyword.\nWhen NOT to use: for exact symbol definition lookup, use wiki_ast_search instead.\nParameters & return example: {\"query\": \"config load\", \"top_k\": 10, \"engine\": \"hybrid\"} -> \"1. `fn load_config()` — src/config.rs:12-40 | score=0.8 | callers=[main] | callees=[]\". Note: requires `code-repo-wiki generate` to have built the index first.",
+        annotations(read_only_hint = true)
+    )]
     async fn search(&self, Parameters(SearchRequest { query, top_k, engine }): Parameters<SearchRequest>) -> String {
         // 配置完整性检查：搜索前确认配置可加载（错误早暴露）；v22 起
         // 引擎/条数默认值硬编码，配置内容不再被本函数使用。config 另用于
@@ -123,7 +128,18 @@ impl RepoWikiMcp {
                             None => file.to_string(),
                         };
                         let sig = hit.node.signature.as_deref().unwrap_or(&hit.node.name);
-                        out.push_str(&format!("{}. `{sig}` — {loc}\n", i + 1));
+                        // C-004：命中行文本增强——附加 score 与调用关系。score 为
+                        // SearchHit.score（hybrid 为 RRF 融合分，text/semantic 为原始
+                        // 相关分，恒有值）；callers/callees 仅 hybrid 引擎由 SearchAgent
+                        // 调用链补全填充，text/semantic 恒空（仍输出 [] 保留结构，
+                        // 让 Agent 明确知道该字段存在）。
+                        let callers = hit.callers.join(", ");
+                        let callees = hit.callees.join(", ");
+                        out.push_str(&format!(
+                            "{}. `{sig}` — {loc} | score={:.3} | callers=[{callers}] | callees=[{callees}]\n",
+                            i + 1,
+                            hit.score
+                        ));
                     }
                     out
                 };
@@ -139,9 +155,17 @@ impl RepoWikiMcp {
         }
     }
 
-    /// AST 精确符号查找：扫描源文件定位 函数/结构体/类 定义的 文件+行号+签名（不依赖搜索索引）
-    #[tool(name = "wiki_ast_search", description = "AST 精确符号查找：扫描源文件定位函数/结构体/类定义的 文件+行号+签名（与 CLI code-repo-wiki ast-search 等价）")]
+    /// Exact symbol definition lookup via full AST scan of the source tree
+    #[tool(
+        name = "wiki_ast_search",
+        title = "Look up symbol definition",
+        description = "Purpose: exact symbol definition lookup via a full AST scan of the source tree. Returns definitions with signature and file:line location.\nWhen to use: when you need the precise definition file, line, and signature of a function/struct/trait/class.\nWhen NOT to use: for fuzzy keyword queries, use wiki_search instead.\nWARNING: scans the entire source tree; cost scales with repository size.\nParameters & return example: {\"symbol\": \"load_config\", \"language\": \"rust\"} -> \"1. fn load_config() -> Result<Config> — src/config.rs:20-45\".",
+        annotations(read_only_hint = true)
+    )]
     async fn ast_search(&self, Parameters(AstSearchRequest { symbol, language }): Parameters<AstSearchRequest>) -> String {
+        // C-009：全量扫描成本提示——execute_ast_search 扫描整个源码树，
+        // 耗时随仓库规模增长；计时并在结果尾部附提示，提醒调用方谨慎使用
+        let start = std::time::Instant::now();
         match crate::execute_ast_search(self.config_path.as_deref(), &self.root, &symbol, language.as_deref()) {
             Ok(hits) if hits.is_empty() => format!("未找到符号 \"{symbol}\" 的定义"),
             Ok(hits) => {
@@ -155,14 +179,21 @@ impl RepoWikiMcp {
                     };
                     out.push_str(&format!("{}. {sig} — {loc}\n", i + 1));
                 }
+                // 扫描耗时提示（C-009）：全量扫描成本随仓库规模增长，显式告知调用方
+                out.push_str(&format!("（扫描耗时 {}ms）\n", start.elapsed().as_millis()));
                 out
             }
             Err(e) => format!("符号查找失败: {e}"),
         }
     }
 
-    /// 读取已生成的 Wiki 页面内容（模块页/架构概览/项目概览/api）
-    #[tool(name = "wiki_read_page", description = "读取已生成的 Wiki 页面内容（wiki/{lang}/{page}.md，如 src_config、architecture、overview、api；需先运行 code-repo-wiki generate，未生成的页面报错）")]
+    /// Read a generated wiki page's markdown content
+    #[tool(
+        name = "wiki_read_page",
+        title = "Read wiki page",
+        description = "Purpose: read the markdown content of a generated wiki page (module page / architecture overview / project overview / API).\nWhen to use: to retrieve module or API documentation generated by `code-repo-wiki generate`.\nWhen NOT to use: to read a knowledge card, use wiki_read_card instead. The page must already exist (run `code-repo-wiki generate` first), otherwise the tool reports an error.\nParameters & return example: {\"page\": \"architecture\", \"lang\": \"zh\"} -> \"/abs/path/wiki/zh/architecture.md\\n\\n(page markdown content)\". Returns the file path plus the markdown content.",
+        annotations(read_only_hint = true)
+    )]
     async fn read_wiki_page(&self, Parameters(ReadPageRequest { page, lang }): Parameters<ReadPageRequest>) -> String {
         let config = match crate::load_config_rooted(self.config_path.as_deref(), &self.root) {
             Ok(c) => c,
@@ -195,8 +226,13 @@ impl RepoWikiMcp {
         }
     }
 
-    /// 读取已生成的 Knowledge Card（AI 代理的结构化模块摘要）
-    #[tool(name = "wiki_read_card", description = "读取已生成的 Knowledge Card 内容（cards/{lang}/{card}.md；需先运行 code-repo-wiki generate，未生成的卡片报错）")]
+    /// Read a generated knowledge card's markdown content
+    #[tool(
+        name = "wiki_read_card",
+        title = "Read knowledge card",
+        description = "Purpose: read the markdown content of a generated knowledge card (structured module summary for AI agents).\nWhen to use: to retrieve the details of a module card.\nWhen NOT to use: to read a wiki page (module/API docs), use wiki_read_page instead. The card must already exist (run `code-repo-wiki generate` first), otherwise the tool reports an error.\nParameters & return example: {\"card\": \"src_config\", \"lang\": \"zh\"} -> \"/abs/path/cards/zh/src_config.md\\n\\n(card markdown content)\". Returns the file path plus the markdown content.",
+        annotations(read_only_hint = true)
+    )]
     async fn read_card(&self, Parameters(ReadCardRequest { card, lang }): Parameters<ReadCardRequest>) -> String {
         let config = match crate::load_config_rooted(self.config_path.as_deref(), &self.root) {
             Ok(c) => c,
@@ -225,8 +261,13 @@ impl RepoWikiMcp {
         }
     }
 
-    /// 查看 Wiki 生成状态：页面/卡片数量与 lint 健康检查结果
-    #[tool(name = "wiki_status", description = "查看 Wiki 生成状态：页面/卡片数量与产物健康检查（孤儿页/断链/过时/引用）")]
+    /// Report generated artifact health (page/card counts, degraded index, lint issues)
+    #[tool(
+        name = "wiki_status",
+        title = "Report wiki generation status",
+        description = "Purpose: report generated artifact health — page/card counts, semantic index degradation, and lint issues (orphan pages / broken links / stale / references).\nWhen to use: to check whether `code-repo-wiki generate` has run and whether regeneration is needed.\nWhen NOT to use: to read actual page or card content, use wiki_read_page / wiki_read_card instead.\nParameters & return example: {} -> \"Wiki ready: 3 pages, 2 cards\\nsemantic index: normal\\nlint: ok (no issues)\". Returns counts plus degradation hints.",
+        annotations(read_only_hint = true)
+    )]
     async fn status(&self) -> String {
         let config = match crate::load_config_rooted(self.config_path.as_deref(), &self.root) {
             Ok(c) => c,
