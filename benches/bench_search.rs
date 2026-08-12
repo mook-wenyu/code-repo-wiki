@@ -26,10 +26,9 @@ impl code_repo_wiki::analysis::feature::Embedder for ClusterEmbedder {
         if let Some(rest) = text
             .strip_prefix('f')
             .or_else(|| text.strip_prefix('g'))
+            && let Some(digits) = rest.split('_').next()
         {
-            if let Some(digits) = rest.split('_').next() {
-                cluster = digits.parse::<usize>().unwrap_or(0);
-            }
+            cluster = digits.parse::<usize>().unwrap_or(0);
         }
         let mut vec = vec![0.0f32; 20];
         if cluster < 20 {

@@ -47,6 +47,9 @@ pub trait Embedder: Send + Sync {
     fn cosine_similarity(&self, a: &[f32], b: &[f32]) -> f64;
 }
 
+/// 带块索引的批量嵌入结果（并发分块后按索引重排，保证 zip 不错位）
+type IndexedEmbedBatch = (usize, Result<Vec<Vec<f32>>>);
+
 /// 实体级特征聚类
 ///
 /// `embedder` 为 None 或嵌入失败时降级为纯结构聚类（结构权重即总权重）。
@@ -132,7 +135,7 @@ pub fn detect_features(
         // 原始顺序重排后再组装，保证 zip 不错位、确定性契约不破。
         const EMBED_THREADS: usize = 4;
         let chunk_size = texts.len().div_ceil(EMBED_THREADS).max(1);
-        let results: Vec<(usize, Result<Vec<Vec<f32>>, anyhow::Error>)> = std::thread::scope(|scope| {
+        let results: Vec<IndexedEmbedBatch> = std::thread::scope(|scope| {
             let mut handles = Vec::with_capacity(EMBED_THREADS);
             for (chunk_idx, chunk) in texts.chunks(chunk_size).enumerate() {
                 handles.push(scope.spawn(move || {

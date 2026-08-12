@@ -155,6 +155,7 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
     ///    记录随生成回填到新卡片，保证不丢）；
     /// 2. extra_edits：本次运行新检测到的人工修改（模块名 → 记录文本），
     ///    由上层（lib.rs 从状态指纹比对结果）组装传入。
+    ///
     /// 返回与 chunks **一一对齐**的卡片容器（P1-1 修复）：空 chunk → None、
     /// 生成失败 → None（失败仍记 failed_modules）、成功 → Some(card)。
     /// 上层按 chunk 索引取卡（wiki 页摘要/特征回填），None 不再导致错位。

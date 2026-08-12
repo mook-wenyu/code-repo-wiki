@@ -321,7 +321,7 @@ fn watch_path_dot_slash_prefix_boundary() {
         &[insight],
         &graph,
         &config,
-        &[src_file.clone()],
+        &[src_file],
     )
     .expect("增量分析失败");
     assert!(

@@ -449,7 +449,7 @@ mod tests {
     #[test]
     fn test_impact_exact_path_no_substring_false_positive() {
         let mut g = StableDiGraph::<CodeNode, CodeEdge>::new();
-        let ts = g.add_node(CodeNode {
+        let _ts = g.add_node(CodeNode {
             id: NodeId::new(0),
             kind: NodeKind::Module,
             name: "a_ts".into(),
@@ -459,7 +459,7 @@ mod tests {
             signature: None, visibility: None,
             module_path: vec!["a_ts".into()],
         });
-        let tsx = g.add_node(CodeNode {
+        let _tsx = g.add_node(CodeNode {
             id: NodeId::new(1),
             kind: NodeKind::Module,
             name: "a_tsx".into(),

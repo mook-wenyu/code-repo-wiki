@@ -141,10 +141,10 @@ pub fn chunk_by_module(
                 if graph.graph[e.id()].kind != EdgeKind::Imports {
                     continue;
                 }
-                if let Some(&target_mod) = node_to_module.get(&e.target()) {
-                    if target_mod != module.name.as_str() {
-                        deps.insert(target_mod);
-                    }
+                if let Some(&target_mod) = node_to_module.get(&e.target())
+                    && target_mod != module.name.as_str()
+                {
+                    deps.insert(target_mod);
                 }
             }
         }

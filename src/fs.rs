@@ -72,6 +72,7 @@ pub fn write_file_atomic(path: &Path, content: &str) -> Result<()> {
 ///   UnlockFile 释放内核锁并关闭句柄；守卫被 drop 之前锁一直有效
 ///   （`#[must_use]`，若守卫不保存会在获取处立刻释放）。
 /// - `path`：锁文件路径，仅用于诊断报错。
+///
 /// 锁文件本身常驻，本结构体 Drop 只关闭句柄，不删除文件。
 #[derive(Debug)]
 pub struct RunLock {
@@ -96,6 +97,7 @@ pub fn acquire_run_lock(config: &crate::config::schema::WikiConfig) -> Result<Ru
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(&path)
         .with_context(|| format!("获取运行锁失败: {}", path.display()))?;
 
@@ -283,7 +285,7 @@ mod tests {
         // 锁定区域）读取验证内容
         let mut content = String::new();
         {
-            let file: &mut std::fs::File = &mut *lock._lock;
+            let file: &mut std::fs::File = &mut lock._lock;
             file.seek(SeekFrom::Start(0)).unwrap();
             file.read_to_string(&mut content).unwrap();
         }

@@ -181,7 +181,7 @@ pub fn degrade_mermaid_blocks(content: &str, issues: &[MermaidIssue]) -> String 
             let is_empty_block = content
                 .lines()
                 .nth(i + 1)
-                .map_or(false, |l| l.trim_start().starts_with("```"));
+                .is_some_and(|l| l.trim_start().starts_with("```"));
             if !is_empty_block {
                 let block_index = count_mermaid_fences_before(content, i);
                 if let Some(issue) = issues.iter().find(|i| i.block_index == block_index) {

@@ -391,8 +391,10 @@ mod tests {
     /// max_concurrency=0 是配置错误：Semaphore::new(0) 永久挂起（T04b）
     #[test]
     fn test_embedding_engine_rejects_zero_concurrency() {
-        let mut cfg = EmbedSection::default();
-        cfg.max_concurrency = Some(0);
+        let cfg = EmbedSection {
+            max_concurrency: Some(0),
+            ..Default::default()
+        };
         let handle = tokio::runtime::Runtime::new().unwrap().handle().clone();
         let err = EmbeddingEngine::new(&cfg, handle)
             .err()
