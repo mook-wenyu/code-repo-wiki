@@ -121,54 +121,83 @@ fn acquire_run_lock_inner(
                     "另一 code-repo-wiki 实例正在运行（PID {pid}，锁文件: {}）。该进程结束后可重试",
                     path.display()
                 ),
-                // PID 无进程或不可解析（空/半写锁）→ 疑似残留，删除前重读校验
+                // PID 无进程或不可解析（空/半写锁）→ 疑似残留，原子改名认领
                 //
-                // TOCTOU 窗口：判定与删除之间存在时间窗，双进程 P1/P2 同读
-                // 同一陈旧锁时，P1 remove→create 新锁后 P2 再 remove 会误删
-                // P1 的新锁 → 双持运行（正是锁要防的覆盖场景）。重读校验把
-                // 窗口收窄为「读→校验→删」序列：仍非原子，但窗口已收窄至
-                // ns 级，且内容不一致时放弃删除 → 双持不可能。
+                // 双持防护（reviewer REJECTED 修复）：「重读校验 → remove → create」
+                // 中 remove 与 create 之间无原子屏障——P1 remove→create 新锁后，
+                // P2 的 remove 会误删 P1 的新锁 → 双持。rename 是原子操作：
+                // 只有一方能把 run.lock 改名为私有 stale 名（其余方 ENOENT），
+                // 赢家随后删除自己改名的文件并 create_new——此时它是唯一
+                // 持有者，输家永远无法删除赢家的新锁。
                 _ => {
-                    // 重读校验：内容与最初读取一致（仍死 PID/不可解析）才删除；
-                    // 重读失败或内容已变（他进程已接管换锁）→ 保守报错，不删除
-                    match std::fs::read_to_string(path) {
-                        Ok(c) if c.trim() == content.trim() => {}
-                        Ok(_) => anyhow::bail!(
-                            "运行锁内容在自愈判定后已变化（他进程可能已接管），放弃自愈，锁文件: {}",
-                            path.display()
-                        ),
-                        Err(_) => anyhow::bail!(
-                            "运行锁重读失败（可能另一实例正在释放），放弃自愈，锁文件: {}",
-                            path.display()
-                        ),
-                    }
-                    std::fs::remove_file(path).with_context(|| {
-                        format!("删除残留锁失败（可能刚被释放）: {}", path.display())
-                    })?;
-                    match std::fs::OpenOptions::new().write(true).create_new(true).open(path) {
-                        Ok(mut f) => {
-                            use std::io::Write;
-                            if let Err(e) = writeln!(f, "{}", std::process::id()) {
-                                let _ = std::fs::remove_file(path);
-                                anyhow::bail!("运行锁 PID 写入失败（锁已移除，可重试）: {e}");
-                            }
-                            Ok(RunLock { path: path.to_path_buf() })
-                        }
-                        Err(e) => {
-                            // 自愈重试仍失败：重读锁内容，把新持锁者 PID 纳入
-                            // 报错便于排查（重读失败/不可解析则省略 PID）
-                            let holder = std::fs::read_to_string(path)
-                                .ok()
-                                .and_then(|c| c.trim().parse::<u32>().ok())
-                                .map(|pid| format!("，当前持锁者 PID {pid}"))
-                                .unwrap_or_default();
-                            Err(e).with_context(|| {
-                                format!(
-                                    "获取运行锁失败（自愈重试后仍被占用{holder}）: {}",
+                    // 原子认领：run.lock → run.lock.stale.<pid>（本进程 pid，
+                    // 唯一私有名；rename 成功仅一方）
+                    let stale = path.with_file_name(format!(
+                        "run.lock.stale.{}",
+                        std::process::id()
+                    ));
+                    match std::fs::rename(path, &stale) {
+                        Ok(()) => {
+                            // 赢家：重读改名后文件，内容仍为陈旧（死 PID/不可
+                            // 解析）→ 删除私有文件 + create_new 新锁（此刻唯一
+                            // 持有者，无竞争）；内容已变（理论不可达——rename
+                            // 唯一性保证无第二赢家）→ rename 回原位并报接管
+                            let still_stale = match std::fs::read_to_string(&stale) {
+                                Ok(c) => c.trim() == content.trim(),
+                                Err(_) => false,
+                            };
+                            if still_stale {
+                                let _ = std::fs::remove_file(&stale);
+                                match std::fs::OpenOptions::new()
+                                    .write(true)
+                                    .create_new(true)
+                                    .open(path)
+                                {
+                                    Ok(mut f) => {
+                                        use std::io::Write;
+                                        if let Err(e) = writeln!(f, "{}", std::process::id()) {
+                                            let _ = std::fs::remove_file(path);
+                                            anyhow::bail!(
+                                                "运行锁 PID 写入失败（锁已移除，可重试）: {e}"
+                                            );
+                                        }
+                                        Ok(RunLock { path: path.to_path_buf() })
+                                    }
+                                    Err(e) => {
+                                        let holder = std::fs::read_to_string(path)
+                                            .ok()
+                                            .and_then(|c| c.trim().parse::<u32>().ok())
+                                            .map(|pid| format!("，当前持锁者 PID {pid}"))
+                                            .unwrap_or_default();
+                                        Err(e).with_context(|| {
+                                            format!(
+                                                "获取运行锁失败（自愈重试后仍被占用{holder}）: {}",
+                                                path.display()
+                                            )
+                                        })
+                                    }
+                                }
+                            } else {
+                                // 内容已变（超理论防御——rename 唯一性
+                                // 保证无第二赢家）：归位并报接管
+                                let _ = std::fs::rename(&stale, path);
+                                anyhow::bail!(
+                                    "运行锁内容在自愈认领后已变化（他进程可能已接管），放弃自愈，锁文件: {}",
                                     path.display()
-                                )
-                            })
+                                );
+                            }
                         }
+                        // 输家：锁已被他人认领/删除 → 递归重试一次
+                        // （锁已消失则 create_new 成功；新锁已建则走活 PID/残留判定）
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                            std::thread::sleep(std::time::Duration::from_millis(50));
+                            acquire_run_lock_inner(path, is_alive)
+                        }
+                        Err(e) => anyhow::bail!(
+                            "运行锁自愈认领失败（{}），锁文件: {}",
+                            e,
+                            path.display()
+                        ),
                     }
                 }
             }
