@@ -139,7 +139,16 @@ pub fn detect_features(
                     (chunk_idx, emb.embed_batch(chunk))
                 }));
             }
-            handles.into_iter().map(|h| h.join().expect("embedding 线程 panic")).collect()
+            handles.into_iter().map(|h| match h.join() {
+                Ok(r) => r,
+                Err(_) => {
+                    // 子线程 panic 视为 embedding 失败，走既有降级路径（纯结构聚类），
+                    // 不让一个线程的 panic 炸掉整个流水线。
+                    let msg = "特征聚类 embedding 子线程 panic，降级为纯结构聚类";
+                    tracing::warn!("{msg}");
+                    (0usize, Err(anyhow::anyhow!(msg)))
+                }
+            }).collect()
         });
         let mut vecs: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
         let mut failed = false;
