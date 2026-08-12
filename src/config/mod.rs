@@ -295,16 +295,6 @@ pub fn resolve_config_path(config: Option<&Path>, root: &ProjectRoot) -> Result<
     }
 }
 
-/// 配置加载统一入口：显式路径单文件加载；None 走默认配置链
-/// （项目级 config.toml 字段级合并覆盖用户级 config.toml）。
-/// MCP server 与 CLI 各命令共用，保证 None 语义一致。
-pub fn resolve_mcp_config(config: Option<&Path>, root: &ProjectRoot) -> Result<schema::WikiConfig> {
-    match config {
-        Some(p) => load_config(p),
-        None => load_default_config(root).map(|(_path, cfg)| cfg),
-    }
-}
-
 /// 校验配置合法性（v30+：扫描范围等算法项已硬编码，无可校验键——
 /// 保留入口便于未来新增约束；当前恒通过）
 fn validate_config(_config: &schema::WikiConfig) -> Result<()> {

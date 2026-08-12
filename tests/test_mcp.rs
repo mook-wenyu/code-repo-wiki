@@ -11,7 +11,7 @@ use std::process::Stdio;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 mod common;
-use common::{mock_config, unique_dir};
+use common::{mock_config, run_bin_with_envs, unique_dir};
 
 /// 启动 code-repo-wiki mcp 子进程，返回子进程句柄
 fn spawn_mcp(dir: &Path) -> tokio::process::Child {
@@ -149,7 +149,9 @@ async fn test_mcp_initialize_lists_tools_and_calls() {
     let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
     assert!(text.contains("code-repo-wiki generate"), "未生成时应有引导提示: {text}");
 
-    // 7. tools/call search：索引不存在时给出可读错误（不崩溃）
+    // 7. tools/call search：索引不存在时给出可读引导错误（不崩溃，
+    //    且错误消息精确指明索引缺失并引导运行 generate——索引缺失
+    //    路径的精确断言；降级提示路径见 test_mcp_status_uses_root_and_shows_degradation）
     let resp = rpc_call(
         &mut stdin,
         &mut stdout,
@@ -158,9 +160,10 @@ async fn test_mcp_initialize_lists_tools_and_calls() {
         serde_json::json!({"name": "search", "arguments": {"query": "hello", "engine": "text"}}),
     )
     .await;
+    let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
     assert!(
-        resp["result"]["isError"].as_bool() == Some(true) || resp["result"]["content"][0]["text"].is_string(),
-        "search 应有结果或错误信息: {resp}"
+        text.contains("搜索索引不存在"),
+        "索引缺失应引导运行 generate，实际: {text}"
     );
 
     // 关闭
@@ -263,7 +266,9 @@ async fn test_mcp_lang_traversal_rejected() {
 ///    status 从 sub 找不到产物报未生成，修复后必须就绪。
 /// 2. FR-501：语义降级标记（.search/semantic_degraded）存在时，
 ///    search 结果尾部与 status 报告必须显式提示降级原因（此前降级
-///    仅进 tracing 日志，MCP 调用方不可见——cli-vs-mcp-07）。
+///    仅进 tracing 日志，MCP 调用方不可见——cli-vs-mcp-07）。本测试
+///    真实构建文本索引后直接断言 search 结果尾部提示行——覆盖 mcp.rs
+///    search 工具的降级分支（而非仅 lib 函数级覆盖）。
 #[tokio::test]
 async fn test_mcp_status_uses_root_and_shows_degradation() {
     let dir = unique_dir("root_status");
@@ -271,16 +276,21 @@ async fn test_mcp_status_uses_root_and_shows_degradation() {
     std::fs::create_dir_all(dir.join(".code-repo-wiki")).unwrap();
     let config = mock_config();
     std::fs::write(dir.join("mcp-test.toml"), &config).unwrap();
-    // 合法产物：wiki/zh/architecture.md（status ready 的判据）+ 源文件
-    std::fs::create_dir_all(dir.join(".code-repo-wiki").join("wiki").join("zh")).unwrap();
-    std::fs::write(
-        dir.join(".code-repo-wiki").join("wiki").join("zh").join("architecture.md"),
-        "ok-content",
-    )
-    .unwrap();
+    // 源文件：search 命中实体（hello_world）
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(dir.join("src").join("main.rs"), "pub fn hello_world() {}\n").unwrap();
-    // 语义降级标记（模拟：语义索引构建失败后由生成流程写入）
+    // 真实构建搜索索引（mock provider 不触网；text_index.db 与 wiki 页面
+    // 均落 dir 根）——FR-501 的 search 分支须 search 实际返回命中才能断言
+    // 结果尾部提示，不能仅用索引缺失的错误路径
+    let gen_out = run_bin_with_envs(&dir, &["generate", "--config", "mcp-test.toml"], &[]);
+    assert!(
+        gen_out.status.success(),
+        "generate 应成功（构建索引），stderr: {}",
+        String::from_utf8_lossy(&gen_out.stderr)
+    );
+    // 语义降级标记（模拟：语义索引构建失败后由生成流程写入）。必须放在
+    // generate 之后写——generate 语义构建成功会清除旧标记、失败也会写入
+    // 自己的原因；手工覆盖保证原因内容确定、可精确断言
     std::fs::create_dir_all(dir.join(".code-repo-wiki").join(".search")).unwrap();
     std::fs::write(
         dir.join(".code-repo-wiki").join(".search").join("semantic_degraded"),
@@ -342,20 +352,26 @@ async fn test_mcp_status_uses_root_and_shows_degradation() {
         "status 应显式提示降级原因, 实际: {text}"
     );
 
-    // 2. search：索引不存在时是错误路径（无降级提示场景）——本测试仅验证
-    //    status 路径的 root 化与降级提示；search 的降级提示在同文件
-    //    search 工具实现内，由 lib 单测（semantic_degraded_reason）间接
-    //    覆盖。text 引擎索引缺失 → 引导错误，验证不崩溃即可。
+    // 2. search：降级标记存在 + 真实文本索引 → 结果尾部必须显式提示
+    //    降级原因（FR-501 的 search 输出提示，cli-vs-mcp-07——此前降级
+    //    仅进 tracing 日志，MCP 调用方不可见）。精确断言尾部行：
+    //    提示必须位于结果之后
     let resp = rpc_call(
         &mut stdin,
         &mut stdout,
         4,
         "tools/call",
-        serde_json::json!({"name": "search", "arguments": {"query": "hello", "engine": "text"}}),
+        serde_json::json!({"name": "search", "arguments": {"query": "hello_world", "engine": "text"}}),
     )
     .await;
     let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
-    assert!(text.contains("搜索索引不存在"), "索引缺失应引导: {text}");
+    assert!(text.contains("hello_world"), "search 应命中索引实体: {text}");
+    let tail = text.lines().last().map(str::trim).unwrap_or("");
+    assert_eq!(
+        tail,
+        "提示: 语义索引已降级（原因: embed key 未配置）",
+        "结果尾部应显式提示降级原因, 实际: {text}"
+    );
 
     drop(stdin);
     let _ = child.wait().await;

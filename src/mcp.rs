@@ -103,22 +103,31 @@ impl RepoWikiMcp {
         };
         let top_k = clamp_top_k(top_k.unwrap_or(crate::config::schema::SEARCH_DEFAULT_TOP_K));
         match crate::execute_search(self.config_path.as_deref(), &self.root, &query, top_k, &engine_type) {
-            Ok(hits) if hits.is_empty() => "未找到匹配结果".to_string(),
             Ok(hits) => {
-                let mut out = format!("找到 {} 个结果:\n", hits.len());
-                for (i, hit) in hits.iter().enumerate() {
-                    let file = hit.node.file_path.as_deref().unwrap_or("-");
-                    let loc = match hit.node.line_range {
-                        Some((s, e)) => format!("{file}:{s}-{e}"),
-                        None => file.to_string(),
-                    };
-                    let sig = hit.node.signature.as_deref().unwrap_or(&hit.node.name);
-                    out.push_str(&format!("{}. `{sig}` — {loc}\n", i + 1));
-                }
+                // 先构造结果主体（空/非空），再统一追加降级提示——
+                // 降级提示必须无条件出现：降级场景下 hybrid 引擎静默
+                // 降级为纯 text（lib.rs:1468-1472），可能返回空结果，
+                // 若只挂在非空分支，用户只会看到"未找到匹配结果"而
+                // 永远不知索引已降级（reviewer 14.2 REJECTED 必须项，
+                // 与 CLI 文本模式 main.rs:928-947 无条件提示对齐）
+                let mut out = if hits.is_empty() {
+                    "未找到匹配结果".to_string()
+                } else {
+                    let mut out = format!("找到 {} 个结果:\n", hits.len());
+                    for (i, hit) in hits.iter().enumerate() {
+                        let file = hit.node.file_path.as_deref().unwrap_or("-");
+                        let loc = match hit.node.line_range {
+                            Some((s, e)) => format!("{file}:{s}-{e}"),
+                            None => file.to_string(),
+                        };
+                        let sig = hit.node.signature.as_deref().unwrap_or(&hit.node.name);
+                        out.push_str(&format!("{}. `{sig}` — {loc}\n", i + 1));
+                    }
+                    out
+                };
                 // v0.6 FR-501：语义降级显式提示（cli-vs-mcp-07 修复）——
                 // 降级此前仅进 tracing 日志，MCP 调用方不可见；读生成期
                 // 降级标记（.search/semantic_degraded），有标记即追加原因
-                //（与 CLI search 文本模式 main.rs:944-947 行为一致）
                 if let Some(reason) = crate::semantic_degraded_reason(&config) {
                     out.push_str(&format!("提示: 语义索引已降级（原因: {}）\n", reason.trim()));
                 }
