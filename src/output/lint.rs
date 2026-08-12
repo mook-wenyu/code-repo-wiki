@@ -168,11 +168,18 @@ fn check_broken_links(pages: &[PathBuf], lang: &str) -> Vec<LintIssue> {
 /// 3. 过时检查：模块页/卡片生成时间 < 其源文件 mtime
 ///    （从产物内容提取源文件路径——相关文件段，与源码根下对应文件的 mtime 对比）
 fn check_stale(pages: &[PathBuf], cards_dir: &Path, source_roots: &[PathBuf], lang: &str) -> Vec<LintIssue> {
-    let mut stale_targets: Vec<PathBuf> = pages.to_vec();
-    stale_targets.extend(collect_md_files(cards_dir));
+    // 同时检查 wiki 页与 cards 卡片；逐项携带来源目录名（"wiki"/"cards"）,
+    // 否则 path 恒标 wiki/ 会把卡片误标成 wiki 路径（真实卡片在 cards/{lang}/ 下）
+    let mut stale_targets: Vec<(PathBuf, &'static str)> =
+        pages.iter().map(|p| (p.clone(), "wiki")).collect();
+    stale_targets.extend(
+        collect_md_files(cards_dir)
+            .into_iter()
+            .map(|p| (p, "cards")),
+    );
 
     let mut issues = Vec::new();
-    for page in &stale_targets {
+    for (page, dir) in &stale_targets {
         // 页面读取失败（损坏/权限/竞态删除）时显式告警并跳过该页——
         // 静默当作空内容会把页误报为孤儿/断链（失败必须可观测）
         let Ok(content) = std::fs::read_to_string(page) else {
@@ -195,7 +202,7 @@ fn check_stale(pages: &[PathBuf], cards_dir: &Path, source_roots: &[PathBuf], la
             {
                 issues.push(LintIssue {
                     kind: "stale",
-                    path: format!("wiki/{lang}/{file_name}"),
+                    path: format!("{dir}/{lang}/{file_name}"),
                     message: format!(
                         "过时: 源文件 {src} 的修改时间晚于页面生成时间(源码已变更,文档可能未更新)"
                     ),
@@ -1017,6 +1024,78 @@ mod tests {
             issues.iter().any(|i| i.kind == "stale"),
             "源文件更新后应报过时, 实际: {:?}",
             issues
+        );
+    }
+
+    /// 回归：卡片 stale 的 issue path 必须标 `cards/` 前缀（修复前与页面
+    /// 一样恒为 `wiki/`，展示层误标卡片路径；真实卡片在 cards/{lang}/ 下）。
+    /// 页面 stale 仍标 `wiki/` 前缀，判定逻辑不受影响。
+    #[test]
+    fn test_lint_stale_card_path_uses_cards_prefix() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_stale_card_path_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        let cards = dir.join("cards").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        std::fs::create_dir_all(&cards).unwrap();
+        let src_root = dir.join("src");
+        std::fs::create_dir_all(&src_root).unwrap();
+        let src_file = src_root.join("lib.rs");
+        std::fs::write(&src_file, "pub fn f() {}\n").unwrap();
+        let abs = src_file.to_string_lossy().to_string();
+        // 页面与卡片各一,均引用同一源文件绝对路径（卡片文件名与页面不同,
+        // 避免按文件名过滤时互相干扰）
+        std::fs::write(
+            wiki.join("lib.md"),
+            format!("# Lib\n\n## 相关文件\n\n- `{}`\n", abs),
+        )
+        .unwrap();
+        std::fs::write(
+            cards.join("card.md"),
+            format!("# Card\n\n## 相关文件\n\n- `{}`\n", abs),
+        )
+        .unwrap();
+        // 先等页面/卡片 mtime 落定,再重写源文件(严格更新)
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(&src_file, "pub fn updated() {}\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+
+        let issues = lint(&dir, &[src_root]);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let card_stale: Vec<_> = issues
+            .iter()
+            .filter(|i| i.kind == "stale" && i.path.contains("card.md"))
+            .collect();
+        assert_eq!(
+            card_stale.len(),
+            1,
+            "卡片应报过时且 path 含卡片名, 实际: {:?}",
+            issues
+        );
+        assert!(
+            card_stale[0].path.starts_with("cards/"),
+            "卡片 stale 的 path 应以 cards/ 开头, 实际: {}",
+            card_stale[0].path
+        );
+
+        let page_stale: Vec<_> = issues
+            .iter()
+            .filter(|i| i.kind == "stale" && i.path.contains("lib.md"))
+            .collect();
+        assert_eq!(
+            page_stale.len(),
+            1,
+            "页面应报过时且 path 含页面名, 实际: {:?}",
+            issues
+        );
+        assert!(
+            page_stale[0].path.starts_with("wiki/"),
+            "页面 stale 的 path 应以 wiki/ 开头, 实际: {}",
+            page_stale[0].path
         );
     }
 
