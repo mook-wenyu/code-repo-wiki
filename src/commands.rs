@@ -324,7 +324,7 @@ fn hook_is_ours(content: &str) -> bool {
 /// 永远不知道 wiki 已陈旧）。
 fn hook_content() -> String {
     format!(
-        "#!/bin/sh\n{0}: auto-update wiki on commit\ncd \"$(git rev-parse --show-toplevel)\"\ncommand -v code-repo-wiki >/dev/null 2>&1 || exit 0\nmkdir -p .code-repo-wiki\ncode-repo-wiki update 2>>.code-repo-wiki/update-error.log || echo \"code-repo-wiki: wiki 更新失败（详见 .code-repo-wiki/update-error.log）\" >&2\n",
+        "#!/bin/sh\n{0}: auto-update wiki on commit\ncd \"$(git rev-parse --show-toplevel)\"\ncommand -v code-repo-wiki >/dev/null 2>&1 || exit 0\nmkdir -p .code-repo-wiki\n# v13.3 锁感知：另一实例（watch/手动）正在运行时跳过本次更新，\n# 避免提交 hook 与实例并发写 wiki（锁冲突会累积 update-error.log）\nlock=\"$(git rev-parse --show-toplevel)/.code-repo-wiki/.state/run.lock\"\nif [ -f \"$lock\" ]; then\n  pid=\"$(cat \"$lock\" 2>/dev/null)\"\n  if [ -n \"$pid\" ] && kill -0 \"$pid\" 2>/dev/null; then\n    echo \"code-repo-wiki: 另一实例正在运行（PID $pid），跳过本次提交更新\" >&2\n    exit 0\n  fi\nfi\n# v13.3 日志有界：update-error.log 超 1MB 时轮转保留尾部 100 行\nlog=.code-repo-wiki/update-error.log\nif [ -f \"$log\" ] && [ \"$(wc -c < \"$log\" 2>/dev/null)\" -gt 1048576 ]; then\n  tail -n 100 \"$log\" > \"$log.tmp\" 2>/dev/null && mv \"$log.tmp\" \"$log\" 2>/dev/null || true\nfi\ncode-repo-wiki update 2>>.code-repo-wiki/update-error.log || echo \"code-repo-wiki: wiki 更新失败（详见 .code-repo-wiki/update-error.log）\" >&2\n",
         HOOK_MARKER
     )
 }
@@ -334,7 +334,7 @@ fn hook_content() -> String {
 /// 单条失败不传播为 git hook 失败，也不被静默吞掉）
 fn hook_block() -> String {
     format!(
-        "{0}\n# 自动更新 wiki（追加块，与仓库既有 hook 共存；用户 hook 若以 exit 结束，\n# 本块不会执行——post-commit 场景罕见，若需保证请移除既有 hook 后重装）\ncd \"$(git rev-parse --show-toplevel)\" 2>/dev/null || exit 0\ncommand -v code-repo-wiki >/dev/null 2>&1 || exit 0\nmkdir -p .code-repo-wiki 2>/dev/null || exit 0\ncode-repo-wiki update 2>>.code-repo-wiki/update-error.log || echo \"code-repo-wiki: wiki 更新失败（详见 .code-repo-wiki/update-error.log）\" >&2\n{1}\n",
+        "{0}\n# 自动更新 wiki（追加块，与仓库既有 hook 共存；用户 hook 若以 exit 结束，\n# 本块不会执行——post-commit 场景罕见，若需保证请移除既有 hook 后重装）\ncd \"$(git rev-parse --show-toplevel)\" 2>/dev/null || exit 0\ncommand -v code-repo-wiki >/dev/null 2>&1 || exit 0\nmkdir -p .code-repo-wiki 2>/dev/null || exit 0\n# v13.3 锁感知：另一实例运行时跳过（避免并发写 wiki）\nlock=\"$(git rev-parse --show-toplevel)/.code-repo-wiki/.state/run.lock\"\nif [ -f \"$lock\" ]; then\n  pid=\"$(cat \"$lock\" 2>/dev/null)\"\n  if [ -n \"$pid\" ] && kill -0 \"$pid\" 2>/dev/null; then\n    echo \"code-repo-wiki: 另一实例正在运行（PID $pid），跳过本次提交更新\" >&2\n    exit 0\n  fi\nfi\n# v13.3 日志有界：超 1MB 轮转保留尾部 100 行\nlog=.code-repo-wiki/update-error.log\nif [ -f \"$log\" ] && [ \"$(wc -c < \"$log\" 2>/dev/null)\" -gt 1048576 ]; then\n  tail -n 100 \"$log\" > \"$log.tmp\" 2>/dev/null && mv \"$log.tmp\" \"$log\" 2>/dev/null || true\nfi\ncode-repo-wiki update 2>>.code-repo-wiki/update-error.log || echo \"code-repo-wiki: wiki 更新失败（详见 .code-repo-wiki/update-error.log）\" >&2\n{1}\n",
         HOOK_MARKER, HOOK_END_MARKER
     )
 }
