@@ -698,8 +698,22 @@ pub fn run_card_command(
     config_path: Option<&Path>,
     root: &project::ProjectRoot,
     action: &generate::card::CardAction,
+    lock: LockOptions,
 ) -> anyhow::Result<()> {
     let config = load_config_with_output(config_path, None, root)?;
+    // 单实例运行锁（Phase 15.4 lock-audit-001）：card generate/modify/
+    // supplement/rewrite 写卡片但不持锁，与 generate/update/watch 并发会
+    // 把同一卡片互相覆盖（双写）。锁在 config 加载后、卡片校验与异步
+    // 执行前获取，RunLock 局部变量作用域覆盖整个函数体（Drop 释放）。
+    // --wait/--skip-if-locked 与 generate/update 同语义（Phase 15.2）。
+    let run_lock = match crate::fs::acquire_run_lock_with_options(&config, &lock)? {
+        crate::fs::LockAcquire::Acquired(run_lock) => run_lock,
+        crate::fs::LockAcquire::Skipped => {
+            println!("另一实例正在运行，已按 --skip-if-locked 跳过");
+            return Ok(());
+        }
+    };
+    let _run_lock = run_lock;
     // 编辑类动作要求卡片已存在：先校验（错误信息优先于 LLM API Key 检查）
     match action {
         generate::card::CardAction::Generate { .. } => {}

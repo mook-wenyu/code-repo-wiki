@@ -222,6 +222,12 @@ enum Commands {
         /// 项目根目录（扫描根/git 定位基准，默认当前目录）
         #[arg(long)]
         root: Option<PathBuf>,
+        /// 锁被占用时等待的秒数（超时仍报错）
+        #[arg(long, global = true)]
+        wait: Option<u64>,
+        /// 锁被占用时跳过本次操作（退出码 0），供 hook/CI 非阻塞使用
+        #[arg(long, global = true)]
+        skip_if_locked: bool,
     },
     /// 卸载 code-repo-wiki 集成（v33 合并版：OpenCode MCP + 插件 + AGENTS.md + hooks
     /// + Claude/Codex MCP 条目；--force 确认）
@@ -1021,8 +1027,14 @@ fn main() -> anyhow::Result<()> {
             let rt = code_repo_wiki::get_global_runtime();
             rt.block_on(code_repo_wiki::mcp::serve_stdio(config.as_deref(), root))?;
         }
-        Commands::Card { action, root } => {
+        Commands::Card { action, root, wait, skip_if_locked } => {
             use code_repo_wiki::generate::card as card_cmd;
+            // Phase 15.4：card 写卡片同样纳入运行锁；--wait/--skip-if-locked
+            // 与 generate/update 同构（Phase 15.2）转 LockOptions
+            let lock = code_repo_wiki::LockOptions {
+                wait: wait.map(std::time::Duration::from_secs),
+                skip_if_locked,
+            };
             // CLI 枚举转业务枚举（config 路径在匹配时提取，供 run_card_command 使用）
             let (config, action) = match action {
                 CardAction::Generate { module, config } => {
@@ -1042,7 +1054,7 @@ fn main() -> anyhow::Result<()> {
                 ),
             };
             let root = resolve_root(root.as_deref())?;
-            code_repo_wiki::run_card_command(config.as_deref(), &root, &action)?;
+            code_repo_wiki::run_card_command(config.as_deref(), &root, &action, lock)?;
         }
         Commands::Bench { root, repo_name, config, json, judge, rubrics_only, repodoc, reference } => {
             // 评测基准（U10）：五维自动评测。root 必填（评测对象仓库根），
