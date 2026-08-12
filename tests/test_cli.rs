@@ -156,6 +156,21 @@ fn test_progress_json_cli() {
     let _ = std::fs::remove_dir_all(&work_dir);
 }
 
+#[test]
+fn test_watch_exits_immediately_on_live_lock() {
+    // Phase 13 回归防线（13.2）：watch 遇真并发（活 PID 锁）必须立即
+    // 退出（非成功退出码）而不是退避重试——锁冲突属于另一实例正在运行，
+    // 重试只会浪费轮次（v51 67 次连续锁错误的教训）。
+    // 进程级测试：预置活 PID 锁（当前测试进程必然存活）→ watch
+    // 启动即撞锁 → 断言退出码非成功。
+    let work_dir = prepare_repo("watch_live_lock");
+    let lock_dir = work_dir.join(".code-repo-wiki").join(".state");
+    std::fs::create_dir_all(&lock_dir).unwrap();
+    std::fs::write(lock_dir.join("run.lock"), format!("{}\n", std::process::id())).unwrap();
+    let out = run_bin_with_envs(&work_dir, &["watch", "--config", "mock-server.toml"], &[]);
+    assert!(!out.status.success(), "watch 遇活 PID 锁应立即退出，实际 status: {:?}\nstderr: {}", out.status, String::from_utf8_lossy(&out.stderr));
+}
+
 /// update --progress-json（P2-11）：增量更新命令同样输出 JSONL 进度事件
 ///（U08 给 update 补上 progress 输出后一直无冒烟覆盖——generate 已有
 /// test_progress_json_cli，update 的 progress-json 分支必须同等验证：
