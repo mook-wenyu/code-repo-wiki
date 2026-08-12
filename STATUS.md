@@ -1,5 +1,14 @@
 # 项目状态简报 （AI自动维护，禁止贴代码）
 
+## 六十一、P1 路径解析修复：resolve_source_path root-first + stale 补 .. 过滤（2026-08-13）
+- 修改的功能：lint 源路径解析基准从 cwd 改为 root——resolve_source_path 删除 cwd 相对优先分支（Path::new(p).exists()）与 cwd 兜底，相对路径只按 source_roots 的 root.join(p) 解析，全未命中返回首个 root.join(p)（source_roots 为空返回空路径，metadata 必失败、杜绝 cwd 探测）；check_stale 对相关文件段补 .. 越界段拒绝（与 check_citations/check_vctx_tokens 对齐，消除 root 外 metadata 探测不对称）；修正 resolve_source_path 上方过时注释
+- 摸到的文件：src/output/lint.rs
+- 是否改变了接口/契约：否（lint 签名与 issue 结构未变；仅 resolve 兜底在空 source_roots 时由 cwd 相对改为空路径）
+- 验证：cargo build 通过（仅既有 MSVC linker 消息）；cargo test --lib 555 通过（output::lint 29 项含新增 5 项：resolve root-first/absolute/miss 兜底单测 + stale root-not-cwd 集成 + stale .. 拒绝集成）；test_cli_smoke + test_mcp 27 通过（含 test_lint_three_state_exit_codes）；cargo clippy --all-targets -D warnings 0 告警；对抗验证——临时还原旧 cwd-first 逻辑后新增 resolve/root-not-cwd 测试如预期 FAIL，临时禁用 .. 过滤后 stale .. 测试如预期 FAIL
+- 提交：55fac9e
+- 已知风险：absolutize()（实体表键统一）仍保留 cwd current_dir 兜底但当前调用链只喂绝对路径、属惰性残留未动；resolve_source_path 本身不拦 ..（三个调用方 check_stale/check_citations/check_vctx 均已在调用前过滤）；root-first 测试依赖 cwd=仓库根（cargo test 默认），非常规 cwd 下退化为仅验证新行为
+- 下次最该做的事：libgit2 flaky 测试容错（helper 重试 index.add_all）；STATUS.md 历史条目与新条目去重（可选）
+
 ## 六十、v0.6.0 Phase 15/16（2026-08-12）——命令面简化与系统优化
 - 修改的功能：
   - Phase 15 锁协议：fd-lock 内核锁重写锁协议（常驻锁文件+持锁者身份，替换 create_new+PID+rename 认领）；generate/update 新增 `--wait` 与 `--skip-if-locked`（hook/CI 非阻塞拿锁）；hook 模板改 `--skip-if-locked` 消除 TOCTOU；watch 过滤产物目录；card 命令纳入写锁防并发双写
