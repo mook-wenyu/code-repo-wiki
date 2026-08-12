@@ -60,6 +60,7 @@ fn test_pipeline_progress_events_monotonic_and_done() {
         true,
         &root,
         &code_repo_wiki::GenerationMode::Full,
+        code_repo_wiki::LockOptions::default(),
         &|evt| events.lock().unwrap().push(evt),
     );
     assert!(result.is_ok(), "流水线应成功（LLM 失败被容错跳过）: {:?}", result.err());

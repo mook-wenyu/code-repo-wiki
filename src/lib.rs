@@ -28,6 +28,9 @@ pub struct AnalysisResult {
     pub documents: Vec<model::WikiDocument>,
     pub cards: Vec<model::KnowledgeCard>,
     pub stats: AnalysisStats,
+    /// 锁冲突且 --skip-if-locked 命中：本次未执行生成直接跳过（退出码 0）。
+    /// 正常完成/其他路径恒为 false；调用方（CLI）据此打印跳过提示而非完成摘要。
+    pub skipped: bool,
 }
 
 /// 分析统计信息
@@ -212,6 +215,19 @@ pub enum GenerationMode {
     },
 }
 
+/// 锁获取选项（Phase 15.2）：generate/update 的 `--wait` 与 `--skip-if-locked`。
+///
+/// 组合语义：`wait` 指定时冲突先轮询等待（100-200ms 间隔）至超时；
+/// 超时/未指定 wait 仍冲突时，`skip_if_locked` 为 true 返回跳过（退出码 0，
+/// 供 hook/CI 非阻塞拿锁），否则报错传播。watch 使用 `default()`（立即失败）。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LockOptions {
+    /// 等待时长；None 表示不等待（立即失败）
+    pub wait: Option<std::time::Duration>,
+    /// 冲突时跳过（返回 skipped 结果，退出码 0）；与 wait 同用时先等待后仍冲突才跳过
+    pub skip_if_locked: bool,
+}
+
 /// 运行完整的分析流水线（配置文件路径）
 ///
 /// `output` 非空时覆盖配置文件中的 output.dir（对应 CLI 的 --output 参数），
@@ -227,7 +243,7 @@ pub fn run_pipeline(
     root: &project::ProjectRoot,
     mode: &GenerationMode,
 ) -> anyhow::Result<AnalysisResult> {
-    run_pipeline_with_progress(config_path, output, force, root, mode, &|_| {})
+    run_pipeline_with_progress(config_path, output, force, root, mode, LockOptions::default(), &|_| {})
 }
 
 /// 生成流水线分段计时（v32 8.1 FR-301 数据驱动剖析）
@@ -285,13 +301,14 @@ pub fn run_pipeline_with_progress(
     force: bool,
     root: &project::ProjectRoot,
     mode: &GenerationMode,
+    lock: LockOptions,
     on_progress: &dyn Fn(ProgressEvent),
 ) -> anyhow::Result<AnalysisResult> {
     let config = load_config_with_output(config_path, output, root)?;
     // v52 T08a：配置加载完成后即转调配置直传变体，流水线主干逻辑统一
     // 收敛在 run_pipeline_with_config，避免两份主干漂移；配置来源差异
     // （磁盘模板 vs 运行期内存配置）只存在于本函数这一层。
-    run_pipeline_with_config(config, force, root, mode, on_progress)
+    run_pipeline_with_config(config, force, root, mode, lock, on_progress)
 }
 
 /// 运行完整的分析流水线，并在各阶段边界回调进度事件（配置直传变体）
@@ -308,13 +325,29 @@ pub fn run_pipeline_with_config(
     force: bool,
     root: &project::ProjectRoot,
     mode: &GenerationMode,
+    lock: LockOptions,
     on_progress: &dyn Fn(ProgressEvent),
 ) -> anyhow::Result<AnalysisResult> {
     // 单实例运行锁（Phase 15.1 fd-lock 内核锁）：并发 generate/update/
     // watch 会把状态/索引/产物互相覆盖（最后写入者胜）。锁作用域=本次
     // 生成全程（Drop 释放），崩溃残留无需自愈——内核在进程终止时自动
     // 释放锁，新实例直接获锁。
-    let _run_lock = crate::fs::acquire_run_lock(&config)?;
+    // Phase 15.2：--wait 轮询重试 / --skip-if-locked 冲突跳过（hook/CI
+    // 非阻塞拿锁）；watch 与 bench 等调用方传 default()（冲突立即失败）。
+    let run_lock = match crate::fs::acquire_run_lock_with_options(&config, &lock)? {
+        crate::fs::LockAcquire::Acquired(run_lock) => run_lock,
+        crate::fs::LockAcquire::Skipped => {
+            tracing::info!("运行锁被另一实例占用，按 --skip-if-locked 跳过本次生成");
+            return Ok(AnalysisResult {
+                graph: model::KnowledgeGraph::default(),
+                documents: Vec::new(),
+                cards: Vec::new(),
+                stats: AnalysisStats::default(),
+                skipped: true,
+            });
+        }
+    };
+    let _run_lock = run_lock;
     // 配置直传变体内无 config_path 字段，路径信息由调用方（加载侧）记录，
     // 此处仅保留追踪层级。
     let _span = tracing::info_span!("pipeline");
@@ -359,6 +392,7 @@ pub fn run_pipeline_with_config(
             documents: Vec::new(),
             cards: Vec::new(),
             stats,
+            skipped: false,
         });
     }
 
@@ -459,6 +493,7 @@ pub fn run_pipeline_with_config(
             documents: Vec::new(),
             cards: Vec::new(),
             stats,
+            skipped: false,
         });
     }
 
@@ -654,6 +689,7 @@ pub fn run_pipeline_with_config(
         documents: gen_output.documents,
         cards: gen_output.cards,
         stats,
+        skipped: false,
     })
 }
 

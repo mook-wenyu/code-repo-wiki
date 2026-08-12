@@ -306,6 +306,123 @@ fn test_watch_exits_immediately_on_live_lock() {
     let _ = std::fs::remove_dir_all(&work_dir);
 }
 
+// ==================== Phase 15.2：--skip-if-locked / --wait ====================
+//
+// 与 fs.rs 单测互补：单测覆盖 LockOptions 组合逻辑（同进程时序），此处覆盖
+// 真实二进制跨进程锁冲突——主测试进程经 acquire_run_lock 持有内核写锁，子
+// 进程（独立进程）打开同一锁文件必然撞锁（fd-lock 锁绑定打开句柄而非路径）。
+// 锁路径对齐：子进程 cwd=work_dir、config 无 output.dir → output_dir() 回退
+// .code-repo-wiki 相对 cwd = work_dir/.code-repo-wiki（同 watch 撞锁测试）。
+
+/// --skip-if-locked：generate 撞锁时退出码 0 跳过，不打印「生成完成」误导文案
+#[test]
+fn test_generate_skip_if_locked_exits_zero() {
+    let work_dir = prepare_repo("lock_skip_cli");
+    let config = WikiConfig {
+        output_dir: Some(work_dir.join(".code-repo-wiki")),
+        ..Default::default()
+    };
+    let _lock = acquire_run_lock(&config).expect("主测试进程应能获取运行锁");
+
+    let out = run_bin_with_envs(
+        &work_dir,
+        &["generate", "--config", "mock-server.toml", "--skip-if-locked"],
+        &[],
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.status.success(),
+        "--skip-if-locked 撞锁应退出码 0 跳过，实际 status: {:?}\n输出: {combined}",
+        out.status
+    );
+    assert!(
+        combined.contains("跳过"),
+        "跳过提示应含「跳过」，实际输出: {combined}"
+    );
+    assert!(
+        !combined.contains("生成完成"),
+        "跳过时不应打印「生成完成」误导文案，实际输出: {combined}"
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
+
+/// --skip-if-locked：update 撞锁同样退出码 0 跳过（update 分发处有独立
+/// skipped 处理分支，需独立覆盖防回归）
+#[test]
+fn test_update_skip_if_locked_exits_zero() {
+    let work_dir = prepare_repo("lock_skip_cli_update");
+    let config = WikiConfig {
+        output_dir: Some(work_dir.join(".code-repo-wiki")),
+        ..Default::default()
+    };
+    let _lock = acquire_run_lock(&config).expect("主测试进程应能获取运行锁");
+
+    let out = run_bin_with_envs(
+        &work_dir,
+        &["update", "--config", "mock-server.toml", "--skip-if-locked"],
+        &[],
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.status.success(),
+        "update --skip-if-locked 撞锁应退出码 0 跳过，实际 status: {:?}\n输出: {combined}",
+        out.status
+    );
+    assert!(
+        combined.contains("跳过"),
+        "跳过提示应含「跳过」，实际输出: {combined}"
+    );
+    assert!(
+        !combined.contains("增量更新完成") && !combined.contains("无文件变更"),
+        "跳过时不应打印完成/no-op 误导文案，实际输出: {combined}"
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
+
+/// --wait：持锁期间 `--wait 1` 等待 1 秒后仍冲突 → 超时报错（非 0 退出码 +
+/// 含「正在运行」）；对应"超时仍报错"规格
+#[test]
+fn test_wait_timeout_still_errors() {
+    let work_dir = prepare_repo("lock_wait_cli");
+    let config = WikiConfig {
+        output_dir: Some(work_dir.join(".code-repo-wiki")),
+        ..Default::default()
+    };
+    let _lock = acquire_run_lock(&config).expect("主测试进程应能获取运行锁");
+
+    let out = run_bin_with_envs(
+        &work_dir,
+        &["update", "--config", "mock-server.toml", "--wait", "1"],
+        &[],
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !out.status.success(),
+        "update --wait 1 持锁期间应超时失败，实际 status: {:?}\n输出: {combined}",
+        out.status
+    );
+    assert!(
+        combined.contains("正在运行"),
+        "超时报错应含「正在运行」，实际输出: {combined}"
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
+
 /// update --progress-json（P2-11）：增量更新命令同样输出 JSONL 进度事件
 ///（U08 给 update 补上 progress 输出后一直无冒烟覆盖——generate 已有
 /// test_progress_json_cli，update 的 progress-json 分支必须同等验证：

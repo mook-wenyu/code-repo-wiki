@@ -30,6 +30,12 @@ enum Commands {
         /// 项目根目录（扫描根/git 定位基准，默认当前目录）
         #[arg(long)]
         root: Option<PathBuf>,
+        /// 锁被占用时等待的秒数（超时仍报错）
+        #[arg(long)]
+        wait: Option<u64>,
+        /// 锁被占用时跳过本次操作（退出码 0），供 hook/CI 非阻塞使用
+        #[arg(long)]
+        skip_if_locked: bool,
     },
     /// 增量更新 Wiki 文档
     Update {
@@ -51,6 +57,12 @@ enum Commands {
         /// 项目根目录（扫描根/git 定位基准，默认当前目录）
         #[arg(long)]
         root: Option<PathBuf>,
+        /// 锁被占用时等待的秒数（超时仍报错）
+        #[arg(long)]
+        wait: Option<u64>,
+        /// 锁被占用时跳过本次操作（退出码 0），供 hook/CI 非阻塞使用
+        #[arg(long)]
+        skip_if_locked: bool,
     },
     /// 同步产物目录内容到指纹库（Git 内容合入，不触发 LLM 生成）
     Sync {
@@ -459,8 +471,14 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Generate { config, output, force, progress_json, root } => {
+        Commands::Generate { config, output, force, progress_json, root, wait, skip_if_locked } => {
             let root = resolve_root(root.as_deref())?;
+            // Phase 15.2：--wait/--skip-if-locked 转 LockOptions（锁冲突策略见
+            // lib.rs::LockOptions；--wait 0 视为立即超时=不等待）
+            let lock = code_repo_wiki::LockOptions {
+                wait: wait.map(std::time::Duration::from_secs),
+                skip_if_locked,
+            };
             // v44：文本模式也走进度事件流（run_pipeline_with_progress）——
             // 阶段行输出到 stderr（tracing 日志流，不污染 stdout 业务输出，
             // 对齐 clig.dev「messaging to stderr」约定；非 TTY/CI 下同样是
@@ -473,6 +491,7 @@ fn main() -> anyhow::Result<()> {
                 code_repo_wiki::run_pipeline_with_progress(
                     config.as_deref(), output.as_deref(), force, &root,
                     &code_repo_wiki::GenerationMode::Full,
+                    lock,
                     &|evt| {
                         let cur = evt.current.map(|c| c.to_string()).unwrap_or_else(|| "null".into());
                         let tot = evt.total.map(|c| c.to_string()).unwrap_or_else(|| "null".into());
@@ -488,6 +507,7 @@ fn main() -> anyhow::Result<()> {
                 code_repo_wiki::run_pipeline_with_progress(
                     config.as_deref(), output.as_deref(), force, &root,
                     &code_repo_wiki::GenerationMode::Full,
+                    lock,
                     &|evt| {
                         let mut st = render_state.lock().expect("进度渲染锁中毒");
                         if let Some(s) = render_progress(&evt, tty, &mut st) {
@@ -496,6 +516,17 @@ fn main() -> anyhow::Result<()> {
                     },
                 )?
             };
+            // Phase 15.2：--skip-if-locked 命中（锁冲突且未等到）→ 退出码 0
+            // 跳过，不打印「生成完成」等误导文案（stdout 契约行见注释）
+            if result.skipped {
+                if progress_json {
+                    // progress_json：跳过也走 JSONL 事件行（与 no-op 同构）
+                    println!(r#"{{"stage":"skipped"}}"#);
+                } else {
+                    println!("另一实例正在运行，已按 --skip-if-locked 跳过");
+                }
+                return Ok(());
+            }
             // progress_json：完成摘要也走 JSONL（与事件行同构，插件流式解析
             // 不被纯文本行污染）；文本模式保持原摘要行
             if progress_json {
@@ -516,9 +547,15 @@ fn main() -> anyhow::Result<()> {
                 );
             }
         }
-        Commands::Update { config, output, force, progress_json, dry_run, root } => {
+        Commands::Update { config, output, force, progress_json, dry_run, root, wait, skip_if_locked } => {
             // update 命令无外部 watch 事件，watch_paths 传空、change_kind 传 None
             let root = resolve_root(root.as_deref())?;
+            // Phase 15.2：--wait/--skip-if-locked 转 LockOptions（--dry-run 不持锁
+            // 不受影响，见下方 dry_run 早退分支）
+            let lock = code_repo_wiki::LockOptions {
+                wait: wait.map(std::time::Duration::from_secs),
+                skip_if_locked,
+            };
             // v17 t07：--dry-run 只做变更分析预览，不执行生成（无副作用）。
             // 与 run_pipeline 的差异：跳过 LLM 与渲染，只输出将更新的文件/
             // 模块清单——用户可先预览再决定是否真正执行。
@@ -555,6 +592,7 @@ fn main() -> anyhow::Result<()> {
                         watch_paths: Vec::new(),
                         change_kind: None,
                     },
+                    lock,
                     &|evt| {
                         let cur = evt.current.map(|c| c.to_string()).unwrap_or_else(|| "null".into());
                         let tot = evt.total.map(|c| c.to_string()).unwrap_or_else(|| "null".into());
@@ -570,6 +608,7 @@ fn main() -> anyhow::Result<()> {
                         watch_paths: Vec::new(),
                         change_kind: None,
                     },
+                    lock,
                     &|evt| {
                         let mut st = render_state.lock().expect("进度渲染锁中毒");
                         if let Some(s) = render_progress(&evt, tty, &mut st) {
@@ -578,6 +617,17 @@ fn main() -> anyhow::Result<()> {
                     },
                 )?
             };
+            // Phase 15.2：--skip-if-locked 命中（锁冲突且未等到）→ 退出码 0
+            // 跳过，不打印完成/ no-op 等误导文案；与 generate 跳过语义一致
+            if result.skipped {
+                if progress_json {
+                    // progress_json：跳过也走 JSONL 事件行（与 noop 同构）
+                    println!(r#"{{"stage":"skipped"}}"#);
+                } else {
+                    println!("另一实例正在运行，已按 --skip-if-locked 跳过");
+                }
+                return Ok(());
+            }
             // t03（v21）：no-op 早退出口的 stdout 契约——lib.rs 在扫描前即
             // 判定"无文件变更"并返回空结果（documents 空且扫描 0 文件，
             // 与"空 diff 但已扫描"的普通更新路径可唯一区分）。外部 AI

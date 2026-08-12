@@ -923,6 +923,7 @@ fn measure_update_recall(
                 watch_paths: Vec::new(),
                 change_kind: None,
             },
+            crate::LockOptions::default(),
             &|_| {},
         );
         match result {

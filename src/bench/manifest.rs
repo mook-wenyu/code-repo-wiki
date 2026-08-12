@@ -282,6 +282,7 @@ pub fn run_manifest(
             true, // force：清单跑分语义=全量重建后测量
             &root,
             &crate::GenerationMode::Full,
+            crate::LockOptions::default(),
             &|_| {},
         );
         let result = match res {

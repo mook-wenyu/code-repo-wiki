@@ -119,6 +119,56 @@ pub fn acquire_run_lock(config: &crate::config::schema::WikiConfig) -> Result<Ru
     }
 }
 
+/// 带选项获取运行锁（Phase 15.2：--wait 轮询重试 / --skip-if-locked 跳过）
+///
+/// 语义（与 lib.rs::LockOptions 对齐）：
+/// - 冲突（内核锁被占用）时若 `wait` 指定且未超时，sleep 100-200ms 后重试；
+/// - 最终仍冲突：`skip_if_locked` 为 true 返回 `Skipped`（调用方以退出码 0
+///   跳过本次操作，供 hook/CI 非阻塞拿锁），否则传播冲突报错；
+/// - 其他 I/O 错误（打开/创建锁文件、写身份失败）不视为冲突，直接传播。
+#[derive(Debug)]
+pub enum LockAcquire {
+    /// 成功获取运行锁（Drop 时释放）
+    Acquired(RunLock),
+    /// 冲突且 --skip-if-locked 命中：本次操作跳过
+    Skipped,
+}
+
+/// 判断错误是否为「运行锁被占用」冲突（供 --wait/--skip-if-locked 轮询与
+/// 跳过判定；其他错误直接传播）。锚定 lock_conflict_error 的「正在运行」
+/// 消息标记（fs.rs 单测与 CLI 集成测试均依赖该文案）。
+pub fn is_lock_conflict(err: &anyhow::Error) -> bool {
+    err.to_string().contains("正在运行")
+}
+
+/// 带选项获取运行锁：冲突轮询等待/超时后跳过或报错（见 `LockAcquire`）
+pub fn acquire_run_lock_with_options(
+    config: &crate::config::schema::WikiConfig,
+    lock: &crate::LockOptions,
+) -> Result<LockAcquire> {
+    let start = std::time::Instant::now();
+    loop {
+        match acquire_run_lock(config) {
+            Ok(run_lock) => return Ok(LockAcquire::Acquired(run_lock)),
+            Err(e) if is_lock_conflict(&e) => {
+                // 冲突：有 wait 且未超时 → 轮询重试；否则按 skip 或报错
+                let timed_out = match lock.wait {
+                    Some(d) => start.elapsed() >= d,
+                    None => true, // 未指定等待：立即超时
+                };
+                if timed_out {
+                    if lock.skip_if_locked {
+                        return Ok(LockAcquire::Skipped);
+                    }
+                    return Err(e);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(150));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 /// 覆盖写入锁文件持锁者身份（截断重写；仅获锁后调用，不会破坏他人锁文件）
 fn write_lock_info(guard: &mut fd_lock::RwLockWriteGuard<'_, std::fs::File>) -> Result<()> {
     use std::io::{Seek, SeekFrom, Write};
@@ -240,6 +290,97 @@ mod tests {
         assert!(content.contains("pid="), "锁文件应含 pid=: {content}");
         assert!(content.contains("process="), "锁文件应含 process=: {content}");
         drop(lock);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ==================== Phase 15.2 LockOptions 组合逻辑 ====================
+    // 与集成测试互补：单测覆盖三种组合——wait 超时仍报错、skip 返回跳过、
+    // wait 内让锁释放后成功（后台线程按短时序释放持锁）。跨进程冲突
+    // 语义（CLI 级）由 tests/test_cli.rs 覆盖。
+
+    /// skip_if_locked：无 wait 冲突时立即返回 Skipped（不等待）
+    #[test]
+    fn test_lock_options_skip_if_locked() {
+        let dir = temp_path("lock_skip", "");
+        let config = lock_config(&dir);
+        let _first = acquire_run_lock(&config).unwrap();
+        let options = crate::LockOptions { wait: None, skip_if_locked: true };
+        let outcome = acquire_run_lock_with_options(&config, &options).unwrap();
+        assert!(
+            matches!(outcome, LockAcquire::Skipped),
+            "冲突时应跳过: {outcome:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// default（无 wait 无 skip）：冲突立即报错（既有行为不变）
+    #[test]
+    fn test_lock_options_default_conflict_errors() {
+        let dir = temp_path("lock_default", "");
+        let config = lock_config(&dir);
+        let _first = acquire_run_lock(&config).unwrap();
+        let err = acquire_run_lock_with_options(&config, &crate::LockOptions::default()).unwrap_err();
+        assert!(err.to_string().contains("正在运行"), "应报冲突错误: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// wait 超时仍报错（持锁不放，等 300ms 后仍冲突 → 报错而非跳过/成功）
+    #[test]
+    fn test_lock_options_wait_timeout_errors() {
+        let dir = temp_path("lock_wait_timeout", "");
+        let config = lock_config(&dir);
+        let _first = acquire_run_lock(&config).unwrap();
+        let options = crate::LockOptions {
+            wait: Some(std::time::Duration::from_millis(300)),
+            skip_if_locked: false,
+        };
+        let err = acquire_run_lock_with_options(&config, &options).unwrap_err();
+        assert!(err.to_string().contains("正在运行"), "超时仍应报冲突错误: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// wait + skip_if_locked：等待超时后仍冲突才跳过（非立即跳过）
+    #[test]
+    fn test_lock_options_wait_then_skip() {
+        let dir = temp_path("lock_wait_skip", "");
+        let config = lock_config(&dir);
+        let _first = acquire_run_lock(&config).unwrap();
+        let options = crate::LockOptions {
+            wait: Some(std::time::Duration::from_millis(300)),
+            skip_if_locked: true,
+        };
+        let outcome = acquire_run_lock_with_options(&config, &options).unwrap();
+        assert!(
+            matches!(outcome, LockAcquire::Skipped),
+            "等待超时后仍冲突应跳过: {outcome:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// wait 内让锁释放后成功：后台线程 300ms 后释放持锁，主线程 5s wait
+    /// 内应获锁（非跳过/非报错）。fd-lock 内核锁同进程二次获取也会
+    /// WouldBlock（test_run_lock_rejects_second 已证），因此单进程可测
+    /// 「等待后释放→获锁」的时序路径。
+    #[test]
+    fn test_lock_options_wait_succeeds_after_release() {
+        let dir = temp_path("lock_wait_success", "");
+        let config = lock_config(&dir);
+        let first = acquire_run_lock(&config).unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            drop(first);
+        });
+        let options = crate::LockOptions {
+            wait: Some(std::time::Duration::from_secs(5)),
+            skip_if_locked: false,
+        };
+        let outcome = acquire_run_lock_with_options(&config, &options);
+        release.join().unwrap();
+        match outcome {
+            Ok(LockAcquire::Acquired(_)) => {}
+            Ok(LockAcquire::Skipped) => panic!("wait 未超时应获锁而非跳过"),
+            Err(e) => panic!("wait 未超时应获锁: {e}"),
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
