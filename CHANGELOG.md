@@ -5,6 +5,10 @@
 
 ## [Unreleased]
 
+（暂无待发布变更）
+
+## [0.6.0] - 2026-08-12
+
 ### Added
 - **本地嵌入（v51/T04）**：`[embed] provider = "local"` + `local_model`
   （bge-small-zh-v1.5/bge-small-en-v1.5/bge-m3/multilingual-e5-small）——
@@ -19,6 +23,20 @@
   一次，活进程报真并发（含 PID），空/半写锁自愈；TOCTOU 窗口经重读校验收窄
 - **Unity 工程支持（v51/13.4）**：根级 `Packages/`（UPM 第三方包）、`Temp/`、
   `Logs/` 目录默认排除（嵌套同名目录保留）
+- **generate/update --wait / --skip-if-locked（15.2）**：锁冲突策略可配——
+  `--wait <秒>` 轮询重试（`--wait 0` = 不等待）、`--skip-if-locked` 冲突跳过
+  （退出码 0，非阻塞），hook/CI 拿锁不再误报并发
+- **CLI help 分组（16.3）**：顶层 help 静态分组——查询命令 / 生成命令 /
+  维护命令 / 评测命令 四组 18 命令（clap 4.6.4 无原生子命令分组，用
+  override_help 静态文本 + 契约测试防漂移）
+- **search --engine 解析期校验（16.3）**：`search --engine` 改 clap ValueEnum
+  解析期校验——非法值报错退出码 2，help 列出 possible values
+- **card 子命令 -c 短参（16.3）**：card 各动作的 `--config` 补 `-c` 短参
+- **AGENTS.md 注入块五要素重写（16.5）**：install 注入模板与仓库根 AGENTS.md
+  按 agents.md 标准五要素重写——命令优先（核心命令速查）/ MCP 工具清单
+  （wiki_ 前缀工具与使用时机）/ 完成定义（update no-op、lint 通过判据）/
+  渐进式披露（llms.txt 站点地图 → overview/architecture → 模块页 → api.md）；
+  README/cli.md MCP 清单同步、config.toml 模板命名统一
 
 ### Changed
 - **LLM 调用层统一契约重构（v51/T01）**：SSE 流式截断检测（chat
@@ -54,6 +72,26 @@
 - **架构概览 prompt 消费模块职责描述（14.3）**：architecture 页 user prompt 补入
   `describe_modules` 生成的模块职责描述（缺失时退化回纯统计行）——消除每模块
   1 次白费的 LLM 调用，架构页模块职责不再依赖 LLM 猜测
+- **运行锁协议 fd-lock 内核锁重写（15.1）**：锁实现由 create_new+PID 活性
+  检测改为 fd-lock 内核锁（常驻锁文件 + 持锁者身份写入），同进程二次获取
+  也按 WouldBlock 报真并发——消除 PID 活性判定失真与 hook 内 check-then-act
+  TOCTOU
+- **git hook 模板改 --skip-if-locked（15.3）**：post-commit/post-merge 模板
+  由探测 + 活性判定改为命令内原子拿锁自行跳过（--skip-if-locked），并发由
+  update 命令内处理；watch 监听过滤产物目录（自触发不再递归更新）
+- **MCP 工具改名 wiki_ 前缀（16.1）**：MCP server 五个工具统一 `wiki_` 前缀
+  （wiki_search/wiki_ast_search/wiki_status/wiki_read_page/wiki_read_card），
+  与 OpenCode 插件工具命名对齐；删除 wiki_init 死接线（无消费者残留工具）
+- **MCP 工具描述英文四要素重写（16.2）**：五个工具描述按
+  Purpose / When to use / When NOT to use / Parameters & return example 四要素
+  重写（Agent 命中点判定素材），search/ast_search 互指使用边界
+- **search 结构化输出（16.2）**：MCP `wiki_search` 命中行结构化——签名 +
+  文件:行号区间 + score（RRF 融合分）+ callers/callees（hybrid 专属）；
+  `wiki_ast_search` 结果尾部附扫描耗时提示（成本透明）
+- **prompt 体系修复（16.4）**：overview 拆 system+user（指令入 system、数据
+  入 user、防御声明列出数据类别）；module_description/index_guide 补防御声明 +
+  user 数据段 === 分隔标记；edit_card/schema_doc 语言映射对齐 output_lang；
+  6 个裁判 prompt 补 few-shot 示例；v45 契约测试扩展注入防御/分隔标记断言
 
 ### Fixed
 - **搜索/ast-search 输出目录 root 化（14.1，P0）**：`--root` 场景下
@@ -67,6 +105,9 @@
 - **MCP 语义降级提示对 Agent 可见（14.2，FR-501）**：`search` 结果尾部与
   `status` 报告显式输出「语义索引已降级（原因: …）」（此前仅进 tracing 日志，
   MCP 调用方不可见；与 CLI 行为对齐，cli-vs-mcp-07）
+- **card 命令纳入写锁（15.4）**：card 写卡片同样经运行锁串行化，防并发双写
+  （与 generate/update 同锁语义）；watch 撞锁测试改真实持锁者场景（15.5，
+  适配 fd-lock 内核锁语义，不再依赖 PID 活性判定）
 
 ### 依赖/CI
 - **依赖升级（v51/T10）**：rusqlite 0.32→0.38（bundled SQLite 3.51.1）、
@@ -74,6 +115,8 @@
 - **CI 测试矩阵加 macOS（v51/T09b）**：测试矩阵扩为 ubuntu/windows/macos
   三平台
 - **release 测试前置**：tag 推送产物经三平台测试全绿才发布
+- **版本号 0.5.1 → 0.6.0（16.5）**：Cargo.toml/Cargo.lock 版本同步，[Unreleased]
+  归档为本段
 
 ## [0.5.1] - 2026-08-09
 

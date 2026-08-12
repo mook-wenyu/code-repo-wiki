@@ -1,6 +1,6 @@
 # CLI 命令参考
 
-所有子命令支持 `--root <路径>` 指定项目根（默认当前目录）；每个命令 `--help` 有详细用法。
+除 `bench-manifest` 外，所有子命令支持 `--root <路径>` 指定项目根（默认当前目录；`bench` 的 `--root` 为必填）；每个命令 `--help` 有详细用法。
 
 | 命令 | 用途 |
 |---|---|
@@ -21,6 +21,20 @@
 | `note` | 知识沉淀记录（追加到 `_log.md`） |
 | `mcp` | 启动 MCP stdio server（Claude Code/Cline 接入） |
 | `bench` / `bench-manifest` | 文档质量评测 / 清单批量跑分 |
+
+## MCP server 工具
+
+`mcp` 子命令启动 MCP stdio server（Claude Code/Cline 接入），暴露五个 `wiki_` 前缀工具（全部只读；产物由 `generate` 先行生成，未生成时工具显式报错提示）：
+
+| 工具 | 用途 |
+|---|---|
+| `wiki_search` | 按关键词检索代码实体（text/semantic/hybrid 三引擎，hybrid 含调用链补全；结果含 score 与调用关系，尾部附语义降级提示） |
+| `wiki_ast_search` | 精确符号定义查找（全量 AST 扫描，返回文件+行号+签名，附扫描耗时提示——成本随仓库规模增长，慎用） |
+| `wiki_status` | 报告 Wiki 生成状态（页面/卡片计数、语义索引降级原因、lint 问题清单；未生成时提示先运行 generate） |
+| `wiki_read_page` | 读取模块页/架构/概览/API 页面 Markdown 内容（返回文件路径 + 正文） |
+| `wiki_read_card` | 读取知识卡片（模块结构化摘要；返回文件路径 + 正文） |
+
+调用示例（Claude Code）：`wiki_status` 确认已生成 → `wiki_search` 定位实体 → `wiki_read_page` 读取对应模块页。
 
 ## 评测命令
 

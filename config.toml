@@ -1,4 +1,4 @@
-# repo-wiki 默认配置模板（由 `repo-wiki install` 或缺省配置链写入用户级目录；
+# code-repo-wiki 默认配置模板（由 `code-repo-wiki install` 或缺省配置链写入用户级目录；
 # v25 起项目级配置为 config.toml（字段级合并覆盖用户级）
 # 键集合与 src/config/schema.rs 严格对齐；未知键会被 serde 忽略（无效配置，勿写）。
 # v30 傻瓜式精简：输出目录/扫描范围/增量策略/搜索与嵌入开关/计划文件等全部

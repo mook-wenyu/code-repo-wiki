@@ -54,6 +54,11 @@ fn test_install_wiki_creates_agents_md() {
     assert!(content.contains(START), "应含 START 标记，实际: {content}");
     assert!(content.contains(END), "应含 END 标记，实际: {content}");
     assert!(content.contains("code-repo-wiki update"), "应含 code-repo-wiki update 指引，实际: {content}");
+    // Phase 16.5：注入块按 agents.md 五要素重写——MCP 工具清单（wiki_ 前缀）
+    // 与完成定义判据必须在注入块中
+    assert!(content.contains("wiki_search"), "应含 MCP 工具清单（wiki_search），实际: {content}");
+    assert!(content.contains("wiki_status"), "应含 MCP 工具清单（wiki_status），实际: {content}");
+    assert!(content.contains("完成定义"), "应含完成定义判据，实际: {content}");
 
     let _ = std::fs::remove_dir_all(&work_dir);
 }

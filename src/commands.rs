@@ -607,9 +607,12 @@ pub const LEGACY_WIKI_BLOCK_START: &str = "<!-- REPO-WIKI:START -->";
 /// v37 改名前的旧结束标记
 pub const LEGACY_WIKI_BLOCK_END: &str = "<!-- REPO-WIKI:END -->";
 
-/// 渲染注入块模板（install 的 AGENTS.md 注入与 CLAUDE.md 注入共用）
+/// 渲染注入块模板（install 的 AGENTS.md 注入与 CLAUDE.md 注入共用，单一模板双写）
 ///
-/// 内容为中文 markdown 指针风格：只引产物路径与常用命令，不复制 wiki
+/// 内容按 agents.md 标准五要素组织：命令优先（核心命令速查）/ MCP 工具清单
+/// （16.1 改名后的 wiki_ 前缀工具与使用时机）/ 完成定义（update no-op、lint
+/// 通过等判据）/ 渐进式披露（llms.txt 站点地图 → overview/architecture →
+/// 模块页 → api.md，按上下文预算分层）。只引产物路径与常用命令，不复制 wiki
 /// 正文（避免与 LLM 生成的产物内容双份漂移）。以换行结尾，保证追加/
 /// 替换后与相邻内容衔接干净。
 ///
@@ -622,16 +625,42 @@ pub fn wiki_block_template(output_dir: &str, lang: &str) -> String {
 <!-- CODE-REPO-WIKI:START -->
 本仓库使用 code-repo-wiki 维护可持续进化的项目 Wiki，产物位于 `{output_dir}/`。
 
-## AI 代理使用指引
+## 核心命令速查
 
-1. 先读 `{output_dir}/llms.txt` 定位目标页面（站点地图），再读
-   `{output_dir}/wiki/{lang}/overview.md` 与 `{output_dir}/wiki/{lang}/architecture.md`
-   建立全局认知，按需深入模块页；上下文预算充足时用 `{output_dir}/llms-full.txt`
-   一次获得完整实体骨架。
-2. 查找实体（函数/结构体/类）用 `code-repo-wiki search -q \"<关键词>\"`（支持
-   text/semantic/hybrid 三引擎，hybrid 含调用链补全）。
-3. 修改代码后运行 `code-repo-wiki update` 增量更新；`code-repo-wiki lint` 检查产物健康。
-4. 知识沉淀：`code-repo-wiki note \"<记录>\"` 追加到 `{output_dir}/wiki/{lang}/_log.md`。
+| 命令 | 用途 |
+|---|---|
+| `code-repo-wiki generate` | 全量生成（首次/配置变更后；分阶段进度 + 完成摘要） |
+| `code-repo-wiki update` | 增量更新（改完代码后运行；无变更秒回 no-op） |
+| `code-repo-wiki search -q \"<关键词>\"` | 语义搜索实体（text/semantic/hybrid，hybrid 含调用链补全） |
+| `code-repo-wiki ast-search <符号>` | 精确符号查找（文件 + 行号 + 签名） |
+| `code-repo-wiki lint` | 产物健康检查（孤儿页/断链/过时/引用错位） |
+| `code-repo-wiki status` | Wiki 状态报告（是否就绪/语义降级/lint 问题） |
+| `code-repo-wiki watch` | 常驻监听，保存即自动更新 |
+| `code-repo-wiki note \"<记录>\"` | 追加知识记录到 `{output_dir}/wiki/{lang}/_log.md` |
+| `code-repo-wiki install` | 注册 git hooks + 插件 + MCP（本块由它维护） |
+
+## MCP 工具（已注册的 Agent 会话可直接调用）
+
+| 工具 | 使用时机 |
+|---|---|
+| `wiki_search` | 按关键词检索代码实体（定位函数/结构体/类定义或引用，hybrid 含调用链补全） |
+| `wiki_ast_search` | 精确符号定义查找（全量 AST 扫描，成本随仓库规模增长，仅需精确定位时用） |
+| `wiki_status` | 先确认 Wiki 是否已生成/健康（语义索引降级、lint 问题） |
+| `wiki_read_page` | 读取模块页/架构/概览/API 页面正文 |
+| `wiki_read_card` | 读取知识卡片（模块结构化摘要） |
+
+## 完成定义
+
+- `update` 输出 no-op（无文件变更，跳过更新）即无增量待生成；
+- `lint` 无孤儿页/断链/过时/引用错位问题即产物健康；
+- `generate` 输出完成摘要（扫描 N 文件 / M 实体 / K 页文档）即生成成功。
+
+## 渐进式披露（按上下文预算分层）
+
+1. 预算紧张：只读 `{output_dir}/llms.txt` 站点地图定位目标页面；
+2. 预算充足：读 `{output_dir}/wiki/{lang}/overview.md` 与 `{output_dir}/wiki/{lang}/architecture.md`
+   建立全局认知，再按需深入模块页（可用 `{output_dir}/llms-full.txt` 一次获得实体骨架）；
+3. 查 API 签名与文件行号：`{output_dir}/wiki/{lang}/api.md`。
 <!-- CODE-REPO-WIKI:END -->
 "
     )
