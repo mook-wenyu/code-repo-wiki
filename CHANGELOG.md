@@ -5,6 +5,57 @@
 
 ## [Unreleased]
 
+### Added
+- **本地嵌入（v51/T04）**：`[embed] provider = "local"` + `local_model`
+  （bge-small-zh-v1.5/bge-small-en-v1.5/bge-m3/multilingual-e5-small）——
+  fastembed ONNX 本地推理，零网络依赖；默认 `provider = "remote"`
+  （qwen3-text-embedding 不变）；`cargo build --features local-embed` 启用
+- **评测参考注入（v51/T05）**：`bench`/`rubrics` 命令新增 `--reference <path>`
+  ——judge 三态（满意/不满意/不确定）prompt 注入人工参考材料对照，缓解
+  「无标签基准」偏差（arXiv 2606.00093 实践）
+- **运行锁残留自愈（v51/13.1）**：锁冲突时读取 PID 做进程活性检测
+  （Unix kill(pid,0) / Windows OpenProcess）——死进程残留锁自动清理重试
+  一次，活进程报真并发（含 PID），空/半写锁自愈；TOCTOU 窗口经重读校验收窄
+- **Unity 工程支持（v51/13.4）**：根级 `Packages/`（UPM 第三方包）、`Temp/`、
+  `Logs/` 目录默认排除（嵌套同名目录保留）
+
+### Changed
+- **LLM 调用层统一契约重构（v51/T01）**：SSE 流式截断检测（chat
+  finish_reason / Anthropic stop_reason / Responses incomplete）；full jitter
+  指数退避重试 + Retry-After 头尊重（429/503）；chat/embed 并发信号量
+  `max_concurrency`（默认 16/16/4）；Anthropic max_tokens 默认 4096→8192；
+  embedding 批次内并发（4 路保序）；`[embed] max_concurrency = 0` 显式报错
+  （不再死锁挂起）
+- **增量更新正确性修复（v51/T02）**：语义索引 rowid 不再显式自增（修复增量
+  路径主键冲突——此前每次增量更新必失败）；watch 中途存盘移除（崩溃后产物
+  与指纹失配隐患）；变更路径精确匹配（a.ts 不再误命中 a.tsx）
+- **检索质量（v51/T03）**：RRF 融合 k 可配置 `[search] rrf_k`（默认 40）；
+  FTS5 保留词（OR/AND/NOT）转义；同名实体去重键含行号；callgraph 符号级聚合
+- **图分析层（v51/T11）**：embedding 提取 4 线程并发；单例特征过滤；
+  确定性排序（NodeId tie-break）
+- **生成管线（v51/T07）**：卡片失败不再错位（失败卡占位对齐）；Mermaid
+  降级空块感知；卡片 JSON 解析失败自动重试一次；chunk 依赖单遍处理
+- **解析器（v51/T06）**：.tsx 文件用 TSX 语法解析（JSX 实体不再丢失）；
+  Python docstring 归属修复；`dist/build/out/bin/obj` 仅根级排除；Java
+  注解/C# delegate+event 支持
+- **安全（v51/T08）**：HTML 输出事件级 XSS 转义（原始 HTML 不再透传）；
+  bench 模板配置脱敏（api_key 不落盘）；OpenCode/Claude MCP 配置读失败中止
+  写回（防覆盖 OAuth 会话）；LLM prompt 注入边界声明（代码为数据非指令）；
+  模板占位符缺失显式报错
+- **progress_json 净化（v51/T09a）**：generate/update 完成摘要与 no-op 早退
+  在 --progress-json 下输出 JSON 行（不再污染 JSONL 流）
+- **崩溃自愈有界化（v51/13.2）**：watch 非锁错误指数退避重试封顶 10 次
+  （5s→60s）；锁冲突立即退出（不再无限重试）
+- **git hook 增强（v51/13.3）**：post-commit/post-merge 模板锁感知（另一
+  实例运行中跳过本次）；update-error.log 超 1MiB 轮转保留尾部 100 行
+
+### 依赖/CI
+- **依赖升级（v51/T10）**：rusqlite 0.32→0.38（bundled SQLite 3.51.1）、
+  tree-sitter 语言 crate 按版本矩阵升级
+- **CI 测试矩阵加 macOS（v51/T09b）**：测试矩阵扩为 ubuntu/windows/macos
+  三平台
+- **release 测试前置**：tag 推送产物经三平台测试全绿才发布
+
 ## [0.5.1] - 2026-08-09
 
 ### Added

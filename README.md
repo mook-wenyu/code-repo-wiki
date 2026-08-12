@@ -110,7 +110,7 @@ code-repo-wiki generate
 ## 贡献
 
 - **构建**：`cargo build --release`；**测试**：`cargo test`（全量套件）；**静态检查**：`cargo clippy -- -D warnings` + `cargo doc --no-deps`
-- **CI**：ubuntu/windows 测试矩阵 + clippy/doc 门禁 + markdownlint/lychee 文档门禁 + actionlint（工作流见 `.github/workflows/ci.yml`）
+- **CI**：ubuntu/windows/macos 测试矩阵 + clippy/doc 门禁 + markdownlint/lychee 文档门禁 + actionlint（工作流见 `.github/workflows/ci.yml`）
 - **发布流程**：版本号与 CHANGELOG 规范见 [docs/how-to/maintenance.md](docs/how-to/maintenance.md)
 
 ## License
