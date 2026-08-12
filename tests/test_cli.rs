@@ -156,6 +156,59 @@ fn test_progress_json_cli() {
     let _ = std::fs::remove_dir_all(&work_dir);
 }
 
+/// --root 搜索路径 root 化防回归（v0.6 P0，审计 cli-vs-mcp-02）：
+///
+/// 从 cwd ≠ root 的嵌套子目录以 --root 调用 search，必须命中 root
+/// 下的搜索索引而非回退到 cwd 的相对目录。修复前 execute_search 用
+/// 裸 config 加载，output_dir=None 时 schema.rs::output_dir() 回退
+/// 相对 cwd 的 .code-repo-wiki，子目录运行会读错索引目录。
+#[test]
+fn test_search_with_root_from_subdir() {
+    let work_dir = prepare_repo("search_root_subdir");
+    // 建索引（产物落在 work_dir/.code-repo-wiki 下）
+    let gen_out = run_bin_with_envs(&work_dir, &["generate", "--config", "mock-server.toml"], &[]);
+    assert!(
+        gen_out.status.success(),
+        "generate 应成功, stderr: {}",
+        String::from_utf8_lossy(&gen_out.stderr)
+    );
+
+    // cwd ≠ root：从 work_dir 的嵌套子目录运行（最小实现：创建 sub 目录）
+    let subdir = work_dir.join("sub");
+    std::fs::create_dir_all(&subdir).unwrap();
+    let root_str = work_dir.to_str().unwrap();
+    // --config 与 --root 必须绝对路径（cwd 是 subdir 时相对路径解析失效）
+    let cfg_path = work_dir.join("mock-server.toml");
+    let cfg_str = cfg_path.to_str().unwrap();
+
+    let out = run_bin_with_envs(
+        &subdir,
+        &[
+            "search", "-q", "authenticate", "-k", "3", "--engine", "text",
+            "--json", "--root", root_str, "--config", cfg_str,
+        ],
+        &[],
+    );
+    assert!(
+        out.status.success(),
+        "search --root 应从子目录成功, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let hits: Vec<serde_json::Value> = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("应输出合法 JSON: {e}\n实际: {stdout}"));
+    assert!(
+        hits.iter().any(|h| h
+            .get("name")
+            .and_then(|n| n.as_str())
+            .map(|n| n.contains("authenticate"))
+            .unwrap_or(false)),
+        "应命中 authenticate（证明读的是 root 索引而非 cwd 索引）, 实际 hits: {stdout}"
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
+
 #[test]
 fn test_watch_exits_immediately_on_live_lock() {
     // Phase 13 回归防线（13.2）：watch 遇真并发（活 PID 锁）必须立即

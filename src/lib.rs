@@ -1428,11 +1428,12 @@ pub fn execute_search(
     if query.trim().is_empty() {
         return Ok(Vec::new());
     }
-    // v25：None 走默认配置链（项目级字段级合并覆盖用户级）
-    let config = match config_path {
-        Some(p) => config::load_config(p)?,
-        None => config::load_default_config(root)?.1,
-    };
+    // root 化加载（v0.6，P0 正确性）：与 generate/update 一致走
+    // load_config_rooted——--root 场景（cwd ≠ root）下 output_dir 必须
+    // 解析到 root.path().join(OUTPUT_DIR)，否则 schema.rs::output_dir()
+    // 在 output_dir=None 时回退相对 cwd，索引目录落到进程 cwd 错位
+    // （读错索引目录 → 报"搜索索引不存在"或空结果，审计 cli-vs-mcp-02）
+    let config = load_config_rooted(config_path, root)?;
     let index_dir = search_index_dir(&config);
     let text_path = index_dir.join("text_index.db");
     let semantic_path = index_dir.join("semantic_index.db");
@@ -1532,11 +1533,10 @@ pub fn execute_ast_search(
     if symbol.trim().is_empty() {
         return Ok(Vec::new());
     }
-    let _config = match config_path {
-        // 配置在此 fail-fast 校验（无效配置提前报错）；AST 检索本身不依赖配置
-        Some(p) => config::load_config(p)?,
-        None => config::load_default_config(root)?.1,
-    };
+    // root 化加载（v0.6，P0 正确性）：与 execute_search 同源，--root 场景
+    // 下 output_dir 解析到 root（config 在此 fail-fast 校验，无效配置提前
+    // 报错；AST 检索本身不依赖配置）
+    let _config = load_config_rooted(config_path, root)?;
     let insights = ingest::scan_and_parse_at(root)?.insights;
 
     let mut hits = Vec::new();
