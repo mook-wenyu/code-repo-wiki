@@ -1,5 +1,14 @@
 # 项目状态简报 （AI自动维护，禁止贴代码）
 
+## 六十二、P1 绝对路径 containment 修复：root 外绝对路径拒绝解析（2026-08-13）
+- 修改的功能：resolve_source_path 的绝对路径分支加 containment 校验（canonicalize 后必须落在某个源码根 canonicalize 结果内，超界/不存在返回空路径=不可达，不 stat root 外文件）；三个调用方 check_stale/check_citations/check_vctx_tokens 在 project_root.join 之前对绝对路径做同位置拦截（join(abs)=abs 会绕过 resolve_source_path，必须在调用方拦截）——stale warn 跳过、citations/vctx 报 bad-citation/bad-vctx「绝对路径越出源码根」，与 `..` 越界段过滤行为一致；新增 absolute_path_within_roots 辅助函数（复用 absolutize 处理相对 root，Windows `\\?\` 前缀两侧同源直接可比，不做跨调用缓存——lint 主导成本是源码扫描）
+- 摸到的文件：src/output/lint.rs
+- 是否改变了接口/契约：否（lint 签名与 issue 结构未变；resolve_source_path 对 root 外绝对路径的返回由「原样返回」改为「空路径」，调用方已在上游拦截使该行为不可观测）
+- 验证：cargo build 通过（仅既有 MSVC linker 消息）；cargo test --lib 559 通过（output::lint 33 项含新增 4 项：resolve 绝对路径 containment 单测 + stale root 外绝对路径拒绝 + vctx root 外绝对路径拒绝 + vctx root 内绝对路径放行 + citation UNC 绝对路径拒绝）；test_cli_smoke + test_mcp 27 通过；cargo clippy --all-targets -D warnings 0 告警；对抗验证——临时还原旧「绝对路径原样返回」逻辑并移除三调用方拦截后，新增测试如预期 FAIL（stale 误报 root 外文件 mtime、vctx 静默通过哈希校验、resolve 原样返回），恢复后全部 PASS
+- 提交：945708e
+- 已知风险：根相对路径（Windows `\foo`，is_absolute=false）与盘符相对路径（`C:foo`）不在绝对路径 scope 内、为既有遗留（`..` 过滤也不覆盖），可作后续项；citation 提取层已过滤盘符绝对路径，check_citations 的 containment 为纵深防御（UNC 形态 `\\server\share` 可触发）；canonicalize 校验本身会对目标做一次 stat，但结果只用于拒绝、不参与 lint 判定（CWE 缓解模式本身）
+- 下次最该做的事：libgit2 flaky 测试容错（helper 重试 index.add_all）；评估 `\foo`/`C:foo` 根相对/盘符相对路径的 containment（可选）
+
 ## 六十一、P1 路径解析修复：resolve_source_path root-first + stale 补 .. 过滤（2026-08-13）
 - 修改的功能：lint 源路径解析基准从 cwd 改为 root——resolve_source_path 删除 cwd 相对优先分支（Path::new(p).exists()）与 cwd 兜底，相对路径只按 source_roots 的 root.join(p) 解析，全未命中返回首个 root.join(p)（source_roots 为空返回空路径，metadata 必失败、杜绝 cwd 探测）；check_stale 对相关文件段补 .. 越界段拒绝（与 check_citations/check_vctx_tokens 对齐，消除 root 外 metadata 探测不对称）；修正 resolve_source_path 上方过时注释
 - 摸到的文件：src/output/lint.rs
