@@ -253,3 +253,111 @@ async fn test_mcp_lang_traversal_rejected() {
     let _ = std::fs::remove_file(&secret);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// v0.6（cli-vs-mcp-03 / cli-vs-mcp-07 / FR-501）防回归：
+///
+/// 1. status 工具必须用注入的 --root（self.root）而非 from_cwd()——
+///    跨 cwd 调用（进程 cwd ≠ 项目根）时，from_cwd 解析到启动目录，
+///    lint 扫错目录、误报"Wiki 未生成"。本测试以 cwd=dir/sub 启动
+///    MCP（--root . 相对 cwd 解析为 sub），产物在 dir 根：修复前
+///    status 从 sub 找不到产物报未生成，修复后必须就绪。
+/// 2. FR-501：语义降级标记（.search/semantic_degraded）存在时，
+///    search 结果尾部与 status 报告必须显式提示降级原因（此前降级
+///    仅进 tracing 日志，MCP 调用方不可见——cli-vs-mcp-07）。
+#[tokio::test]
+async fn test_mcp_status_uses_root_and_shows_degradation() {
+    let dir = unique_dir("root_status");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join(".code-repo-wiki")).unwrap();
+    let config = mock_config();
+    std::fs::write(dir.join("mcp-test.toml"), &config).unwrap();
+    // 合法产物：wiki/zh/architecture.md（status ready 的判据）+ 源文件
+    std::fs::create_dir_all(dir.join(".code-repo-wiki").join("wiki").join("zh")).unwrap();
+    std::fs::write(
+        dir.join(".code-repo-wiki").join("wiki").join("zh").join("architecture.md"),
+        "ok-content",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("src").join("main.rs"), "pub fn hello_world() {}\n").unwrap();
+    // 语义降级标记（模拟：语义索引构建失败后由生成流程写入）
+    std::fs::create_dir_all(dir.join(".code-repo-wiki").join(".search")).unwrap();
+    std::fs::write(
+        dir.join(".code-repo-wiki").join(".search").join("semantic_degraded"),
+        "embed key 未配置",
+    )
+    .unwrap();
+
+    // 关键：cwd 切到子目录启动，--root 显式指向 dir（产物在 dir 根）——
+    // self.root=dir（就绪）vs from_cwd=sub（误报未生成），正是
+    // cli-vs-mcp-03 的跨 cwd 场景。--config 同样必须绝对路径（cwd≠root
+    // 时相对路径解析失效，与 test_search_with_root_from_subdir 同规则）
+    let sub = dir.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    let cfg_str = dir.join("mcp-test.toml").to_str().unwrap().to_string();
+    let root_str = dir.to_str().unwrap().to_string();
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_code-repo-wiki"))
+        .args(["mcp", "--config", &cfg_str, "--root", &root_str])
+        .current_dir(&sub)
+        .env("RUST_LOG", "off")
+        .env_remove("OPENAI_API_KEY")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("启动 code-repo-wiki mcp 失败");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+
+    let resp = rpc_call(
+        &mut stdin,
+        &mut stdout,
+        1,
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "test", "version": "0.0.1"}
+        }),
+    )
+    .await;
+    assert!(resp["result"]["protocolVersion"].is_string());
+    let _ = rpc_call(&mut stdin, &mut stdout, 2, "notifications/initialized", serde_json::json!({})).await;
+
+    // 1. status：cwd≠root 时仍应就绪（修复前 from_cwd → sub 找不到产物）
+    let resp = rpc_call(
+        &mut stdin,
+        &mut stdout,
+        3,
+        "tools/call",
+        serde_json::json!({"name": "status", "arguments": {}}),
+    )
+    .await;
+    let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
+    assert!(text.contains("Wiki 就绪"), "status 应就绪（root 化），实际: {text}");
+    // FR-501：status 报告显式提示降级原因
+    assert!(
+        text.contains("语义索引: 已降级") && text.contains("embed key 未配置"),
+        "status 应显式提示降级原因, 实际: {text}"
+    );
+
+    // 2. search：索引不存在时是错误路径（无降级提示场景）——本测试仅验证
+    //    status 路径的 root 化与降级提示；search 的降级提示在同文件
+    //    search 工具实现内，由 lib 单测（semantic_degraded_reason）间接
+    //    覆盖。text 引擎索引缺失 → 引导错误，验证不崩溃即可。
+    let resp = rpc_call(
+        &mut stdin,
+        &mut stdout,
+        4,
+        "tools/call",
+        serde_json::json!({"name": "search", "arguments": {"query": "hello", "engine": "text"}}),
+    )
+    .await;
+    let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
+    assert!(text.contains("搜索索引不存在"), "索引缺失应引导: {text}");
+
+    drop(stdin);
+    let _ = child.wait().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}

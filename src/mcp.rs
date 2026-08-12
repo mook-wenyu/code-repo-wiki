@@ -88,8 +88,9 @@ impl RepoWikiMcp {
     #[tool(description = "搜索代码实体：按关键词返回匹配的函数/结构体/类及文件位置（text/semantic/hybrid 引擎，与 CLI code-repo-wiki search 等价；需先运行 code-repo-wiki generate 构建搜索索引）")]
     async fn search(&self, Parameters(SearchRequest { query, top_k, engine }): Parameters<SearchRequest>) -> String {
         // 配置完整性检查：搜索前确认配置可加载（错误早暴露）；v22 起
-        // 引擎/条数默认值硬编码，配置内容不再被本函数使用
-        let _config = match crate::config::resolve_mcp_config(self.config_path.as_deref(), &self.root) {
+        // 引擎/条数默认值硬编码，配置内容不再被本函数使用。config 另用于
+        // 读取语义降级标记（v0.6 FR-501，见下方结果尾部提示）
+        let config = match crate::load_config_rooted(self.config_path.as_deref(), &self.root) {
             Ok(c) => c,
             Err(e) => return format!("配置加载失败: {e}"),
         };
@@ -113,6 +114,13 @@ impl RepoWikiMcp {
                     };
                     let sig = hit.node.signature.as_deref().unwrap_or(&hit.node.name);
                     out.push_str(&format!("{}. `{sig}` — {loc}\n", i + 1));
+                }
+                // v0.6 FR-501：语义降级显式提示（cli-vs-mcp-07 修复）——
+                // 降级此前仅进 tracing 日志，MCP 调用方不可见；读生成期
+                // 降级标记（.search/semantic_degraded），有标记即追加原因
+                //（与 CLI search 文本模式 main.rs:944-947 行为一致）
+                if let Some(reason) = crate::semantic_degraded_reason(&config) {
+                    out.push_str(&format!("提示: 语义索引已降级（原因: {}）\n", reason.trim()));
                 }
                 out
             }
@@ -145,7 +153,7 @@ impl RepoWikiMcp {
     /// 读取已生成的 Wiki 页面内容（模块页/架构概览/项目概览/api）
     #[tool(description = "读取已生成的 Wiki 页面内容（wiki/{lang}/{page}.md，如 src_config、architecture、overview、api；需先运行 code-repo-wiki generate，未生成的页面报错）")]
     async fn read_wiki_page(&self, Parameters(ReadPageRequest { page, lang }): Parameters<ReadPageRequest>) -> String {
-        let config = match crate::config::resolve_mcp_config(self.config_path.as_deref(), &self.root) {
+        let config = match crate::load_config_rooted(self.config_path.as_deref(), &self.root) {
             Ok(c) => c,
             Err(e) => return format!("配置加载失败: {e}"),
         };
@@ -179,7 +187,7 @@ impl RepoWikiMcp {
     /// 读取已生成的 Knowledge Card（AI 代理的结构化模块摘要）
     #[tool(description = "读取已生成的 Knowledge Card 内容（cards/{lang}/{card}.md；需先运行 code-repo-wiki generate，未生成的卡片报错）")]
     async fn read_card(&self, Parameters(ReadCardRequest { card, lang }): Parameters<ReadCardRequest>) -> String {
-        let config = match crate::config::resolve_mcp_config(self.config_path.as_deref(), &self.root) {
+        let config = match crate::load_config_rooted(self.config_path.as_deref(), &self.root) {
             Ok(c) => c,
             Err(e) => return format!("配置加载失败: {e}"),
         };
@@ -209,22 +217,25 @@ impl RepoWikiMcp {
     /// 查看 Wiki 生成状态：页面/卡片数量与 lint 健康检查结果
     #[tool(description = "查看 Wiki 生成状态：页面/卡片数量与产物健康检查（孤儿页/断链/过时/引用）")]
     async fn status(&self) -> String {
-        let config = match crate::config::resolve_mcp_config(self.config_path.as_deref(), &self.root) {
+        let config = match crate::load_config_rooted(self.config_path.as_deref(), &self.root) {
             Ok(c) => c,
             Err(e) => return format!("配置加载失败: {e}"),
         };
-        // MCP server 由项目内启动，root = 当前工作目录；
-        // 源码根须相对 root 解析（见 commands::source_roots_from_include_rooted），
-        // 否则跨 cwd 调用时 lint 会扫到错误目录
-        let root = match crate::project::ProjectRoot::from_cwd() {
-            Ok(r) => r,
-            Err(e) => return format!("无法确定当前工作目录: {e}"),
-        };
-        let report = crate::commands::status_report(&config, &root);
+        // v0.6（cli-vs-mcp-03 修复）：直接用注入的 self.root（--root 参数），
+        // 不再 from_cwd() 重建——跨 cwd 调用时 from_cwd 解析到启动目录，
+        // 与 --root 不一致会 lint 扫错目录、误报"未生成"
+        let root = &self.root;
+        let report = crate::commands::status_report(&config, root);
         if !report.ready {
             return "Wiki 未生成（运行 code-repo-wiki generate 生成后可用）".to_string();
         }
         let mut out = format!("Wiki 就绪: {} 张页面, {} 张卡片\n", report.wiki_pages, report.cards);
+        // v0.6 FR-501：status 报告显式提示语义降级（读降级标记；
+        // 与 CLI status main.rs:674-678 行为一致）
+        match crate::semantic_degraded_reason(&config) {
+            Some(reason) => out.push_str(&format!("语义索引: 已降级（原因: {}）\n", reason.trim())),
+            None => out.push_str("语义索引: 正常\n"),
+        }
         if report.issues.is_empty() {
             out.push_str("lint: 通过（无孤儿页/断链/过时/引用/覆盖问题）");
         } else {
