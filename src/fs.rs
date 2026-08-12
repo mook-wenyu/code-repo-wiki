@@ -121,8 +121,27 @@ fn acquire_run_lock_inner(
                     "另一 code-repo-wiki 实例正在运行（PID {pid}，锁文件: {}）。该进程结束后可重试",
                     path.display()
                 ),
-                // PID 无进程或不可解析（空/半写锁）→ 残留，删除后重试一次
+                // PID 无进程或不可解析（空/半写锁）→ 疑似残留，删除前重读校验
+                //
+                // TOCTOU 窗口：判定与删除之间存在时间窗，双进程 P1/P2 同读
+                // 同一陈旧锁时，P1 remove→create 新锁后 P2 再 remove 会误删
+                // P1 的新锁 → 双持运行（正是锁要防的覆盖场景）。重读校验把
+                // 窗口收窄为「读→校验→删」序列：仍非原子，但窗口已收窄至
+                // ns 级，且内容不一致时放弃删除 → 双持不可能。
                 _ => {
+                    // 重读校验：内容与最初读取一致（仍死 PID/不可解析）才删除；
+                    // 重读失败或内容已变（他进程已接管换锁）→ 保守报错，不删除
+                    match std::fs::read_to_string(path) {
+                        Ok(c) if c.trim() == content.trim() => {}
+                        Ok(_) => anyhow::bail!(
+                            "运行锁内容在自愈判定后已变化（他进程可能已接管），放弃自愈，锁文件: {}",
+                            path.display()
+                        ),
+                        Err(_) => anyhow::bail!(
+                            "运行锁重读失败（可能另一实例正在释放），放弃自愈，锁文件: {}",
+                            path.display()
+                        ),
+                    }
                     std::fs::remove_file(path).with_context(|| {
                         format!("删除残留锁失败（可能刚被释放）: {}", path.display())
                     })?;
@@ -135,9 +154,21 @@ fn acquire_run_lock_inner(
                             }
                             Ok(RunLock { path: path.to_path_buf() })
                         }
-                        Err(e) => Err(e).with_context(|| {
-                            format!("获取运行锁失败（自愈重试后仍被占用）: {}", path.display())
-                        }),
+                        Err(e) => {
+                            // 自愈重试仍失败：重读锁内容，把新持锁者 PID 纳入
+                            // 报错便于排查（重读失败/不可解析则省略 PID）
+                            let holder = std::fs::read_to_string(path)
+                                .ok()
+                                .and_then(|c| c.trim().parse::<u32>().ok())
+                                .map(|pid| format!("，当前持锁者 PID {pid}"))
+                                .unwrap_or_default();
+                            Err(e).with_context(|| {
+                                format!(
+                                    "获取运行锁失败（自愈重试后仍被占用{holder}）: {}",
+                                    path.display()
+                                )
+                            })
+                        }
                     }
                 }
             }
