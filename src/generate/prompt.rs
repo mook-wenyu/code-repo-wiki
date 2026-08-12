@@ -164,8 +164,14 @@ fn architecture_overview_user_prompt(modules: &[ModuleCluster], graph: &Knowledg
 
     parts.push("## 模块聚类信息".to_string());
     for module in modules {
+        // v0.6（prompt-audit HIGH 修复）：模块行必须带职责描述——
+        // describe_modules 生成的 description 是 LLM 判断模块职责的
+        // 关键输入，此前被丢弃（wiki.rs:427 调用 describe_modules 但
+        // prompt 只给模块名+统计），架构页产出质量依赖 LLM 猜职责。
+        // description 缺失（模块跳过/无实体）时退化回纯统计行。
+        let desc = module.description.as_deref().unwrap_or("（无职责描述）");
         parts.push(format!(
-            "- {} (内聚度: {:.2}, 耦合度: {:.2}, 节点数: {})",
+            "- {} (内聚度: {:.2}, 耦合度: {:.2}, 节点数: {}) — {desc}",
             module.name,
             module.cohesion,
             module.coupling,
@@ -606,6 +612,42 @@ mod tests {
             arch[0].content.contains("不得添加"),
             "架构 prompt 必须含模块真实性约束: {}",
             arch[0].content
+        );
+    }
+
+    /// v0.6（prompt-audit HIGH 修复）：架构概览 user prompt 必须消费
+    /// describe_modules 的职责描述——模块行带 description 时输出
+    /// 职责描述；None（模块跳过/无实体）时退化回纯统计行不 panic。
+    #[test]
+    fn test_architecture_prompt_includes_module_description() {
+        let graph = KnowledgeGraph::default();
+        let modules = vec![
+            ModuleCluster {
+                name: "src_core".into(),
+                node_ids: vec![],
+                cohesion: 0.9,
+                coupling: 0.1,
+                description: Some("核心逻辑层".into()),
+            },
+            ModuleCluster {
+                name: "src_ui".into(),
+                node_ids: vec![],
+                cohesion: 0.8,
+                coupling: 0.2,
+                description: None,
+            },
+        ];
+        let messages = architecture_overview_prompt(&modules, &graph, "zh");
+        let user = &messages[1].content;
+        // 有描述：模块行必须带职责描述（修复前被丢弃）
+        assert!(
+            user.contains("src_core") && user.contains("核心逻辑层"),
+            "带 description 的模块行应包含职责描述: {user}"
+        );
+        // 无描述：退化行（不 panic、不伪造）
+        assert!(
+            user.contains("src_ui") && user.contains("（无职责描述）"),
+            "description=None 应输出退化标记: {user}"
         );
     }
 
