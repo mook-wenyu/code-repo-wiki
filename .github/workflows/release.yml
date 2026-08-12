@@ -6,7 +6,8 @@ name: Release
 #   3. build-binaries   —— 矩阵构建并上传二进制到 Draft（共享 release-id，
 #                          消除并发创建竞态——矩阵各 job 各自创建 Release 会
 #                          反复 "release not found"）
-#   4. publish-release  —— 全部二进制上传完成后 Draft → 正式发布
+#   4. test             —— 三平台测试前置（发布前全绿）
+#   5. publish-release  —— 全部二进制上传完成后 Draft → 正式发布
 #
 # 注意（首次发布）：
 #   - 新 crate 不能走 Trusted Publishing，首次必须手动 `cargo publish`
@@ -62,7 +63,32 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+  # v13.9 发布测试前置：tag 推送不触发 ci.yml（其 on 仅 master 分支+PR），
+  # 发布产物（crates.io 包 + 三平台二进制）必须在测试全绿后才允许发布——
+  # 测试矩阵与 ci.yml 同构（三平台 + macOS OpenSSL 步骤）
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install system deps (git2/openssl)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev zlib1g-dev
+      - name: Install OpenSSL (macos)
+        if: runner.os == 'macOS'
+        run: |
+          brew install openssl@3
+          echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> "$GITHUB_ENV"
+      - name: Test
+        run: cargo test --locked
+
   publish-crates-io:
+    needs: [create-release, test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -79,7 +105,7 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
   build-binaries:
-    needs: create-release
+    needs: [create-release, test]
     strategy:
       fail-fast: false
       matrix:
