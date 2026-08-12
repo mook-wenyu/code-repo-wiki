@@ -47,191 +47,131 @@ pub fn write_file_atomic(path: &Path, content: &str) -> Result<()> {
     Ok(())
 }
 
-// ==================== 单实例运行锁（v36 D4）====================
+// ==================== 单实例运行锁（Phase 15.1，fd-lock 内核锁）====================
 //
 // 并发 generate/update/watch 会把状态/索引/产物互相覆盖（最后写入者
 // 胜）。生成是「进程内串行、进程间互斥」的操作：本锁在
-// run_pipeline_with_progress 入口以 create_new 原子获取，作用域=单次
+// run_pipeline_with_progress 入口以内核 advisory 锁获取，作用域=单次
 // 生成全程，Drop 时释放（正常退出/错误传播都会走 Drop）。
 //
-// 崩溃残留（进程被杀，锁文件遗留）：自动清理——读取锁内 PID 做进程
-// 活性检测，进程不存在则视为残留锁删除重试。取舍：自动清理存在把
-// 「另一实例正在生成」误判为残留的风险，但真实故障场景（外部强杀
-// TerminateProcess/任务管理器结束，Drop 不执行）会留下永久锁导致
-// watch/git hook 持续失败（实测 67 次锁冲突），活性检测把风险窗口
-// 收窄到「PID 恰好被复用且同目录并发」的极小概率，收益大于风险。
+// 协议要点（v36 create_new+PID 活性检测方案废弃，改 fd-lock 内核锁）：
+// - 锁文件 {output_dir}/.state/run.lock 常驻：仅首次运行创建，从不
+//   删除。互斥性由内核 advisory 锁（Windows LockFileEx / Unix flock
+//   族）保证，锁绑定「打开句柄」而非路径——只要所有实例都打开同一
+//   路径，冲突检测就有效。
+// - 崩溃残留（进程被强杀，句柄未关闭）无需自愈：内核在进程终止时
+//   自动释放其持有的锁，新实例直接获锁；锁文件内容被截断重写为
+//   新持锁者身份。旧方案的 PID 活性检测 / rename 认领因此整体删除。
+// - 锁文件内容保存持锁者身份（pid/process/started 三行），供冲突
+//   实例报错时定位「谁在运行」（内核锁只回答有/无，不回答谁持有）。
 
 /// 运行锁：持有期间其他实例的生成入口被拒绝；Drop 释放
+///
+/// 字段说明：
+/// - `_lock`：fd_lock 写守卫，是锁的真正载体。其 Drop 显式调用
+///   UnlockFile 释放内核锁并关闭句柄；守卫被 drop 之前锁一直有效
+///   （`#[must_use]`，若守卫不保存会在获取处立刻释放）。
+/// - `path`：锁文件路径，仅用于诊断报错。
+/// 锁文件本身常驻，本结构体 Drop 只关闭句柄，不删除文件。
 #[derive(Debug)]
 pub struct RunLock {
+    _lock: fd_lock::RwLockWriteGuard<'static, std::fs::File>,
+    // 锁路径保留用于诊断（Debug 输出可见）；运行期冲突报错在
+    // acquire_run_lock 内完成，本字段无运行期读取点
+    #[allow(dead_code)]
     path: std::path::PathBuf,
 }
 
-impl Drop for RunLock {
-    fn drop(&mut self) {
-        // 释放失败可忽略：锁文件残留会由下一次获取报错指引人工删除，
-        // 此处报错无调用方（Drop 语义），静默符合预期
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
-/// 原子获取运行锁：.state/run.lock 不存在则创建（写入当前进程 PID 供
-/// 排查），存在则做残留判定——锁内 PID 无对应进程（或 PID 缺失/不可
-/// 解析）视为残留锁删除重试一次；PID 存活视为真并发报错。
+/// 获取运行锁：打开（必要时创建）常驻锁文件 → 获取内核写锁 →
+/// 写持锁者身份。锁被占用时报错并给出持锁者身份。
 pub fn acquire_run_lock(config: &crate::config::schema::WikiConfig) -> Result<RunLock> {
     let state_dir = config.output_dir().join(".state");
     std::fs::create_dir_all(&state_dir)
         .with_context(|| format!("创建状态目录失败: {}", state_dir.display()))?;
     let path = state_dir.join("run.lock");
-    // 自愈重试一次：首次 create_new 失败（残留）→ 清理 → 二次创建；
-    // 二次仍失败则报真并发（活 PID 场景）
-    acquire_run_lock_inner(&path, &process_alive)
-}
 
-/// 锁获取核心：is_alive 注入使测试不依赖真实进程表
-fn acquire_run_lock_inner(
-    path: &std::path::Path,
-    is_alive: &dyn Fn(u32) -> bool,
-) -> Result<RunLock> {
-    match std::fs::OpenOptions::new().write(true).create_new(true).open(path) {
-        Ok(mut f) => {
-            use std::io::Write;
-            // PID 写入失败改显式错误：无 PID 的锁无法做残留判定（下次
-            // 冲突要么误删真并发锁要么永久卡死），故移除刚创建的锁并报错
-            if let Err(e) = writeln!(f, "{}", std::process::id()) {
-                let _ = std::fs::remove_file(path);
-                anyhow::bail!("运行锁 PID 写入失败（锁已移除，可重试）: {e}");
-            }
-            Ok(RunLock { path: path.to_path_buf() })
+    // 打开锁文件：create(true) 首次创建，read/write 供写身份与读冲突
+    // 诊断；不 truncate、不删除——文件常驻，锁状态由内核管理。
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&path)
+        .with_context(|| format!("获取运行锁失败: {}", path.display()))?;
+
+    // guard 借用 RwLock 本身（自引用），故 RwLock 需要 'static：
+    // 进程级单例锁在此泄漏一个 Box（Windows 上仅含 File 句柄，
+    // 约 16 字节），进程退出由 OS 回收，可接受。
+    let lock: &'static mut fd_lock::RwLock<std::fs::File> =
+        Box::leak(Box::new(fd_lock::RwLock::new(file)));
+
+    match lock.try_write() {
+        Ok(mut guard) => {
+            // 先获锁再写身份：避免未获锁时截断覆盖持锁者的诊断内容
+            // （否则冲突分支读到的会是「自己刚写的」而非持锁者的）
+            write_lock_info(&mut guard)
+                .with_context(|| format!("获取运行锁失败: {}", path.display()))?;
+            Ok(RunLock { _lock: guard, path })
         }
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            // 冲突：读取锁内容做残留判定
-            let content = match std::fs::read_to_string(path) {
-                Ok(c) => c,
-                // 读失败（竞态删除/权限）：保守报错指引人工处理，不自愈
-                Err(e) => anyhow::bail!(
-                    "运行锁读取失败（可能另一实例正在释放），锁文件: {}。错误: {e}",
-                    path.display()
-                ),
-            };
-            let pid: Option<u32> = content.trim().parse().ok();
-            match pid {
-                // PID 存活 → 真并发
-                Some(pid) if is_alive(pid) => anyhow::bail!(
-                    "另一 code-repo-wiki 实例正在运行（PID {pid}，锁文件: {}）。该进程结束后可重试",
-                    path.display()
-                ),
-                // PID 无进程或不可解析（空/半写锁）→ 疑似残留，原子改名认领
-                //
-                // 双持防护（reviewer REJECTED 修复）：「重读校验 → remove → create」
-                // 中 remove 与 create 之间无原子屏障——P1 remove→create 新锁后，
-                // P2 的 remove 会误删 P1 的新锁 → 双持。rename 是原子操作：
-                // 只有一方能把 run.lock 改名为私有 stale 名（其余方 ENOENT），
-                // 赢家随后删除自己改名的文件并 create_new——此时它是唯一
-                // 持有者，输家永远无法删除赢家的新锁。
-                _ => {
-                    // 原子认领：run.lock → run.lock.stale.<pid>（本进程 pid，
-                    // 唯一私有名；rename 成功仅一方）
-                    let stale = path.with_file_name(format!(
-                        "run.lock.stale.{}",
-                        std::process::id()
-                    ));
-                    match std::fs::rename(path, &stale) {
-                        Ok(()) => {
-                            // 赢家：重读改名后文件，内容仍为陈旧（死 PID/不可
-                            // 解析）→ 删除私有文件 + create_new 新锁（此刻唯一
-                            // 持有者，无竞争）；内容已变（理论不可达——rename
-                            // 唯一性保证无第二赢家）→ rename 回原位并报接管
-                            let still_stale = match std::fs::read_to_string(&stale) {
-                                Ok(c) => c.trim() == content.trim(),
-                                Err(_) => false,
-                            };
-                            if still_stale {
-                                let _ = std::fs::remove_file(&stale);
-                                match std::fs::OpenOptions::new()
-                                    .write(true)
-                                    .create_new(true)
-                                    .open(path)
-                                {
-                                    Ok(mut f) => {
-                                        use std::io::Write;
-                                        if let Err(e) = writeln!(f, "{}", std::process::id()) {
-                                            let _ = std::fs::remove_file(path);
-                                            anyhow::bail!(
-                                                "运行锁 PID 写入失败（锁已移除，可重试）: {e}"
-                                            );
-                                        }
-                                        Ok(RunLock { path: path.to_path_buf() })
-                                    }
-                                    Err(e) => {
-                                        let holder = std::fs::read_to_string(path)
-                                            .ok()
-                                            .and_then(|c| c.trim().parse::<u32>().ok())
-                                            .map(|pid| format!("，当前持锁者 PID {pid}"))
-                                            .unwrap_or_default();
-                                        Err(e).with_context(|| {
-                                            format!(
-                                                "获取运行锁失败（自愈重试后仍被占用{holder}）: {}",
-                                                path.display()
-                                            )
-                                        })
-                                    }
-                                }
-                            } else {
-                                // 内容已变（超理论防御——rename 唯一性
-                                // 保证无第二赢家）：不归位直接报接管（stale 残留
-                                // 无害，与 remove 失败允许残留一致；归位 rename 在
-                                // Windows 会覆盖已重建目标，反而引入理论覆盖风险）
-                                anyhow::bail!(
-                                    "运行锁内容在自愈认领后已变化（他进程可能已接管），放弃自愈，锁文件: {}",
-                                    path.display()
-                                );
-                            }
-                        }
-                        // 输家：锁已被他人认领/删除 → 递归重试一次
-                        // （锁已消失则 create_new 成功；新锁已建则走活 PID/残留判定）
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                            std::thread::sleep(std::time::Duration::from_millis(50));
-                            acquire_run_lock_inner(path, is_alive)
-                        }
-                        Err(e) => anyhow::bail!(
-                            "运行锁自愈认领失败（{}），锁文件: {}",
-                            e,
-                            path.display()
-                        ),
-                    }
-                }
-            }
-        }
+        // 锁被占用（WouldBlock）：读锁文件定位持锁者，给出可操作报错
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Err(lock_conflict_error(&path)),
         Err(e) => Err(e).with_context(|| format!("获取运行锁失败: {}", path.display())),
     }
 }
 
-/// 进程活性检测：pid 对应进程存在返回 true
-#[cfg(unix)]
-fn process_alive(pid: u32) -> bool {
-    // kill(pid, 0) 不发送信号仅探活：0 → 存在；-1 且 errno=ESRCH → 不存在；
-    // EPERM → 进程存在但无权限（视为存活）
-    let r = unsafe { libc::kill(pid as libc::pid_t, 0) };
-    r == 0 || (r == -1 && std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH))
+/// 覆盖写入锁文件持锁者身份（截断重写；仅获锁后调用，不会破坏他人锁文件）
+fn write_lock_info(guard: &mut fd_lock::RwLockWriteGuard<'_, std::fs::File>) -> Result<()> {
+    use std::io::{Seek, SeekFrom, Write};
+    let content = format!(
+        "pid={}\nprocess={}\nstarted={}\n",
+        std::process::id(),
+        process_name(),
+        chrono::Local::now().to_rfc3339()
+    );
+    let file: &mut std::fs::File = &mut *guard;
+    file.set_len(0).context("截断锁文件失败")?;
+    file.seek(SeekFrom::Start(0)).context("定位锁文件失败")?;
+    file.write_all(content.as_bytes())
+        .context("写入锁文件诊断内容失败")?;
+    Ok(())
 }
 
-/// 进程活性检测：pid 对应进程存在返回 true
-#[cfg(windows)]
-fn process_alive(pid: u32) -> bool {
-    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_INVALID_PARAMETER};
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
-    unsafe {
-        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if !h.is_null() {
-            CloseHandle(h);
-            true
-        } else {
-            // ERROR_INVALID_PARAMETER → PID 不存在；其他错误（权限等）
-            // 保守视为存在（无法确认死亡就不自愈，避免真并发窗口）
-            GetLastError() != ERROR_INVALID_PARAMETER
-        }
+/// 当前可执行文件基名（诊断用）；获取失败退化为空串
+fn process_name() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_default()
+}
+
+/// 锁被占用时的报错：读取锁文件解析持锁者身份；内容缺失/损坏退化为 PID 未知
+fn lock_conflict_error(path: &std::path::Path) -> anyhow::Error {
+    let content = std::fs::read_to_string(path).unwrap_or_default();
+    let pid = lock_field(&content, "pid");
+    let process = lock_field(&content, "process");
+    let started = lock_field(&content, "started");
+    match (pid, process, started) {
+        (Some(pid), Some(process), Some(started)) => anyhow::anyhow!(
+            "获取运行锁失败: 另一 code-repo-wiki 实例正在运行（PID {pid}，进程 {process}，启动于 {started}，锁文件: {}）。该进程结束后可重试",
+            path.display()
+        ),
+        _ => anyhow::anyhow!(
+            "获取运行锁失败: 另一 code-repo-wiki 实例正在运行（PID 未知，锁文件: {}）。该进程结束后可重试",
+            path.display()
+        ),
     }
+}
+
+/// 提取锁文件诊断行 `key=value` 的 value；行不存在/值为空返回 None
+fn lock_field(content: &str, key: &str) -> Option<String> {
+    content.lines().find_map(|line| {
+        let value = line.strip_prefix(key)?.strip_prefix('=')?.trim();
+        if value.is_empty() {
+            None
+        } else {
+            Some(value.to_string())
+        }
+    })
 }
 
 #[cfg(test)]
@@ -252,7 +192,7 @@ mod tests {
         }
     }
 
-    /// 锁可获取；Drop 后释放（可再次获取）
+    /// 锁可获取；获取后锁文件存在；Drop 后锁文件仍存在（常驻）；可再次获取
     #[test]
     fn test_run_lock_acquire_and_release() {
         let dir = temp_path("lock_roundtrip", "");
@@ -260,14 +200,15 @@ mod tests {
         let lock = acquire_run_lock(&config).unwrap();
         assert!(dir.join(".state/run.lock").exists());
         drop(lock);
-        assert!(!dir.join(".state/run.lock").exists(), "Drop 应释放锁");
+        // 锁文件常驻：Drop 只关闭句柄释放内核锁，不删除文件
+        assert!(dir.join(".state/run.lock").exists(), "锁文件应常驻");
         // 释放后可再次获取（幂等循环）
         let lock2 = acquire_run_lock(&config).unwrap();
         drop(lock2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 锁已存在时拒绝第二次获取，报错含路径与指引
+    /// 锁已存在时拒绝第二次获取，报错含持锁者指引与锁路径
     #[test]
     fn test_run_lock_rejects_second() {
         let dir = temp_path("lock_reject", "");
@@ -280,59 +221,24 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 残留锁（死 PID）自愈：锁内 PID 无进程 → 删除重试成功
+    /// 获取锁后锁文件写入持锁者身份（供冲突实例报错定位）
     #[test]
-    fn test_run_lock_stale_dead_pid_selfheals() {
-        let dir = temp_path("lock_stale", "");
-        let _config = lock_config(&dir);
-        let path = dir.join(".state/run.lock");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "99999999\n").unwrap(); // 极大 PID 必然无进程
-        let lock = acquire_run_lock_inner(&path, &|_| false).unwrap();
-        assert!(path.exists());
-        drop(lock);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// 真并发（活 PID）报错：注入 is_alive=true
-    #[test]
-    fn test_run_lock_live_pid_reports_concurrency() {
-        let dir = temp_path("lock_live", "");
-        let _config = lock_config(&dir);
-        let path = dir.join(".state/run.lock");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "1\n").unwrap();
-        let err = acquire_run_lock_inner(&path, &|_| true).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("正在运行"), "应报并发错误: {msg}");
-        assert!(msg.contains("PID 1"), "报错应含 PID: {msg}");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// 空锁文件（PID 缺失）自愈删除重试
-    #[test]
-    fn test_run_lock_empty_file_selfheals() {
-        let dir = temp_path("lock_empty", "");
-        let _config = lock_config(&dir);
-        let path = dir.join(".state/run.lock");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "").unwrap();
-        let lock = acquire_run_lock_inner(&path, &|_| true).unwrap();
-        assert!(path.exists());
-        drop(lock);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// 半写锁文件（PID 不可解析）自愈删除重试
-    #[test]
-    fn test_run_lock_half_written_selfheals() {
-        let dir = temp_path("lock_half", "");
-        let _config = lock_config(&dir);
-        let path = dir.join(".state/run.lock");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "12x").unwrap(); // 半写：PID 前缀不可解析
-        let lock = acquire_run_lock_inner(&path, &|_| true).unwrap();
-        assert!(path.exists());
+    fn test_run_lock_writes_holder_info() {
+        use std::io::{Read, Seek, SeekFrom};
+        let dir = temp_path("lock_info", "");
+        let config = lock_config(&dir);
+        let mut lock = acquire_run_lock(&config).unwrap();
+        // Windows 上 LockFileEx 锁定文件 offset 0 区域，其他句柄读该区域
+        // 会返回 ERROR_LOCK_VIOLATION，因此经守卫句柄（同一句柄可读写
+        // 锁定区域）读取验证内容
+        let mut content = String::new();
+        {
+            let file: &mut std::fs::File = &mut *lock._lock;
+            file.seek(SeekFrom::Start(0)).unwrap();
+            file.read_to_string(&mut content).unwrap();
+        }
+        assert!(content.contains("pid="), "锁文件应含 pid=: {content}");
+        assert!(content.contains("process="), "锁文件应含 process=: {content}");
         drop(lock);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -369,4 +275,3 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
-// v17 F 组增量闭环验证

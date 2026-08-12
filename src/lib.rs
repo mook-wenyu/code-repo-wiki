@@ -310,9 +310,10 @@ pub fn run_pipeline_with_config(
     mode: &GenerationMode,
     on_progress: &dyn Fn(ProgressEvent),
 ) -> anyhow::Result<AnalysisResult> {
-    // v36 D4：单实例运行锁——并发 generate/update/watch 会把状态/索引/
-    // 产物互相覆盖（最后写入者胜）。锁作用域=本次生成全程（Drop 释放），
-    // 崩溃残留由 fs.rs acquire_run_lock 自动清理（PID 活性检测，死 PID 删锁重试）。
+    // 单实例运行锁（Phase 15.1 fd-lock 内核锁）：并发 generate/update/
+    // watch 会把状态/索引/产物互相覆盖（最后写入者胜）。锁作用域=本次
+    // 生成全程（Drop 释放），崩溃残留无需自愈——内核在进程终止时自动
+    // 释放锁，新实例直接获锁。
     let _run_lock = crate::fs::acquire_run_lock(&config)?;
     // 配置直传变体内无 config_path 字段，路径信息由调用方（加载侧）记录，
     // 此处仅保留追踪层级。
