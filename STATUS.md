@@ -1,5 +1,15 @@
 # 项目状态简报 （AI自动维护，禁止贴代码）
 
+## 六十、v0.6.0 Phase 15/16（2026-08-12）——命令面简化与系统优化
+- 修改的功能：
+  - Phase 15 锁协议：fd-lock 内核锁重写锁协议（常驻锁文件+持锁者身份，替换 create_new+PID+rename 认领）；generate/update 新增 `--wait` 与 `--skip-if-locked`（hook/CI 非阻塞拿锁）；hook 模板改 `--skip-if-locked` 消除 TOCTOU；watch 过滤产物目录；card 命令纳入写锁防并发双写
+  - Phase 16 命令面：MCP 5 工具加 wiki_ 前缀 + 修复 wiki_init 死接线；工具描述英文四要素重写 + search 结构化输出（补 score/callers/callees）+ ast_search 成本提示；CLI help 分组（clap 无原生多组，用 override_help）+ search `--engine` 改 clap 解析期校验（退出码 1→2）+ card 补 `-c`；prompt 体系修复（overview 补 system+注入防御、module_description/index_guide 防御、edit_card zh 映射、6 裁判 few-shot、契约测试扩展断言）；AGENTS.md 五要素重写
+  - version 0.6.0：Cargo.toml/Cargo.lock 同步 + CHANGELOG [0.6.0] 段（v0.6.0 tag 未打）
+- 验证证据：独立验证 729 passed（唯一失败为已知环境性 libgit2 flaky）、clippy -D warnings 0 告警；全链路验收通过——generate（config provider=mock 与 `--provider mock` 两形态）/search（JSON 结构化）/status/card/lint/MCP 5 工具（tools/list+call）/锁链路（`--skip-if-locked=0` 未获锁直接退出、`--wait=非零` 阻塞等锁）/help 分组/version 0.6.0
+- 提交：2d3dfe8（15.1 锁协议）→ 58f20ac（15.5 前置测试适配）→ d6cc5497（15.2 --wait/--skip-if-locked）→ b17fddd（15.3 hook/watch 过滤）→ 6745a43（15.4 card 锁）→ a026dc5（clippy 门禁清理）→ 92605765（16.1 MCP 前缀）→ 619cf72（16.2 MCP 描述）→ 5f45211（16.3 CLI）→ d2d4d39（16.4 prompt）→ 2dec379（16.5 文档+版本）→ e2e9eef（lint 切片签名误剥修复）
+- 已知风险：测试需 NO_PROXY=127.0.0.1,localhost,::1（本机系统代理干扰 reqwest）；已知环境性 flaky `test_incremental_git_diff_scenarios`（libgit2 竞态，建议 helper 对 index.add_all 加重试或标记 ignore）；MCP notifications/initialized 返回 -32601（rmcp 既有行为，非本次引入）；验收发现并已修复 lint 切片签名误剥缺陷（&[T] 签名 stale-entity 误报）；v0.6.0 tag 未打
+- 下次最该做的事：libgit2 flaky 测试容错（helper 重试 index.add_all）；STATUS.md 历史条目与新条目去重（可选）
+
 ## 五十九、v47 更新卡死根因修复（2026-08-09，本会话）
 - 修改的功能：①非 TTY 进度行补换行（不再与 tracing 日志粘行）；②`analyzing 25%`
   移至图构建前发射（消除 54s 黑屏误判）；③HTTP `send()` 新增 90s 首字节超时
