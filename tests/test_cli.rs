@@ -12,6 +12,8 @@
 
 mod common;
 use common::{copy_dir, mock_llm_server, openai_compatible_config, run_bin_with_envs, unique_dir};
+use code_repo_wiki::config::schema::WikiConfig;
+use code_repo_wiki::fs::acquire_run_lock;
 use std::path::{Path, PathBuf};
 
 /// 最小可用配置：LLM 指向本地 mock server，输出硬编码 .code-repo-wiki
@@ -211,17 +213,97 @@ fn test_search_with_root_from_subdir() {
 
 #[test]
 fn test_watch_exits_immediately_on_live_lock() {
-    // Phase 13 回归防线（13.2）：watch 遇真并发（活 PID 锁）必须立即
-    // 退出（非成功退出码）而不是退避重试——锁冲突属于另一实例正在运行，
-    // 重试只会浪费轮次（v51 67 次连续锁错误的教训）。
-    // 进程级测试：预置活 PID 锁（当前测试进程必然存活）→ watch
-    // 启动即撞锁 → 断言退出码非成功。
+    // Phase 15.5 回归防线（适配 Phase 15.1 fd-lock 内核锁语义）：
+    // watch 遇真并发（另一实例持有内核写锁）必须立即退出（非成功退出码）
+    // 而不是退避重试——锁冲突属于另一实例正在运行，重试只会浪费轮次
+    //（v51 67 次连续锁错误的教训）。
+    // 旧方案「预置含当前 PID 的 run.lock 文件」模拟并发已失效：新语义下
+    //「存在锁文件」≠「持有内核锁」——watch 能正常获取内核锁并进入监听，
+    // 断言非成功退出码会永远等待（测试挂起）。改真实持锁者场景：主测试
+    // 进程经 acquire_run_lock 真正持有内核写锁，watch 子进程作为独立进程
+    // 打开同一锁文件必然撞锁（fd-lock 锁绑定打开句柄而非路径）。
     let work_dir = prepare_repo("watch_live_lock");
-    let lock_dir = work_dir.join(".code-repo-wiki").join(".state");
-    std::fs::create_dir_all(&lock_dir).unwrap();
-    std::fs::write(lock_dir.join("run.lock"), format!("{}\n", std::process::id())).unwrap();
+
+    // 主测试进程持有内核写锁。output_dir 注入与 watch 子进程锁路径一致：
+    // 子进程 cwd=work_dir、config 无 output.dir → output_dir() 回退
+    // .code-repo-wiki 相对 cwd = work_dir/.code-repo-wiki。
+    let config = WikiConfig {
+        output_dir: Some(work_dir.join(".code-repo-wiki")),
+        ..Default::default()
+    };
+    let _lock = acquire_run_lock(&config).expect("主测试进程应能获取运行锁");
+
+    // 持锁状态下 spawn watch 子进程 → 启动即撞内核锁 → 非成功退出码 +
+    // 报「另一实例正在运行」。Windows 上 LockFileEx 阻止子进程读锁定区域，
+    // 错误信息会退化为「PID 未知」——断言只依赖「正在运行」而非持锁者身份。
     let out = run_bin_with_envs(&work_dir, &["watch", "--config", "mock-server.toml"], &[]);
-    assert!(!out.status.success(), "watch 遇活 PID 锁应立即退出，实际 status: {:?}\nstderr: {}", out.status, String::from_utf8_lossy(&out.stderr));
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !out.status.success(),
+        "watch 撞内核锁应立即退出，实际 status: {:?}\n输出: {combined}",
+        out.status
+    );
+    assert!(
+        combined.contains("正在运行"),
+        "撞锁报错应含「正在运行」提示，实际输出: {combined}"
+    );
+
+    // 释放锁后 watch 能正常启动（阻塞监听：spawn + 轮询 try_wait + kill，
+    // 参考 test_cli_smoke.rs 的 watch 子进程处理模式）。撞锁路径在流水线
+    // 入口约 1s 内退出，观察窗口 10s 远超该值：若提前退出即撞锁（失败）；
+    // 存活超过窗口即证明已获取内核锁进入生成/监听，随后 kill 收尾。
+    drop(_lock);
+    use std::io::Read as _;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_code-repo-wiki"))
+        .args(["watch", "--config", "mock-server.toml"])
+        .current_dir(&work_dir)
+        .env("RUST_LOG", "off")
+        .env_remove("OPENAI_API_KEY")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("启动 watch 失败");
+    // 排空 stdout/stderr 管道：子进程持有管道，缓冲填满会阻塞其继续处理
+    //（watch 单测的死锁陷阱）
+    let mut out_pipe = child.stdout.take().expect("取 stdout 管道失败");
+    let mut err_pipe = child.stderr.take().expect("取 stderr 管道失败");
+    let drain_out = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = out_pipe.read_to_end(&mut buf);
+    });
+    let drain_err = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = err_pipe.read_to_end(&mut buf);
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut early_exit: Option<std::process::ExitStatus> = None;
+    while Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(200));
+        if let Some(status) = child.try_wait().expect("try_wait 失败") {
+            early_exit = Some(status);
+            break;
+        }
+    }
+    assert!(
+        early_exit.is_none(),
+        "释放锁后 watch 不应提前退出（撞锁即失败），退出码: {:?}",
+        early_exit.map(|s| s.code())
+    );
+    // 收尾：kill 子进程（watch 是阻塞监听，必须显式终止）
+    let _ = child.kill();
+    let _ = child.wait();
+    drain_out.join().unwrap();
+    drain_err.join().unwrap();
+
+    let _ = std::fs::remove_dir_all(&work_dir);
 }
 
 /// update --progress-json（P2-11）：增量更新命令同样输出 JSONL 进度事件
