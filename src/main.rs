@@ -4,8 +4,51 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 
+/// Phase 16.3：顶层 help 分组静态文本（override_help）。
+///
+/// clap 4.6.4 无原生多组子命令 help（官方 issue #1553 仍 open；
+/// next_help_heading 只作用于参数不作用于子命令列表），故用 override_help
+/// 静态文本替代，顶层 `-h/--help` 与 `help` 子命令输出此文本；子命令自身
+/// `-h` 仍走 clap 自动帮助。此文本是第二真源，tests/test_cli_smoke.rs 的
+/// test_help_shows_grouped_commands 守卫防漂移（4 分组标题 + 18 命令各一次）。
+const GROUPED_HELP: &str = "\
+代码仓库 Wiki 自动生成系统
+
+Usage: code-repo-wiki <COMMAND>
+
+查询命令:
+  search         搜索代码实体（BM25/语义/混合）
+  ast-search     AST 精确符号查找
+  status         查看当前 Wiki 状态
+  note           追加知识沉淀记录
+  card           知识卡片操作
+
+生成命令:
+  generate       全量生成 Wiki 文档
+  update         增量更新 Wiki 文档
+  sync           同步产物目录到指纹库
+  export         导出 Wiki 为 HTML
+  watch          监听文件变更并自动增量更新
+
+维护命令:
+  install        安装集成（插件/MCP/AGENTS.md/hooks）
+  uninstall      卸载集成
+  key            交互式配置 LLM API key
+  doctor         环境诊断（六项检查）
+  lint           检查 Wiki 产物健康
+  mcp            启动 MCP stdio server
+
+评测命令:
+  bench          对目标仓库运行五维自动评测
+  bench-manifest 清单批量跑分
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+";
+
 #[derive(Parser)]
-#[command(name = "code-repo-wiki", about = "代码仓库 Wiki 自动生成系统", version)]
+#[command(name = "code-repo-wiki", about = "代码仓库 Wiki 自动生成系统", version, override_help = GROUPED_HELP)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -69,7 +112,7 @@ enum Commands {
         /// 配置文件路径
         #[arg(short, long)]
         config: Option<PathBuf>,
-        /// 项目根目录（产物目录定位基准，默认当前目录；U02 root 补齐族）
+        /// 项目根目录（产物目录定位基准，默认当前目录；root 补齐族）
         #[arg(long)]
         root: Option<PathBuf>,
     },
@@ -78,7 +121,7 @@ enum Commands {
         /// 配置文件路径
         #[arg(short, long)]
         config: Option<PathBuf>,
-        /// 项目根目录（产物目录定位基准，默认当前目录；U02 root 补齐族）
+        /// 项目根目录（产物目录定位基准，默认当前目录；root 补齐族）
         #[arg(long)]
         root: Option<PathBuf>,
     },
@@ -87,13 +130,12 @@ enum Commands {
         /// 配置文件路径
         #[arg(short, long)]
         config: Option<PathBuf>,
-        /// 项目根目录（产物目录定位基准，默认当前目录；U02 root 补齐族）
+        /// 项目根目录（产物目录定位基准，默认当前目录；root 补齐族）
         #[arg(long)]
         root: Option<PathBuf>,
     },
-    /// 环境诊断（v17 t08，v21 文案对齐）：配置可解析/产物目录可写/输出
-    /// 目录状态/LLM Key/网络/版本漂移 六查，逐项输出 ✓/✗；全过退出码 0，
-    /// 任一失败退出码 1
+    /// 环境诊断：配置可解析/产物目录可写/输出目录状态/LLM Key/网络/
+    /// 版本漂移 六查，逐项输出 ✓/✗；全过退出码 0，任一失败退出码 1
     Doctor {
         /// 配置文件路径（缺省走默认配置链）
         #[arg(short, long)]
@@ -125,7 +167,7 @@ enum Commands {
         /// 配置文件路径（取主语言写日志）
         #[arg(short, long)]
         config: Option<PathBuf>,
-        /// 项目根目录（产物目录定位基准，默认当前目录；U02 root 补齐族）
+        /// 项目根目录（产物目录定位基准，默认当前目录；root 补齐族）
         #[arg(long)]
         root: Option<PathBuf>,
     },
@@ -144,16 +186,16 @@ enum Commands {
         #[arg(long)]
         root: Option<PathBuf>,
     },
-    /// 安装 code-repo-wiki 集成（v33 合并版：OpenCode 插件 + 多 Agent MCP + AGENTS.md + git hooks）
+    /// 安装 code-repo-wiki 集成（OpenCode 插件 + 多 Agent MCP + AGENTS.md + git hooks）
     ///
     /// 默认执行：① 确保用户级默认配置（config.toml）存在，缺失时自动创建
-    /// （v25 起 init 并入 install，配置链=项目级 config.toml 覆盖用户级）；
+    /// （init 并入 install，配置链=项目级 config.toml 覆盖用户级）；
     /// ② 注册 OpenCode 插件（用户级 ~/.config/opencode/plugins/code-repo-wiki.ts）；
     /// ③ 注册 OpenCode MCP（用户级全局 opencode.json 的 mcp 块）；
     /// ④ 注入 AGENTS.md wiki 引用块；⑤ 安装 git post-commit/post-merge hooks。
     /// --claude 额外注册 Claude Code MCP（用户级 ~/.claude.json 顶层 mcpServers，
-    /// User scope——v39 起不再写项目根 .mcp.json）并同步注入 CLAUDE.md
-    /// （v36 起 --also-claude 并入——Claude Code 不读 AGENTS.md，注册 MCP
+    /// User scope——不再写项目根 .mcp.json）并同步注入 CLAUDE.md
+    /// （--also-claude 并入——Claude Code 不读 AGENTS.md，注册 MCP
     /// 时必然需要文档指引，两个开关分离无意义）；--codex 额外注册 Codex
     /// CLI MCP（用户级 ~/.codex/config.toml）。
     /// 全部幂等；已存在的非 code-repo-wiki 内容（用户自定义 hook/其他 MCP server）保留。
@@ -191,9 +233,9 @@ enum Commands {
         /// 以 JSON 格式输出
         #[arg(long)]
         json: bool,
-        /// 搜索引擎选择: text / semantic / hybrid（默认 hybrid；hybrid 无嵌入 key 时自动降级纯 text）
+        /// 搜索引擎选择（默认 hybrid；hybrid 无嵌入 key 时自动降级纯 text）
         #[arg(short, long)]
-        engine: Option<String>,
+        engine: Option<code_repo_wiki::config::schema::SearchEngineType>,
         /// 项目根目录（扫描根/git 定位基准，默认当前目录）
         #[arg(long)]
         root: Option<PathBuf>,
@@ -229,7 +271,7 @@ enum Commands {
         #[arg(long, global = true)]
         skip_if_locked: bool,
     },
-    /// 卸载 code-repo-wiki 集成（v33 合并版：OpenCode MCP + 插件 + AGENTS.md + hooks
+    /// 卸载 code-repo-wiki 集成（OpenCode MCP + 插件 + AGENTS.md + hooks
     /// + Claude/Codex MCP 条目；--force 确认）
     ///
     /// 清理 install 写入的全部集成痕迹（幂等，缺省即跳过）；保留用户级
@@ -239,7 +281,7 @@ enum Commands {
         /// 跳过确认（卸载将移除集成配置）
         #[arg(long)]
         force: bool,
-        /// 项目根目录（插件/hook/AGENTS.md 移除基准，默认当前目录；U02 root 补齐族）
+        /// 项目根目录（插件/hook/AGENTS.md 移除基准，默认当前目录；root 补齐族）
         #[arg(long)]
         root: Option<PathBuf>,
     },
@@ -273,7 +315,7 @@ enum Commands {
         /// LLM 不可用时该维度跳过）
         #[arg(long)]
         judge: bool,
-        /// v32（6.4 FR-101）：RepoDocBench 对齐五维报告——强制 LLM 裁判
+        /// RepoDocBench 对齐五维报告——强制 LLM 裁判
         /// （与 --judge 正交，隐含 judge=true）并输出五维聚合摘要
         /// （Coverage / Doc Information / Completeness@K / TQS /
         /// Update Recall），各维缺失时降级跳过并显式标注（不得静默）。
@@ -284,15 +326,15 @@ enum Commands {
         /// Update Recall 的 git commit 回放——大仓库评测时回放成本
         /// 不可接受，用此模式单独完成裁判打分。
         /// 与 --judge 正交：--rubrics-only --judge = 真实 LLM 裁判的
-        /// 快速评测（v28 t09 验证轮的标准形态）
+        /// 快速评测（验证轮的标准形态）
         #[arg(long)]
         rubrics_only: bool,
         /// 参考文件路径（可重复传 --reference，可选）——注入 LLM 裁判
-        /// （Doc Info/Rubric）作为对照材料，防止凭空打分（T05）
+        /// （Doc Info/Rubric）作为对照材料，防止凭空打分
         #[arg(long)]
         reference: Vec<PathBuf>,
     },
-    /// 清单批量跑分（v21 E 组）：对清单中每个仓库执行 Coverage/
+    /// 清单批量跑分：对清单中每个仓库执行 Coverage/
     /// Doc Info/lint/Time 四快维度，输出仓库×维度矩阵。
     ///
     /// 清单格式：每行一个仓库（`#` 注释/空行跳过）；本地路径直接使用，
@@ -323,7 +365,7 @@ enum CardAction {
         /// 模块名（如 src::config）
         module: String,
         /// 配置文件路径
-        #[arg(long)]
+        #[arg(short, long)]
         config: Option<PathBuf>,
     },
     /// 按指令修改已有卡片
@@ -337,7 +379,7 @@ enum CardAction {
         #[arg(long)]
         reference: Vec<PathBuf>,
         /// 配置文件路径
-        #[arg(long)]
+        #[arg(short, long)]
         config: Option<PathBuf>,
     },
     /// 在已有卡片上追加内容
@@ -351,7 +393,7 @@ enum CardAction {
         #[arg(long)]
         reference: Vec<PathBuf>,
         /// 配置文件路径
-        #[arg(long)]
+        #[arg(short, long)]
         config: Option<PathBuf>,
     },
     /// 忽略现有内容全量重写
@@ -365,7 +407,7 @@ enum CardAction {
         #[arg(long)]
         reference: Vec<PathBuf>,
         /// 配置文件路径
-        #[arg(long)]
+        #[arg(short, long)]
         config: Option<PathBuf>,
     },
 }
@@ -949,16 +991,12 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Search { query, top_k, config, json, engine, root } => {
-            // 解析引擎类型：优先用 CLI 参数，否则取默认常量 SEARCH_DEFAULT_ENGINE
-            //（v36 起为 Hybrid；hybrid 无 embed key 时自动降级纯 text）
+            // 解析引擎类型：CLI 参数经 clap ValueEnum 校验（非法值在解析期
+            // 报错退出码 2，help 列出 possible values），此处仅回退默认常量
+            // SEARCH_DEFAULT_ENGINE（v36 起为 Hybrid；hybrid 无 embed key 时
+            // 自动降级纯 text）
             let root = resolve_root(root.as_deref())?;
-            let engine_type = match engine.as_deref() {
-                Some("text") => code_repo_wiki::config::schema::SearchEngineType::Text,
-                Some("semantic") => code_repo_wiki::config::schema::SearchEngineType::Semantic,
-                Some("hybrid") => code_repo_wiki::config::schema::SearchEngineType::Hybrid,
-                Some(other) => anyhow::bail!("不支持的搜索引擎: {other}（可选: text/semantic/hybrid）"),
-                None => code_repo_wiki::config::schema::SEARCH_DEFAULT_ENGINE,
-            };
+            let engine_type = engine.unwrap_or(code_repo_wiki::config::schema::SEARCH_DEFAULT_ENGINE);
             // CLI 显式 -k 优先，未传时回退硬编码默认 SEARCH_DEFAULT_TOP_K
             // N17：top_k 下限收敛到 1（top_k=0 的搜索调用无意义，返回空结果）
             let top_k = top_k.unwrap_or(code_repo_wiki::config::schema::SEARCH_DEFAULT_TOP_K).max(1);

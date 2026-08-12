@@ -345,7 +345,7 @@ impl Default for EmbedSection {
 }
 
 /// 搜索引擎类型
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, clap::ValueEnum)]
 pub enum SearchEngineType {
     /// BM25 全文搜索
     #[serde(rename = "text")]

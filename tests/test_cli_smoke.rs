@@ -1009,3 +1009,110 @@ fn test_bench_manifest_smoke() {
 
     let _ = std::fs::remove_dir_all(&base);
 }
+
+// ==================== Phase 16.3：help 分组 / search ValueEnum / card -c ====================
+
+/// Phase 16.3：顶层 --help 输出分组帮助（override_help 静态文本——clap
+/// 4.6.4 无原生多组子命令 help，next_help_heading 只作用于参数）。
+/// 守卫断言：4 个分组标题 + 18 个命令名各恰好一次，防 GROUPED_HELP
+/// （第二真源）漂移——改动分组文本须同步此测试。
+#[test]
+fn test_help_shows_grouped_commands() {
+    let work_dir = unique_dir("help_grouped");
+    let _ = std::fs::create_dir_all(&work_dir);
+
+    let out = run_bin(&work_dir, &["--help"]);
+    assert!(
+        out.status.success(),
+        "--help 应成功退出，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for heading in ["查询命令", "生成命令", "维护命令", "评测命令"] {
+        assert!(
+            stdout.contains(heading),
+            "help 应含分组标题 {heading}，实际输出: {stdout}"
+        );
+    }
+    for name in [
+        "search", "ast-search", "status", "note", "card",
+        "generate", "update", "sync", "export", "watch",
+        "install", "uninstall", "key", "doctor", "lint", "mcp",
+        "bench", "bench-manifest",
+    ] {
+        let count = stdout.lines().filter(|l| {
+            let t = l.trim_start();
+            t.strip_prefix(name)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
+        }).count();
+        assert_eq!(
+            count, 1,
+            "命令 {name} 应在 help 中恰好出现一次，实际输出: {stdout}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
+
+/// Phase 16.3（cli-commands-002）：search --engine 改 clap ValueEnum 后，
+/// 非法引擎值在解析期报错退出码 2（不再走运行时 bail 分支）
+#[test]
+fn test_search_engine_invalid_exits_code_2() {
+    let work_dir = unique_dir("engine_invalid");
+    let _ = std::fs::create_dir_all(&work_dir);
+
+    let out = run_bin(&work_dir, &["search", "--engine", "bogus", "-q", "x"]);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "非法 engine 应在 clap 解析期报错退出码 2，stdout: {}，stderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        combined.contains("possible values"),
+        "解析错误应列出可取值，实际输出: {combined}"
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
+
+/// Phase 16.3（cli-commands-003）：card 子命令 config 支持 -c 短旗标。
+/// 冒烟：generate 后 card generate <module> -c config.toml 成功
+#[test]
+fn test_card_config_short_flag() {
+    let work_dir = prepare_repo("card_short_flag");
+
+    let out = run_bin(&work_dir, &["generate", "-c", "config.toml"]);
+    assert!(
+        out.status.success(),
+        "generate 应成功，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let cards_dir = work_dir.join(".code-repo-wiki").join("cards").join("zh");
+    let card_file = std::fs::read_dir(&cards_dir)
+        .unwrap_or_else(|e| panic!("卡片目录应存在 {}: {}", cards_dir.display(), e))
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|x| x == "md"))
+        .expect("generate 后应有卡片文件");
+    let module = card_file
+        .file_stem()
+        .unwrap()
+        .to_string_lossy()
+        .replace('_', "::");
+
+    let out = run_bin(&work_dir, &["card", "generate", &module, "-c", "config.toml"]);
+    assert!(
+        out.status.success(),
+        "card generate -c 短旗标应成功，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
