@@ -13,6 +13,7 @@
 - **评测参考注入（v51/T05）**：`bench`/`rubrics` 命令新增 `--reference <path>`
   ——judge 三态（满意/不满意/不确定）prompt 注入人工参考材料对照，缓解
   「无标签基准」偏差（arXiv 2606.00093 实践）
+- **评测体系修复（T05）**：TQS 三态 uncertain 正式启用（option_variant 独立 attempts 计数，不再 ignore）；`bench --root` 校验存在性；Update Recall 强制 mock 回放 + 产物过滤（`.code-repo-wiki/` 变更不计入 recall）；manifest 克隆目录名 URL 派生 + 已存在时 open+fetch 更新；TQS 报告输出 2×2 混淆矩阵
 - **运行锁残留自愈（v51/13.1）**：锁冲突时读取 PID 做进程活性检测
   （Unix kill(pid,0) / Windows OpenProcess）——死进程残留锁自动清理重试
   一次，活进程报真并发（含 PID），空/半写锁自愈；TOCTOU 窗口经重读校验收窄
@@ -32,7 +33,7 @@
 - **检索质量（v51/T03）**：RRF 融合 k 可配置 `[search] rrf_k`（默认 40）；
   FTS5 保留词（OR/AND/NOT）转义；同名实体去重键含行号；callgraph 符号级聚合
 - **图分析层（v51/T11）**：embedding 提取 4 线程并发；单例特征过滤；
-  确定性排序（NodeId tie-break）
+  确定性排序（NodeId tie-break）；import 边单边建模（自克隆边删除）
 - **生成管线（v51/T07）**：卡片失败不再错位（失败卡占位对齐）；Mermaid
   降级空块感知；卡片 JSON 解析失败自动重试一次；chunk 依赖单遍处理
 - **解析器（v51/T06）**：.tsx 文件用 TSX 语法解析（JSX 实体不再丢失）；
@@ -41,13 +42,15 @@
 - **安全（v51/T08）**：HTML 输出事件级 XSS 转义（原始 HTML 不再透传）；
   bench 模板配置脱敏（api_key 不落盘）；OpenCode/Claude MCP 配置读失败中止
   写回（防覆盖 OAuth 会话）；LLM prompt 注入边界声明（代码为数据非指令）；
-  模板占位符缺失显式报错
+  模板占位符缺失显式报错、{{ 残留检测、引导注入分级（tier）、.gitignore 模板四项
 - **progress_json 净化（v51/T09a）**：generate/update 完成摘要与 no-op 早退
   在 --progress-json 下输出 JSON 行（不再污染 JSONL 流）
 - **崩溃自愈有界化（v51/13.2）**：watch 非锁错误指数退避重试封顶 10 次
   （5s→60s）；锁冲突立即退出（不再无限重试）
 - **git hook 增强（v51/13.3）**：post-commit/post-merge 模板锁感知（另一
   实例运行中跳过本次）；update-error.log 超 1MiB 轮转保留尾部 100 行
+- **图构建进度补点（13.5）**：`analyzing 27%` 移至 build_graph 完成后 + 28/29 推进点（25%→30% 大窗口不再黑屏）
+- **panic 链加固（13.6）**：子线程 panic 降级为阶段告警 + 模块检测阶段定位（不再整体中断生成）
 
 ### 依赖/CI
 - **依赖升级（v51/T10）**：rusqlite 0.32→0.38（bundled SQLite 3.51.1）、

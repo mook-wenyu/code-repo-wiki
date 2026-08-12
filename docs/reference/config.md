@@ -35,6 +35,8 @@ api_key_env = "OPENCODEGO2_API_KEY"  # key 放环境变量，仓库只写变量�
 #                                #   仅 openai-compatible（chat/completions）路径生效。
 
 [embed]
+# provider = "local"                  # 本地嵌入（LocalEmbedder）：零 key 语义搜索；需 cargo build --features local-embed 编译启用
+# local_model = "bge-small-zh-v1.5"   # 本地模型名：bge-small-zh-v1.5 / bge-small-en-v1.5 / bge-m3 / multilingual-e5-small
 model = "qwen3.7-text-embedding"      # 默认阿里百炼 + qwen3.7-text-embedding
 # base_url = "https://llm-…maas.aliyuncs.com/compatible-mode/v1"
 api_key = ""

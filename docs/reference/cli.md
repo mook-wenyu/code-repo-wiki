@@ -25,6 +25,7 @@
 ## 评测命令
 
 - `bench --root <repo> [--judge]`：自动评测（Coverage/文档信息/Completeness@K/lint/Update Recall/耗时 + LLM-as-judge 打分）
+- `bench --reference <path>`：注入人工参考材料供 judge 对照
 - `bench --repodoc`：RepoDocBench 对齐五维聚合报告（Coverage/Doc Info/Completeness@K/TQS/Update Recall，LLM 不可用等降级显式标注）
 - `bench --rubrics-only`：仅跑文档质量准则评分
 - `bench-manifest`：清单批量跑分（注释/空行/本地路径/URL/带名形式；本地路径无需预克隆，URL 自动克隆）

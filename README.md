@@ -27,7 +27,7 @@ code-repo-wiki generate
 
 **一键全自动（推荐）**：`code-repo-wiki install` 注册 git `post-commit`/`post-merge` hook——之后**每次 commit 后 Wiki 自动增量更新**，无需再手动执行任何命令；同时注册 OpenCode 插件与 MCP（用户级全局，一次安装所有仓库可用），`--claude` / `--codex` 可加注 Claude Code / Codex MCP。常驻实时模式用 `code-repo-wiki watch`（代码保存即更新）。卸载用 `code-repo-wiki uninstall --force`。
 
-**可选配置**：默认零配置即可运行；需要自定义时使用 `config.toml`——用户级（Windows: `%USERPROFILE%\.code-repo-wiki\config.toml`；其他: `~/.code-repo-wiki/config.toml`，可用环境变量 `CODE_REPO_WIKI_HOME` 重定位；v41 起自动从旧目录一次性迁移）与项目级（仓库根 `config.toml`）字段级合并，详见[配置参考](docs/reference/config.md)。
+**可选配置**：默认零配置即可运行；需要自定义时使用 `config.toml`——用户级（Windows: `%USERPROFILE%\.code-repo-wiki\config.toml`；其他: `~/.code-repo-wiki/config.toml`，可用环境变量 `CODE_REPO_WIKI_HOME` 重定位；v41 起自动从旧目录一次性迁移）与项目级（仓库根 `config.toml`）字段级合并，详见[配置参考](docs/reference/config.md)。语义嵌入支持本地 ONNX 模型（cargo build --features local-embed + [embed] provider = "local"，零 key 真实语义搜索）
 
 ## 常用命令
 
@@ -39,7 +39,7 @@ code-repo-wiki generate
 | `search --query "关键词"` | 代码语义搜索——默认 hybrid 引擎 + top-k 10，**均可省略**；另有 `ast-search` 精确符号查找 |
 | `lint` | 九类健康检查（断链/过时/引用错位/LLM 编造） |
 | `doctor` / `status` | 环境健康检查 / Wiki 状态报告 |
-| `bench` | RepoDocBench 五维评测 + rubrics 准则评分 |
+| `bench` | RepoDocBench 五维评测 + rubrics 准则评分（--reference 可注入人工参考材料） |
 | `export` | 一键导出静态 HTML 站点 |
 | `install` / `uninstall` | 一键集成 / 卸载（hook + 插件 + MCP + AGENTS.md） |
 
