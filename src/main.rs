@@ -496,13 +496,25 @@ fn main() -> anyhow::Result<()> {
                     },
                 )?
             };
-            println!(
-                "✓ 生成完成: 扫描 {} 个文件 / {} 个实体 / {} 页文档（{}s）",
-                result.stats.files_scanned,
-                result.stats.total_entities,
-                result.documents.len(),
-                started.elapsed().as_secs()
-            );
+            // progress_json：完成摘要也走 JSONL（与事件行同构，插件流式解析
+            // 不被纯文本行污染）；文本模式保持原摘要行
+            if progress_json {
+                println!(
+                    r#"{{"stage":"done","files":{},"entities":{},"documents":{},"elapsed_secs":{}}}"#,
+                    result.stats.files_scanned,
+                    result.stats.total_entities,
+                    result.documents.len(),
+                    started.elapsed().as_secs()
+                );
+            } else {
+                println!(
+                    "✓ 生成完成: 扫描 {} 个文件 / {} 个实体 / {} 页文档（{}s）",
+                    result.stats.files_scanned,
+                    result.stats.total_entities,
+                    result.documents.len(),
+                    started.elapsed().as_secs()
+                );
+            }
         }
         Commands::Update { config, output, force, progress_json, dry_run, root } => {
             // update 命令无外部 watch 事件，watch_paths 传空、change_kind 传 None
@@ -573,7 +585,20 @@ fn main() -> anyhow::Result<()> {
             // "增量更新完成"只属于真实执行路径，跳过时向 stdout 打印
             // 明确消息且不再打印完成行（跳过细节仍走 stderr tracing）。
             if result.documents.is_empty() && result.stats.files_scanned == 0 {
-                println!("无文件变更，跳过更新（no-op）");
+                if progress_json {
+                    // progress_json：no-op 也走 JSONL 事件行，插件流式解析不被纯文本行污染
+                    println!(r#"{{"stage":"noop"}}"#);
+                } else {
+                    println!("无文件变更，跳过更新（no-op）");
+                }
+            } else if progress_json {
+                // progress_json：完成摘要与事件行同构（stage:"done"），文本模式保持原摘要行
+                println!(
+                    r#"{{"stage":"done","files":{},"documents":{},"elapsed_secs":{}}}"#,
+                    result.stats.files_scanned,
+                    result.documents.len(),
+                    started.elapsed().as_secs()
+                );
             } else {
                 println!(
                     "✓ 增量更新完成: 扫描 {} 个文件 / {} 页文档（{}s）",

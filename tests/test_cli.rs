@@ -129,6 +129,27 @@ fn test_progress_json_cli() {
     }
     assert_eq!(events.last().unwrap().0, "done", "末个事件应为 done");
     assert_eq!(events.last().unwrap().1, 100, "末个事件 progress 应为 100");
+    // T09a 回归防线：progress_json 模式下 stdout 每行都必须可解析为 JSON
+    //（旧纯文本摘要污染会被 filter_map 静默丢弃而漏检，此处逐行强制解析）
+    let parsed: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| {
+            serde_json::from_str(line).unwrap_or_else(|e| {
+                panic!("progress_json 输出行应可解析为 JSON: {e}\n行内容: {line}\n完整 stdout: {stdout}")
+            })
+        })
+        .collect();
+    // 完成摘要行（stage:"done" 且无 progress 字段，与事件行区分）
+    let done_v = parsed.iter().find(|v| {
+        v.get("stage").and_then(|s| s.as_str()) == Some("done") && v.get("progress").is_none()
+    }).unwrap_or_else(|| panic!("应存在 stage=done 完成摘要行，实际 stdout: {stdout}"));
+    // files/entities/documents/elapsed_secs 均为数字（锚定 main.rs:502-508 摘要格式）
+    for field in ["files", "entities", "documents", "elapsed_secs"] {
+        assert!(
+            done_v.get(field).is_some_and(|v| v.is_number()),
+            "done 摘要行 {field} 应为数字: {done_v}"
+        );
+    }
     // 输出产物存在
     assert!(work_dir.join(".code-repo-wiki").is_dir(), "应生成 wiki 输出目录");
 
@@ -179,6 +200,35 @@ fn test_update_progress_json_cli() {
     assert!(!events.is_empty(), "update 应输出进度事件，实际 stdout: {stdout}");
     assert_eq!(events.last().unwrap().0, "done", "末个事件应为 done");
     assert_eq!(events.last().unwrap().1, 100, "末个事件 progress 应为 100");
+    // T09a 回归防线：progress_json 模式下 stdout 每行都必须可解析为 JSON
+    //（旧纯文本摘要污染会被 filter_map 静默丢弃而漏检，此处逐行强制解析）
+    let parsed: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| {
+            serde_json::from_str(line).unwrap_or_else(|e| {
+                panic!("progress_json 输出行应可解析为 JSON: {e}\n行内容: {line}\n完整 stdout: {stdout}")
+            })
+        })
+        .collect();
+    // 终态摘要行（无 progress 字段，与事件行区分）：真实更新为 done、no-op 为 noop
+    //（本场景修改了源文件 → 走真实更新路径触达 done；noop 分支防回归）
+    let summary = parsed.iter().find(|v| {
+        v.get("progress").is_none()
+            && matches!(v.get("stage").and_then(|s| s.as_str()), Some("done") | Some("noop"))
+    }).unwrap_or_else(|| panic!("应存在 done/noop 终态摘要行，实际 stdout: {stdout}"));
+    match summary.get("stage").and_then(|s| s.as_str()).unwrap() {
+        // 真实更新摘要（锚定 main.rs:596-601）：files/documents/elapsed_secs 为数字
+        //（update 摘要行无 entities 字段，与 generate 不同）
+        "done" => for field in ["files", "documents", "elapsed_secs"] {
+            assert!(
+                summary.get(field).is_some_and(|v| v.is_number()),
+                "done 摘要行 {field} 应为数字: {summary}"
+            );
+        },
+        // no-op 摘要行（锚定 main.rs:588-590）仅含 stage 字段，存在性断言已覆盖
+        "noop" => {}
+        _ => unreachable!("终态摘要行 stage 仅可能为 done 或 noop"),
+    }
 
     let _ = std::fs::remove_dir_all(&work_dir);
 }
