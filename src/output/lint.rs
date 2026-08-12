@@ -742,10 +742,19 @@ pub fn entity_name_from_signature(sig: &str) -> Option<String> {
     // v21 I 轮 Unity 抽样核证（20/20 真实存在）：948 条 stale 中真实
     // 只有 ~13 条，误报根因是最后标识符被三类后缀污染——逐类剥离：
     // 0) 属性宏段（C# [ContextMenu("x")] / Rust #[test]）必须在找 '('
-    //    之前切掉——属性自身的括号会先于函数括号被 find('(') 命中
-    let after_attr = match trimmed.rfind(']') {
-        Some(rb) => &trimmed[rb + 1..],
-        None => trimmed,
+    //    之前切掉——属性自身的括号会先于函数括号被 find('(') 命中。
+    //    只在前缀确为 '#'（Rust #[..]）或 '['（C# [..]）时剥离，否则不剥：
+    //    函数签名里的切片类型 &[i64] 也含 ']'，无条件 rfind(']') 会把
+    //    [i64] 的右括号误当属性段结尾（pub fn sum(values: &[i64]) -> i64
+    //    被截成 ") -> i64"，末标识符提取出原生类型 i64 → 误报 stale-entity）。
+    //    保留 rfind 以兼容叠放多段属性宏
+    let after_attr = if trimmed.starts_with('#') || trimmed.starts_with('[') {
+        match trimmed.rfind(']') {
+            Some(rb) => &trimmed[rb + 1..],
+            None => trimmed,
+        }
+    } else {
+        trimmed
     };
     let mut head = match after_attr.find('(') {
         Some(open) => &after_attr[..open],
@@ -1349,6 +1358,37 @@ mod tests {
         assert_eq!(
             entity_name_from_signature("pub fn load(path: &str) -> Result<Config>"),
             Some("load".into())
+        );
+    }
+
+    /// 边界回归：切片类型签名 `&[i64]` 的右括号不应被误当属性宏段结尾。
+    /// 原实现无条件 rfind(']')，会把 pub fn sum(values: &[i64]) -> i64 截成
+    /// ") -> i64"，末标识符提取出原生类型 i64 → 误报 stale-entity（lint 为
+    /// CI 门禁，任何含 &[T] 参数的仓库必误报）。属性宏前缀仍应正常剥离。
+    #[test]
+    fn test_entity_name_slice_type_signature_not_misstripped() {
+        // 切片类型参数：rfind(']') 会命中 [i64] 的右括号，修复后应提取 sum
+        assert_eq!(
+            entity_name_from_signature("pub fn sum(values: &[i64]) -> i64"),
+            Some("sum".into())
+        );
+        assert_eq!(
+            entity_name_from_signature("pub fn concat(items: &[String]) -> String"),
+            Some("concat".into())
+        );
+        // Rust 属性宏前缀仍正确剥离
+        assert_eq!(
+            entity_name_from_signature("#[tokio::main] async fn run() {}"),
+            Some("run".into())
+        );
+        assert_eq!(
+            entity_name_from_signature("#[test] fn helper() {}"),
+            Some("helper".into())
+        );
+        // C# 属性宏（既有行为不回退）
+        assert_eq!(
+            entity_name_from_signature("[ContextMenu(\"x\")] public void DoThing()"),
+            Some("DoThing".into())
         );
     }
 
