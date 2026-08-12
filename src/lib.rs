@@ -402,12 +402,15 @@ pub fn run_pipeline_with_config(
     // 实测 54s（274 特征），若在之后发射则 10%→25% 之间长时间无进度，
     // 用户误判卡死（实测反馈）。
     on_progress(ProgressEvent { stage: "analyzing", percent: 25, current: None, total: None });
-    // v48：build_graph（含模块检测/聚类）在大仓库可达分钟级（如 3143 文件的
-    // Unity 项目）——25→30 之间补 27 事件，让「构建知识图谱」在长黑屏期内
-    // 仍有可见推进，避免再次误判卡死。
-    on_progress(ProgressEvent { stage: "analyzing", percent: 27, current: None, total: None });
     let mut graph = analysis::build_graph(&file_insights)?;
+    // v13.5：27% 在 build_graph 完成后发射——大仓图构建可达分钟级，
+    // 25% 前置事件之后、27% 之前即为构建耗时窗口，
+    // 完成即推进进度，避免长黑屏误判卡死（v47 原则的延续）。
+    on_progress(ProgressEvent { stage: "analyzing", percent: 27, current: None, total: None });
     attach_features(&mut graph, &config);
+    // 特征附着（embedding/特征聚类）同样可能耗时（大仓数百实体），
+    // 完成后补 28% 推进点。
+    on_progress(ProgressEvent { stage: "analyzing", percent: 28, current: None, total: None });
     timings.graph_ms = start.elapsed().as_millis() as u64 - timings.scan_parse_ms;
     stats.total_entities = graph.graph.node_count();
     stats.total_edges = graph.graph.edge_count();
@@ -420,6 +423,11 @@ pub fn run_pipeline_with_config(
     } else {
         None
     };
+    // 增量变更分析（git diff + 实体级分类）完成后补 29%——仅增量模式有
+    // 此阶段；全量模式 28% 后直接进入 30% chunking（单调性保持）。
+    if inc_result.is_some() {
+        on_progress(ProgressEvent { stage: "analyzing", percent: 29, current: None, total: None });
+    }
     timings.incremental_ms = start.elapsed().as_millis() as u64
         - timings.scan_parse_ms
         - timings.graph_ms;
