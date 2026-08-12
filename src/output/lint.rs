@@ -208,6 +208,19 @@ fn check_stale(pages: &[PathBuf], cards_dir: &Path, source_roots: &[PathBuf], la
                 );
                 continue;
             }
+            // 绝对路径 containment 拦截（与 `..` 过滤同位置、同语义）：root
+            // 外绝对路径即使真实存在且更新也不解析，避免 metadata 探测 root
+            // 外文件（P1 不对称消除）。resolve_source_path 内的 containment
+            // 是兜底，此处提前拦截使 warn 可观测。
+            if Path::new(&src).is_absolute()
+                && !absolute_path_within_roots(Path::new(&src), source_roots)
+            {
+                tracing::warn!(
+                    "lint stale 跳过越出源码根的绝对路径: `{src}` (page: {})",
+                    page.display()
+                );
+                continue;
+            }
             let abs = resolve_source_path(source_roots, &src);
             if let Ok(meta) = std::fs::metadata(&abs)
                 && let Ok(src_time) = meta.modified()
@@ -261,6 +274,22 @@ fn check_citations(
                     kind: "bad-citation",
                     path: format!("wiki/{lang}/{file_name}"),
                     message: format!("路径含越界段 ..: `{}`", citation.path),
+                });
+                continue;
+            }
+            // 绝对路径 containment 拦截（与 `..` 过滤同位置、同语义）：
+            // project_root.join(abs)=abs 会把 root 外绝对路径直接送进 fs
+            // （绕过 resolve_source_path 的 containment 校验），必须在 join
+            // 前拦截，避免 stat/读取 root 外文件。citation 提取层已过滤
+            // 绝对路径，此处是纵深防御（与 vctx/stale 三检查行为一致）。
+            let citation_path = Path::new(&citation.path);
+            if citation_path.is_absolute()
+                && !absolute_path_within_roots(citation_path, source_roots)
+            {
+                issues.push(LintIssue {
+                    kind: "bad-citation",
+                    path: format!("wiki/{lang}/{file_name}"),
+                    message: format!("绝对路径越出源码根: `{}`", citation.path),
                 });
                 continue;
             }
@@ -442,6 +471,20 @@ fn check_vctx_tokens(
                     kind: "bad-vctx",
                     path: format!("wiki/{lang}/{file_name}"),
                     message: format!("vctx 路径含越界段 ..: `{}`", token.path),
+                });
+                continue;
+            }
+            // 绝对路径 containment 拦截（与 check_citations 同一规则）：
+            // project_root.join(abs)=abs 会把 root 外绝对路径直接送进 fs，
+            // 必须在 join 前拦截——越出源码根按无效处理，不 stat root 外。
+            let token_path = Path::new(&token.path);
+            if token_path.is_absolute()
+                && !absolute_path_within_roots(token_path, source_roots)
+            {
+                issues.push(LintIssue {
+                    kind: "bad-vctx",
+                    path: format!("wiki/{lang}/{file_name}"),
+                    message: format!("vctx 绝对路径越出源码根: `{}`", token.path),
                 });
                 continue;
             }
@@ -897,16 +940,49 @@ fn extract_source_files(content: &str) -> Vec<String> {
     out
 }
 
+/// 绝对路径 containment 校验：canonicalize 后必须落在任一源码根的
+/// canonicalize 结果内才允许解析（阻止 root 外 stat/读取——元数据 oracle
+/// 消除，与 `..` 越界段过滤同一语义）。
+///
+/// canonicalize 依赖路径存在：目标文件不存在/不可解析时返回 false（视为
+/// 不可达，后续 fs 操作失败跳过，不 stat root 外）。root 可能是相对路径
+/// （--root ../foo）——先用 current_dir 绝对化再 canonicalize。Windows 上
+/// canonicalize 统一加 `\\?\` 前缀，两侧同源前缀、starts_with 直接可比
+/// （无需 dunce）；Windows 路径比较大小写不敏感（std Path 语义）。
+///
+/// 性能说明：lint 主导成本是源码扫描（walk_files + AST 解析），引用/文件
+/// 数量的 canonicalize 开销相对可忽略；跨调用缓存需共享全局态，与并行
+/// 测试的多 root 冲突，故不缓存。
+fn absolute_path_within_roots(p: &Path, source_roots: &[PathBuf]) -> bool {
+    let Ok(canon_p) = p.canonicalize() else {
+        return false;
+    };
+    source_roots.iter().any(|root| {
+        let root_abs = absolutize(root);
+        root_abs
+            .canonicalize()
+            .is_ok_and(|canon_root| canon_p.starts_with(canon_root))
+    })
+}
+
 /// 将产物中记录的源路径解析为绝对路径（相对源码根逐根尝试）
 ///
 /// root-first 解析（对齐产物路径相对 root 的实践，见 src/ingest/mod.rs 的
 /// strip_prefix 基准）：相对路径只按 `root.join(p)` 解析，不再有 cwd 相对
 /// 分支——cwd 与 --root 分离时，cwd 下同名文件会把 stale/引用/vctx 检查
-/// 指向错误文件（P1 修复）。绝对路径原样返回。
+/// 指向错误文件（P1 修复）。绝对路径须通过 containment 校验（canonicalize
+/// 后落在某个源码根内）才允许解析，root 外绝对路径返回空路径（不可达，
+/// 使 metadata/读取必失败、不 stat root 外，与 `..` 越界段过滤同一语义）。
 fn resolve_source_path(source_roots: &[PathBuf], src: &str) -> PathBuf {
     let p = Path::new(src);
     if p.is_absolute() {
-        return p.to_path_buf();
+        // 绝对路径 containment 校验：canonicalize 后落在某个源码根内才
+        // 放行；超界/不存在返回空路径——后续 fs 操作失败跳过，不 stat
+        // root 外文件（元数据 oracle 消除）。
+        if absolute_path_within_roots(p, source_roots) {
+            return p.to_path_buf();
+        }
+        return PathBuf::new();
     }
     for root in source_roots {
         let candidate = root.join(p);
@@ -1139,7 +1215,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// P1 绝对路径分支：原样返回，source_roots 为空也不影响
+    /// P1 绝对路径 containment：root 内绝对路径原样返回（回归保护）；
+    /// root 外绝对路径与空 source_roots 均视为不可达（返回空路径，
+    /// metadata 必失败，不 stat root 外）
     #[test]
     fn test_resolve_source_path_absolute() {
         let dir = std::env::temp_dir().join(format!(
@@ -1150,8 +1228,25 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let abs = dir.join("abs.rs");
         std::fs::write(&abs, "x\n").unwrap();
-        let resolved = resolve_source_path(&[], &abs.to_string_lossy());
+        // root 内绝对路径：containment 通过，原样返回
+        let resolved = resolve_source_path(std::slice::from_ref(&dir), &abs.to_string_lossy());
         assert_eq!(resolved, abs);
+        // root 外绝对路径（dir 的兄弟文件，真实存在）→ 不可达
+        let outside = std::env::temp_dir().join(format!(
+            "code_repo_wiki_resolve_abs_out_{}",
+            std::process::id()
+        ));
+        std::fs::write(&outside, "x\n").unwrap();
+        let blocked = resolve_source_path(std::slice::from_ref(&dir), &outside.to_string_lossy());
+        assert_ne!(blocked, outside, "root 外绝对路径不得原样返回");
+        assert!(
+            std::fs::metadata(&blocked).is_err(),
+            "root 外绝对路径必须不可达（metadata 失败）"
+        );
+        // 空 source_roots：任何绝对路径都不放行（无 containment 基准）
+        let empty = resolve_source_path(&[], &abs.to_string_lossy());
+        assert_eq!(empty, PathBuf::new(), "无源码根时绝对路径也不得放行");
+        let _ = std::fs::remove_file(&outside);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1246,6 +1341,48 @@ mod tests {
         assert!(
             !issues.iter().any(|i| i.kind == "stale"),
             "含 .. 的相关文件路径应被跳过, 不得报 stale(也不得探测 root 外), 实际: {:?}",
+            issues
+        );
+    }
+
+    /// P1 绝对路径越界防护（本轮新增）：相关文件段含 root 外绝对路径
+    /// （真实存在、mtime 更新）时不得报 stale——canonicalize 后 containment
+    /// 校验拒绝，不 stat root 外文件（与 `..` 越界段同一语义）。修复前
+    /// resolve_source_path 对绝对路径原样放行，metadata 命中 root 外文件
+    /// 会误报 stale，本测试可检出。
+    #[test]
+    fn test_lint_stale_rejects_out_of_root_absolute_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_stale_absout_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        // root（= dir）外真实存在该文件（绝对路径越界但存在）
+        let outside = std::env::temp_dir().join(format!(
+            "outside_abs_stale_{}.rs",
+            std::process::id()
+        ));
+        std::fs::write(&outside, "line1\n").unwrap();
+        let abs = outside.to_string_lossy().to_string();
+        // 页面相关文件段写 root 外绝对路径
+        std::fs::write(
+            wiki.join("m.md"),
+            format!("# M\n\n## 相关文件\n\n- `{abs}`\n"),
+        )
+        .unwrap();
+        // outside 文件写晚于页面（更新，若被解析会报 stale）——必须被 containment 拦截
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(&outside, "line1\nupdated\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+
+        let issues = lint(&dir, std::slice::from_ref(&dir));
+        let _ = std::fs::remove_file(&outside);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            !issues.iter().any(|i| i.kind == "stale"),
+            "root 外绝对路径应被跳过, 不得报 stale(也不得探测 root 外), 实际: {:?}",
             issues
         );
     }
@@ -1719,6 +1856,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// P1 绝对路径 containment（本轮新增）：UNC 形态绝对路径（Windows 下
+    /// extract_citations 会提取，Path::is_absolute 为 true）越出源码根 →
+    /// bad-citation（project_root.join(abs)=abs 的绕过在调用方被拦截）。
+    /// 修复前会直接对 root 外路径做 exists/read，本测试可检出。
+    #[test]
+    fn test_lint_bad_citation_rejects_out_of_root_absolute_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_cite_absout_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let out = dir.join(".code-repo-wiki");
+        let wiki = out.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        // UNC 绝对路径（`\\server\share\file.rs`）：root 外，按无效处理
+        std::fs::write(
+            wiki.join("m.md"),
+            "# M\n\n核心逻辑见 `\\\\server\\share\\file.rs:1`\n",
+        )
+        .unwrap();
+
+        let issues = lint(&out, std::slice::from_ref(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+        let bad: Vec<_> = issues.iter().filter(|i| i.kind == "bad-citation").collect();
+        assert_eq!(bad.len(), 1, "root 外绝对路径引用应报 bad-citation, 实际: {:?}", issues);
+        assert!(
+            bad[0].message.contains("越出源码根"),
+            "消息应说明越界: {}",
+            bad[0].message
+        );
+    }
+
     /// v28 t06：vctx 只读校验——合法标记（文件存在/行区间有效/哈希正确）不报错。
     /// 哈希期望值硬编码为独立算法的已知输出（SHA-256("hello") 前 8 位 =
     /// 2cf24dba），防实现自身偏差（自洽计算无法发现"两侧同错"）。
@@ -1825,5 +1994,78 @@ mod tests {
         assert_eq!(bad.len(), 1, "内容变更后旧哈希应报错, 实际: {:?}", issues);
         assert!(bad[0].message.contains("哈希不匹配"), "消息应说明哈希不一致: {}", bad[0].message);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// P1 绝对路径越界防护（本轮新增）：vctx 标记含 root 外绝对路径时按
+    /// 无效处理（bad-vctx），不读取 root 外文件做哈希校验——project_root
+    /// .join(abs)=abs 会绕过 resolve_source_path 的 containment，必须在调用
+    /// 方拦截。修复前会直接读取 root 外文件并（哈希正确时）静默通过，
+    /// 本测试可检出。
+    #[test]
+    fn test_lint_vctx_rejects_out_of_root_absolute_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_vctx_absout_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let out = dir.join(".code-repo-wiki");
+        let wiki = out.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        // root（= dir）外真实存在该文件，内容哈希恰好匹配标记（若被读取会
+        // 静默通过哈希校验）——必须被 containment 拦截并报 bad-vctx
+        let outside = std::env::temp_dir().join(format!(
+            "outside_abs_vctx_{}",
+            std::process::id()
+        ));
+        std::fs::write(&outside, "hello\n").unwrap();
+        let abs = outside.to_string_lossy().to_string();
+        std::fs::write(
+            wiki.join("m.md"),
+            format!("# M\n\n见 [[vctx:{abs}#L-1-L-1@2cf24dba]]\n"),
+        )
+        .unwrap();
+
+        let issues = lint(&out, std::slice::from_ref(&dir));
+        let _ = std::fs::remove_file(&outside);
+        let _ = std::fs::remove_dir_all(&dir);
+        let bad: Vec<_> = issues.iter().filter(|i| i.kind == "bad-vctx").collect();
+        assert_eq!(bad.len(), 1, "root 外绝对路径 vctx 应报 bad-vctx, 实际: {:?}", issues);
+        assert!(
+            bad[0].message.contains("越出源码根"),
+            "消息应说明越界: {}",
+            bad[0].message
+        );
+    }
+
+    /// P1 绝对路径 containment 回归：vctx 标记指向 root 内绝对路径仍正常
+    /// 通过哈希校验（containment 放行，不误报）
+    #[test]
+    fn test_lint_vctx_absolute_path_within_root_passes() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_vctx_absin_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let out = dir.join(".code-repo-wiki");
+        let wiki = out.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        // root 内源文件（content "hello" → SHA-256 前 8 位 2cf24dba）
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let src_file = dir.join("src").join("real.rs");
+        std::fs::write(&src_file, "hello\n").unwrap();
+        let abs = src_file.to_string_lossy().to_string();
+        std::fs::write(
+            wiki.join("m.md"),
+            format!("# M\n\n见 [[vctx:{abs}#L-1-L-1@2cf24dba]]\n"),
+        )
+        .unwrap();
+
+        let issues = lint(&out, std::slice::from_ref(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            !issues.iter().any(|i| i.kind == "bad-vctx"),
+            "root 内绝对路径 vctx 不应报错, 实际: {:?}",
+            issues
+        );
     }
 }
