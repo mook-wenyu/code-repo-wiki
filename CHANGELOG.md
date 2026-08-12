@@ -51,6 +51,22 @@
   实例运行中跳过本次）；update-error.log 超 1MiB 轮转保留尾部 100 行
 - **图构建进度补点（13.5）**：`analyzing 27%` 移至 build_graph 完成后 + 28/29 推进点（25%→30% 大窗口不再黑屏）
 - **panic 链加固（13.6）**：子线程 panic 降级为阶段告警 + 模块检测阶段定位（不再整体中断生成）
+- **架构概览 prompt 消费模块职责描述（14.3）**：architecture 页 user prompt 补入
+  `describe_modules` 生成的模块职责描述（缺失时退化回纯统计行）——消除每模块
+  1 次白费的 LLM 调用，架构页模块职责不再依赖 LLM 猜测
+
+### Fixed
+- **搜索/ast-search 输出目录 root 化（14.1，P0）**：`--root` 场景下
+  `execute_search`/`execute_ast_search` 改走 `load_config_rooted`——输出目录统一
+  解析到 `root/.code-repo-wiki`，修复跨 cwd 调用时索引目录按进程 cwd 相对解析
+  导致的「读错索引目录」（索引不存在或空结果，cli-vs-mcp-02）
+- **MCP 工具产物路径 root 化（14.2，P0）**：search/read_wiki_page/read_card/status
+  四个工具配置加载改 `load_config_rooted`，`status` 改用注入的 `--root`
+  （不再 `from_cwd()` 重建）——修复跨 cwd 调用时 MCP 读错产物目录、`status`
+  误报「未生成」（cli-vs-mcp-03）；删除 resolve_mcp_config 死代码
+- **MCP 语义降级提示对 Agent 可见（14.2，FR-501）**：`search` 结果尾部与
+  `status` 报告显式输出「语义索引已降级（原因: …）」（此前仅进 tracing 日志，
+  MCP 调用方不可见；与 CLI 行为对齐，cli-vs-mcp-07）
 
 ### 依赖/CI
 - **依赖升级（v51/T10）**：rusqlite 0.32→0.38（bundled SQLite 3.51.1）、
