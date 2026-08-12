@@ -44,11 +44,15 @@ pub struct WatchEvent {
 ///
 /// v30+：监听根恒为仓库根（扫描范围已硬编码为全量遍历+内置过滤），
 /// 事件上报时按支持语言扩展名与噪音目录过滤（与 scanner 同一边界）。
+/// v15.3：`ignore_root` 为产物目录（lib.rs 由 `config.output_dir()` 解析，
+/// 支持 --output 自定义）——增量更新写产物时文件事件会回流监听器再次触发
+/// 自身（自触发死循环），路径前缀命中忽略根即不上报。
 ///
 /// 边界：删除事件的路径已不存在于磁盘，回调内不能读取文件内容；
 /// 事件类型（ChangeKind）已显式携带，下游不再以 exists() 推断删除。
 pub fn run_watch_loop(
     root: &Path,
+    ignore_root: &Path,
     stop_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     on_change: impl Fn(Vec<WatchEvent>) + Send + 'static,
 ) -> Result<()> {
@@ -113,7 +117,7 @@ pub fn run_watch_loop(
             Ok(Ok(events)) => {
                 // 聚合 + 折叠（批内同路径跨 kind 按最终态合并），
                 // 事件类型显式传递给下游，删除不再依赖 exists() 推断
-                let watch_events = process_batch(&events, &include_exts);
+                let watch_events = process_batch(&events, &include_exts, Some(ignore_root));
                 if !watch_events.is_empty() {
                     // 跨批按时间序收敛（apply_batch）：同路径后到达的 kind
                     // 覆盖先到达的——删除重建（git checkout/codegen clean+
@@ -224,8 +228,12 @@ fn flush_events(pending: &[(PathBuf, ChangeKind)]) -> Vec<WatchEvent> {
 ///
 /// 两步：aggregate_events 按 kind 分组去重合并 → fold_events 按最终态语义
 /// 折叠同路径的跨 kind 事件。窗口内同路径最多产出一个 WatchEvent。
-pub fn process_batch(events: &[DebouncedEvent], include_exts: &[String]) -> Vec<WatchEvent> {
-    fold_events(aggregate_events(events, include_exts))
+pub fn process_batch(
+    events: &[DebouncedEvent],
+    include_exts: &[String],
+    ignore_root: Option<&Path>,
+) -> Vec<WatchEvent> {
+    fold_events(aggregate_events(events, include_exts, ignore_root))
 }
 
 /// 按最终态语义折叠同路径的跨 kind 事件，消除同窗口双跑完整流水线
@@ -270,12 +278,16 @@ fn has_path(events: &[WatchEvent], kind: ChangeKind, path: &Path) -> bool {
 ///
 /// Modify 与 Remove 混合的窗口产出两个独立事件，删除路径不与被
 /// 修改路径混在一起，下游可直入清理而无需 exists() 推断。
-fn aggregate_events(events: &[DebouncedEvent], include_exts: &[String]) -> Vec<WatchEvent> {
+fn aggregate_events(
+    events: &[DebouncedEvent],
+    include_exts: &[String],
+    ignore_root: Option<&Path>,
+) -> Vec<WatchEvent> {
     let mut out: Vec<WatchEvent> = Vec::new();
     for debounced in events {
         let kind = change_kind_of(&debounced.event.kind);
         for p in &debounced.event.paths {
-            if !should_report(p, include_exts) {
+            if !should_report(p, include_exts, ignore_root) {
                 continue;
             }
             match out.iter_mut().find(|e| e.kind == kind) {
@@ -312,21 +324,33 @@ fn supported_exts() -> Vec<String> {
         .collect()
 }
 
-/// 路径是否应上报（不在噪音目录内且扩展名为支持语言）
-fn should_report(path: &Path, include_exts: &[String]) -> bool {
-    !should_ignore(path) && matches_include(path, include_exts)
+/// 路径是否应上报（不在产物忽略根/噪音目录内且扩展名为支持语言）
+fn should_report(path: &Path, include_exts: &[String], ignore_root: Option<&Path>) -> bool {
+    !should_ignore(path, ignore_root) && matches_include(path, include_exts)
 }
 
-/// 判断路径是否位于噪音目录（与 scanner 同清单语义，P1-14/F2 同步）：
-/// 任意深度清单（node_modules/target/.git 等）命中任意路径段即忽略；
-/// 根级清单（dist/build/out/bin/obj）仅命中「仓库根的直接子目录」段。
+/// 判断路径是否应忽略（产物忽略根前缀 / 噪音目录）。
+///
+/// 产物忽略根：v15.3 自触发防护——增量更新写产物（.code-repo-wiki/）时
+/// 文件事件回流监听器会再次触发自身（死循环），`ignore_root` 为解析后的
+/// 产物目录（lib.rs 由 `config.output_dir()` 解析，覆盖 --output 自定义
+/// 目录，不硬编码），路径前缀命中即忽略。
+///
+/// 噪音目录（与 scanner 同清单语义，P1-14/F2 同步）：任意深度清单
+/// （node_modules/target/.git 等）命中任意路径段即忽略；根级清单
+/// （dist/build/out/bin/obj）仅命中「仓库根的直接子目录」段。
 ///
 /// F2（reviewer 实证）：深度锚定必须与路径组件类型无关——Windows 盘符
 /// 路径 D:\repo\dist\… 的 components 含 Prefix("D:") 与 RootDir，按组件计数
 /// 的 depth 会偏移导致根级判定恒失败。改为只遍历 Normal 段（目录/文件名），
 /// 第 0 段是仓库名、第 1 段即仓库根的直接子目录（src/bin 的 bin 在第 2 段，
 /// 不命中——src/bin 是合法源码目录）。
-fn should_ignore(path: &Path) -> bool {
+fn should_ignore(path: &Path, ignore_root: Option<&Path>) -> bool {
+    if let Some(root) = ignore_root
+        && path.starts_with(root)
+    {
+        return true;
+    }
     let mut normal_index = 0;
     for c in path.components() {
         // 只统计 Normal（目录/文件）段：Prefix(盘符)/RootDir(根) 不参与
@@ -362,38 +386,38 @@ mod tests {
     #[test]
     fn test_should_ignore_target_dir() {
         let p = Path::new("/repo/target/debug/main.rs");
-        assert!(should_ignore(p));
+        assert!(should_ignore(p, None));
     }
 
     #[test]
     fn test_should_ignore_git_dir() {
         let p = Path::new("/repo/.git/HEAD");
-        assert!(should_ignore(p));
+        assert!(should_ignore(p, None));
     }
 
     #[test]
     fn test_should_ignore_node_modules() {
         let p = Path::new("/repo/node_modules/foo/index.js");
-        assert!(should_ignore(p));
+        assert!(should_ignore(p, None));
     }
 
     #[test]
     fn test_should_ignore_dist_and_venv() {
-        assert!(should_ignore(Path::new("/repo/dist/bundle.js")));
-        assert!(should_ignore(Path::new("/repo/.venv/lib/py.py")));
+        assert!(should_ignore(Path::new("/repo/dist/bundle.js"), None));
+        assert!(should_ignore(Path::new("/repo/.venv/lib/py.py"), None));
     }
 
     #[test]
     fn test_should_not_ignore_src_dir() {
         let p = Path::new("/repo/src/main.rs");
-        assert!(!should_ignore(p));
+        assert!(!should_ignore(p, None));
     }
 
     /// P1-14 回归锚：src/bin 是合法源码目录，深层 bin 段不忽略
     #[test]
     fn test_should_not_ignore_src_bin() {
         let p = Path::new("/repo/src/bin/tool.rs");
-        assert!(!should_ignore(p), "src/bin 是合法源码目录，不得忽略: {:?}", p);
+        assert!(!should_ignore(p, None), "src/bin 是合法源码目录，不得忽略: {:?}", p);
     }
 
     /// F2 回归锚：Windows 盘符路径的根级判定不受 Prefix 段影响。
@@ -402,9 +426,9 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn test_should_ignore_windows_drive_paths() {
-        assert!(should_ignore(Path::new("D:\\repo\\dist\\bundle.js")), "Windows 根级 dist 应忽略");
-        assert!(!should_ignore(Path::new("D:\\repo\\src\\bin\\tool.rs")), "Windows src/bin 是合法源码目录，不得忽略");
-        assert!(should_ignore(Path::new("D:\\repo\\target\\debug\\main.rs")), "Windows target 任意深度仍忽略");
+        assert!(should_ignore(Path::new("D:\\repo\\dist\\bundle.js"), None), "Windows 根级 dist 应忽略");
+        assert!(!should_ignore(Path::new("D:\\repo\\src\\bin\\tool.rs"), None), "Windows src/bin 是合法源码目录，不得忽略");
+        assert!(should_ignore(Path::new("D:\\repo\\target\\debug\\main.rs"), None), "Windows target 任意深度仍忽略");
     }
 
     #[test]
@@ -434,10 +458,54 @@ mod tests {
     #[test]
     fn test_should_report_filters_ignored_and_mismatched() {
         let exts = vec!["rs".to_string()];
-        assert!(should_report(Path::new("/repo/src/main.rs"), &exts));
-        assert!(!should_report(Path::new("/repo/target/main.rs"), &exts));
-        assert!(!should_report(Path::new("/repo/src/main.js"), &exts));
-        assert!(!should_report(Path::new("/repo/src/no_ext"), &exts));
+        assert!(should_report(Path::new("/repo/src/main.rs"), &exts, None));
+        assert!(!should_report(Path::new("/repo/target/main.rs"), &exts, None));
+        assert!(!should_report(Path::new("/repo/src/main.js"), &exts, None));
+        assert!(!should_report(Path::new("/repo/src/no_ext"), &exts, None));
+    }
+
+    /// v15.3 产物目录过滤（lock-audit-003）：忽略根前缀命中即忽略——
+    /// 增量更新写产物（.code-repo-wiki/）时事件回流监听器会再次触发自身，
+    /// 产物目录内文件不上报；src/*.rs 正常上报。
+    #[test]
+    fn test_should_ignore_output_dir_prefix() {
+        let ignore_root = Path::new("/repo/.code-repo-wiki");
+        assert!(
+            should_ignore(Path::new("/repo/.code-repo-wiki/wiki/zh/api.md"), Some(ignore_root)),
+            "产物页应忽略"
+        );
+        assert!(
+            should_ignore(Path::new("/repo/.code-repo-wiki/.state/generation_state.json"), Some(ignore_root)),
+            "生成状态应忽略"
+        );
+        assert!(
+            should_ignore(Path::new("/repo/.code-repo-wiki/.state/run.lock"), Some(ignore_root)),
+            "运行锁应忽略"
+        );
+        assert!(
+            !should_ignore(Path::new("/repo/src/main.rs"), Some(ignore_root)),
+            "src 源码不应忽略"
+        );
+        // 无忽略根时保持既有噪音目录判定（向后兼容）
+        assert!(!should_ignore(Path::new("/repo/src/main.rs"), None));
+    }
+
+    /// v15.3 上报过滤：忽略根内的文件即使扩展名命中支持语言也不上报
+    #[test]
+    fn test_should_report_ignores_output_dir() {
+        let exts = vec!["rs".to_string(), "md".to_string()];
+        let ignore_root = Path::new("/repo/.code-repo-wiki");
+        assert!(
+            !should_report(Path::new("/repo/.code-repo-wiki/wiki/zh/api.md"), &exts, Some(ignore_root)),
+            "产物目录内 .md 不上报（前缀命中先于扩展名过滤）"
+        );
+        assert!(
+            !should_report(Path::new("/repo/.code-repo-wiki/.state/run.lock"), &exts, Some(ignore_root))
+        );
+        assert!(
+            should_report(Path::new("/repo/src/main.rs"), &exts, Some(ignore_root)),
+            "src 源码正常上报"
+        );
     }
 
     /// 事件类型显式化：Modify 与 Remove 事件聚合后 kind 正确保留，
@@ -459,7 +527,7 @@ mod tests {
             DebouncedEvent::new(removed, std::time::Instant::now()),
         ];
         let exts = vec!["rs".to_string()];
-        let aggregated = aggregate_events(&events, &exts);
+        let aggregated = aggregate_events(&events, &exts, None);
 
         assert_eq!(aggregated.len(), 2, "Modify 与 Remove 应各自聚合成独立事件");
         let modified = aggregated
@@ -486,7 +554,7 @@ mod tests {
             DebouncedEvent::new(e, std::time::Instant::now())
         };
         let exts = vec!["rs".to_string()];
-        let aggregated = aggregate_events(&[mk(), mk()], &exts);
+        let aggregated = aggregate_events(&[mk(), mk()], &exts, None);
         assert_eq!(aggregated.len(), 1);
         assert_eq!(aggregated[0].paths, vec![PathBuf::from("src/a.rs")]);
     }
@@ -511,7 +579,7 @@ mod tests {
             make_debounced(notify::EventKind::Modify(ModifyKind::Data(DataChange::Content)), "src/a.rs"),
             make_debounced(notify::EventKind::Remove(RemoveKind::File), "src/a.rs"),
         ];
-        let folded = process_batch(&events, &exts);
+        let folded = process_batch(&events, &exts, None);
         assert_eq!(folded.len(), 1, "同路径 Modified+Deleted 应折叠为单事件");
         assert_eq!(folded[0].kind, ChangeKind::Deleted);
         assert_eq!(folded[0].paths, vec![PathBuf::from("src/a.rs")]);
@@ -526,7 +594,7 @@ mod tests {
             make_debounced(notify::EventKind::Create(CreateKind::File), "src/a.rs"),
             make_debounced(notify::EventKind::Remove(RemoveKind::File), "src/a.rs"),
         ];
-        let folded = process_batch(&events, &exts);
+        let folded = process_batch(&events, &exts, None);
         assert_eq!(folded.len(), 1);
         assert_eq!(folded[0].kind, ChangeKind::Deleted);
     }
@@ -540,7 +608,7 @@ mod tests {
             make_debounced(notify::EventKind::Create(CreateKind::File), "src/a.rs"),
             make_debounced(notify::EventKind::Modify(ModifyKind::Data(DataChange::Content)), "src/a.rs"),
         ];
-        let folded = process_batch(&events, &exts);
+        let folded = process_batch(&events, &exts, None);
         assert_eq!(folded.len(), 1);
         assert_eq!(folded[0].kind, ChangeKind::Modified);
         assert_eq!(folded[0].paths, vec![PathBuf::from("src/a.rs")]);
@@ -556,7 +624,7 @@ mod tests {
             make_debounced(notify::EventKind::Modify(ModifyKind::Data(DataChange::Content)), "src/a.rs"),
             make_debounced(notify::EventKind::Remove(RemoveKind::File), "src/a.rs"),
         ];
-        let folded = process_batch(&events, &exts);
+        let folded = process_batch(&events, &exts, None);
         assert_eq!(folded.len(), 1);
         assert_eq!(folded[0].kind, ChangeKind::Deleted);
     }
@@ -572,7 +640,7 @@ mod tests {
             make_debounced(notify::EventKind::Remove(RemoveKind::File), "src/a.rs"),
             make_debounced(notify::EventKind::Modify(ModifyKind::Data(DataChange::Content)), "src/b.rs"),
         ];
-        let folded = process_batch(&events, &exts);
+        let folded = process_batch(&events, &exts, None);
         assert_eq!(folded.len(), 2, "a 折叠为 Deleted、b 独立 Modified，共 2 事件");
         let deleted = folded
             .iter()
@@ -597,7 +665,7 @@ mod tests {
         // 标记预置：循环第一次检查即退出（监听根不存在只告警不阻塞）
         let stop_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let start = std::time::Instant::now();
-        let result = run_watch_loop(&dir, stop_flag, |_| panic!("不应触发回调"));
+        let result = run_watch_loop(&dir, &dir, stop_flag, |_| panic!("不应触发回调"));
         assert!(result.is_ok(), "优雅退出应返回 Ok: {result:?}");
         assert!(
             start.elapsed() < std::time::Duration::from_secs(5),

@@ -897,7 +897,7 @@ pub fn sync_manual_edits_to_cards(
 /// （扫描根一致，watch 常驻进程的 cwd 漂移不影响监听范围）。
 pub fn run_watch(config_path: Option<&Path>, root: &project::ProjectRoot) -> anyhow::Result<()> {
     // 配置在此 fail-fast 校验（无效配置提前报错）；监听循环本身不再读取配置
-    let _config = match config_path {
+    let config = match config_path {
         Some(p) => config::load_config(p)?,
         None => config::load_default_config(root)?.1,
     };
@@ -909,6 +909,11 @@ pub fn run_watch(config_path: Option<&Path>, root: &project::ProjectRoot) -> any
     // 监听根 = 注入的项目根（与 scan_and_parse_at 的扫描根一致）
     let watch_root = root.path().to_path_buf();
     let watch_root_for_loop = watch_root.clone();
+    // v15.3 watch 自触发防护（lock-audit-003）：增量更新写产物（output_dir）
+    // 时文件事件回流监听器会再次触发自身（死循环）。把解析后的产物目录作为
+    // 忽略根传入监听循环（路径前缀命中即不上报；output_dir 支持 --output
+    // 自定义，root.path().join 统一解析为绝对路径以匹配 notify 的事件路径）。
+    let ignore_root = root.path().join(config.output_dir());
     // v14 F 组（t06 拍板）：Ctrl-C 优雅退出——专用线程等待 SIGINT 后置
     // 停止标记；run_watch_loop 每 500ms 轮询标记，置位时等当前增量
     // 生成完成再退出（不会在状态落盘中途打断）。
@@ -926,6 +931,7 @@ pub fn run_watch(config_path: Option<&Path>, root: &project::ProjectRoot) -> any
     }
     incremental::watch::run_watch_loop(
         &watch_root_for_loop,
+        &ignore_root,
         stop_flag,
         move |events| {
             for event in events {

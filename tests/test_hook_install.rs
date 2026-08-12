@@ -81,6 +81,14 @@ fn test_install_writes_git_hooks() {
             "{hook_name} 应含 update 命令，实际: {content}"
         );
         assert!(
+            content.contains("--skip-if-locked"),
+            "{hook_name} 应含 --skip-if-locked（Phase 15.3 消除 kill -0 TOCTOU），实际: {content}"
+        );
+        assert!(
+            !content.contains("kill -0"),
+            "{hook_name} 不应含 kill -0 锁感知块（fd-lock 下锁文件常驻，kill -0 判定失真），实际: {content}"
+        );
+        assert!(
             !content.contains("--quiet"),
             "{hook_name} 不应含已废弃的 --quiet（clap 会报错被 || true 吞掉），实际: {content}"
         );
@@ -114,8 +122,8 @@ fn test_hook_command_succeeds() {
     let content = std::fs::read_to_string(hooks_dir.join("post-commit")).unwrap();
     assert_eq!(
         parse_hook_command(&content),
-        "code-repo-wiki update",
-        "hook 命令应为 code-repo-wiki update（无 --quiet），实际 hook:\n{content}"
+        "code-repo-wiki update --skip-if-locked",
+        "hook 命令应为 code-repo-wiki update --skip-if-locked（Phase 15.3 并发由命令内原子拿锁处理），实际 hook:\n{content}"
     );
 
     let _ = std::fs::remove_dir_all(&work_dir);
@@ -331,6 +339,56 @@ fn test_install_upgrades_appended_block_keeps_user_content() {
     assert!(
         content.contains("2>>.code-repo-wiki/update-error.log"),
         "块应升级为当前模板（v36 D2 错误日志特性），实际: {content}"
+    );
+    assert_eq!(
+        content.matches("# code-repo-wiki: append-begin").count(),
+        1,
+        "块只应有一个，实际: {content}"
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// Phase 15.3（lock-audit-007）：旧版 v13.3 kill -0 锁感知追加块 → 新版
+/// --skip-if-locked 块升级——fd-lock 下锁文件常驻、kill -0 活性判定失真
+/// （check-then-act TOCTOU），旧块必须被整块替换，不能残留
+#[test]
+fn test_install_upgrades_kill0_lock_block_to_skip_if_locked() {
+    let work_dir = unique_dir("lock_block_upgrade");
+    let _ = std::fs::remove_dir_all(&work_dir);
+    std::fs::create_dir_all(&work_dir).unwrap();
+    let hooks_dir = init_git_repo(&work_dir);
+    // 预置：人工 hook + 旧版（v13.3）kill -0 锁感知追加块（带 begin/end 标记）
+    std::fs::write(
+        hooks_dir.join("post-commit"),
+        "#!/bin/sh\necho '人工 hook'\n# code-repo-wiki: append-begin\n# v13.3 锁感知：另一实例运行时跳过\nlock=\"$(git rev-parse --show-toplevel)/.code-repo-wiki/.state/run.lock\"\nif [ -f \"$lock\" ]; then\n  pid=\"$(cat \"$lock\" 2>/dev/null)\"\n  if [ -n \"$pid\" ] && kill -0 \"$pid\" 2>/dev/null; then\n    echo \"code-repo-wiki: 另一实例正在运行，跳过本次提交更新\" >&2\n    exit 0\n  fi\nfi\ncode-repo-wiki update 2>>.code-repo-wiki/update-error.log || echo \"code-repo-wiki: wiki 更新失败\" >&2\n# code-repo-wiki: append-end\n",
+    )
+    .unwrap();
+    let home = unique_dir("lock_block_upgrade_home");
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let envs: Vec<(&str, String)> = home_envs(&home);
+    let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
+
+    let out = run_bin_with_envs(&work_dir, &["install"], &envs_ref);
+    assert!(out.status.success(), "install 应成功，stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let content = std::fs::read_to_string(hooks_dir.join("post-commit")).unwrap();
+    assert!(
+        content.contains("echo '人工 hook'"),
+        "人工内容应保留，实际: {content}"
+    );
+    assert!(
+        !content.contains("kill -0"),
+        "旧 kill -0 锁感知块应被整块替换（TOCTOU 消除），实际: {content}"
+    );
+    assert!(
+        content.contains("--skip-if-locked"),
+        "块应升级为 --skip-if-locked 版本，实际: {content}"
+    );
+    assert!(
+        content.contains("2>>.code-repo-wiki/update-error.log"),
+        "错误日志特性保留，实际: {content}"
     );
     assert_eq!(
         content.matches("# code-repo-wiki: append-begin").count(),

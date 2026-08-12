@@ -318,13 +318,15 @@ fn hook_is_ours(content: &str) -> bool {
 ///
 /// `#!/bin/sh` + LF：Windows 上由 Git for Windows 的 sh 执行（POSIX 语义，
 /// 绝非 PowerShell）；`cd` 到仓库顶层保证 --root 无关；`command -v` 探测
-/// 二进制存在性；update 失败不阻断 git 主流程（hook 是通知型），但
-/// 失败必须可见：stderr 落 .code-repo-wiki/update-error.log 并在提交输出中
-/// 提示一行（v36 D2：此前 2>/dev/null || true 把失败完全吞掉，用户
-/// 永远不知道 wiki 已陈旧）。
+/// 二进制存在性；并发由 update --skip-if-locked 处理（v15.3：fd-lock 下
+/// 锁文件常驻，kill -0 活性判定失真，改由命令内原子拿锁自行跳过，消除
+/// hook 内 check-then-act TOCTOU）；update 失败不阻断 git 主流程（hook 是
+/// 通知型），但失败必须可见：stderr 落 .code-repo-wiki/update-error.log 并在
+/// 提交输出中提示一行（v36 D2：此前 2>/dev/null || true 把失败完全吞掉，
+/// 用户永远不知道 wiki 已陈旧）。
 fn hook_content() -> String {
     format!(
-        "#!/bin/sh\n{0}: auto-update wiki on commit\ncd \"$(git rev-parse --show-toplevel)\"\ncommand -v code-repo-wiki >/dev/null 2>&1 || exit 0\nmkdir -p .code-repo-wiki\n# v13.3 锁感知：另一实例（watch/手动）正在运行时跳过本次更新，\n# 避免提交 hook 与实例并发写 wiki（锁冲突会累积 update-error.log）\nlock=\"$(git rev-parse --show-toplevel)/.code-repo-wiki/.state/run.lock\"\nif [ -f \"$lock\" ]; then\n  pid=\"$(cat \"$lock\" 2>/dev/null)\"\n  if [ -n \"$pid\" ] && kill -0 \"$pid\" 2>/dev/null; then\n    echo \"code-repo-wiki: 另一实例正在运行（PID $pid），跳过本次提交更新\" >&2\n    exit 0\n  fi\nfi\n# v13.3 日志有界：update-error.log 超 1MB 时轮转保留尾部 100 行\nlog=.code-repo-wiki/update-error.log\nif [ -f \"$log\" ] && [ \"$(wc -c < \"$log\" 2>/dev/null)\" -gt 1048576 ]; then\n  tail -n 100 \"$log\" > \"$log.tmp\" 2>/dev/null && mv \"$log.tmp\" \"$log\" 2>/dev/null || true\nfi\ncode-repo-wiki update 2>>.code-repo-wiki/update-error.log || echo \"code-repo-wiki: wiki 更新失败（详见 .code-repo-wiki/update-error.log）\" >&2\n",
+        "#!/bin/sh\n{0}: auto-update wiki on commit\ncd \"$(git rev-parse --show-toplevel)\"\ncommand -v code-repo-wiki >/dev/null 2>&1 || exit 0\nmkdir -p .code-repo-wiki\n# v15.3 并发处理：--skip-if-locked 在另一实例（watch/手动）持有运行锁时跳过本次更新\n# （fd-lock 下锁文件常驻，旧 PID 活性判定失真，v13.3 锁感知块已废弃）\n# v13.3 日志有界：update-error.log 超 1MB 时轮转保留尾部 100 行\nlog=.code-repo-wiki/update-error.log\nif [ -f \"$log\" ] && [ \"$(wc -c < \"$log\" 2>/dev/null)\" -gt 1048576 ]; then\n  tail -n 100 \"$log\" > \"$log.tmp\" 2>/dev/null && mv \"$log.tmp\" \"$log\" 2>/dev/null || true\nfi\ncode-repo-wiki update --skip-if-locked 2>>.code-repo-wiki/update-error.log || echo \"code-repo-wiki: wiki 更新失败（详见 .code-repo-wiki/update-error.log）\" >&2\n",
         HOOK_MARKER
     )
 }
@@ -334,7 +336,7 @@ fn hook_content() -> String {
 /// 单条失败不传播为 git hook 失败，也不被静默吞掉）
 fn hook_block() -> String {
     format!(
-        "{0}\n# 自动更新 wiki（追加块，与仓库既有 hook 共存；用户 hook 若以 exit 结束，\n# 本块不会执行——post-commit 场景罕见，若需保证请移除既有 hook 后重装）\ncd \"$(git rev-parse --show-toplevel)\" 2>/dev/null || exit 0\ncommand -v code-repo-wiki >/dev/null 2>&1 || exit 0\nmkdir -p .code-repo-wiki 2>/dev/null || exit 0\n# v13.3 锁感知：另一实例运行时跳过（避免并发写 wiki）\nlock=\"$(git rev-parse --show-toplevel)/.code-repo-wiki/.state/run.lock\"\nif [ -f \"$lock\" ]; then\n  pid=\"$(cat \"$lock\" 2>/dev/null)\"\n  if [ -n \"$pid\" ] && kill -0 \"$pid\" 2>/dev/null; then\n    echo \"code-repo-wiki: 另一实例正在运行（PID $pid），跳过本次提交更新\" >&2\n    exit 0\n  fi\nfi\n# v13.3 日志有界：超 1MB 轮转保留尾部 100 行\nlog=.code-repo-wiki/update-error.log\nif [ -f \"$log\" ] && [ \"$(wc -c < \"$log\" 2>/dev/null)\" -gt 1048576 ]; then\n  tail -n 100 \"$log\" > \"$log.tmp\" 2>/dev/null && mv \"$log.tmp\" \"$log\" 2>/dev/null || true\nfi\ncode-repo-wiki update 2>>.code-repo-wiki/update-error.log || echo \"code-repo-wiki: wiki 更新失败（详见 .code-repo-wiki/update-error.log）\" >&2\n{1}\n",
+        "{0}\n# 自动更新 wiki（追加块，与仓库既有 hook 共存；用户 hook 若以 exit 结束，\n# 本块不会执行——post-commit 场景罕见，若需保证请移除既有 hook 后重装）\ncd \"$(git rev-parse --show-toplevel)\" 2>/dev/null || exit 0\ncommand -v code-repo-wiki >/dev/null 2>&1 || exit 0\nmkdir -p .code-repo-wiki 2>/dev/null || exit 0\n# v15.3 并发处理：--skip-if-locked 在另一实例持有运行锁时跳过（PID 活性判定失真，旧锁感知块废弃）\n# v13.3 日志有界：超 1MB 轮转保留尾部 100 行\nlog=.code-repo-wiki/update-error.log\nif [ -f \"$log\" ] && [ \"$(wc -c < \"$log\" 2>/dev/null)\" -gt 1048576 ]; then\n  tail -n 100 \"$log\" > \"$log.tmp\" 2>/dev/null && mv \"$log.tmp\" \"$log\" 2>/dev/null || true\nfi\ncode-repo-wiki update --skip-if-locked 2>>.code-repo-wiki/update-error.log || echo \"code-repo-wiki: wiki 更新失败（详见 .code-repo-wiki/update-error.log）\" >&2\n{1}\n",
         HOOK_MARKER, HOOK_END_MARKER
     )
 }
@@ -358,6 +360,21 @@ fn strip_hook_block(content: &str) -> String {
         // 区间不完整（只有一端）→ 保守不动（不破坏用户 hook）
         _ => content.trim().to_string(),
     }
+}
+
+/// 内容中是否存在完整的追加块区间（begin/end 标记各恰一行且 begin 在 end
+/// 前）。存在才算「追加块场景」——install 只替换区间、uninstall 只剥离区间，
+/// 保留区间外用户内容。
+///
+/// 缺失区间时：v41 独立脚本的标记只作特征行前缀（`HOOK_MARKER: auto-update...`，
+/// 非独立行）或 v33/v37 旧模板无 begin/end 行，属「整文件场景」——必须整文件
+/// 覆盖升级/删除。若误走区间替换，strip 找不到区间会原样返回、随后向尾部
+/// 再追一块：旧块（含已废弃的 kill -0 锁感知）残留且块重复（v15.3 前实测）。
+fn has_hook_block_span(content: &str) -> bool {
+    let lines: Vec<&str> = content.lines().collect();
+    let begin = lines.iter().position(|l| l.trim() == HOOK_MARKER);
+    let end = lines.iter().position(|l| l.trim() == HOOK_END_MARKER);
+    matches!((begin, end), (Some(b), Some(e)) if b <= e)
 }
 
 /// 在既有内容尾部追加块（块不存在时；已存在则整文件升级走
@@ -440,7 +457,7 @@ fn install_hooks(project_root: &std::path::Path) -> Result<bool> {
         if hook_path.exists() {
             let existing = std::fs::read_to_string(&hook_path)?;
             if hook_is_ours(&existing) {
-                if existing.contains(HOOK_MARKER) {
+                if existing.contains(HOOK_MARKER) && has_hook_block_span(&existing) {
                     // 追加块场景：只替换块区间，保留用户内容
                     let new_content = replace_hook_block(&existing, &block);
                     if new_content != existing {
@@ -450,6 +467,8 @@ fn install_hooks(project_root: &std::path::Path) -> Result<bool> {
                         println!("✓ git {hook_name} hook 已是最新");
                     }
                 } else if existing != content {
+                    // 独立脚本（v41 标记前缀 / v33/v37 旧模板，无 begin/end 区间）：
+                    // 整文件覆盖升级——旧 kill -0 锁感知块整体移除（v15.3）
                     write_hook(&hook_path, &content)?;
                     println!("✓ git {hook_name} hook 已升级");
                 } else {
@@ -483,7 +502,7 @@ fn remove_hooks(project_root: &std::path::Path) -> Result<()> {
         if hook_path.exists() {
             let content = std::fs::read_to_string(&hook_path).unwrap_or_default();
             if hook_is_ours(&content) {
-                if content.contains(HOOK_MARKER) {
+                if content.contains(HOOK_MARKER) && has_hook_block_span(&content) {
                     // 追加块：剥离区间，用户内容保留
                     let remaining = strip_hook_block(&content);
                     if remaining.is_empty() {
@@ -493,6 +512,7 @@ fn remove_hooks(project_root: &std::path::Path) -> Result<()> {
                     }
                     println!("✓ git {hook_name} hook 已移除 code-repo-wiki 块（原内容保留）");
                 } else {
+                    // 独立脚本（v41 标记前缀 / v33/v37 旧模板）：整文件删除
                     std::fs::remove_file(&hook_path)?;
                     println!("✓ git {hook_name} hook 已移除");
                 }
@@ -981,3 +1001,4 @@ mod tests {
         assert!(err.to_string().contains("不完整"), "旧标记半标记应报错: {err}");
     }
 }
+
