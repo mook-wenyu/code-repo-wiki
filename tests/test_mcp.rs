@@ -373,6 +373,26 @@ async fn test_mcp_status_uses_root_and_shows_degradation() {
         "结果尾部应显式提示降级原因, 实际: {text}"
     );
 
+    // 3. search 空结果 + 降级标记：提示必须无条件出现（reviewer 14.2
+    //    必须项闭合——降级场景 hybrid 静默降级为纯 text 可能返回空
+    //    结果，用户必须仍能看到降级原因，与 CLI 文本模式一致）
+    let resp = rpc_call(
+        &mut stdin,
+        &mut stdout,
+        5,
+        "tools/call",
+        serde_json::json!({"name": "search", "arguments": {"query": "no_such_symbol_xyz", "engine": "text"}}),
+    )
+    .await;
+    let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
+    assert!(text.starts_with("未找到匹配结果"), "空结果应报告未找到: {text}");
+    let tail = text.lines().last().map(str::trim).unwrap_or("");
+    assert_eq!(
+        tail,
+        "提示: 语义索引已降级（原因: embed key 未配置）",
+        "空结果尾部也应显式提示降级原因, 实际: {text}"
+    );
+
     drop(stdin);
     let _ = child.wait().await;
     let _ = std::fs::remove_dir_all(&dir);

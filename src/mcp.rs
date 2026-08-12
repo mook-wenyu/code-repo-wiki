@@ -111,7 +111,9 @@ impl RepoWikiMcp {
                 // 永远不知索引已降级（reviewer 14.2 REJECTED 必须项，
                 // 与 CLI 文本模式 main.rs:928-947 无条件提示对齐）
                 let mut out = if hits.is_empty() {
-                    "未找到匹配结果".to_string()
+                    // 尾部换行与下方提示行分隔（与命中分支的每行 \n 一致，
+                    // 保证"提示: …"独占一行——测试精确断言 lines().last()）
+                    "未找到匹配结果\n".to_string()
                 } else {
                     let mut out = format!("找到 {} 个结果:\n", hits.len());
                     for (i, hit) in hits.iter().enumerate() {
