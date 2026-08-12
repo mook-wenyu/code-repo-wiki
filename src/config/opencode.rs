@@ -236,7 +236,7 @@ impl OpenCodeConfig {
             .join("code-repo-wiki.ts");
         // t02（v16）：PATH 硬依赖根治——把模板中 execa 的二进制名替换为
         // 当前进程的绝对路径。插件经 execa("code-repo-wiki", ...) 调 CLI，二进制
-        // 不在 PATH 时（cargo install 目标目录未入 PATH、便携部署等）16 个
+        // 不在 PATH 时（cargo install 目标目录未入 PATH、便携部署等）15 个
         // 工具全部 ENOENT 失效。install 时注入 current_exe() 绝对路径，
         // 插件不再依赖 PATH。只替换 execa 首参（模板中该字面量唯一）；
         // 路径经 JSON 字符串转义（Windows 反斜杠/引号安全）。

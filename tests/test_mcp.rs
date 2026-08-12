@@ -73,7 +73,7 @@ async fn test_mcp_initialize_lists_tools_and_calls() {
     std::fs::create_dir_all(dir.join(".code-repo-wiki")).unwrap();
     let config = mock_config();
     std::fs::write(dir.join("mcp-test.toml"), &config).unwrap();
-    // 建一个源文件供 search/ast_search 扫描
+    // 建一个源文件供 wiki_search/wiki_ast_search 扫描
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(dir.join("src").join("main.rs"), "pub fn hello_world() {}\n").unwrap();
 
@@ -106,24 +106,24 @@ async fn test_mcp_initialize_lists_tools_and_calls() {
         .iter()
         .filter_map(|t| t["name"].as_str())
         .collect();
-    for expected in ["search", "ast_search", "read_wiki_page", "read_card", "status"] {
+    for expected in ["wiki_search", "wiki_ast_search", "wiki_read_page", "wiki_read_card", "wiki_status"] {
         assert!(names.contains(&expected), "工具 {expected} 未注册, 实际: {names:?}");
     }
 
-    // 4. tools/call ast_search：符号定义可查（不依赖索引，直接扫描）
+    // 4. tools/call wiki_ast_search：符号定义可查（不依赖索引，直接扫描）
     let resp = rpc_call(
         &mut stdin,
         &mut stdout,
         4,
         "tools/call",
         serde_json::json!({
-            "name": "ast_search",
+            "name": "wiki_ast_search",
             "arguments": {"symbol": "hello_world"}
         }),
     )
     .await;
     let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
-    assert!(text.contains("hello_world"), "ast_search 应找到符号: {text}");
+    assert!(text.contains("hello_world"), "wiki_ast_search 应找到符号: {text}");
 
     // 5. tools/call status：配置可加载（未生成 wiki → 未就绪提示）
     let resp = rpc_call(
@@ -131,19 +131,19 @@ async fn test_mcp_initialize_lists_tools_and_calls() {
         &mut stdout,
         5,
         "tools/call",
-        serde_json::json!({"name": "status", "arguments": {}}),
+        serde_json::json!({"name": "wiki_status", "arguments": {}}),
     )
     .await;
     let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
     assert!(text.contains("Wiki"), "status 应返回 wiki 状态: {text}");
 
-    // 6. tools/call read_wiki_page：未生成的页面给出引导提示
+    // 6. tools/call wiki_read_page：未生成的页面给出引导提示
     let resp = rpc_call(
         &mut stdin,
         &mut stdout,
         6,
         "tools/call",
-        serde_json::json!({"name": "read_wiki_page", "arguments": {"page": "architecture"}}),
+        serde_json::json!({"name": "wiki_read_page", "arguments": {"page": "architecture"}}),
     )
     .await;
     let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
@@ -157,7 +157,7 @@ async fn test_mcp_initialize_lists_tools_and_calls() {
         &mut stdout,
         7,
         "tools/call",
-        serde_json::json!({"name": "search", "arguments": {"query": "hello", "engine": "text"}}),
+        serde_json::json!({"name": "wiki_search", "arguments": {"query": "hello", "engine": "text"}}),
     )
     .await;
     let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
@@ -172,7 +172,7 @@ async fn test_mcp_initialize_lists_tools_and_calls() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// S1 安全回归：read_wiki_page/read_card 的 lang 参数路径穿越必须被拒绝，
+/// S1 安全回归：wiki_read_page/wiki_read_card 的 lang 参数路径穿越必须被拒绝，
 /// 且不泄漏 output_dir 之外的文件内容（曾实测复现：lang=../.. 可读任意 .md）。
 #[tokio::test]
 async fn test_mcp_lang_traversal_rejected() {
@@ -213,31 +213,31 @@ async fn test_mcp_lang_traversal_rejected() {
     assert!(resp["result"]["protocolVersion"].is_string());
     let _ = rpc_call(&mut stdin, &mut stdout, 2, "notifications/initialized", serde_json::json!({})).await;
 
-    // 1. read_wiki_page lang 穿越（相对穿越 ../..）：拒绝且不泄漏内容
+    // 1. wiki_read_page lang 穿越（相对穿越 ../..）：拒绝且不泄漏内容
     let resp = rpc_call(
         &mut stdin,
         &mut stdout,
         3,
         "tools/call",
-        serde_json::json!({"name": "read_wiki_page", "arguments": {"page": "secret", "lang": "../.."}}),
+        serde_json::json!({"name": "wiki_read_page", "arguments": {"page": "secret", "lang": "../.."}}),
     )
     .await;
     let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
     assert!(!text.contains("SECRET-CONTENT"), "穿越必须被拒绝, 泄漏: {text}");
     assert!(text.contains("非法语言名"), "应返回明确的校验错误: {text}");
 
-    // 2. read_card lang 穿越：同样拒绝
+    // 2. wiki_read_card lang 穿越：同样拒绝
     let resp = rpc_call(
         &mut stdin,
         &mut stdout,
         4,
         "tools/call",
-        serde_json::json!({"name": "read_card", "arguments": {"card": "secret", "lang": "../../x"}}),
+        serde_json::json!({"name": "wiki_read_card", "arguments": {"card": "secret", "lang": "../../x"}}),
     )
     .await;
     let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
-    assert!(!text.contains("SECRET-CONTENT"), "read_card 穿越必须被拒绝: {text}");
-    assert!(text.contains("非法语言名"), "read_card 应返回明确的校验错误: {text}");
+    assert!(!text.contains("SECRET-CONTENT"), "wiki_read_card 穿越必须被拒绝: {text}");
+    assert!(text.contains("非法语言名"), "wiki_read_card 应返回明确的校验错误: {text}");
 
     // 3. 合法 lang 不受影响：正常读取 wiki/zh/architecture.md
     let resp = rpc_call(
@@ -245,7 +245,7 @@ async fn test_mcp_lang_traversal_rejected() {
         &mut stdout,
         5,
         "tools/call",
-        serde_json::json!({"name": "read_wiki_page", "arguments": {"page": "architecture", "lang": "zh"}}),
+        serde_json::json!({"name": "wiki_read_page", "arguments": {"page": "architecture", "lang": "zh"}}),
     )
     .await;
     let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
@@ -341,7 +341,7 @@ async fn test_mcp_status_uses_root_and_shows_degradation() {
         &mut stdout,
         3,
         "tools/call",
-        serde_json::json!({"name": "status", "arguments": {}}),
+        serde_json::json!({"name": "wiki_status", "arguments": {}}),
     )
     .await;
     let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
@@ -361,7 +361,7 @@ async fn test_mcp_status_uses_root_and_shows_degradation() {
         &mut stdout,
         4,
         "tools/call",
-        serde_json::json!({"name": "search", "arguments": {"query": "hello_world", "engine": "text"}}),
+        serde_json::json!({"name": "wiki_search", "arguments": {"query": "hello_world", "engine": "text"}}),
     )
     .await;
     let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
@@ -381,7 +381,7 @@ async fn test_mcp_status_uses_root_and_shows_degradation() {
         &mut stdout,
         5,
         "tools/call",
-        serde_json::json!({"name": "search", "arguments": {"query": "no_such_symbol_xyz", "engine": "text"}}),
+        serde_json::json!({"name": "wiki_search", "arguments": {"query": "no_such_symbol_xyz", "engine": "text"}}),
     )
     .await;
     let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");

@@ -6,9 +6,9 @@ import { execa } from "execa";
  * code-repo-wiki OpenCode 插件
  *
  * 提供：
- * - 16 个 Agent 工具：5 个查询工具（ast_search/wiki_search/wiki_query/wiki_generate/module_info）
+ * - 15 个 Agent 工具：5 个查询工具（wiki_ast_search/wiki_search/wiki_query/wiki_generate/wiki_module_info）
  *   + 4 个知识卡片工具（card_generate/card_modify/card_supplement/card_rewrite）
- *   + 7 个 Wiki 管理工具（wiki_update/wiki_sync/wiki_status/wiki_export/wiki_note/wiki_lint/wiki_init）
+ *   + 6 个 Wiki 管理工具（wiki_update/wiki_sync/wiki_status/wiki_export/wiki_note/wiki_lint）
  * - 自动调用 Rust CLI 核心引擎（execa）
  * - 从 .code-repo-wiki/ 读取现有卡片和 Wiki 数据
  *
@@ -182,7 +182,7 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
     return {
         tool: {
             // ---- 查询工具 ----
-            ast_search: tool({
+            wiki_ast_search: tool({
                 description: "AST 精确符号查找：扫描源文件定位符号定义（文件+行号+签名，不依赖搜索索引）",
                 args: {
                     symbol: tool.schema.string().describe("要查找的符号名（函数/结构体/trait/类等）"),
@@ -260,7 +260,7 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
                 },
             }),
 
-            module_info: tool({
+            wiki_module_info: tool({
                 description: "获取项目中某个模块的结构化信息",
                 args: {
                     module: tool.schema.string().describe("模块路径"),
@@ -340,23 +340,6 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
                     return result.code === 0
                         ? (result.stdout || "lint: 通过，无孤儿页/断链/过时问题")
                         : `lint 发现问题:\n${result.stdout || result.stderr}`;
-                },
-            }),
-            // init：引导缺失 config 场景（生成 schema 对齐的默认配置，供后续 generate/search 使用）
-            wiki_init: tool({
-                description: "初始化 .code-repo-wiki/config.toml 默认配置文件（缺失 config 时的引导入口）",
-                args: {
-                    root: tool.schema.string().optional()
-                        .describe("项目根目录（默认当前工作目录；提供时在 root/.code-repo-wiki/config.toml 处初始化）"),
-                },
-                execute: async (args) => {
-                    // init 的子命令参数是配置文件路径（positional，无 --config）；
-                    // 指定 root 时在 root/.code-repo-wiki/config.toml 处初始化，否则用 CLI 默认路径
-                    const cliArgs = args.root ? ["init", `${args.root}/.code-repo-wiki/config.toml`] : ["init"];
-                    const result = await runCli(cliArgs);
-                    return result.code === 0
-                        ? (result.stdout || "默认配置文件已创建")
-                        : `初始化失败: ${result.stderr}`;
                 },
             }),
         },
