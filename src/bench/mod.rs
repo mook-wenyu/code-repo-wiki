@@ -623,7 +623,7 @@ struct DocInfoLlmOutcome {
 fn doc_info_judge_prompt(module: &str, summary: &str, references: &str) -> Vec<crate::generate::llm::Message> {
     vec![
         crate::generate::llm::Message::system(
-            "你是 Wiki 文档信息性裁判。判断模块文档页是否提供了关于该模块的实质信息（职责/实体/关系/用法示例）。只输出 JSON：{\"score\": 0-10}。若页面内容过少或与模块无关，输出 {\"verdict\": \"uncertain\"}，不要猜测。",
+            "你是 Wiki 文档信息性裁判。判断模块文档页是否提供了关于该模块的实质信息（职责/实体/关系/用法示例）。只输出 JSON：{\"score\": 0-10}。若页面内容过少或与模块无关，输出 {\"verdict\": \"uncertain\"}，不要猜测。\n\n示例：\n页面详述模块职责、核心实体与用法时 → {\"score\": 9}；页面内容过少或与模块无关时 → {\"verdict\": \"uncertain\"}",
         ),
         crate::generate::llm::Message::user(if references.is_empty() {
             format!("模块：{}\n\n--- 页面内容 ---\n{}", module, summary)
@@ -1805,7 +1805,7 @@ fn measure_rubrics(config: &WikiConfig, root: &ProjectRoot, references: &str) ->
 
 /// Rubric 生成 prompt：docs_tree → 层级 rubric JSON
 fn rubric_generation_prompt(docs_text: &str) -> Vec<crate::generate::llm::Message> {
-    let system = "你是仓库文档需求分析器。根据仓库的 README 与 docs 推导出文档应满足的需求清单（用于评测 Wiki 文档对仓库意图的覆盖度）。输出 JSON：{\"rubrics\": [{\"requirement\": \"需求描述\", \"weight\": 1-3, \"sub_tasks\": [...]}]}，层级最多 3 层，叶子必须无 sub_tasks。只输出 JSON。";
+    let system = "你是仓库文档需求分析器。根据仓库的 README 与 docs 推导出文档应满足的需求清单（用于评测 Wiki 文档对仓库意图的覆盖度）。输出 JSON：{\"rubrics\": [{\"requirement\": \"需求描述\", \"weight\": 1-3, \"sub_tasks\": [...]}]}，层级最多 3 层，叶子必须无 sub_tasks。只输出 JSON。\n\n示例：\n{\"rubrics\": [{\"requirement\": \"说明如何安装与运行项目\", \"weight\": 3, \"sub_tasks\": [{\"requirement\": \"给出依赖安装命令\", \"weight\": 2, \"sub_tasks\": []}]}]}";
     vec![
         crate::generate::llm::Message::system(system),
         crate::generate::llm::Message::user(docs_text.to_string()),
@@ -1814,7 +1814,7 @@ fn rubric_generation_prompt(docs_text: &str) -> Vec<crate::generate::llm::Messag
 
 /// Rubric 合并 prompt：多份独立生成的 rubric 树 → 语义合并后的单树
 fn rubric_merge_prompt(trees: &[Vec<RubricNode>]) -> Vec<crate::generate::llm::Message> {
-    let mut user = String::from("合并以下多份独立生成的 rubrics 为一份：语义相同或高度相似（>70%）的需求合并为一条（权重取均值），其余保留；保持层级结构（最多 3 层）。只输出合并后的 JSON：{\"rubrics\": [...]}。\n\n");
+    let mut user = String::from("合并以下多份独立生成的 rubrics 为一份：语义相同或高度相似（>70%）的需求合并为一条（权重取均值），其余保留；保持层级结构（最多 3 层）。只输出合并后的 JSON：{\"rubrics\": [...]}。\n\n示例：\n两份输入各含\"说明安装步骤\"需求时，合并为一条：{\"rubrics\": [{\"requirement\": \"说明安装步骤\", \"weight\": 3, \"sub_tasks\": []}]}\n\n");
     for (i, tree) in trees.iter().enumerate() {
         user.push_str(&format!(
             "--- 第 {} 份 ---\n{}\n",
@@ -1845,7 +1845,7 @@ fn rubric_judge_prompt(requirement: &str, evidence: &str, reverse_options: bool,
         "\"satisfied\" 或 \"unsatisfied\""
     };
     let system = format!(
-        "你是 Wiki 文档质量裁判。判断下面的文档产物是否满足给定的需求。只输出 JSON：{{\"verdict\": {options} 或 \"uncertain\"}}。若给出的产物证据不足以判定（摘要与检索片段均未提及相关事实），输出 \"uncertain\"，不要猜测。"
+        "你是 Wiki 文档质量裁判。判断下面的文档产物是否满足给定的需求。只输出 JSON：{{\"verdict\": {options} 或 \"uncertain\"}}。若给出的产物证据不足以判定（摘要与检索片段均未提及相关事实），输出 \"uncertain\"，不要猜测。\n\n示例：\n文档明确说明该功能的用法与入口 → {{\"verdict\": \"satisfied\"}}；文档完全未提及该需求相关事实 → {{\"verdict\": \"unsatisfied\"}}"
     );
     vec![
         crate::generate::llm::Message::system(system),
@@ -2160,6 +2160,10 @@ fn tqs_prompt(lang: &str, doc_a: &str, doc_b: &str, a_first: bool) -> Vec<crate:
 仅输出 JSON，无 prose、无 markdown 围栏，格式：
 {{"A": {{"clarity": 0, "readability": 0, "conciseness": 0, "richness": 0, "structure": 0}},
  "B": {{"clarity": 0, "readability": 0, "conciseness": 0, "richness": 0, "structure": 0}}}}
+
+示例：
+{{"A": {{"clarity": 8, "readability": 7, "conciseness": 6, "richness": 9, "structure": 8}},
+ "B": {{"clarity": 5, "readability": 5, "conciseness": 4, "richness": 6, "structure": 5}}}}
 语言：{lang}"#
     );
     vec![
@@ -3228,6 +3232,123 @@ mod tests {
             .map(|m| m.content.clone())
             .collect();
         assert!(!joined_empty.contains("## 参考材料"), "空参考不应注入参考段: {joined_empty}");
+    }
+
+    /// C-008（Phase 16.4）：提取字符串中所有 {…} 平衡片段并尝试解析为 JSON
+    /// （few-shot 示例校验用；schema 模板含 0-10/1-3 等非法 JSON 值会被跳过）
+    fn extract_json(s: &str) -> Vec<serde_json::Value> {
+        let chars: Vec<char> = s.chars().collect();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] == '{' {
+                let mut depth = 0usize;
+                let mut j = i;
+                while j < chars.len() {
+                    match chars[j] {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    j += 1;
+                }
+                if j < chars.len() {
+                    let candidate: String = chars[i..=j].iter().collect();
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&candidate) {
+                        out.push(v);
+                    }
+                    i = j + 1;
+                } else {
+                    break;
+                }
+            } else {
+                i += 1;
+            }
+        }
+        out
+    }
+
+    /// C-008（Phase 16.4）：judge few-shot——各裁判 prompt 含「示例：」与可解析
+    /// 的示例 JSON（不改变既有 schema，只补示例）
+    #[test]
+    fn test_judge_prompts_have_fewshot_examples() {
+        // doc_info_judge：score 高分 + uncertain 双例
+        let di = doc_info_judge_prompt("mod", "summary", "");
+        let di_sys = di[0].content.clone();
+        assert!(di_sys.contains("示例："), "doc_info 应含示例标记: {di_sys}");
+        assert!(di_sys.contains("只输出 JSON"), "doc_info 应含 JSON 输出约束: {di_sys}");
+        let di_json = extract_json(&di_sys);
+        assert!(
+            di_json.iter().any(|v| v.get("score").and_then(|s| s.as_f64()) == Some(9.0)),
+            "doc_info 应含 score 高分示例: {di_sys}"
+        );
+        assert!(
+            di_json
+                .iter()
+                .any(|v| v.get("verdict").and_then(|x| x.as_str()) == Some("uncertain")),
+            "doc_info 应含 uncertain 示例: {di_sys}"
+        );
+
+        // rubric_generation：合法 rubrics 树示例（叶子无 sub_tasks）
+        let rg = rubric_generation_prompt("docs 内容");
+        let rg_sys = rg[0].content.clone();
+        assert!(rg_sys.contains("示例："), "rubric_generation 应含示例标记: {rg_sys}");
+        assert!(rg_sys.contains("只输出 JSON"), "rubric_generation 应含 JSON 输出约束: {rg_sys}");
+        let rg_json = extract_json(&rg_sys);
+        assert!(
+            rg_json
+                .iter()
+                .any(|v| v.get("rubrics").and_then(|r| r.as_array()).map(|a| !a.is_empty()) == Some(true)),
+            "rubric_generation 应含非空 rubrics 树示例: {rg_sys}"
+        );
+
+        // rubric_merge：合并后 JSON 示例
+        let rm = rubric_merge_prompt(&[]);
+        let rm_user = rm[1].content.clone();
+        assert!(rm_user.contains("示例："), "rubric_merge 应含示例标记: {rm_user}");
+        let rm_json = extract_json(&rm_user);
+        assert!(
+            rm_json
+                .iter()
+                .any(|v| v.get("rubrics").and_then(|r| r.as_array()).map(|a| !a.is_empty()) == Some(true)),
+            "rubric_merge 应含合并后 rubrics 示例: {rm_user}"
+        );
+
+        // rubric_judge：satisfied 与 unsatisfied 正反例
+        let rj = rubric_judge_prompt("需求", "证据", false, "");
+        let rj_sys = rj[0].content.clone();
+        assert!(rj_sys.contains("示例："), "rubric_judge 应含示例标记: {rj_sys}");
+        assert!(rj_sys.contains("只输出 JSON"), "rubric_judge 应含 JSON 输出约束: {rj_sys}");
+        let rj_json = extract_json(&rj_sys);
+        assert!(
+            rj_json
+                .iter()
+                .any(|v| v.get("verdict").and_then(|x| x.as_str()) == Some("satisfied")),
+            "rubric_judge 应含 satisfied 正例: {rj_sys}"
+        );
+        assert!(
+            rj_json
+                .iter()
+                .any(|v| v.get("verdict").and_then(|x| x.as_str()) == Some("unsatisfied")),
+            "rubric_judge 应含 unsatisfied 反例: {rj_sys}"
+        );
+
+        // tqs：五维非零分数示例（现有模板是零值占位）
+        let tqs = tqs_prompt("zh", "docA", "docB", true);
+        let tqs_sys = tqs[0].content.clone();
+        assert!(tqs_sys.contains("示例："), "tqs 应含示例标记: {tqs_sys}");
+        let tqs_json = extract_json(&tqs_sys);
+        assert!(
+            tqs_json
+                .iter()
+                .any(|v| v.get("A").and_then(|a| a.get("richness")).and_then(|r| r.as_f64()) == Some(9.0)),
+            "tqs 应含非零五维示例: {tqs_sys}"
+        );
     }
 
     /// 方案甲：计数检索排序——命中数多者排前，无命中页不返回，

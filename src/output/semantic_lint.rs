@@ -84,7 +84,10 @@ fn semantic_conflict_prompt(lang: &str, evidence: &str) -> Vec<Message> {
 
 只报告明确矛盾，不做猜测。输出 JSON（语言：{lang}）：
 {{"conflicts": [{{"page": "页面标题", "claim": "矛盾声明原文", "conflict": "与什么矛盾"}}]}}
-没有矛盾时输出 {{"conflicts": []}}。只输出 JSON。"#
+没有矛盾时输出 {{"conflicts": []}}。只输出 JSON。
+
+示例：
+{{"conflicts": [{{"page": "src::net", "claim": "模块已废弃", "conflict": "api.md 仍列为核心模块"}}]}}"#
     );
     vec![
         Message::system(system),
@@ -149,5 +152,60 @@ mod tests {
         let config = WikiConfig::default();
         let issues = check_semantic_consistency(&config, &[]).unwrap();
         assert!(issues.is_empty());
+    }
+
+    /// C-008（Phase 16.4）：semantic_conflict_prompt few-shot——含「示例：」
+    /// 与可解析的 conflicts 单条示例（带具体内容）
+    #[test]
+    fn test_semantic_conflict_prompt_has_fewshot_example() {
+        let messages = semantic_conflict_prompt("zh", "证据内容");
+        let sys = messages[0].content.clone();
+        assert!(sys.contains("示例："), "应含示例标记: {sys}");
+        assert!(sys.contains("只输出 JSON"), "应含 JSON 输出约束: {sys}");
+        // 提取 {…} 平衡片段解析 JSON，断言存在含具体 claim 的 conflicts 示例
+        let chars: Vec<char> = sys.chars().collect();
+        let mut examples = Vec::new();
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] == '{' {
+                let mut depth = 0usize;
+                let mut j = i;
+                while j < chars.len() {
+                    match chars[j] {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    j += 1;
+                }
+                if j < chars.len() {
+                    let candidate: String = chars[i..=j].iter().collect();
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&candidate) {
+                        examples.push(v);
+                    }
+                    i = j + 1;
+                } else {
+                    break;
+                }
+            } else {
+                i += 1;
+            }
+        }
+        assert!(sys.contains("模块已废弃"), "示例应带具体内容: {sys}");
+        assert!(
+            examples.iter().any(|v| v
+                .get("conflicts")
+                .and_then(|c| c.as_array())
+                .and_then(|a| a.first())
+                .and_then(|item| item.get("claim"))
+                .and_then(|claim| claim.as_str())
+                .is_some()),
+            "应含可解析的 conflicts 单条示例: {sys}"
+        );
     }
 }
