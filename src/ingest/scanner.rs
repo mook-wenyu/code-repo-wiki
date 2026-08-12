@@ -39,7 +39,13 @@ pub const NOISE_DIRS: &[&str] = &[
 /// src/bin/*.rs 会被任意深度匹配的 bin 整棵跳过（入口文件全丢）、
 /// C/C++ 项目的 out/build 目录也可能含手写源码。这些只在仓库根
 /// （深度 1）出现时按构建产物处理，嵌套出现视为普通源码目录。
-pub const ROOT_ONLY_NOISE_DIRS: &[&str] = &["dist", "build", "out", "bin", "obj"];
+///
+/// Unity 项目同理：Packages/（UPM 第三方包目录，常含数百个 .cs）、
+/// Temp/（Unity 编译缓存）与 Logs/（编辑器日志）均为根级生成物，
+/// 全量入扫会放大图构建/分析成本；嵌套出现（如 Unity 内嵌子项目
+/// 的 src/Packages/）仍按普通源码目录保留，语义与其余根级清单一致。
+pub const ROOT_ONLY_NOISE_DIRS: &[&str] =
+    &["dist", "build", "out", "bin", "obj", "Packages", "Temp", "Logs"];
 
 /// 噪音目录判定：任意深度清单直接命中；根级清单仅 entry.depth()==1 时命中
 /// （depth 0=仓库根自身，1=根的直接子目录——构建产物通常在根级出现）
@@ -228,6 +234,35 @@ mod tests {
         assert!(names.iter().any(|n| n.ends_with("src/main.rs")), "src 顶层源码应保留: {names:?}");
         assert!(!names.iter().any(|n| n.starts_with("bin/")), "根级 bin/ 应被剪枝: {names:?}");
         assert!(!names.iter().any(|n| n.starts_with("dist/")), "根级 dist/ 应被剪枝: {names:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Unity 项目根级生成物剪枝：根级 Packages/Temp/Logs 整棵跳过，
+    /// 嵌套同名目录（内嵌子项目）仍按普通源码目录保留
+    #[test]
+    fn test_noise_dirs_unity_root_anchored() {
+        let dir = scratch("unitynoise");
+        std::fs::create_dir_all(dir.join("Assets/Scripts")).unwrap();
+        std::fs::create_dir_all(dir.join("Packages/com.unity.test-framework")).unwrap();
+        std::fs::create_dir_all(dir.join("Temp/Il2Cpp")).unwrap();
+        std::fs::create_dir_all(dir.join("Logs")).unwrap();
+        std::fs::create_dir_all(dir.join("src/Packages/local")).unwrap();
+        std::fs::write(dir.join("Assets/Scripts/Game.cs"), "class Game {}").unwrap();
+        std::fs::write(dir.join("Packages/com.unity.test-framework/Test.cs"), "class T {}").unwrap();
+        std::fs::write(dir.join("Temp/Il2Cpp/gen.cs"), "class G {}").unwrap();
+        std::fs::write(dir.join("Logs/editor.cs"), "class L {}").unwrap();
+        std::fs::write(dir.join("src/Packages/local/Helper.cs"), "class H {}").unwrap();
+
+        let scanner = Scanner::new(&dir);
+        let files = scanner.scan().unwrap();
+        let names: Vec<String> = files.iter().map(|p| p.to_string_lossy().replace('\\', "/")).collect();
+        assert!(names.iter().any(|n| n.ends_with("Assets/Scripts/Game.cs")), "主源码应保留: {names:?}");
+        assert!(names.iter().any(|n| n.ends_with("src/Packages/local/Helper.cs")), "嵌套 Packages 是合法源码目录不应被剪: {names:?}");
+        assert!(!names.iter().any(|n| n.starts_with("Packages/")), "根级 Packages/ 应被剪枝: {names:?}");
+        assert!(!names.iter().any(|n| n.starts_with("Temp/")), "根级 Temp/ 应被剪枝: {names:?}");
+        assert!(!names.iter().any(|n| n.starts_with("Logs/")), "根级 Logs/ 应被剪枝: {names:?}");
+        assert_eq!(files.len(), 2, "仅主源码与嵌套目录文件应保留: {names:?}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
