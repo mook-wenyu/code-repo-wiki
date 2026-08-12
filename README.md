@@ -66,7 +66,7 @@ code-repo-wiki generate
 
 | 功能 | 说明 |
 |---|---|
-| 代码解析 | tree-sitter：Rust/TypeScript/TSX/Python/Go/JS/JSX/MJS/CJS/C#/Java 共 11 种 |
+| 代码解析 | tree-sitter：Rust/TypeScript/TSX/Python/Go/JS/JSX/MJS/CJS/C#/Java 共 11 种；自动跳过噪音目录（依赖/构建产物/Unity 根级 `Packages`/`Temp`/`Logs`，详见[限制项](docs/reference/limitations.md)） |
 | 模块划分 | petgraph 知识图谱 + leiden-rs 社区检测，自动发现模块边界 |
 | Wiki 生成 | LLM 生成知识卡片 + 模块页 + API 参考，引用真实文件/行号 |
 | 增量更新 | 实体级变化分类（新增/删除/签名变更/正文修改）驱动语义传播，只重生成受影响模块；基于内容指纹，**非 Git 仓库同样支持** |

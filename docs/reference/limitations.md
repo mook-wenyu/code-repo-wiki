@@ -9,6 +9,12 @@
 - 每种语言都独立生成会线性放大 LLM 成本——当前只输出主语言（`wiki.language`，默认 `zh`）。
 - **语言覆盖**：tree-sitter 解析支持 Rust/TypeScript/TSX/Python/Go/JS/JSX/MJS/CJS/C#/Java 11 种；**无 Ruby/PHP 解析器**（rails 等 Ruby 仓库只能解析其 JS/TS 资产；纯非支持语言仓库零源文件会显式报错「未找到任何源文件」——扫描是全量自动识别，无 include 白名单配置）。
 
+## 扫描边界
+
+- 内置噪音目录整棵跳过：`node_modules`/`vendor`/`Pods`/`Library` 等依赖与缓存目录任意深度命中即剪。
+- **仅根级剪枝的目录**：`dist`/`build`/`out`/`bin`/`obj`/`Packages`/`Temp`/`Logs` 只在仓库根直接子目录出现时排除，嵌套同名目录（如 `src/bin/`、`src/Packages/`）按普通源码目录保留。
+- **Unity 工程（v51/13.4）**：根级 `Packages/`（UPM 第三方包，常含数百个 `.cs`）、`Temp/`（编译缓存）、`Logs/`（编辑器日志）默认排除；嵌套同名目录不受影响（仅根级生效）。
+
 ## 大仓边界
 
 - 单项目上限 **10 万个源文件**（超出显式报错）。
