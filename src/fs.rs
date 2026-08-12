@@ -179,8 +179,9 @@ fn acquire_run_lock_inner(
                                 }
                             } else {
                                 // 内容已变（超理论防御——rename 唯一性
-                                // 保证无第二赢家）：归位并报接管
-                                let _ = std::fs::rename(&stale, path);
+                                // 保证无第二赢家）：不归位直接报接管（stale 残留
+                                // 无害，与 remove 失败允许残留一致；归位 rename 在
+                                // Windows 会覆盖已重建目标，反而引入理论覆盖风险）
                                 anyhow::bail!(
                                     "运行锁内容在自愈认领后已变化（他进程可能已接管），放弃自愈，锁文件: {}",
                                     path.display()
