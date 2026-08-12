@@ -63,9 +63,12 @@ pub fn export_html(
     if !global_docs.is_empty() {
         toc_items.push_str("<h2>全局文档</h2>\n<ul>\n");
         for doc in &global_docs {
+            // 注入向量：wiki_file_name 清洗仅替换 /\:，引号（LLM 标题常见）保留进
+            // 文件名，进而出现在 href 值里 → 可提前闭合属性注入任意 HTML。
+            // 故 href 输出前同样经 escape_html（引号转 &quot;，属性注入被中和）。
             toc_items.push_str(&format!(
                 "<li><a href=\"{}\">{}</a></li>\n",
-                wiki_html_link(output_dir, doc),
+                escape_html(&wiki_html_link(output_dir, doc)),
                 escape_html(&doc.title)
             ));
         }
@@ -77,7 +80,7 @@ pub fn export_html(
         for doc in docs {
             toc_items.push_str(&format!(
                 "<li><a href=\"{}\">{}</a></li>\n",
-                wiki_html_link(output_dir, doc),
+                escape_html(&wiki_html_link(output_dir, doc)),
                 escape_html(&doc.title)
             ));
         }
@@ -585,5 +588,32 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
+    }
+
+    /// Phase 13 回归防线（12.x 审查 MEDIUM）：全局文档 href 由 wiki_file_name
+    /// 产出（仅替换 /\:，引号保留进文件名）→ 引号可提前闭合 href="..." 属性
+    /// 注入任意 HTML。escape_html 必须将引号实体化：删除 index.html 生成处
+    /// （:71/:83）的 escape_html 调用或去掉引号转义，本测试即失败。
+    /// 纯内存断言——避免 Windows 上引号文件名写盘失败（恶意标题不落盘）。
+    #[test]
+    fn test_export_html_escapes_href_quote() {
+        let doc = WikiDocument {
+            title: r#"x" onmouseover="alert(1)"#.to_string(),
+            kind: crate::model::DocumentKind::WikiPage,
+            content: "# 测试\n\nHello world.".to_string(),
+            language: "zh".to_string(),
+            module_path: vec![], // 全局文档 → 文件名来自 title
+            references: vec![],
+            last_updated: "2025-01-01".to_string(),
+            based_on_commit: None,
+            fingerprint: None,
+        };
+        let href = wiki_html_link(std::path::Path::new("out"), &doc);
+        // 前提：wiki_file_name 保留引号，载荷确实进入 href（否则测试空转）
+        assert!(href.contains('"'), "wiki_file_name 应保留引号: {href}");
+        let escaped = escape_html(&href);
+        assert!(escaped.contains("&quot;"), "href 应转义引号: {escaped}");
+        assert!(!escaped.contains('"'), "href 不应残留裸引号（属性注入向量）: {escaped}");
+        assert!(!escaped.contains(r#"onmouseover=""#), "onmouseover 不得以裸引号赋值: {escaped}");
     }
 }
