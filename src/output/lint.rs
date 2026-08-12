@@ -166,7 +166,8 @@ fn check_broken_links(pages: &[PathBuf], lang: &str) -> Vec<LintIssue> {
 }
 
 /// 3. 过时检查：模块页/卡片生成时间 < 其源文件 mtime
-///    （从产物内容提取源文件路径——相关文件段，与源码根下对应文件的 mtime 对比）
+///    （从产物内容提取源文件路径——相关文件段，与源码根下对应文件的 mtime 对比；
+///    相关文件段含 `..` 越界段时跳过该源路径，防 root 外 metadata 探测）
 fn check_stale(pages: &[PathBuf], cards_dir: &Path, source_roots: &[PathBuf], lang: &str) -> Vec<LintIssue> {
     // 同时检查 wiki 页与 cards 卡片；逐项携带来源目录名（"wiki"/"cards"）,
     // 否则 path 恒标 wiki/ 会把卡片误标成 wiki 路径（真实卡片在 cards/{lang}/ 下）
@@ -195,6 +196,18 @@ fn check_stale(pages: &[PathBuf], cards_dir: &Path, source_roots: &[PathBuf], la
             .ok();
         let Some(page_time) = page_mtime else { continue };
         for src in extract_source_files(&content) {
+            // 路径越界段 `..` 拒绝（与 check_citations/check_vctx_tokens 同一
+            // 规则）：相关文件段是生成层写入的 root 相对路径，含 `..` 段说明
+            // 已逃逸 root——即使目标真实存在也拒绝解析，避免 metadata 探测
+            // root 外文件（P1 不对称消除）。此处无对应 issue 类别，沿用本
+            // 函数"读取失败跳过并 warn"的既有失败处理风格。
+            if src.split(['/', '\\']).any(|seg| seg == "..") {
+                tracing::warn!(
+                    "lint stale 跳过含越界段 .. 的相关文件路径: `{src}` (page: {})",
+                    page.display()
+                );
+                continue;
+            }
             let abs = resolve_source_path(source_roots, &src);
             if let Ok(meta) = std::fs::metadata(&abs)
                 && let Ok(src_time) = meta.modified()
@@ -885,25 +898,29 @@ fn extract_source_files(content: &str) -> Vec<String> {
 }
 
 /// 将产物中记录的源路径解析为绝对路径（相对源码根逐根尝试）
+///
+/// root-first 解析（对齐产物路径相对 root 的实践，见 src/ingest/mod.rs 的
+/// strip_prefix 基准）：相对路径只按 `root.join(p)` 解析，不再有 cwd 相对
+/// 分支——cwd 与 --root 分离时，cwd 下同名文件会把 stale/引用/vctx 检查
+/// 指向错误文件（P1 修复）。绝对路径原样返回。
 fn resolve_source_path(source_roots: &[PathBuf], src: &str) -> PathBuf {
     let p = Path::new(src);
     if p.is_absolute() {
         return p.to_path_buf();
     }
     for root in source_roots {
-        // 产物内路径是相对 cwd 的完整相对路径(如 "src/lib.rs"),可能已含 root 前缀:
-        // 先试 cwd 相对(p 原样),再试 root.join(p)(历史行为,兼容不含前缀的情况)
-        let p_path = Path::new(p);
-        if p_path.exists() {
-            return p_path.to_path_buf();
-        }
         let candidate = root.join(p);
         if candidate.exists() {
             return candidate;
         }
     }
-    // 全部未命中:返回 cwd 相对路径(供 metadata 报错)
-    Path::new(p).to_path_buf()
+    // 全部未命中：返回首个 root.join(p)（供 metadata 报错定位到 root 内；
+    // 不再返回 cwd 相对路径，那会把 metadata/读取指向 cwd 同名对象）。
+    // source_roots 为空时返回空路径，使 metadata 必失败，杜绝任何 cwd 探测。
+    source_roots
+        .first()
+        .map(|root| root.join(p))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -1099,6 +1116,140 @@ mod tests {
         );
     }
 
+    /// P1 root-first：cwd（cargo test 默认 = 本仓库根）存在与产物路径同名的
+    /// 相对文件（cwd/src/lib.rs 恰为本仓库真实文件）时，resolve_source_path
+    /// 必须取 root 下的文件而非 cwd 文件——修复前 cwd 相对分支会先命中。
+    #[test]
+    fn test_resolve_source_path_root_first_over_cwd() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_resolve_rootfirst_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src").join("lib.rs"), "ROOT VERSION\n").unwrap();
+        // cwd = 本仓库根，存在同名 src/lib.rs（同名碰撞）
+        let resolved = resolve_source_path(std::slice::from_ref(&dir), "src/lib.rs");
+        assert_eq!(resolved, dir.join("src/lib.rs"));
+        assert_eq!(
+            std::fs::read_to_string(&resolved).unwrap(),
+            "ROOT VERSION\n",
+            "应读取到 root 下文件的版本, 而非 cwd 同名文件"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// P1 绝对路径分支：原样返回，source_roots 为空也不影响
+    #[test]
+    fn test_resolve_source_path_absolute() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_resolve_abs_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let abs = dir.join("abs.rs");
+        std::fs::write(&abs, "x\n").unwrap();
+        let resolved = resolve_source_path(&[], &abs.to_string_lossy());
+        assert_eq!(resolved, abs);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// P1 全未命中兜底：非空 roots 返回首个 root.join(p)（定位到 root 内，
+    /// 供 metadata 报错）；source_roots 为空返回空路径，metadata 必失败，
+    /// 杜绝任何 cwd 探测。
+    #[test]
+    fn test_resolve_source_path_miss_fallback() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_resolve_miss_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = dir.join("proj");
+        let missed = resolve_source_path(std::slice::from_ref(&root), "src/ghost.rs");
+        assert_eq!(missed, root.join("src/ghost.rs"));
+        assert!(!missed.exists(), "未命中的兜底路径不应存在");
+        let empty = resolve_source_path(&[], "src/ghost.rs");
+        assert_eq!(empty, PathBuf::new());
+        assert!(std::fs::metadata(&empty).is_err(), "空路径 metadata 必须失败");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// P1 集成：cwd ≠ root 且 cwd 存在与产物路径同名文件时，stale 检查必须
+    /// 命中 root 下的文件。fixture 的 root=dir 含 src/lib.rs；cwd（本仓库根）
+    /// 也含 src/lib.rs（mtime 为历史提交时间，早于本测试新写页面）。先写页面
+    /// 再写 root 源文件（root 源文件严格更新）→ 应报 stale；若走 cwd 兜底会
+    /// 命中仓库自己的 src/lib.rs（更旧）→ 不报 stale，测试即可检出旧缺陷。
+    #[test]
+    fn test_lint_stale_resolves_root_not_cwd() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_rootfirst_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        // 先写页面（mtime 早）
+        std::fs::write(
+            wiki.join("lib.md"),
+            "# Lib\n\n## 相关文件\n\n- `src/lib.rs`\n",
+        )
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        // 再写 root（= dir）下的 src/lib.rs（mtime 严格更新）
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src").join("lib.rs"), "pub fn f() {}\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+
+        let issues = lint(&dir, std::slice::from_ref(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            issues.iter().any(|i| i.kind == "stale" && i.path.ends_with("lib.md")),
+            "应命中 root 的 src/lib.rs 并报 stale, 实际: {:?}",
+            issues
+        );
+    }
+
+    /// P1 越界段防护：相关文件段含 `..` 时跳过（与 check_citations/check_vctx
+    /// 对齐）——目标文件真实存在于 root 外（root 相对 `..` 可解析到）且更新
+    /// 也绝不报 stale，消除 root 外 metadata 探测不对称。修复前 cwd 相对分支
+    /// 兜底会命中该 root 外文件并误报 stale，本测试可检出。
+    #[test]
+    fn test_lint_stale_rejects_dotdot_source_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_stale_dotdot_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        // root 外（dir 的父级 = temp_dir）真实存在该文件（越界但存在）
+        let escape_dir = dir.parent().unwrap().join(format!(
+            "escape_dir_stale_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&escape_dir).unwrap();
+        let escape_path_rel = format!("../escape_dir_stale_{}/x.rs", std::process::id());
+        std::fs::write(
+            wiki.join("m.md"),
+            format!("# M\n\n## 相关文件\n\n- `{escape_path_rel}`\n"),
+        )
+        .unwrap();
+        // escape 文件写晚于页面（更新，若被解析会报 stale）——必须被 `..` 过滤拦截
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(escape_dir.join("x.rs"), "line1\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+
+        let issues = lint(&dir, std::slice::from_ref(&dir));
+        let _ = std::fs::remove_dir_all(&escape_dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            !issues.iter().any(|i| i.kind == "stale"),
+            "含 .. 的相关文件路径应被跳过, 不得报 stale(也不得探测 root 外), 实际: {:?}",
+            issues
+        );
+    }
+
     /// v23 B 组防回归：include 通配（`**/*.rs`）派生的源码根带 `./` 段时，
     /// 区间重叠检查必须仍命中实体区间——修复前两侧键形态不一致（实体表
     /// 键含 `/./` 段、引用侧无），实体表查询恒空，检查静默失效。
@@ -1121,8 +1272,9 @@ mod tests {
         std::fs::write(src_root.join("lib.rs"), "pub fn f() {}\npub fn g() {}\n\n").unwrap();
         // 引用写相对项目根（= output_dir.parent()）的路径。注意必须含父
         // 目录前缀（如 code_repo_wiki_lint_dotslash_<pid>/src/lib.rs）——若只写
-        // src/lib.rs，resolve_source_path 的 cwd 相对兜底会命中本仓库自己
-        // 的 src/lib.rs（cwd 恰好有同名文件），实体表键恒不命中
+        // src/lib.rs，project_root.join 会落在 temp_dir 下而非真实源码位置，
+        // resolve_source_path 又已去除 cwd 兜底（root-first），文件将不可达、
+        // 被误报 bad-citation，实体表键恒不命中
         let rel = format!(
             "{}/src/lib.rs",
             dir.file_name().unwrap().to_string_lossy()
