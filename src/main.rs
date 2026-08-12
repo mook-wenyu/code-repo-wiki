@@ -855,19 +855,35 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Watch { config, root } => {
             let root = resolve_root(root.as_deref())?;
-            // v36 D5：watch 常驻自愈——监听循环崩溃（notify 初始化失败/
-            // 事件循环错误）时指数退避自动重启（5s 起、上限 60s）；
-            // Ctrl-C 优雅退出（run_watch 返回 Ok）直接结束。
+            // v36 D5 + v13.2：watch 常驻自愈（有界）——监听循环崩溃（notify
+            // 初始化失败/事件循环错误）时指数退避自动重启（5s 起、上限 60s，
+            // 封顶 10 次）；锁冲突（真并发或保守报错）重启无意义，立即退出
+            // 非零码。Ctrl-C 优雅退出（run_watch 返回 Ok）直接结束。
             // watch 是「自动维护」的最后一环：崩溃后静默消失会让 wiki
-            // 从此停更（无人知道）——自愈循环兜住这个缺口。
+            // 从此停更（无人知道）——有界自愈兜住缺口且不永久刷日志。
+            // v13.2：自愈有界化——锁冲突（真并发/读失败保守报错）重启无意义，
+            // 立即退出；非锁错误指数退避重试（5s→60s），WATCH_RETRY_MAX 次后
+            // 放弃退出非零码——无限重启只会永久刷日志。
+            const WATCH_RETRY_MAX: u32 = 10;
             let mut delay = std::time::Duration::from_secs(5);
+            let mut attempts: u32 = 0;
             loop {
                 match code_repo_wiki::run_watch(config.as_deref(), &root) {
                     Ok(()) => break,
                     Err(e) => {
+                        let msg = format!("{e:#}");
+                        if msg.contains("实例正在运行") || msg.contains("运行锁") {
+                            eprintln!("code-repo-wiki: 运行锁冲突（另一实例或保守报错），watch 退出: {e}");
+                            std::process::exit(1);
+                        }
+                        attempts += 1;
+                        if attempts >= WATCH_RETRY_MAX {
+                            eprintln!("code-repo-wiki: watch 连续失败 {WATCH_RETRY_MAX} 次，放弃自动重启: {e}");
+                            std::process::exit(1);
+                        }
                         eprintln!("code-repo-wiki: watch 监听循环异常退出: {e}");
                         eprintln!(
-                            "code-repo-wiki: {} 秒后自动重启监听（Ctrl-C 退出）",
+                            "code-repo-wiki: {} 秒后自动重启监听（第 {attempts}/{WATCH_RETRY_MAX} 次，Ctrl-C 退出）",
                             delay.as_secs()
                         );
                         std::thread::sleep(delay);
