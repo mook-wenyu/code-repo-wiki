@@ -12,7 +12,7 @@
 //!
 //! 4b. **bad-vctx**：正文 `[[vctx:path#L-a-L-b@hash8]]` 手工标记做 5 步哈希只读校验（vericontext 协议，人工文档护栏：t05 决议不引入生成契约，只识别并校验已有标记）
 //!
-//! 5. **entity-coverage**：页面声称的实体不在 api.md 权威清单（LLM 编造的第二道闸；api.md 的模块名（## 节标题）属已知名——合成页按模块名引用不是实体声称）
+//! 5. **entity-coverage**：页面声称的实体不在 api.md 权威清单（LLM 编造的第二道闸；api.md 的模块名（## 节标题）属已知名——合成页按模块名引用不是实体声称；v0.7.1 DEFECT-B 起加源码现实校验——真实目录段名/文件 stem/AST 解析实体同样放行，路径引用（`src/main.rs`）由声称侧剔除，不产生派生 token）
 //! 6. **bad-mermaid**：产物中的 mermaid fence 无法被 merman 解析（历史产物/人工编辑/增量遗留）
 //! 7. **stale-entity**：api.md 权威清单的实体在当前源码中不存在（文档引用了已删除/重命名的符号）
 //!
@@ -51,7 +51,8 @@ pub fn lint(output_dir: &Path, source_roots: &[PathBuf]) -> Vec<LintIssue> {
 
     // 源码实体表：stale-entity（实体名集合）与 bad-citation-overlap（行区间表）
     // 共用一次扫描（两检查的输入同源，各自消费不同投影）
-    let (source_entity_ranges, source_entity_names) = collect_source_entities(source_roots);
+    let (source_entity_ranges, source_entity_names, source_path_names) =
+        collect_source_entities(source_roots);
 
     // 收集主语言目录下的全部 .md 产物（wiki 页 + 全局文档）
     let languages = collect_language_dirs(&wiki_root);
@@ -72,7 +73,14 @@ pub fn lint(output_dir: &Path, source_roots: &[PathBuf]) -> Vec<LintIssue> {
         issues.extend(check_stale(&pages, &output_dir.join("cards").join(lang), source_roots, lang));
         issues.extend(check_citations(&pages, output_dir, source_roots, lang, &source_entity_ranges));
         issues.extend(check_vctx_tokens(&pages, output_dir, source_roots, lang));
-        issues.extend(check_entity_coverage(&pages, &output_dir.join("wiki").join(lang).join("api.md"), lang, output_dir));
+        issues.extend(check_entity_coverage(
+            &pages,
+            &output_dir.join("wiki").join(lang).join("api.md"),
+            lang,
+            output_dir,
+            &source_entity_names,
+            &source_path_names,
+        ));
         issues.extend(check_mermaid(&pages, lang));
         issues.extend(check_stale_entities(
             &output_dir.join("wiki").join(lang).join("api.md"),
@@ -595,7 +603,19 @@ fn api_module_names(api_content: &str) -> std::collections::HashSet<String> {
 /// 5. 实体覆盖率检查（P1-4 零成本评测）：模块页核心实体须存在于 api.md
 ///    （api.md 由 graph 权威渲染，页面声称的实体若不在 = LLM 编造实体名，
 ///    防幻觉第二道闸；api.md 仅主语言一份，只检查主语言目录）
-fn check_entity_coverage(pages: &[PathBuf], api_path: &Path, lang: &str, output_dir: &Path) -> Vec<LintIssue> {
+///
+/// 放行判定（两侧同口径，v0.7.1 DEFECT-B）：`known`（api.md 叶子实体）与
+/// `modules`（api.md `##` 节标题 = 容器名）是权威清单侧；`source_entity_names`
+/// 与 `source_path_names`（目录段名 + 文件 stem）是源码现实校验侧——真实存在于
+/// 代码库的名字不是编造。四者任一命中即放行，全不满足才报 entity-coverage。
+fn check_entity_coverage(
+    pages: &[PathBuf],
+    api_path: &Path,
+    lang: &str,
+    output_dir: &Path,
+    source_entity_names: &std::collections::HashSet<String>,
+    source_path_names: &std::collections::HashSet<String>,
+) -> Vec<LintIssue> {
     if primary_language(output_dir) != *lang {
         return Vec::new();
     }
@@ -621,8 +641,18 @@ fn check_entity_coverage(pages: &[PathBuf], api_path: &Path, lang: &str, output_
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default();
         for entity in extract_entity_names(&content, &modules) {
-            // 声称命中叶子实体清单或模块名（容器名）即非编造；其余报错
-            if known.contains(&entity) || modules.contains(&entity) {
+            // 声称命中权威侧（叶子实体/模块名）或源码现实侧（AST 解析实体/
+            // 真实目录段名/文件 stem）即非编造；其余报错。
+            //
+            // 明确取舍（DEFECT-B）：编造名恰与真实目录/文件 stem 同名时不再
+            // 报——与「模块名引用放行」同一哲学，entity-coverage 管「名字是否
+            // 存在于代码库」而非「引用类别是否准确」；引用类别准确性归
+            // source-missing/bad-citation 管辖。
+            if known.contains(&entity)
+                || modules.contains(&entity)
+                || source_entity_names.contains(&entity)
+                || source_path_names.contains(&entity)
+            {
                 continue;
             }
             issues.push(LintIssue {
@@ -638,7 +668,12 @@ fn check_entity_coverage(pages: &[PathBuf], api_path: &Path, lang: &str, output_
 /// 扫描源码根并解析全部实体（stale-entity 与 bad-citation-overlap 共用一次
 /// 扫描，避免 lint 对源码做两遍 AST 解析）
 ///
-/// 返回 (norm_sep 绝对路径 → 实体行区间列表, 全部实体名集合)。
+/// 返回 (norm_sep 绝对路径 → 实体行区间列表, 全部实体名集合, 目录段名+文件
+/// stem 集合)。第三项为 entity-coverage 的「源码现实校验」输入（DEFECT-B）：
+/// 真实子目录名/文件 stem 是目录/文件引用而非叶子实体，parser 不会产出，
+/// 但它们在代码库中真实存在——与 AST 解析出的实体名互补，共同构成「名字
+/// 是否存在于源码」的判定面。目录段名/文件 stem 相对 source_root 收集，
+/// 避免把临时目录/绝对路径段（如 temp 目录名）算作合法名。
 /// 解析失败的文件跳过（文件级损坏不是文档问题）；源码根不存在/为空时
 /// 返回空表——调用方据此跳过对应检查（扫描失败 ≠ 文档过期/引用错误，
 /// 两种错误信号不能混淆）。
@@ -647,16 +682,19 @@ fn collect_source_entities(
 ) -> (
     crate::output::citation::EntityRanges,
     std::collections::HashSet<String>,
+    std::collections::HashSet<String>,
 ) {
     let mut ranges: crate::output::citation::EntityRanges =
         std::collections::HashMap::new();
     let mut names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut path_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     let registry = crate::ingest::parser::ParserRegistry::new();
     for root in source_roots {
         if !root.is_dir() {
             continue;
         }
         for entry in walk_files(root) {
+            collect_path_names(&entry, root, &mut path_names);
             let Some(processor) = registry.get_for_file(&entry) else { continue };
             let Ok(source) = std::fs::read_to_string(&entry) else { continue };
             if let Ok(insight) = processor.parse(&source, &entry) {
@@ -675,7 +713,36 @@ fn collect_source_entities(
             }
         }
     }
-    (ranges, names)
+    (ranges, names, path_names)
+}
+
+/// 把 entry 相对 root 的路径分解为「目录段名 + 文件 stem」收集进 out
+/// （DEFECT-B 源码现实校验用；一次遍历顺带完成，避免第二次 I/O）。
+/// 只收集 Normal 组件，过滤 RootDir/Prefix/CurDir/ParentDir；文件段取 stem
+/// （去扩展名）——声称侧路径引用（`src/main.rs`）已由 extract_entity_names
+/// 先行剔除，这里放行的形态是裸目录段名（`core`）与裸文件 stem（`main`）。
+fn collect_path_names(
+    entry: &Path,
+    root: &Path,
+    out: &mut std::collections::HashSet<String>,
+) {
+    let Ok(rel) = entry.strip_prefix(root) else { return };
+    let mut components: Vec<std::path::Component> = rel.components().collect();
+    if let Some(std::path::Component::Normal(file_seg)) = components.pop() {
+        let name = file_seg.to_string_lossy();
+        // 去扩展名取 stem；`.gitignore` 这类前导点文件 rsplit_once 前半为空，
+        // 回退整名（把 `.gitignore` 算作合法名无害且更符合直觉）
+        let stem = match name.rsplit_once('.') {
+            Some((head, _)) if !head.is_empty() => head.to_string(),
+            _ => name.to_string(),
+        };
+        out.insert(stem);
+    }
+    for comp in components {
+        if let std::path::Component::Normal(seg) = comp {
+            out.insert(seg.to_string_lossy().into_owned());
+        }
+    }
 }
 
 /// 7. 符号漂移检查（v13 D1，N1）：api.md 权威清单中的实体在当前源码中不存在
@@ -862,12 +929,21 @@ fn claimed_backtick_inner(line: &str) -> Option<&str> {
 /// `modules` 为 api.md 的模块名集合：原文精确命中模块名的声称行是模块引用
 /// （容器名，如 `src`、`src::storage`）而非实体声称，先行剔除——多段名
 /// `src::storage` 经 entity_name_from_signature（`::` 被当作继承段冒号）
-/// 会截断为 `src`，必须按原文剔除（P3 误报修复）
+/// 会截断为 `src`，必须按原文剔除（P3 误报修复）。
+///
+/// v0.7.1 DEFECT-B：路径形态声称（反引号内含 `/` 或 `\` 分隔符、或带代码
+/// 扩展名，如 `src/main.rs`、`mod.rs`）是文件引用，归 source-missing/
+/// bad-citation 管辖，不是实体声称——`entity_name_from_signature` 会把
+/// `src/main.rs` 截成路径派生 token `rs` 造成误报，这里先行剔除（复用
+/// has_code_extension，与 extract_source_files 的判定口径一致）。
 fn extract_entity_names(content: &str, modules: &std::collections::HashSet<String>) -> Vec<String> {
     let mut out = Vec::new();
     for line in content.lines() {
         let Some(inner) = claimed_backtick_inner(line) else { continue };
         if modules.contains(inner) {
+            continue;
+        }
+        if inner.contains('/') || inner.contains('\\') || has_code_extension(inner) {
             continue;
         }
         if let Some(name) = entity_name_from_signature(inner) {
@@ -1960,6 +2036,59 @@ mod tests {
             "模块名引用不应误报: {:?}",
             cov
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// DEFECT-B 防回归：真实子目录名（`core`/`net`/`service`）与路径引用
+    /// （`src/main.rs`）不应误报 entity-coverage——子目录名/文件 stem 经源码
+    /// 现实校验放行（目录/文件引用而非叶子实体），路径引用由声称侧剔除
+    /// （不派生 `rs` token）。追加真编造名（GhostFactory）仍必须报（防幻觉
+    /// 语义不变）。
+    #[test]
+    fn test_lint_entity_coverage_accepts_real_subdir_and_path_refs() {
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_lint_cov_path_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        // 源码树：src/{core,net,service}/mod.rs + src/main.rs（真实目录名/文件 stem）
+        let src = dir.join("src");
+        for (sub, func) in [("core", "Foo"), ("net", "Bar"), ("service", "Baz")] {
+            std::fs::create_dir_all(src.join(sub)).unwrap();
+            std::fs::write(src.join(sub).join("mod.rs"), format!("pub fn {func}() {{}}\n")).unwrap();
+        }
+        std::fs::write(src.join("main.rs"), "fn main() {}\n").unwrap();
+        // api.md：模块名 src / src::lib + 叶子实体 Foo/Bar（权威清单）
+        std::fs::write(
+            wiki.join("api.md"),
+            "# API 参考\n\n## src\n\n- `Foo`\n\n## src::lib\n\n- `Bar`\n",
+        )
+        .unwrap();
+        // 页面：裸子目录名引用 + 相关文件段路径引用
+        std::fs::write(
+            wiki.join("src.md"),
+            "# 模块 src\n\n## 模块\n\n- `core` — 核心模块\n- `net` — 网络模块\n- `service` — 服务模块\n\n## 相关文件\n\n- `src/main.rs`\n",
+        )
+        .unwrap();
+
+        // 双 source_roots：仓库根 + src 子目录，覆盖现实校验的两种挂载点
+        let issues = lint(&dir, &[dir.clone(), src.clone()]);
+        let cov: Vec<_> = issues.iter().filter(|i| i.kind == "entity-coverage").collect();
+        assert_eq!(cov.len(), 0, "真实子目录名与路径引用不应误报, 实际: {:?}", issues);
+        // 路径扩展名防回归：`## 相关文件` 的 `src/main.rs` 不产生 `rs` 声称
+        assert!(
+            !issues.iter().any(|i| i.kind == "entity-coverage" && i.message.contains("`rs`")),
+            "路径引用不应派生 `rs` 声称: {:?}",
+            issues
+        );
+
+        // 追加真编造名 → 仍报 1 条
+        let mut content = std::fs::read_to_string(wiki.join("src.md")).unwrap();
+        content.push_str("\n- `GhostFactory` — 编造的实体\n");
+        std::fs::write(wiki.join("src.md"), content).unwrap();
+        let issues = lint(&dir, &[dir.clone(), src.clone()]);
+        let cov: Vec<_> = issues.iter().filter(|i| i.kind == "entity-coverage").collect();
+        assert_eq!(cov.len(), 1, "真编造应报 1 条, 实际: {:?}", issues);
+        assert!(cov[0].message.contains("GhostFactory"), "应指向 GhostFactory: {}", cov[0].message);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
