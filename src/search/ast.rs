@@ -1,6 +1,6 @@
+use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 use tree_sitter::{Language, Parser};
-use anyhow::{Result, anyhow};
 
 /// AST 查询器：统一的 tree-sitter 查询接口
 ///
@@ -28,8 +28,13 @@ impl AstQuery {
     pub fn new(language: &str) -> Result<Self> {
         let lang = get_language(language)?;
         let mut parser = Parser::new();
-        parser.set_language(&lang).map_err(|e| anyhow!("设置语言失败: {}", e))?;
-        Ok(Self { language: language.to_string(), parser })
+        parser
+            .set_language(&lang)
+            .map_err(|e| anyhow!("设置语言失败: {}", e))?;
+        Ok(Self {
+            language: language.to_string(),
+            parser,
+        })
     }
 
     /// 查找符号定义位置
@@ -37,7 +42,9 @@ impl AstQuery {
     /// 手动遍历 AST，找到 name 与 symbol 匹配的顶层定义节点。
     /// 不依赖 tree-sitter Query API，兼容所有 tree-sitter 版本。
     pub fn find_definition(&mut self, source: &str, symbol: &str) -> Result<Option<QueryMatch>> {
-        let tree = self.parser.parse(source, None)
+        let tree = self
+            .parser
+            .parse(source, None)
             .ok_or_else(|| anyhow!("解析源码失败"))?;
         let bytes = source.as_bytes();
         let _root = tree.root_node();
@@ -45,11 +52,43 @@ impl AstQuery {
 
         // 定义节点类型列表：各语言中可能包含定义的节点类型
         let def_types = match self.language.as_str() {
-            "rust" => &["function_item", "struct_item", "trait_item", "enum_item", "type_item", "const_item", "static_item", "impl_item", "mod_item"][..],
+            "rust" => &[
+                "function_item",
+                "struct_item",
+                "trait_item",
+                "enum_item",
+                "type_item",
+                "const_item",
+                "static_item",
+                "impl_item",
+                "mod_item",
+            ][..],
             "python" => &["function_definition", "class_definition", "assignment"][..],
-            "javascript" | "typescript" => &["function_declaration", "class_declaration", "method_definition", "variable_declaration", "interface_declaration", "type_alias_declaration", "enum_declaration"][..],
-            "go" => &["function_declaration", "type_declaration", "type_spec", "const_declaration", "var_declaration"][..],
-            "csharp" => &["method_declaration", "class_declaration", "struct_declaration", "interface_declaration", "enum_declaration", "delegate_declaration", "property_declaration"][..],
+            "javascript" | "typescript" => &[
+                "function_declaration",
+                "class_declaration",
+                "method_definition",
+                "variable_declaration",
+                "interface_declaration",
+                "type_alias_declaration",
+                "enum_declaration",
+            ][..],
+            "go" => &[
+                "function_declaration",
+                "type_declaration",
+                "type_spec",
+                "const_declaration",
+                "var_declaration",
+            ][..],
+            "csharp" => &[
+                "method_declaration",
+                "class_declaration",
+                "struct_declaration",
+                "interface_declaration",
+                "enum_declaration",
+                "delegate_declaration",
+                "property_declaration",
+            ][..],
             _ => return Ok(None),
         };
 
@@ -57,7 +96,11 @@ impl AstQuery {
         let mut cursor = tree.walk();
         'outer: loop {
             let node = cursor.node();
-            if def_types.contains(&node.kind()) && let Some(name_node) = node.child_by_field_name("name") && let Ok(name) = name_node.utf8_text(bytes) && name == symbol {
+            if def_types.contains(&node.kind())
+                && let Some(name_node) = node.child_by_field_name("name")
+                && let Ok(name) = name_node.utf8_text(bytes)
+                && name == symbol
+            {
                 let mut captures = HashMap::new();
                 let mut capture_lines = HashMap::new();
                 if let Ok(text) = node.utf8_text(bytes) {
@@ -73,10 +116,16 @@ impl AstQuery {
                 break 'outer;
             }
 
-            if cursor.goto_first_child() { continue; }
+            if cursor.goto_first_child() {
+                continue;
+            }
             loop {
-                if cursor.goto_next_sibling() { continue 'outer; }
-                if !cursor.goto_parent() { break 'outer; }
+                if cursor.goto_next_sibling() {
+                    continue 'outer;
+                }
+                if !cursor.goto_parent() {
+                    break 'outer;
+                }
             }
         }
 
@@ -85,31 +134,60 @@ impl AstQuery {
 
     /// 获取解析结果中的顶层实体名列表
     pub fn list_definitions(&mut self, source: &str) -> Result<Vec<String>> {
-        let tree = self.parser.parse(source, None)
+        let tree = self
+            .parser
+            .parse(source, None)
             .ok_or_else(|| anyhow!("解析源码失败"))?;
         let bytes = source.as_bytes();
         let mut defs = Vec::new();
 
         let def_types = match self.language.as_str() {
-            "rust" => &["function_item", "struct_item", "trait_item", "enum_item", "type_item", "const_item", "impl_item"][..],
+            "rust" => &[
+                "function_item",
+                "struct_item",
+                "trait_item",
+                "enum_item",
+                "type_item",
+                "const_item",
+                "impl_item",
+            ][..],
             "python" => &["function_definition", "class_definition"][..],
-            "javascript" | "typescript" => &["function_declaration", "class_declaration", "method_definition", "interface_declaration"][..],
+            "javascript" | "typescript" => &[
+                "function_declaration",
+                "class_declaration",
+                "method_definition",
+                "interface_declaration",
+            ][..],
             "go" => &["function_declaration", "type_spec"][..],
-            "csharp" => &["method_declaration", "class_declaration", "struct_declaration", "interface_declaration"][..],
+            "csharp" => &[
+                "method_declaration",
+                "class_declaration",
+                "struct_declaration",
+                "interface_declaration",
+            ][..],
             _ => return Ok(defs),
         };
 
         let mut cursor = tree.walk();
         'walk: loop {
             let node = cursor.node();
-            if def_types.contains(&node.kind()) && let Some(name_node) = node.child_by_field_name("name") && let Ok(name) = name_node.utf8_text(bytes) {
+            if def_types.contains(&node.kind())
+                && let Some(name_node) = node.child_by_field_name("name")
+                && let Ok(name) = name_node.utf8_text(bytes)
+            {
                 defs.push(name.to_string());
             }
 
-            if cursor.goto_first_child() { continue; }
+            if cursor.goto_first_child() {
+                continue;
+            }
             loop {
-                if cursor.goto_next_sibling() { continue 'walk; }
-                if !cursor.goto_parent() { break 'walk; }
+                if cursor.goto_next_sibling() {
+                    continue 'walk;
+                }
+                if !cursor.goto_parent() {
+                    break 'walk;
+                }
             }
         }
 

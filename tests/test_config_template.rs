@@ -20,11 +20,26 @@ fn test_template_no_dead_keys() {
 
     // 死键段：已随 v30 硬编码从模板移除（output/search/incremental/plan/expand_languages）
     assert!(!table.contains_key("project"), "模板不得含死键段 [project]");
-    assert!(!table.contains_key("generate"), "模板不得含死键段 [generate]");
-    assert!(!table.contains_key("output"), "模板不得含死键段 [output]（v30 硬编码）");
-    assert!(!table.contains_key("search"), "模板不得含死键段 [search]（v30 硬编码）");
-    assert!(!table.contains_key("incremental"), "模板不得含死键段 [incremental]（v30 硬编码）");
-    assert!(!table.contains_key("plan"), "模板不得含死键段 [plan]（v30 删除）");
+    assert!(
+        !table.contains_key("generate"),
+        "模板不得含死键段 [generate]"
+    );
+    assert!(
+        !table.contains_key("output"),
+        "模板不得含死键段 [output]（v30 硬编码）"
+    );
+    assert!(
+        !table.contains_key("search"),
+        "模板不得含死键段 [search]（v30 硬编码）"
+    );
+    assert!(
+        !table.contains_key("incremental"),
+        "模板不得含死键段 [incremental]（v30 硬编码）"
+    );
+    assert!(
+        !table.contains_key("plan"),
+        "模板不得含死键段 [plan]（v30 删除）"
+    );
 
     // schema 现有段必须齐全
     for section in ["wiki", "llm", "embed"] {
@@ -35,14 +50,17 @@ fn test_template_no_dead_keys() {
 /// 模板经 load_config 必须能完整加载（含默认值填充与校验通过）
 #[test]
 fn test_template_loads_cleanly() {
-    let dir = std::env::temp_dir().join(format!("code-repo-wiki-template-test-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "code-repo-wiki-template-test-{}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let path: PathBuf = dir.join("config.toml");
     std::fs::write(&path, TEMPLATE).unwrap();
 
     let config: schema::WikiConfig = load_config(&path).expect("模板必须可被 load_config 加载");
     assert_eq!(config.llm.api_key_env, "OPENCODEGO2_API_KEY");
-        // embed 段随模板配置（当前模板启用百炼 embedding，仅断言字段可解析）
+    // embed 段随模板配置（当前模板启用百炼 embedding，仅断言字段可解析）
     assert!(!config.embed.model.is_empty());
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -57,7 +75,8 @@ fn test_mock_config_max_concurrency_effective() {
     let path: PathBuf = dir.join("config.toml");
     std::fs::write(&path, common::mock_config()).unwrap();
 
-    let config: schema::WikiConfig = load_config(&path).expect("mock_config 必须可被 load_config 加载");
+    let config: schema::WikiConfig =
+        load_config(&path).expect("mock_config 必须可被 load_config 加载");
     assert_eq!(
         config.llm.max_concurrency,
         Some(1),

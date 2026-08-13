@@ -9,8 +9,8 @@
 use anyhow::Result;
 use std::path::Path;
 
-use crate::config::schema::LlmProviderType;
 use crate::config::load_config;
+use crate::config::schema::LlmProviderType;
 use crate::incremental::state::GenerationState;
 use crate::project::ProjectRoot;
 
@@ -38,7 +38,13 @@ async fn probe_protocol(
     api_key: &str,
     body: &serde_json::Value,
 ) -> bool {
-    match client.post(url).bearer_auth(api_key).json(body).send().await {
+    match client
+        .post(url)
+        .bearer_auth(api_key)
+        .json(body)
+        .send()
+        .await
+    {
         Ok(resp) => {
             let status = resp.status();
             !(status == reqwest::StatusCode::NOT_FOUND
@@ -107,12 +113,17 @@ pub fn run(config_path: Option<&Path>, root: &ProjectRoot) -> Result<Vec<CheckRe
     // 3. 输出目录状态（已存在非空产物 → 提示将增量更新/可能覆盖；
     // 空目录/不存在 → 全新生成提示）
     let has_existing = output_dir.exists()
-        && std::fs::read_dir(output_dir).map(|mut d| d.next().is_some()).unwrap_or(false);
+        && std::fs::read_dir(output_dir)
+            .map(|mut d| d.next().is_some())
+            .unwrap_or(false);
     checks.push(CheckResult {
         name: "输出目录",
         ok: true,
         detail: Some(if has_existing {
-            format!("{} 已存在历史产物，生成将按指纹增量更新（人工修改受保护）", output_dir.display())
+            format!(
+                "{} 已存在历史产物，生成将按指纹增量更新（人工修改受保护）",
+                output_dir.display()
+            )
         } else {
             format!("{} 为空或不存在，将全新生成", output_dir.display())
         }),
@@ -189,7 +200,10 @@ pub fn run(config_path: Option<&Path>, root: &ProjectRoot) -> Result<Vec<CheckRe
             detail: Some(if reachable {
                 format!("{} 可达", base_url)
             } else {
-                format!("{} 不可达（5s 超时/拒绝连接）。检查网络或 base_url 配置", base_url)
+                format!(
+                    "{} 不可达（5s 超时/拒绝连接）。检查网络或 base_url 配置",
+                    base_url
+                )
             }),
         });
     }
@@ -206,7 +220,9 @@ pub fn run(config_path: Option<&Path>, root: &ProjectRoot) -> Result<Vec<CheckRe
         LlmProviderType::Mock | LlmProviderType::Anthropic => CheckResult {
             name: "协议",
             ok: true,
-            detail: Some("mock/Anthropic：跳过协议探测（本地模拟不触网 / 协议形态固定）".to_string()),
+            detail: Some(
+                "mock/Anthropic：跳过协议探测（本地模拟不触网 / 协议形态固定）".to_string(),
+            ),
         },
         _ => {
             let is_responses = config.llm.provider == LlmProviderType::OpenAI;
@@ -215,7 +231,11 @@ pub fn run(config_path: Option<&Path>, root: &ProjectRoot) -> Result<Vec<CheckRe
                 .base_url
                 .clone()
                 .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
-            let endpoint = if is_responses { "responses" } else { "chat/completions" };
+            let endpoint = if is_responses {
+                "responses"
+            } else {
+                "chat/completions"
+            };
             let url = format!("{}/{}", base_url.trim_end_matches('/'), endpoint);
             // 最小探测请求体（1 token 预算，stream:false 一次收包；探测只关心
             // 端点到不到，不解析响应内容——即使 body 被拒（400）也说明端点存在）
@@ -251,7 +271,11 @@ pub fn run(config_path: Option<&Path>, root: &ProjectRoot) -> Result<Vec<CheckRe
                     })
                 })
                 .unwrap_or(false);
-            let protocol_name = if is_responses { "Responses" } else { "chat/completions" };
+            let protocol_name = if is_responses {
+                "Responses"
+            } else {
+                "chat/completions"
+            };
             CheckResult {
                 name: "协议",
                 ok: available,
@@ -301,7 +325,9 @@ pub fn run(config_path: Option<&Path>, root: &ProjectRoot) -> Result<Vec<CheckRe
                 None => CheckResult {
                     name: "版本",
                     ok: true,
-                    detail: Some("产物由旧版本生成（状态无版本记录），建议运行一次完整 generate".to_string()),
+                    detail: Some(
+                        "产物由旧版本生成（状态无版本记录），建议运行一次完整 generate".to_string(),
+                    ),
                 },
             },
             Err(e) => CheckResult {
@@ -338,7 +364,10 @@ mod tests {
                     let reason = if status == 200 { "OK" } else { "Error" };
                     let raw = format!(
                         "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                        status, reason, body.len(), body
+                        status,
+                        reason,
+                        body.len(),
+                        body
                     );
                     let _ = stream.write_all(raw.as_bytes());
                 });
@@ -349,7 +378,11 @@ mod tests {
 
     /// 构造临时目录内的最小 mock 配置（可追加覆盖段）
     fn temp_config(tag: &str, extra: &str) -> (PathBuf, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_doctor_{}_{}", tag, std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_doctor_{}_{}",
+            tag,
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let config = dir.join("doctor-test.toml");
@@ -383,7 +416,10 @@ max_concurrent = 1
 
     #[test]
     fn test_doctor_config_missing_fails_first_check_only() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_doctor_missing_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_doctor_missing_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let root = ProjectRoot::new(dir.clone());
@@ -406,7 +442,10 @@ max_concurrent = 1
         )
         .unwrap();
         let checks = run(Some(&config), &root).unwrap();
-        let key = checks.iter().find(|c| c.name == "LLM Key").expect("应有 Key 检查");
+        let key = checks
+            .iter()
+            .find(|c| c.name == "LLM Key")
+            .expect("应有 Key 检查");
         assert!(!key.ok);
         let detail = key.detail.clone().unwrap();
         assert!(detail.contains("api_key_env"), "应给出可操作引导: {detail}");
@@ -421,14 +460,16 @@ max_concurrent = 1
         let cfg_text = std::fs::read_to_string(&config).unwrap();
         std::fs::write(
             &config,
-            cfg_text
-                .replace("provider = \"mock\"", "provider = \"openai-compatible\"")
+            cfg_text.replace("provider = \"mock\"", "provider = \"openai-compatible\"")
                 + "base_url = \"http://127.0.0.1:1/v1\"\n",
         )
         .unwrap();
         let root = ProjectRoot::new(dir.clone());
         let checks = run(Some(&config), &root).unwrap();
-        let net = checks.iter().find(|c| c.name == "网络").expect("应有网络检查");
+        let net = checks
+            .iter()
+            .find(|c| c.name == "网络")
+            .expect("应有网络检查");
         assert!(!net.ok, "未监听端口应报不可达: {:?}", net.detail);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -440,7 +481,10 @@ max_concurrent = 1
         let (dir, config) = temp_config("ver", "");
         let root = ProjectRoot::new(dir.clone());
         let checks = run(Some(&config), &root).unwrap();
-        let ver = checks.iter().find(|c| c.name == "版本").expect("应有版本检查");
+        let ver = checks
+            .iter()
+            .find(|c| c.name == "版本")
+            .expect("应有版本检查");
         assert!(ver.ok, "无状态文件时应通过: {:?}", ver.detail);
         assert!(
             ver.detail.clone().unwrap().contains("尚无生成状态"),
@@ -456,7 +500,10 @@ max_concurrent = 1
         )
         .unwrap();
         let checks = run(Some(&config), &root).unwrap();
-        let ver = checks.iter().find(|c| c.name == "版本").expect("应有版本检查");
+        let ver = checks
+            .iter()
+            .find(|c| c.name == "版本")
+            .expect("应有版本检查");
         assert!(ver.ok);
         let detail = ver.detail.clone().unwrap();
         assert!(detail.contains("0.0.0"), "应报告记录版本: {detail}");
@@ -472,7 +519,10 @@ max_concurrent = 1
         )
         .unwrap();
         let checks = run(Some(&config), &root).unwrap();
-        let ver = checks.iter().find(|c| c.name == "版本").expect("应有版本检查");
+        let ver = checks
+            .iter()
+            .find(|c| c.name == "版本")
+            .expect("应有版本检查");
         assert!(ver.ok);
         assert!(
             ver.detail.clone().unwrap().contains("由当前版本"),
@@ -492,21 +542,26 @@ max_concurrent = 1
         let cfg_text = std::fs::read_to_string(&config).unwrap();
         std::fs::write(
             &config,
-            cfg_text
-                .replace("provider = \"mock\"", "provider = \"openai\"")
+            cfg_text.replace("provider = \"mock\"", "provider = \"openai\"")
                 + &format!("base_url = \"{}/v1\"\n", base),
         )
         .unwrap();
         let root = ProjectRoot::new(dir.clone());
         let checks = run(Some(&config), &root).unwrap();
-        let proto = checks.iter().find(|c| c.name == "协议").expect("应有协议检查");
+        let proto = checks
+            .iter()
+            .find(|c| c.name == "协议")
+            .expect("应有协议检查");
         assert!(!proto.ok, "404 应判协议不可用: {:?}", proto.detail);
         assert!(
             proto.detail.clone().unwrap().contains("provider 类型"),
             "失败说明应给出配置引导: {:?}",
             proto.detail
         );
-        let net = checks.iter().find(|c| c.name == "网络").expect("应有网络检查");
+        let net = checks
+            .iter()
+            .find(|c| c.name == "网络")
+            .expect("应有网络检查");
         assert!(net.ok, "监听中的服务器应可达: {:?}", net.detail);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -520,14 +575,16 @@ max_concurrent = 1
         let cfg_text = std::fs::read_to_string(&config).unwrap();
         std::fs::write(
             &config,
-            cfg_text
-                .replace("provider = \"mock\"", "provider = \"openai\"")
+            cfg_text.replace("provider = \"mock\"", "provider = \"openai\"")
                 + &format!("base_url = \"{}/v1\"\n", base),
         )
         .unwrap();
         let root = ProjectRoot::new(dir.clone());
         let checks = run(Some(&config), &root).unwrap();
-        let proto = checks.iter().find(|c| c.name == "协议").expect("应有协议检查");
+        let proto = checks
+            .iter()
+            .find(|c| c.name == "协议")
+            .expect("应有协议检查");
         assert!(proto.ok, "401 应判协议可用（端点存在）: {:?}", proto.detail);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -541,15 +598,21 @@ max_concurrent = 1
         let cfg_text = std::fs::read_to_string(&config).unwrap();
         std::fs::write(
             &config,
-            cfg_text
-                .replace("provider = \"mock\"", "provider = \"openai-compatible\"")
+            cfg_text.replace("provider = \"mock\"", "provider = \"openai-compatible\"")
                 + &format!("base_url = \"{}/v1\"\n", base),
         )
         .unwrap();
         let root = ProjectRoot::new(dir.clone());
         let checks = run(Some(&config), &root).unwrap();
-        let proto = checks.iter().find(|c| c.name == "协议").expect("应有协议检查");
-        assert!(proto.ok, "chat/completions 200 应判协议可用: {:?}", proto.detail);
+        let proto = checks
+            .iter()
+            .find(|c| c.name == "协议")
+            .expect("应有协议检查");
+        assert!(
+            proto.ok,
+            "chat/completions 200 应判协议可用: {:?}",
+            proto.detail
+        );
         assert!(
             proto.detail.clone().unwrap().contains("chat/completions"),
             "应说明探测的协议形态: {:?}",

@@ -18,8 +18,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use code_repo_wiki::config::schema::{LlmProviderType, LlmSection, WikiConfig, WikiSection};
-use code_repo_wiki::ingest::parser::{Entity, FileInsight};
 use code_repo_wiki::incremental::state::GenerationState;
+use code_repo_wiki::ingest::parser::{Entity, FileInsight};
 
 /// 轮询等待条件成立，90s 上限，超时 panic（watch 防抖 300ms，轮询间隔按场景 250~500ms）
 ///
@@ -42,8 +42,14 @@ fn wait_until(mut cond: impl FnMut() -> bool, interval: Duration, what: &str) {
 fn watch_config(repo: &Path) -> WikiConfig {
     WikiConfig {
         output_dir: Some((repo.join(".code-repo-wiki").to_string_lossy().into_owned()).into()),
-        wiki: WikiSection { language: "zh".into(), guide: Default::default() },
-        llm: LlmSection { provider: LlmProviderType::Mock, ..Default::default() },
+        wiki: WikiSection {
+            language: "zh".into(),
+            guide: Default::default(),
+        },
+        llm: LlmSection {
+            provider: LlmProviderType::Mock,
+            ..Default::default()
+        },
         // v30：embed 默认真实阵营（百炼）且 EmbedSection 无 mock 通道——
         // 环境有 BAILIAN_API_KEY 时嵌入会真实触网拖慢全量。api_key_env=""
         // 让 resolve_api_key 立即失败（不做网络重试）→语义索引/特征聚类
@@ -86,17 +92,27 @@ fn read_opt(path: &Path) -> Option<String> {
 ///   短路不在本测试覆盖内（不影响本测试断言的有效性：产物确实随事件更新）。
 #[test]
 fn watch_e2e_file_change_triggers_incremental() {
-    let repo = std::env::temp_dir().join(format!("code_repo_wiki_watch_e2e_{}", std::process::id()));
+    let repo =
+        std::env::temp_dir().join(format!("code_repo_wiki_watch_e2e_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&repo);
     std::fs::create_dir_all(repo.join("src")).expect("创建临时仓库失败");
-    std::fs::write(repo.join("src").join("alpha.rs"), "pub fn alpha_fn(x: u32) -> u32 { x + 1 }\n")
-        .expect("写入 alpha.rs 失败");
-    std::fs::write(repo.join("src").join("beta.rs"), "pub fn beta_fn(x: u32) -> u32 { x + 2 }\n")
-        .expect("写入 beta.rs 失败");
+    std::fs::write(
+        repo.join("src").join("alpha.rs"),
+        "pub fn alpha_fn(x: u32) -> u32 { x + 1 }\n",
+    )
+    .expect("写入 alpha.rs 失败");
+    std::fs::write(
+        repo.join("src").join("beta.rs"),
+        "pub fn beta_fn(x: u32) -> u32 { x + 2 }\n",
+    )
+    .expect("写入 beta.rs 失败");
 
     let config = watch_config(&repo);
-    std::fs::write(repo.join("config.toml"), toml::to_string_pretty(&config).expect("序列化配置失败"))
-        .expect("写入 config.toml 失败");
+    std::fs::write(
+        repo.join("config.toml"),
+        toml::to_string_pretty(&config).expect("序列化配置失败"),
+    )
+    .expect("写入 config.toml 失败");
 
     let config_path = repo.join("config.toml");
     let root = code_repo_wiki::project::ProjectRoot::new(repo.clone());
@@ -106,13 +122,18 @@ fn watch_e2e_file_change_triggers_incremental() {
     let thread_root = root.clone();
     let thread_config_path = config_path.clone();
     let handle = std::thread::spawn(move || {
-        code_repo_wiki::run_watch(Some(&thread_config_path), &thread_root).expect("run_watch 启动失败");
+        code_repo_wiki::run_watch(Some(&thread_config_path), &thread_root)
+            .expect("run_watch 启动失败");
     });
     // 设计说明：不 join（见上方诚实边界——测试进程无法注入 SIGINT；
     // stop_flag 退出语义由模块级单测覆盖）。drop JoinHandle = detach。
     drop(handle);
 
-    let api_path = repo.join(".code-repo-wiki").join("wiki").join("zh").join("api.md");
+    let api_path = repo
+        .join(".code-repo-wiki")
+        .join("wiki")
+        .join("zh")
+        .join("api.md");
 
     // 第一步：等待初始全量生成完成（产物存在且含基线实体）
     wait_until(
@@ -158,17 +179,22 @@ fn watch_e2e_file_change_triggers_incremental() {
 /// 跑全量解析过慢。
 #[test]
 fn insights_cache_size_reports() {
-    let dir = std::env::temp_dir().join(format!("code_repo_wiki_cache_size_{}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("code_repo_wiki_cache_size_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("创建临时目录失败");
 
     for i in 0..10 {
-        let content = format!("pub fn m{i}(x: u32) -> u32 {{ x + {i} }}\npub struct S{i} {{ pub v: u32 }}\n");
+        let content =
+            format!("pub fn m{i}(x: u32) -> u32 {{ x + {i} }}\npub struct S{i} {{ pub v: u32 }}\n");
         std::fs::write(dir.join(format!("m{i}.rs")), content).expect("写入源文件失败");
     }
 
     let root = code_repo_wiki::project::ProjectRoot::new(dir.clone());
-    let cache_path = dir.join(".code-repo-wiki").join(".state").join("insights_cache.json");
+    let cache_path = dir
+        .join(".code-repo-wiki")
+        .join(".state")
+        .join("insights_cache.json");
     let empty_changed = std::collections::HashSet::new();
 
     // 第一次：写缓存
@@ -191,7 +217,9 @@ fn insights_cache_size_reports() {
     .insights;
     assert_eq!(second.len(), 10);
 
-    let bytes = std::fs::metadata(&cache_path).expect("缓存文件应存在").len();
+    let bytes = std::fs::metadata(&cache_path)
+        .expect("缓存文件应存在")
+        .len();
     assert!(bytes > 0, "缓存文件不应为空");
     // 线性外推依据：每条目为独立 JSON（路径 + 定长指纹 + 解析结果），
     // 文件数翻倍 ≈ 字节数近似翻倍（条目内无跨文件共享状态）
@@ -223,11 +251,13 @@ fn insights_cache_size_reports() {
 /// 流水线，相对化后与 insight.path 形态一致、传播/删除命中。
 #[test]
 fn watch_path_dot_slash_prefix_boundary() {
-    let repo = std::env::temp_dir().join(format!("code_repo_wiki_dot_prefix_{}", std::process::id()));
+    let repo =
+        std::env::temp_dir().join(format!("code_repo_wiki_dot_prefix_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&repo);
     std::fs::create_dir_all(repo.join("src")).expect("创建临时仓库失败");
     let src_file = repo.join("src").join("foo.rs");
-    std::fs::write(&src_file, "pub fn foo_fn(x: u32) -> u32 { x + 1 }\n").expect("写入 foo.rs 失败");
+    std::fs::write(&src_file, "pub fn foo_fn(x: u32) -> u32 { x + 1 }\n")
+        .expect("写入 foo.rs 失败");
 
     // ---- 1) 复现 relativize_watch_path（剥离 CurDir + 相对化），确认修复行为 ----
     let root_path = repo.clone();
@@ -251,7 +281,11 @@ fn watch_path_dot_slash_prefix_boundary() {
         .strip_prefix(&root_path)
         .map(|r| r.to_path_buf())
         .unwrap_or_else(|_| abs.clone());
-    assert_eq!(relativized_abs, PathBuf::from("src/foo.rs"), "绝对路径应被相对化");
+    assert_eq!(
+        relativized_abs,
+        PathBuf::from("src/foo.rs"),
+        "绝对路径应被相对化"
+    );
 
     // ---- 2) 真实链路观测：FileWatch 增量下 watch 路径的透传与传播行为 ----
     // insight.path 用绝对路径（与真实流水线的相对形态不同，注释说明）：
@@ -268,13 +302,15 @@ fn watch_path_dot_slash_prefix_boundary() {
             line_start: 1,
             line_end: 1,
             doc_comment: None,
-            signature: Some("pub fn foo_fn(x: u32) -> u32 { x + 1 }".into()), visibility: None,
+            signature: Some("pub fn foo_fn(x: u32) -> u32 { x + 1 }".into()),
+            visibility: None,
         }],
         imports: Vec::new(),
         doc_comments: Vec::new(),
         source: std::fs::read_to_string(&src_file).unwrap(),
     };
-    let graph = code_repo_wiki::analysis::build_graph(std::slice::from_ref(&insight)).expect("构建 graph 失败");
+    let graph = code_repo_wiki::analysis::build_graph(std::slice::from_ref(&insight))
+        .expect("构建 graph 失败");
     let config = watch_config(&repo);
     let state_dir = config.output_dir().join(".state");
 
@@ -341,8 +377,8 @@ fn watch_path_dot_slash_prefix_boundary() {
     {
         use code_repo_wiki::model::{CodeNode, NodeId, NodeKind};
         use code_repo_wiki::search::store::SearchStore;
-        let store_path = std::env::temp_dir()
-            .join(format!("code_repo_wiki_dot_del_{}.db", std::process::id()));
+        let store_path =
+            std::env::temp_dir().join(format!("code_repo_wiki_dot_del_{}.db", std::process::id()));
         let _ = std::fs::remove_file(&store_path);
         let (store, _) = SearchStore::open(&store_path).expect("打开测试索引失败");
         let node = CodeNode {

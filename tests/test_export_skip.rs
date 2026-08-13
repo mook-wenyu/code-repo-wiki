@@ -41,11 +41,21 @@ fn test_export_skip_generate_after_generate() {
         "generate 应成功，stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let snapshot = work_dir.join(".code-repo-wiki").join(".state").join("export_snapshot.json");
-    assert!(snapshot.exists(), "generate 应写导出快照 {}", snapshot.display());
+    let snapshot = work_dir
+        .join(".code-repo-wiki")
+        .join(".state")
+        .join("export_snapshot.json");
+    assert!(
+        snapshot.exists(),
+        "generate 应写导出快照 {}",
+        snapshot.display()
+    );
 
     // 2. export --skip-generate：不重跑生成，直接从快照导出
-    let out = run_bin(&work_dir, &["export", "--skip-generate", "-c", "config.toml"]);
+    let out = run_bin(
+        &work_dir,
+        &["export", "--skip-generate", "-c", "config.toml"],
+    );
     assert!(
         out.status.success(),
         "export --skip-generate 应成功，stderr: {}",
@@ -64,7 +74,10 @@ fn test_export_skip_generate_after_generate() {
 fn test_export_skip_generate_missing_snapshot_errors() {
     let work_dir = prepare_repo("no_snapshot");
 
-    let out = run_bin(&work_dir, &["export", "--skip-generate", "-c", "config.toml"]);
+    let out = run_bin(
+        &work_dir,
+        &["export", "--skip-generate", "-c", "config.toml"],
+    );
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
@@ -90,7 +103,14 @@ fn test_export_skip_generate_output_conflict_errors() {
 
     let out = run_bin(
         &work_dir,
-        &["export", "--skip-generate", "--output", "custom-out", "-c", "config.toml"],
+        &[
+            "export",
+            "--skip-generate",
+            "--output",
+            "custom-out",
+            "-c",
+            "config.toml",
+        ],
     );
     let combined = format!(
         "{}{}",
@@ -118,7 +138,11 @@ fn test_export_skip_generate_stale_snapshot_errors() {
 
     // 1. 生成（快照落盘）
     let out = run_bin(&work_dir, &["generate", "-c", "config.toml"]);
-    assert!(out.status.success(), "generate 应成功: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "generate 应成功: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     // 2. 人为让快照变旧：把 wiki 页 mtime 推到未来（快照早于产物）
     let wiki_dir = work_dir.join(".code-repo-wiki").join("wiki").join("zh");
@@ -126,7 +150,10 @@ fn test_export_skip_generate_stale_snapshot_errors() {
     for entry in std::fs::read_dir(&wiki_dir).unwrap() {
         let path = entry.unwrap().path();
         if path.extension().is_some_and(|e| e == "md") {
-            page_mtimes.push((path.clone(), std::fs::metadata(&path).unwrap().modified().unwrap()));
+            page_mtimes.push((
+                path.clone(),
+                std::fs::metadata(&path).unwrap().modified().unwrap(),
+            ));
         }
     }
     assert!(!page_mtimes.is_empty(), "生成后应有 wiki 页");
@@ -139,7 +166,10 @@ fn test_export_skip_generate_stale_snapshot_errors() {
     let _ = far_future; // 不需要精确控制 mtime——重写即前进
 
     // 3. export --skip-generate 应报"导出快照过期"
-    let out = run_bin(&work_dir, &["export", "--skip-generate", "-c", "config.toml"]);
+    let out = run_bin(
+        &work_dir,
+        &["export", "--skip-generate", "-c", "config.toml"],
+    );
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),

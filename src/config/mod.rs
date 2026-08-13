@@ -1,7 +1,7 @@
-pub mod opencode;
 /// 多 Agent MCP 配置读写（v33；v39 落点统一用户级：opencode 全局 /
 /// Claude Code ~/.claude.json User scope / Codex config.toml）
 pub mod mcp;
+pub mod opencode;
 
 pub mod schema;
 
@@ -69,7 +69,9 @@ pub fn global_config_dir_from(userprofile: Option<&Path>, home: Option<&Path>) -
         Some(p) if !p.as_os_str().is_empty() => Ok(p.join(".code-repo-wiki")),
         _ => home
             .filter(|h| !h.as_os_str().is_empty())
-            .ok_or_else(|| anyhow::anyhow!("无法确定用户级配置目录（USERPROFILE 与 HOME 均未设置）"))
+            .ok_or_else(|| {
+                anyhow::anyhow!("无法确定用户级配置目录（USERPROFILE 与 HOME 均未设置）")
+            })
             .map(|h| h.join(".code-repo-wiki")),
     }
 }
@@ -114,7 +116,8 @@ pub fn ensure_global_config_dir() -> Result<(PathBuf, bool)> {
             legacy.push(PathBuf::from(home).join("code-repo-wiki"));
         }
         legacy
-    };    let migrated = migrate_global_config(&dir, &legacy_dirs)?;
+    };
+    let migrated = migrate_global_config(&dir, &legacy_dirs)?;
     Ok((dir, migrated))
 }
 
@@ -141,10 +144,9 @@ pub fn migrate_global_config(new_dir: &Path, legacy_dirs: &[PathBuf]) -> Result<
 
 /// 递归复制目录内容（迁移用；简单文件复制——配置目录无符号链接场景）
 fn copy_dir_contents(from: &Path, to: &Path) -> Result<()> {
-    std::fs::create_dir_all(to)
-        .with_context(|| format!("创建目录失败: {}", to.display()))?;
-    for entry in std::fs::read_dir(from)
-        .with_context(|| format!("读取目录失败: {}", from.display()))?
+    std::fs::create_dir_all(to).with_context(|| format!("创建目录失败: {}", to.display()))?;
+    for entry in
+        std::fs::read_dir(from).with_context(|| format!("读取目录失败: {}", from.display()))?
     {
         let entry = entry?;
         let src = entry.path();
@@ -402,220 +404,236 @@ mod tests {
         assert_eq!(parsed.llm.model, "deepseek-v4-flash");
         assert_eq!(parsed.llm.api_key_env, "OPENCODEGO2_API_KEY");
         assert_eq!(parsed.wiki.language, "zh");
-        assert_eq!(parsed.output_dir(), std::path::Path::new(crate::config::schema::OUTPUT_DIR));
+        assert_eq!(
+            parsed.output_dir(),
+            std::path::Path::new(crate::config::schema::OUTPUT_DIR)
+        );
     }
 }
 
+// ============ E 组：全局配置链 ============
 
-    // ============ E 组：全局配置链 ============
+/// 全局目录路径组装：USERPROFILE 提供时拼 %USERPROFILE%/.code-repo-wiki
+/// （v41 拍板——home 点目录惯例，对齐 ~/.codex、~/.claude）
+#[test]
+fn test_global_config_dir_from_userprofile() {
+    let dir = global_config_dir_from(
+        Some(Path::new("C:/Users/wenyu")),
+        Some(Path::new("/home/wenyu")),
+    )
+    .unwrap();
+    assert_eq!(dir, PathBuf::from("C:/Users/wenyu/.code-repo-wiki"));
+}
 
-    /// 全局目录路径组装：USERPROFILE 提供时拼 %USERPROFILE%/.code-repo-wiki
-    /// （v41 拍板——home 点目录惯例，对齐 ~/.codex、~/.claude）
-    #[test]
-    fn test_global_config_dir_from_userprofile() {
-        let dir = global_config_dir_from(Some(Path::new("C:/Users/wenyu")), Some(Path::new("/home/wenyu")))
-            .unwrap();
-        assert_eq!(dir, PathBuf::from("C:/Users/wenyu/.code-repo-wiki"));
-    }
+/// 全局目录路径组装：USERPROFILE 缺失（非 Windows）时退化 $HOME/.code-repo-wiki
+#[test]
+fn test_global_config_dir_from_home_fallback() {
+    let dir = global_config_dir_from(None, Some(Path::new("/home/wenyu"))).unwrap();
+    assert_eq!(dir, PathBuf::from("/home/wenyu/.code-repo-wiki"));
+}
 
-    /// 全局目录路径组装：USERPROFILE 缺失（非 Windows）时退化 $HOME/.code-repo-wiki
-    #[test]
-    fn test_global_config_dir_from_home_fallback() {
-        let dir = global_config_dir_from(None, Some(Path::new("/home/wenyu"))).unwrap();
-        assert_eq!(dir, PathBuf::from("/home/wenyu/.code-repo-wiki"));
-    }
+/// USERPROFILE 与 HOME 都缺失：显式报错（不静默写当前目录）
+#[test]
+fn test_global_config_dir_from_missing_both_errors() {
+    assert!(global_config_dir_from(None, None).is_err());
+    assert!(global_config_dir_from(None, Some(Path::new(""))).is_err());
+}
 
-    /// USERPROFILE 与 HOME 都缺失：显式报错（不静默写当前目录）
-    #[test]
-    fn test_global_config_dir_from_missing_both_errors() {
-        assert!(global_config_dir_from(None, None).is_err());
-        assert!(global_config_dir_from(None, Some(Path::new(""))).is_err());
-    }
+/// 一次性迁移：新目录无 config.toml 且旧目录存在 → 复制内容 + 返回 true
+#[test]
+fn test_migrate_global_config_migrates_legacy() {
+    let tmp = test_tmp_dir("migrate-legacy");
+    let legacy = tmp.join("legacy");
+    let new = tmp.join("new");
+    std::fs::create_dir_all(legacy.join("sub")).unwrap();
+    std::fs::write(legacy.join("config.toml"), "llm_model = 'deepseek'").unwrap();
+    std::fs::write(legacy.join("sub/notes.txt"), "abc").unwrap();
 
-    /// 一次性迁移：新目录无 config.toml 且旧目录存在 → 复制内容 + 返回 true
-    #[test]
-    fn test_migrate_global_config_migrates_legacy() {
-        let tmp = test_tmp_dir("migrate-legacy");
-        let legacy = tmp.join("legacy");
-        let new = tmp.join("new");
-        std::fs::create_dir_all(legacy.join("sub")).unwrap();
-        std::fs::write(legacy.join("config.toml"), "llm_model = 'deepseek'").unwrap();
-        std::fs::write(legacy.join("sub/notes.txt"), "abc").unwrap();
+    assert!(migrate_global_config(&new, std::slice::from_ref(&legacy)).unwrap());
+    assert_eq!(
+        std::fs::read_to_string(new.join("config.toml")).unwrap(),
+        "llm_model = 'deepseek'"
+    );
+    assert_eq!(
+        std::fs::read_to_string(new.join("sub/notes.txt")).unwrap(),
+        "abc"
+    );
+    // 旧目录保留不删
+    assert!(legacy.join("config.toml").exists());
+}
 
-        assert!(migrate_global_config(&new, std::slice::from_ref(&legacy)).unwrap());
-        assert_eq!(
-            std::fs::read_to_string(new.join("config.toml")).unwrap(),
-            "llm_model = 'deepseek'"
-        );
-        assert_eq!(std::fs::read_to_string(new.join("sub/notes.txt")).unwrap(), "abc");
-        // 旧目录保留不删
-        assert!(legacy.join("config.toml").exists());
-    }
+/// 一次性迁移：新目录已有 config.toml → 不迁移（新配置优先）
+#[test]
+fn test_migrate_global_config_skips_when_new_exists() {
+    let tmp = test_tmp_dir("migrate-new-exists");
+    let legacy = tmp.join("legacy");
+    let new = tmp.join("new");
+    std::fs::create_dir_all(&legacy).unwrap();
+    std::fs::write(legacy.join("config.toml"), "old").unwrap();
+    std::fs::create_dir_all(&new).unwrap();
+    std::fs::write(new.join("config.toml"), "new-content").unwrap();
 
-    /// 一次性迁移：新目录已有 config.toml → 不迁移（新配置优先）
-    #[test]
-    fn test_migrate_global_config_skips_when_new_exists() {
-        let tmp = test_tmp_dir("migrate-new-exists");
-        let legacy = tmp.join("legacy");
-        let new = tmp.join("new");
-        std::fs::create_dir_all(&legacy).unwrap();
-        std::fs::write(legacy.join("config.toml"), "old").unwrap();
-        std::fs::create_dir_all(&new).unwrap();
-        std::fs::write(new.join("config.toml"), "new-content").unwrap();
+    assert!(!migrate_global_config(&new, &[legacy]).unwrap());
+    assert_eq!(
+        std::fs::read_to_string(new.join("config.toml")).unwrap(),
+        "new-content"
+    );
+}
 
-        assert!(!migrate_global_config(&new, &[legacy]).unwrap());
-        assert_eq!(std::fs::read_to_string(new.join("config.toml")).unwrap(), "new-content");
-    }
+/// 一次性迁移：新目录空且旧目录不存在 → 不迁移（正常全新安装）
+#[test]
+fn test_migrate_global_config_skips_when_legacy_missing() {
+    let tmp = test_tmp_dir("migrate-legacy-missing");
+    let legacy = tmp.join("missing");
+    let new = tmp.join("new");
+    assert!(!migrate_global_config(&new, &[legacy]).unwrap());
+    assert!(!new.exists());
+}
 
-    /// 一次性迁移：新目录空且旧目录不存在 → 不迁移（正常全新安装）
-    #[test]
-    fn test_migrate_global_config_skips_when_legacy_missing() {
-        let tmp = test_tmp_dir("migrate-legacy-missing");
-        let legacy = tmp.join("missing");
-        let new = tmp.join("new");
-        assert!(!migrate_global_config(&new, &[legacy]).unwrap());
-        assert!(!new.exists());
-    }
+/// 一次性迁移：多个候选旧目录按序取第一个有效的
+#[test]
+fn test_migrate_global_config_uses_first_legacy_with_config() {
+    let tmp = test_tmp_dir("migrate-first-legacy");
+    let legacy_empty = tmp.join("empty");
+    let legacy_real = tmp.join("real");
+    let new = tmp.join("new");
+    std::fs::create_dir_all(&legacy_empty).unwrap();
+    std::fs::create_dir_all(&legacy_real).unwrap();
+    std::fs::write(legacy_real.join("config.toml"), "real-content").unwrap();
 
-    /// 一次性迁移：多个候选旧目录按序取第一个有效的
-    #[test]
-    fn test_migrate_global_config_uses_first_legacy_with_config() {
-        let tmp = test_tmp_dir("migrate-first-legacy");
-        let legacy_empty = tmp.join("empty");
-        let legacy_real = tmp.join("real");
-        let new = tmp.join("new");
-        std::fs::create_dir_all(&legacy_empty).unwrap();
-        std::fs::create_dir_all(&legacy_real).unwrap();
-        std::fs::write(legacy_real.join("config.toml"), "real-content").unwrap();
+    assert!(migrate_global_config(&new, &[legacy_empty, legacy_real]).unwrap());
+    assert_eq!(
+        std::fs::read_to_string(new.join("config.toml")).unwrap(),
+        "real-content"
+    );
+}
 
-        assert!(migrate_global_config(&new, &[legacy_empty, legacy_real]).unwrap());
-        assert_eq!(
-            std::fs::read_to_string(new.join("config.toml")).unwrap(),
-            "real-content"
-        );
-    }
+/// 测试用唯一临时目录（std 实现——Cargo.toml 无 dev-dependencies；
+/// 进程 id + 原子序号防并行测试冲突——v19 教训）
+///
+/// clippy 在非测试视角下对 cfg(test) 模块内被测试调用的 helper 会
+/// 误报 never used（rustc dead_code 以 lib 编译单元分析）；4 个迁移
+/// 测试均调用它（cargo test 全绿），非死代码。
+#[allow(dead_code)]
+fn test_tmp_dir(name: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static SEQ: AtomicUsize = AtomicUsize::new(0);
+    std::env::temp_dir().join(format!(
+        "code-repo-wiki-config-test-{}-{}-{}",
+        std::process::id(),
+        name,
+        SEQ.fetch_add(1, Ordering::SeqCst)
+    ))
+}
 
-    /// 测试用唯一临时目录（std 实现——Cargo.toml 无 dev-dependencies；
-    /// 进程 id + 原子序号防并行测试冲突——v19 教训）
-    ///
-    /// clippy 在非测试视角下对 cfg(test) 模块内被测试调用的 helper 会
-    /// 误报 never used（rustc dead_code 以 lib 编译单元分析）；4 个迁移
-    /// 测试均调用它（cargo test 全绿），非死代码。
-    #[allow(dead_code)]
-    fn test_tmp_dir(name: &str) -> PathBuf {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static SEQ: AtomicUsize = AtomicUsize::new(0);
-        std::env::temp_dir().join(format!(
-            "code-repo-wiki-config-test-{}-{}-{}",
-            std::process::id(),
-            name,
-            SEQ.fetch_add(1, Ordering::SeqCst)
-        ))
-    }
+/// E 组搜索链：项目级配置存在 → 返回项目级（项目级优先；v24 起为
+/// 独立文件 `config.toml`，不再混入产物目录）
+#[test]
+fn test_resolve_prefers_project_config() {
+    let dir = std::env::temp_dir().join(format!("code_repo_wiki_e_project_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(PROJECT_CONFIG_FILE), "dummy").unwrap();
+    let global_dir = dir.join("global");
+    std::fs::create_dir_all(&global_dir).unwrap();
+    std::fs::write(global_dir.join(USER_CONFIG_FILE), "dummy-global").unwrap();
 
-    /// E 组搜索链：项目级配置存在 → 返回项目级（项目级优先；v24 起为
-    /// 独立文件 `config.toml`，不再混入产物目录）
-    #[test]
-    fn test_resolve_prefers_project_config() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_e_project_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(PROJECT_CONFIG_FILE), "dummy").unwrap();
-        let global_dir = dir.join("global");
-        std::fs::create_dir_all(&global_dir).unwrap();
-        std::fs::write(global_dir.join(USER_CONFIG_FILE), "dummy-global").unwrap();
+    let resolved =
+        resolve_default_config_path_with(&ProjectRoot::new(dir.clone()), &global_dir).unwrap();
+    assert_eq!(resolved, dir.join(PROJECT_CONFIG_FILE));
 
-        let resolved = resolve_default_config_path_with(&ProjectRoot::new(dir.clone()), &global_dir).unwrap();
-        assert_eq!(resolved, dir.join(PROJECT_CONFIG_FILE));
+    let _ = std::fs::remove_dir_all(&dir);
+}
 
-        let _ = std::fs::remove_dir_all(&dir);
-    }
+/// v25：三链加载——项目级 config.toml 存在时，以用户级
+/// config.toml（缺则模板）为基，字段级合并覆盖；
+/// v30：项目级 llm/embed 键（base_url/api_key_env）完整覆盖用户级值
+#[test]
+fn test_load_default_config_project_overrides_user() {
+    let dir = std::env::temp_dir().join(format!("code_repo_wiki_merge_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
 
-    /// v25：三链加载——项目级 config.toml 存在时，以用户级
-    /// config.toml（缺则模板）为基，字段级合并覆盖；
-    /// v30：项目级 llm/embed 键（base_url/api_key_env）完整覆盖用户级值
-    #[test]
-    fn test_load_default_config_project_overrides_user() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_merge_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+    // 用户级：模板 + 自定义 model（v30：scope/output 等段已硬编码，模板即全量默认）
+    let global_dir = dir.join("global");
+    std::fs::create_dir_all(&global_dir).unwrap();
+    let user_text = include_str!("../../config.toml")
+        .replace("model = \"deepseek-v4-flash\"", "model = \"user-model\"");
+    std::fs::write(global_dir.join(USER_CONFIG_FILE), &user_text).unwrap();
 
-        // 用户级：模板 + 自定义 model（v30：scope/output 等段已硬编码，模板即全量默认）
-        let global_dir = dir.join("global");
-        std::fs::create_dir_all(&global_dir).unwrap();
-        let user_text = include_str!("../../config.toml")
-            .replace("model = \"deepseek-v4-flash\"", "model = \"user-model\"");
-        std::fs::write(global_dir.join(USER_CONFIG_FILE), &user_text).unwrap();
-
-        // 项目级：写 model + api_key_env 覆盖
-        std::fs::write(
-            dir.join(PROJECT_CONFIG_FILE),
-            r#"
+    // 项目级：写 model + api_key_env 覆盖
+    std::fs::write(
+        dir.join(PROJECT_CONFIG_FILE),
+        r#"
 [llm]
 provider = "anthropic"
 api_key_env = "ANTHROPIC_API_KEY"
 model = "claude-test"
 "#,
-        )
-        .unwrap();
+    )
+    .unwrap();
 
-        let (path, config) = load_default_config_with(&ProjectRoot::new(dir.clone()), &global_dir).unwrap();
-        // 项目级路径胜出（返回项目级文件位置）
-        assert_eq!(path, dir.join(PROJECT_CONFIG_FILE));
-        // model 字段级覆盖生效
-        assert_eq!(config.llm.model, "claude-test");
-        // v30：项目级 provider/api_key_env 完整覆盖用户级（不再净化剥离）
-        assert_eq!(config.llm.provider, schema::LlmProviderType::Anthropic);
-        assert_eq!(config.llm.api_key_env, "ANTHROPIC_API_KEY");
+    let (path, config) =
+        load_default_config_with(&ProjectRoot::new(dir.clone()), &global_dir).unwrap();
+    // 项目级路径胜出（返回项目级文件位置）
+    assert_eq!(path, dir.join(PROJECT_CONFIG_FILE));
+    // model 字段级覆盖生效
+    assert_eq!(config.llm.model, "claude-test");
+    // v30：项目级 provider/api_key_env 完整覆盖用户级（不再净化剥离）
+    assert_eq!(config.llm.provider, schema::LlmProviderType::Anthropic);
+    assert_eq!(config.llm.api_key_env, "ANTHROPIC_API_KEY");
 
-        let _ = std::fs::remove_dir_all(&dir);
-    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
 
-    /// v25：无项目级配置时，用户级存在则直接用（无合并无净化）；
-    /// 用户级缺失时创建（模板），绝不自动创建项目级文件。
-    #[test]
-    fn test_load_default_config_user_only_or_creates() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_useronly_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+/// v25：无项目级配置时，用户级存在则直接用（无合并无净化）；
+/// 用户级缺失时创建（模板），绝不自动创建项目级文件。
+#[test]
+fn test_load_default_config_user_only_or_creates() {
+    let dir = std::env::temp_dir().join(format!("code_repo_wiki_useronly_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
 
-        // 用户级存在：直接使用
-        let global_dir = dir.join("global");
-        std::fs::create_dir_all(&global_dir).unwrap();
-        let user_text = include_str!("../../config.toml")
-            .replace("model = \"deepseek-v4-flash\"", "model = \"user-only-model\"");
-        std::fs::write(global_dir.join(USER_CONFIG_FILE), &user_text).unwrap();
-        let (path, config) = load_default_config_with(&ProjectRoot::new(dir.clone()), &global_dir).unwrap();
-        assert_eq!(path, global_dir.join(USER_CONFIG_FILE));
-        assert_eq!(config.llm.model, "user-only-model");
-        // 项目级文件未被创建
-        assert!(!dir.join(PROJECT_CONFIG_FILE).exists());
+    // 用户级存在：直接使用
+    let global_dir = dir.join("global");
+    std::fs::create_dir_all(&global_dir).unwrap();
+    let user_text = include_str!("../../config.toml").replace(
+        "model = \"deepseek-v4-flash\"",
+        "model = \"user-only-model\"",
+    );
+    std::fs::write(global_dir.join(USER_CONFIG_FILE), &user_text).unwrap();
+    let (path, config) =
+        load_default_config_with(&ProjectRoot::new(dir.clone()), &global_dir).unwrap();
+    assert_eq!(path, global_dir.join(USER_CONFIG_FILE));
+    assert_eq!(config.llm.model, "user-only-model");
+    // 项目级文件未被创建
+    assert!(!dir.join(PROJECT_CONFIG_FILE).exists());
 
-        // 用户级缺失：创建模板；项目级仍不创建
-        let global2 = dir.join("global2");
-        let (path2, config2) = load_default_config_with(&ProjectRoot::new(dir.clone()), &global2).unwrap();
-        assert!(path2.ends_with(USER_CONFIG_FILE));
-        assert!(global2.join(USER_CONFIG_FILE).exists());
-        assert_eq!(config2.llm.model, "deepseek-v4-flash");
-        assert!(!dir.join(PROJECT_CONFIG_FILE).exists());
+    // 用户级缺失：创建模板；项目级仍不创建
+    let global2 = dir.join("global2");
+    let (path2, config2) =
+        load_default_config_with(&ProjectRoot::new(dir.clone()), &global2).unwrap();
+    assert!(path2.ends_with(USER_CONFIG_FILE));
+    assert!(global2.join(USER_CONFIG_FILE).exists());
+    assert_eq!(config2.llm.model, "deepseek-v4-flash");
+    assert!(!dir.join(PROJECT_CONFIG_FILE).exists());
 
-        let _ = std::fs::remove_dir_all(&dir);
-    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
 
-
-    /// v30：项目级配置文件加载时 base_url/api_key_env 完整生效——
-    /// 净化/注入规则已整体删除（端点/变量名非密钥明文，项目级可用
-    /// 配置即写即用）；缺失字段由 schema serde 默认兜底
-    #[test]
-    fn test_load_project_config_keeps_sensitive_keys() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_projcfg_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(PROJECT_CONFIG_FILE);
-        // 项目级配置声明项目契约（语言）+ 完整端点与变量名
-        std::fs::write(
-            &path,
-            r#"
+/// v30：项目级配置文件加载时 base_url/api_key_env 完整生效——
+/// 净化/注入规则已整体删除（端点/变量名非密钥明文，项目级可用
+/// 配置即写即用）；缺失字段由 schema serde 默认兜底
+#[test]
+fn test_load_project_config_keeps_sensitive_keys() {
+    let dir = std::env::temp_dir().join(format!("code_repo_wiki_projcfg_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(PROJECT_CONFIG_FILE);
+    // 项目级配置声明项目契约（语言）+ 完整端点与变量名
+    std::fs::write(
+        &path,
+        r#"
 [wiki]
 language = "en"
 
@@ -625,223 +643,264 @@ model = "claude-opus"
 base_url = "https://custom.example.com/v1"
 api_key_env = "HACKED_KEY"
 "#,
-        )
-        .unwrap();
+    )
+    .unwrap();
 
-        let config = load_config(&path).unwrap();
-        // 项目级覆盖值全部保留（v30：不再剥离）
-        assert_eq!(config.llm.provider, crate::config::schema::LlmProviderType::Anthropic);
-        assert_eq!(config.llm.model, "claude-opus");
-        assert_eq!(config.llm.base_url.as_deref(), Some("https://custom.example.com/v1"));
-        assert_eq!(config.llm.api_key_env, "HACKED_KEY");
-        // 项目契约保留
-        assert_eq!(config.wiki.language, "en");
-        // v30: output.dir 已硬编码，项目级不可写
+    let config = load_config(&path).unwrap();
+    // 项目级覆盖值全部保留（v30：不再剥离）
+    assert_eq!(
+        config.llm.provider,
+        crate::config::schema::LlmProviderType::Anthropic
+    );
+    assert_eq!(config.llm.model, "claude-opus");
+    assert_eq!(
+        config.llm.base_url.as_deref(),
+        Some("https://custom.example.com/v1")
+    );
+    assert_eq!(config.llm.api_key_env, "HACKED_KEY");
+    // 项目契约保留
+    assert_eq!(config.wiki.language, "en");
+    // v30: output.dir 已硬编码，项目级不可写
 
-        let _ = std::fs::remove_dir_all(&dir);
-    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
 
-    /// v30：缺键由 schema serde 默认兜底——项目级配置省略
-    /// base_url/api_key_env 等字段仍可加载（使用默认可用阵营）
-    #[test]
-    fn test_load_project_config_defaults_for_missing_keys() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_projcfg_defaults_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(PROJECT_CONFIG_FILE);
-        std::fs::write(
-            &path,
-            r#"
+/// v30：缺键由 schema serde 默认兜底——项目级配置省略
+/// base_url/api_key_env 等字段仍可加载（使用默认可用阵营）
+#[test]
+fn test_load_project_config_defaults_for_missing_keys() {
+    let dir = std::env::temp_dir().join(format!(
+        "code_repo_wiki_projcfg_defaults_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(PROJECT_CONFIG_FILE);
+    std::fs::write(
+        &path,
+        r#"
 [llm]
 provider = "mock"
 "#,
-        )
-        .unwrap();
+    )
+    .unwrap();
 
-        let config = load_config(&path).unwrap();
-        assert_eq!(config.llm.provider, crate::config::schema::LlmProviderType::Mock);
-        // 缺失字段由 schema 字段级 serde 默认兜底（v29 可用阵营）
-        assert_eq!(config.llm.base_url.as_deref(), Some("https://opencode.ai/zen/go/v1"));
-        assert_eq!(config.llm.api_key_env, "OPENCODEGO2_API_KEY");
-        assert_eq!(config.embed.model, "qwen3.7-text-embedding");
+    let config = load_config(&path).unwrap();
+    assert_eq!(
+        config.llm.provider,
+        crate::config::schema::LlmProviderType::Mock
+    );
+    // 缺失字段由 schema 字段级 serde 默认兜底（v29 可用阵营）
+    assert_eq!(
+        config.llm.base_url.as_deref(),
+        Some("https://opencode.ai/zen/go/v1")
+    );
+    assert_eq!(config.llm.api_key_env, "OPENCODEGO2_API_KEY");
+    assert_eq!(config.embed.model, "qwen3.7-text-embedding");
 
-        let _ = std::fs::remove_dir_all(&dir);
-    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
 
-    /// 任意文件名（显式 --config）均原样加载（v30：净化/注入已整体删除，
-    /// 文件名不再有语义差异）；缺失字段同样由 schema serde 默认兜底
-    #[test]
-    fn test_load_explicit_config_keeps_sensitive_keys() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_anyname_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("my.toml");
-        std::fs::write(
-            &path,
-            r#"
+/// 任意文件名（显式 --config）均原样加载（v30：净化/注入已整体删除，
+/// 文件名不再有语义差异）；缺失字段同样由 schema serde 默认兜底
+#[test]
+fn test_load_explicit_config_keeps_sensitive_keys() {
+    let dir = std::env::temp_dir().join(format!("code_repo_wiki_anyname_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("my.toml");
+    std::fs::write(
+        &path,
+        r#"
 [llm]
 provider = "anthropic"
 model = "claude-opus"
 api_key_env = "ANTHROPIC_API_KEY"
 "#,
-        )
-        .unwrap();
+    )
+    .unwrap();
 
-        let config = load_config(&path).unwrap();
-        // 用户级/显式配置完整保留敏感键
-        assert_eq!(config.llm.provider, crate::config::schema::LlmProviderType::Anthropic);
-        assert_eq!(config.llm.model, "claude-opus");
+    let config = load_config(&path).unwrap();
+    // 用户级/显式配置完整保留敏感键
+    assert_eq!(
+        config.llm.provider,
+        crate::config::schema::LlmProviderType::Anthropic
+    );
+    assert_eq!(config.llm.model, "claude-opus");
 
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-    #[test]
-    fn test_resolve_falls_back_to_global() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_e_global_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let global_dir = dir.join("global");
-        std::fs::create_dir_all(&global_dir).unwrap();
-        std::fs::write(global_dir.join(USER_CONFIG_FILE), "dummy-global").unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+#[test]
+fn test_resolve_falls_back_to_global() {
+    let dir = std::env::temp_dir().join(format!("code_repo_wiki_e_global_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let global_dir = dir.join("global");
+    std::fs::create_dir_all(&global_dir).unwrap();
+    std::fs::write(global_dir.join(USER_CONFIG_FILE), "dummy-global").unwrap();
 
-        let resolved = resolve_default_config_path_with(&ProjectRoot::new(dir.clone()), &global_dir).unwrap();
-        assert_eq!(resolved, global_dir.join(USER_CONFIG_FILE));
+    let resolved =
+        resolve_default_config_path_with(&ProjectRoot::new(dir.clone()), &global_dir).unwrap();
+    assert_eq!(resolved, global_dir.join(USER_CONFIG_FILE));
 
-        let _ = std::fs::remove_dir_all(&dir);
-    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
 
-    /// E 组搜索链：项目级与全局都缺失 → 创建全局目录 + 默认配置，返回全局路径
-    #[test]
-    fn test_resolve_creates_global_config_when_missing() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_e_create_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let global_dir = dir.join("global");
+/// E 组搜索链：项目级与全局都缺失 → 创建全局目录 + 默认配置，返回全局路径
+#[test]
+fn test_resolve_creates_global_config_when_missing() {
+    let dir = std::env::temp_dir().join(format!("code_repo_wiki_e_create_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let global_dir = dir.join("global");
 
-        let resolved = resolve_default_config_path_with(&ProjectRoot::new(dir.clone()), &global_dir).unwrap();
-        assert_eq!(resolved, global_dir.join(USER_CONFIG_FILE));
-        assert!(global_dir.join(USER_CONFIG_FILE).exists(), "缺失时应创建全局默认配置");
-        // 创建的配置必须可加载（模板完整）
-        assert!(load_config(&resolved).is_ok());
+    let resolved =
+        resolve_default_config_path_with(&ProjectRoot::new(dir.clone()), &global_dir).unwrap();
+    assert_eq!(resolved, global_dir.join(USER_CONFIG_FILE));
+    assert!(
+        global_dir.join(USER_CONFIG_FILE).exists(),
+        "缺失时应创建全局默认配置"
+    );
+    // 创建的配置必须可加载（模板完整）
+    assert!(load_config(&resolved).is_ok());
 
-        // 幂等：再次解析仍返回同一路径，不重复创建
-        let resolved2 = resolve_default_config_path_with(&ProjectRoot::new(dir.clone()), &global_dir).unwrap();
-        assert_eq!(resolved2, resolved);
+    // 幂等：再次解析仍返回同一路径，不重复创建
+    let resolved2 =
+        resolve_default_config_path_with(&ProjectRoot::new(dir.clone()), &global_dir).unwrap();
+    assert_eq!(resolved2, resolved);
 
-        let _ = std::fs::remove_dir_all(&dir);
-    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
 
-    /// resolve_config_path：显式指定原样返回（不触发创建）
-    #[test]
-    fn test_resolve_config_path_explicit_wins() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_e_explicit_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+/// resolve_config_path：显式指定原样返回（不触发创建）
+#[test]
+fn test_resolve_config_path_explicit_wins() {
+    let dir =
+        std::env::temp_dir().join(format!("code_repo_wiki_e_explicit_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
 
-        let explicit = dir.join("custom.toml");
-        let resolved = resolve_config_path(Some(&explicit), &ProjectRoot::new(dir.clone())).unwrap();
-        assert_eq!(resolved, explicit);
-        // 显式指定不创建全局目录/文件
-        assert!(!dir.join("global").exists());
+    let explicit = dir.join("custom.toml");
+    let resolved = resolve_config_path(Some(&explicit), &ProjectRoot::new(dir.clone())).unwrap();
+    assert_eq!(resolved, explicit);
+    // 显式指定不创建全局目录/文件
+    assert!(!dir.join("global").exists());
 
-        let _ = std::fs::remove_dir_all(&dir);
-    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
 
-    // ============ A7.6 audit-cfg-03/04/05：validate_config 解析期校验 ============
+// ============ A7.6 audit-cfg-03/04/05：validate_config 解析期校验 ============
 
-    /// 写入配置文件并 load_config，断言返回 Err 且错误消息含关键词
-    /// （仅测试调用；cfg(test) 隔离避免非测试构建 dead_code 告警）
-    #[cfg(test)]
-    fn assert_config_rejected(tag: &str, text: &str, needle: &str) {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_cfg_valid_{}_{}", tag, std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.toml");
-        std::fs::write(&path, text).unwrap();
-        let err = load_config(&path).unwrap_err().to_string();
-        assert!(
-            err.contains(needle),
-            "应拒绝非法配置（{needle}），实际: {err}"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
+/// 写入配置文件并 load_config，断言返回 Err 且错误消息含关键词
+/// （仅测试调用；cfg(test) 隔离避免非测试构建 dead_code 告警）
+#[cfg(test)]
+fn assert_config_rejected(tag: &str, text: &str, needle: &str) {
+    let dir = std::env::temp_dir().join(format!(
+        "code_repo_wiki_cfg_valid_{}_{}",
+        tag,
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, text).unwrap();
+    let err = load_config(&path).unwrap_err().to_string();
+    assert!(
+        err.contains(needle),
+        "应拒绝非法配置（{needle}），实际: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
 
-    /// audit-cfg-04：wiki.language 含路径分隔符/点段 → 解析期拒绝
-    #[test]
-    fn test_validate_rejects_language_with_path_chars() {
-        for bad in ["zh/../en", "zh en", "..", "C:zh"] {
-            assert_config_rejected("lang", &format!("[wiki]\nlanguage = \"{bad}\"\n"), "wiki.language");
-        }
-        // 反斜杠在 TOML 基本字符串需转义（\e 非法、解析层就拒），用字面量
-        // 字符串形态注入，验证 charset 校验本身拒绝反斜杠（Windows 路径分隔符）
-        assert_config_rejected("lang_bs", "[wiki]\nlanguage = 'zh\\en'\n", "wiki.language");
-    }
-
-    /// audit-cfg-05：llm.reasoning_effort 非白名单值 → 解析期拒绝
-    #[test]
-    fn test_validate_rejects_invalid_reasoning_effort() {
+/// audit-cfg-04：wiki.language 含路径分隔符/点段 → 解析期拒绝
+#[test]
+fn test_validate_rejects_language_with_path_chars() {
+    for bad in ["zh/../en", "zh en", "..", "C:zh"] {
         assert_config_rejected(
-            "effort",
-            "[llm]\nreasoning_effort = \"banana\"\n",
-            "reasoning_effort",
+            "lang",
+            &format!("[wiki]\nlanguage = \"{bad}\"\n"),
+            "wiki.language",
         );
     }
+    // 反斜杠在 TOML 基本字符串需转义（\e 非法、解析层就拒），用字面量
+    // 字符串形态注入，验证 charset 校验本身拒绝反斜杠（Windows 路径分隔符）
+    assert_config_rejected("lang_bs", "[wiki]\nlanguage = 'zh\\en'\n", "wiki.language");
+}
 
-    /// audit-cfg-03：max_concurrency=0 → 解析期拒绝（Semaphore 永久挂起前拦截）
-    #[test]
-    fn test_validate_rejects_zero_max_concurrency() {
-        assert_config_rejected("llm_mc", "[llm]\nmax_concurrency = 0\n", "max_concurrency");
-        assert_config_rejected("embed_mc", "[embed]\nmax_concurrency = 0\n", "max_concurrency");
-    }
+/// audit-cfg-05：llm.reasoning_effort 非白名单值 → 解析期拒绝
+#[test]
+fn test_validate_rejects_invalid_reasoning_effort() {
+    assert_config_rejected(
+        "effort",
+        "[llm]\nreasoning_effort = \"banana\"\n",
+        "reasoning_effort",
+    );
+}
 
-    /// audit-cfg-03：model / base_url 显式写空 → 解析期拒绝
-    #[test]
-    fn test_validate_rejects_empty_model_and_base_url() {
-        assert_config_rejected("empty_model", "[llm]\nmodel = \"\"\n", "llm.model");
-        assert_config_rejected("empty_base", "[llm]\nbase_url = \"\"\n", "llm.base_url");
-        assert_config_rejected("empty_embed", "[embed]\nmodel = \"\"\n", "embed.model");
-    }
+/// audit-cfg-03：max_concurrency=0 → 解析期拒绝（Semaphore 永久挂起前拦截）
+#[test]
+fn test_validate_rejects_zero_max_concurrency() {
+    assert_config_rejected("llm_mc", "[llm]\nmax_concurrency = 0\n", "max_concurrency");
+    assert_config_rejected(
+        "embed_mc",
+        "[embed]\nmax_concurrency = 0\n",
+        "max_concurrency",
+    );
+}
 
-    /// audit-cfg-03：合法配置（含默认语言 zh）不被误拒
-    #[test]
-    fn test_validate_accepts_valid_configs() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_cfg_ok_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.toml");
-        // 最小合法配置：缺 [wiki] → 默认 zh；缺 model/base_url → schema 默认填充
-        std::fs::write(&path, "[llm]\nprovider = \"mock\"\n").unwrap();
-        assert!(load_config(&path).is_ok(), "最小合法配置应通过校验");
-        // 合法 reasoning_effort 值域内 + 正并发
-        std::fs::write(
-            &path,
-            "[llm]\nprovider = \"mock\"\nreasoning_effort = \"high\"\nmax_concurrency = 8\n",
-        )
-        .unwrap();
-        assert!(load_config(&path).is_ok(), "合法值域配置应通过校验");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
+/// audit-cfg-03：model / base_url 显式写空 → 解析期拒绝
+#[test]
+fn test_validate_rejects_empty_model_and_base_url() {
+    assert_config_rejected("empty_model", "[llm]\nmodel = \"\"\n", "llm.model");
+    assert_config_rejected("empty_base", "[llm]\nbase_url = \"\"\n", "llm.base_url");
+    assert_config_rejected("empty_embed", "[embed]\nmodel = \"\"\n", "embed.model");
+}
 
-    /// audit-cfg-02：create_default_config 创建的用户级 config 在 Unix 下
-    /// 权限收紧（文件 0600 + 目录 0700），key 写入前窗口期即受保护
-    #[test]
-    fn test_create_default_config_sets_private_permissions() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_cfg_perm_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let config_path = dir.join("config.toml");
-        create_default_config(&config_path).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                std::fs::metadata(&config_path).unwrap().permissions().mode() & 0o777,
-                0o600,
-                "用户级配置应 0600"
-            );
-            assert_eq!(
-                std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
-                0o700,
-                "用户级目录应 0700"
-            );
-        }
-        let _ = std::fs::remove_dir_all(&dir);
+/// audit-cfg-03：合法配置（含默认语言 zh）不被误拒
+#[test]
+fn test_validate_accepts_valid_configs() {
+    let dir = std::env::temp_dir().join(format!("code_repo_wiki_cfg_ok_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.toml");
+    // 最小合法配置：缺 [wiki] → 默认 zh；缺 model/base_url → schema 默认填充
+    std::fs::write(&path, "[llm]\nprovider = \"mock\"\n").unwrap();
+    assert!(load_config(&path).is_ok(), "最小合法配置应通过校验");
+    // 合法 reasoning_effort 值域内 + 正并发
+    std::fs::write(
+        &path,
+        "[llm]\nprovider = \"mock\"\nreasoning_effort = \"high\"\nmax_concurrency = 8\n",
+    )
+    .unwrap();
+    assert!(load_config(&path).is_ok(), "合法值域配置应通过校验");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// audit-cfg-02：create_default_config 创建的用户级 config 在 Unix 下
+/// 权限收紧（文件 0600 + 目录 0700），key 写入前窗口期即受保护
+#[test]
+fn test_create_default_config_sets_private_permissions() {
+    let dir = std::env::temp_dir().join(format!("code_repo_wiki_cfg_perm_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let config_path = dir.join("config.toml");
+    create_default_config(&config_path).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&config_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600,
+            "用户级配置应 0600"
+        );
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700,
+            "用户级目录应 0700"
+        );
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}

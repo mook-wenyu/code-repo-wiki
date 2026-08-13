@@ -30,7 +30,12 @@ static DIR_SEQ: AtomicUsize = AtomicUsize::new(0);
 /// 不同测试二进制进程 pid 不同）。与原各文件实现形态一致。
 pub fn unique_dir(name: &str) -> PathBuf {
     let seq = DIR_SEQ.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("code_repo_wiki_{}_{}_{}", name, std::process::id(), seq))
+    std::env::temp_dir().join(format!(
+        "code_repo_wiki_{}_{}_{}",
+        name,
+        std::process::id(),
+        seq
+    ))
 }
 
 /// 递归复制目录（fixture 复制用）

@@ -1,5 +1,5 @@
-use std::path::Path;
 use anyhow::Result;
+use std::path::Path;
 use tree_sitter::{Language, Node, Parser};
 
 use super::{Entity, FileInsight, ImportStmt, KindRule, LanguageProcessor, SharedProcessor};
@@ -31,8 +31,12 @@ const KINDS: &[KindRule] = &[
 /// 无法表化的特殊分支（import_statement 文本解析）、正则 fallback。
 /// 公共 walk/fallback 触发/FileInsight 组装走 SharedProcessor 默认实现。
 impl SharedProcessor for TypeScriptProcessor {
-    fn language() -> &'static str { "TypeScript" }
-    fn grammar() -> Language { tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into() }
+    fn language() -> &'static str {
+        "TypeScript"
+    }
+    fn grammar() -> Language {
+        tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()
+    }
 
     /// F1（reviewer 实证）：TS/TSX 是两种方言而非超集关系——
     /// .ts 泛型箭头 `<T>(x: T) => x` 与类型断言 `<Foo>expr` 在 TSX 语法下
@@ -54,7 +58,12 @@ impl SharedProcessor for TypeScriptProcessor {
         KINDS
     }
 
-    fn handle_special(node: Node, bytes: &[u8], entities: &mut Vec<Entity>, imports: &mut Vec<ImportStmt>) {
+    fn handle_special(
+        node: Node,
+        bytes: &[u8],
+        entities: &mut Vec<Entity>,
+        imports: &mut Vec<ImportStmt>,
+    ) {
         // P1-15：variable_declarator 动态 kind——箭头函数（const fn = () => {}）
         // 归类 function 而非 variable（React 函数组件依赖此语义进调用图/聚类）；
         // 解构（const {x,y} = obj / const [a,b] = arr）不产出实体，"{x, y}" 是伪
@@ -62,24 +71,27 @@ impl SharedProcessor for TypeScriptProcessor {
         if node.kind() == "variable_declarator" {
             let name_node = node.child_by_field_name("name");
             let is_identifier = name_node.is_some_and(|n| n.kind() == "identifier");
-            if is_identifier
-                && let Some(name) = name_node.and_then(|n| n.utf8_text(bytes).ok())
-            {
+            if is_identifier && let Some(name) = name_node.and_then(|n| n.utf8_text(bytes).ok()) {
                 let is_arrow = node
                     .child_by_field_name("value")
                     .is_some_and(|v| v.kind() == "arrow_function");
                 let kind = if is_arrow { "function" } else { "variable" };
                 entities.push(Entity {
-                    name: name.to_string(), kind: kind.to_string(),
+                    name: name.to_string(),
+                    kind: kind.to_string(),
                     line_start: node.start_position().row + 1,
                     line_end: node.end_position().row + 1,
-                    doc_comment: None, signature: None, visibility: None,
+                    doc_comment: None,
+                    signature: None,
+                    visibility: None,
                 });
             }
             return;
         }
         if node.kind() == "import_statement"
-            && let Some(src) = node.child_by_field_name("source").and_then(|n| n.utf8_text(bytes).ok())
+            && let Some(src) = node
+                .child_by_field_name("source")
+                .and_then(|n| n.utf8_text(bytes).ok())
         {
             imports.push(ImportStmt {
                 source: src.trim_matches(&['"', '\''][..]).to_string(),
@@ -93,21 +105,66 @@ impl SharedProcessor for TypeScriptProcessor {
         let mut entities = Vec::new();
         let mut imports = Vec::new();
         for (i, line) in source.lines().enumerate() {
-            let line_no = i + 1; let t = line.trim();
+            let line_no = i + 1;
+            let t = line.trim();
             if let Some(rest) = t.strip_prefix("import ") {
                 if let Some(from) = rest.find(" from ") {
                     let src = rest[from + 6..].trim().trim_matches(&['"', '\'', ';'][..]);
-                    imports.push(ImportStmt { source: src.to_string(), alias: None, line: line_no });
+                    imports.push(ImportStmt {
+                        source: src.to_string(),
+                        alias: None,
+                        line: line_no,
+                    });
                 }
                 continue;
             }
-            let core = t.strip_prefix("export ").or_else(|| t.strip_prefix("export default ")).or_else(|| t.strip_prefix("export async ")).unwrap_or(t);
-            if let Some(name) = core.strip_prefix("class ").and_then(|s| s.split(&['{', ' ', '<', '(', ';'][..]).next()).map(|s| s.trim()) {
-                entities.push(Entity { name: name.to_string(), kind: "class".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: None, visibility: None });
-            } else if let Some(name) = core.strip_prefix("interface ").and_then(|s| s.split(&['{', ' ', '<', ';'][..]).next()).map(|s| s.trim()) {
-                entities.push(Entity { name: name.to_string(), kind: "interface".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: None, visibility: None });
-            } else if let Some(name) = core.strip_prefix("function ").and_then(|s| s.split(&['(', ' ', '<', '{', ';'][..]).next()).map(|s| s.trim()) {
-                entities.push(Entity { name: name.to_string(), kind: "function".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: Some(t.to_string()), visibility: None });
+            let core = t
+                .strip_prefix("export ")
+                .or_else(|| t.strip_prefix("export default "))
+                .or_else(|| t.strip_prefix("export async "))
+                .unwrap_or(t);
+            if let Some(name) = core
+                .strip_prefix("class ")
+                .and_then(|s| s.split(&['{', ' ', '<', '(', ';'][..]).next())
+                .map(|s| s.trim())
+            {
+                entities.push(Entity {
+                    name: name.to_string(),
+                    kind: "class".into(),
+                    line_start: line_no,
+                    line_end: line_no,
+                    doc_comment: None,
+                    signature: None,
+                    visibility: None,
+                });
+            } else if let Some(name) = core
+                .strip_prefix("interface ")
+                .and_then(|s| s.split(&['{', ' ', '<', ';'][..]).next())
+                .map(|s| s.trim())
+            {
+                entities.push(Entity {
+                    name: name.to_string(),
+                    kind: "interface".into(),
+                    line_start: line_no,
+                    line_end: line_no,
+                    doc_comment: None,
+                    signature: None,
+                    visibility: None,
+                });
+            } else if let Some(name) = core
+                .strip_prefix("function ")
+                .and_then(|s| s.split(&['(', ' ', '<', '{', ';'][..]).next())
+                .map(|s| s.trim())
+            {
+                entities.push(Entity {
+                    name: name.to_string(),
+                    kind: "function".into(),
+                    line_start: line_no,
+                    line_end: line_no,
+                    doc_comment: None,
+                    signature: Some(t.to_string()),
+                    visibility: None,
+                });
             }
         }
         (entities, imports)
@@ -115,8 +172,12 @@ impl SharedProcessor for TypeScriptProcessor {
 }
 
 impl LanguageProcessor for TypeScriptProcessor {
-    fn name(&self) -> &'static str { Self::language() }
-    fn extensions(&self) -> &[&str] { &[".ts", ".tsx"] }
+    fn name(&self) -> &'static str {
+        Self::language()
+    }
+    fn extensions(&self) -> &[&str] {
+        &[".ts", ".tsx"]
+    }
 
     fn parse(&self, source: &str, path: &Path) -> Result<FileInsight> {
         Self::parse_file(source, path)
@@ -153,8 +214,22 @@ export function Greeting({ name }: Props) {
 "#;
         let proc = TypeScriptProcessor::new().unwrap();
         let result = proc.parse(source, Path::new("test.tsx")).unwrap();
-        assert!(result.entities.iter().any(|e| e.name == "Greeting" && e.kind == "function"), "Greeting 应解析: {:?}", result.entities);
-        assert!(result.entities.iter().any(|e| e.name == "Props" && e.kind == "interface"), "Props 应解析: {:?}", result.entities);
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.name == "Greeting" && e.kind == "function"),
+            "Greeting 应解析: {:?}",
+            result.entities
+        );
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.name == "Props" && e.kind == "interface"),
+            "Props 应解析: {:?}",
+            result.entities
+        );
     }
 
     /// F1 回归锚：.ts 的泛型箭头与类型断言必须用 TS 方言解析（TSX 会
@@ -167,9 +242,23 @@ export function after(): number { return 1; }
 "#;
         let proc = TypeScriptProcessor::new().unwrap();
         let result = proc.parse(source, Path::new("test.ts")).unwrap();
-        assert!(result.entities.iter().any(|e| e.name == "identity" && e.kind == "function"), "泛型箭头应解析为 function: {:?}", result.entities);
-        assert!(result.entities.iter().any(|e| e.name == "after"), "类型断言后的函数不得被 JSX 吞掉: {:?}", result.entities);
-        assert!(result.entities.iter().any(|e| e.name == "asserted"), "类型断言变量应解析");
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.name == "identity" && e.kind == "function"),
+            "泛型箭头应解析为 function: {:?}",
+            result.entities
+        );
+        assert!(
+            result.entities.iter().any(|e| e.name == "after"),
+            "类型断言后的函数不得被 JSX 吞掉: {:?}",
+            result.entities
+        );
+        assert!(
+            result.entities.iter().any(|e| e.name == "asserted"),
+            "类型断言变量应解析"
+        );
     }
 
     /// P1-15：TS 箭头函数归类 function（非 variable）；解构不产出实体
@@ -183,8 +272,28 @@ const plain = 42;
 "#;
         let proc = TypeScriptProcessor::new().unwrap();
         let result = proc.parse(source, Path::new("comp.tsx")).unwrap();
-        assert!(result.entities.iter().any(|e| e.name == "Greeting" && e.kind == "function"), "箭头函数应归类 function: {:?}", result.entities);
-        assert!(result.entities.iter().any(|e| e.name == "plain" && e.kind == "variable"), "普通变量仍为 variable");
-        assert!(!result.entities.iter().any(|e| e.name.contains('{') || e.name.contains('}')), "解构不得产出伪实体名: {:?}", result.entities);
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.name == "Greeting" && e.kind == "function"),
+            "箭头函数应归类 function: {:?}",
+            result.entities
+        );
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.name == "plain" && e.kind == "variable"),
+            "普通变量仍为 variable"
+        );
+        assert!(
+            !result
+                .entities
+                .iter()
+                .any(|e| e.name.contains('{') || e.name.contains('}')),
+            "解构不得产出伪实体名: {:?}",
+            result.entities
+        );
     }
 }

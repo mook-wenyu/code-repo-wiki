@@ -1,5 +1,5 @@
-use std::path::Path;
 use anyhow::Result;
+use std::path::Path;
 use tree_sitter::{Language, Node};
 
 use super::{Entity, FileInsight, ImportStmt, KindRule, LanguageProcessor, SharedProcessor};
@@ -28,14 +28,23 @@ const KINDS: &[KindRule] = &[
 /// 无法表化的特殊分支（variable_declarator 箭头函数动态 kind / import/export 文本解析）、
 /// 正则 fallback。公共 walk/fallback 触发/FileInsight 组装走 SharedProcessor 默认实现。
 impl SharedProcessor for JavaScriptProcessor {
-    fn language() -> &'static str { "JavaScript" }
-    fn grammar() -> Language { tree_sitter_javascript::LANGUAGE.into() }
+    fn language() -> &'static str {
+        "JavaScript"
+    }
+    fn grammar() -> Language {
+        tree_sitter_javascript::LANGUAGE.into()
+    }
 
     fn kinds() -> &'static [KindRule] {
         KINDS
     }
 
-    fn handle_special(node: Node, bytes: &[u8], entities: &mut Vec<Entity>, imports: &mut Vec<ImportStmt>) {
+    fn handle_special(
+        node: Node,
+        bytes: &[u8],
+        entities: &mut Vec<Entity>,
+        imports: &mut Vec<ImportStmt>,
+    ) {
         match node.kind() {
             "variable_declarator" => {
                 // P1-15：解构（const {x,y} = obj）不产出实体——"{x, y}" 是伪
@@ -45,19 +54,27 @@ impl SharedProcessor for JavaScriptProcessor {
                     && let Some(name) = name_node.and_then(|n| n.utf8_text(bytes).ok())
                 {
                     // 检查是否为箭头函数（const fn = () => {}）
-                    let is_arrow = node.child_by_field_name("value")
-                        .map(|v| v.kind() == "arrow_function").unwrap_or(false);
+                    let is_arrow = node
+                        .child_by_field_name("value")
+                        .map(|v| v.kind() == "arrow_function")
+                        .unwrap_or(false);
                     let kind = if is_arrow { "function" } else { "variable" };
                     entities.push(Entity {
-                        name: name.to_string(), kind: kind.to_string(),
+                        name: name.to_string(),
+                        kind: kind.to_string(),
                         line_start: node.start_position().row + 1,
                         line_end: node.end_position().row + 1,
-                        doc_comment: None, signature: None, visibility: None,
+                        doc_comment: None,
+                        signature: None,
+                        visibility: None,
                     });
                 }
             }
             "import_statement" => {
-                if let Some(src) = node.child_by_field_name("source").and_then(|n| n.utf8_text(bytes).ok()) {
+                if let Some(src) = node
+                    .child_by_field_name("source")
+                    .and_then(|n| n.utf8_text(bytes).ok())
+                {
                     imports.push(ImportStmt {
                         source: src.trim_matches(&['"', '\''][..]).to_string(),
                         alias: None,
@@ -67,7 +84,10 @@ impl SharedProcessor for JavaScriptProcessor {
             }
             "export_statement" => {
                 // 处理重导出：export { x } from "mod" 或 export * from "mod"
-                if let Some(src) = node.child_by_field_name("source").and_then(|n| n.utf8_text(bytes).ok()) {
+                if let Some(src) = node
+                    .child_by_field_name("source")
+                    .and_then(|n| n.utf8_text(bytes).ok())
+                {
                     imports.push(ImportStmt {
                         source: src.trim_matches(&['"', '\''][..]).to_string(),
                         alias: None,
@@ -94,8 +114,14 @@ impl SharedProcessor for JavaScriptProcessor {
             // 导入：import ... from '...'
             if let Some(rest) = t.strip_prefix("import ") {
                 if let Some(from_pos) = rest.find(" from ") {
-                    let src = rest[from_pos + 6..].trim().trim_matches(&['"', '\'', ';'][..]);
-                    imports.push(ImportStmt { source: src.to_string(), alias: None, line: line_no });
+                    let src = rest[from_pos + 6..]
+                        .trim()
+                        .trim_matches(&['"', '\'', ';'][..]);
+                    imports.push(ImportStmt {
+                        source: src.to_string(),
+                        alias: None,
+                        line: line_no,
+                    });
                 }
                 continue;
             }
@@ -104,35 +130,55 @@ impl SharedProcessor for JavaScriptProcessor {
             if let Some(rest) = t.strip_prefix("export ")
                 && let Some(from_pos) = rest.find(" from ")
             {
-                let src = rest[from_pos + 6..].trim().trim_matches(&['"', '\'', ';'][..]);
-                imports.push(ImportStmt { source: src.to_string(), alias: None, line: line_no });
+                let src = rest[from_pos + 6..]
+                    .trim()
+                    .trim_matches(&['"', '\'', ';'][..]);
+                imports.push(ImportStmt {
+                    source: src.to_string(),
+                    alias: None,
+                    line: line_no,
+                });
             }
 
             // 去掉 export 前缀后匹配实体
-            let core = t.strip_prefix("export ")
+            let core = t
+                .strip_prefix("export ")
                 .or_else(|| t.strip_prefix("export default "))
                 .or_else(|| t.strip_prefix("export async "))
                 .or_else(|| t.strip_prefix("async "))
                 .unwrap_or(t);
             let core = core.trim();
 
-            if let Some(name) = core.strip_prefix("class ")
-                .and_then(|s| s.split(&['{', ' ', '<', '(', ';', '}'][..]).next()).map(|s| s.trim())
+            if let Some(name) = core
+                .strip_prefix("class ")
+                .and_then(|s| s.split(&['{', ' ', '<', '(', ';', '}'][..]).next())
+                .map(|s| s.trim())
             {
                 entities.push(Entity {
-                    name: name.to_string(), kind: "class".into(),
-                    line_start: line_no, line_end: line_no,
-                    doc_comment: None, signature: None, visibility: None,
+                    name: name.to_string(),
+                    kind: "class".into(),
+                    line_start: line_no,
+                    line_end: line_no,
+                    doc_comment: None,
+                    signature: None,
+                    visibility: None,
                 });
-            } else if let Some(name) = core.strip_prefix("function ")
-                .and_then(|s| s.split(&['(', ' ', '<', '{', ';', '}'][..]).next()).map(|s| s.trim())
+            } else if let Some(name) = core
+                .strip_prefix("function ")
+                .and_then(|s| s.split(&['(', ' ', '<', '{', ';', '}'][..]).next())
+                .map(|s| s.trim())
             {
                 entities.push(Entity {
-                    name: name.to_string(), kind: "function".into(),
-                    line_start: line_no, line_end: line_no,
-                    doc_comment: None, signature: Some(t.to_string()), visibility: None,
+                    name: name.to_string(),
+                    kind: "function".into(),
+                    line_start: line_no,
+                    line_end: line_no,
+                    doc_comment: None,
+                    signature: Some(t.to_string()),
+                    visibility: None,
                 });
-            } else if let Some(name) = core.strip_prefix("const ")
+            } else if let Some(name) = core
+                .strip_prefix("const ")
                 .or_else(|| core.strip_prefix("let "))
                 .or_else(|| core.strip_prefix("var "))
                 .and_then(|s| s.split(&['=', ':', ' ', ';'][..]).next())
@@ -142,9 +188,13 @@ impl SharedProcessor for JavaScriptProcessor {
                 let is_arrow = core.contains("=>");
                 let kind = if is_arrow { "function" } else { "variable" };
                 entities.push(Entity {
-                    name: name.to_string(), kind: kind.into(),
-                    line_start: line_no, line_end: line_no,
-                    doc_comment: None, signature: Some(t.to_string()), visibility: None,
+                    name: name.to_string(),
+                    kind: kind.into(),
+                    line_start: line_no,
+                    line_end: line_no,
+                    doc_comment: None,
+                    signature: Some(t.to_string()),
+                    visibility: None,
                 });
             }
         }
@@ -153,8 +203,12 @@ impl SharedProcessor for JavaScriptProcessor {
 }
 
 impl LanguageProcessor for JavaScriptProcessor {
-    fn name(&self) -> &'static str { Self::language() }
-    fn extensions(&self) -> &[&str] { &[".js", ".jsx", ".mjs", ".cjs"] }
+    fn name(&self) -> &'static str {
+        Self::language()
+    }
+    fn extensions(&self) -> &[&str] {
+        &[".js", ".jsx", ".mjs", ".cjs"]
+    }
 
     fn parse(&self, source: &str, path: &Path) -> Result<FileInsight> {
         Self::parse_file(source, path)
@@ -211,8 +265,21 @@ const fn = (x) => x * 2;
 "#;
         let proc = JavaScriptProcessor::new().unwrap();
         let result = proc.parse(source, Path::new("test.js")).unwrap();
-        assert!(!result.entities.iter().any(|e| e.name.contains('{') || e.name.contains('}') || e.name.contains('[') || e.name.contains(']')), "解构不得产出伪实体名: {:?}", result.entities);
-        assert!(result.entities.iter().any(|e| e.name == "fn" && e.kind == "function"), "箭头函数仍归类 function");
+        assert!(
+            !result.entities.iter().any(|e| e.name.contains('{')
+                || e.name.contains('}')
+                || e.name.contains('[')
+                || e.name.contains(']')),
+            "解构不得产出伪实体名: {:?}",
+            result.entities
+        );
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.name == "fn" && e.kind == "function"),
+            "箭头函数仍归类 function"
+        );
     }
 
     #[test]

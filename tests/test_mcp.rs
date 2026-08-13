@@ -29,7 +29,13 @@ fn spawn_mcp(dir: &Path) -> tokio::process::Child {
 }
 
 /// JSON-RPC 请求：向子进程写请求并读取单行响应
-async fn rpc_call(stdin: &mut tokio::process::ChildStdin, stdout: &mut tokio::process::ChildStdout, id: u64, method: &str, params: serde_json::Value) -> serde_json::Value {
+async fn rpc_call(
+    stdin: &mut tokio::process::ChildStdin,
+    stdout: &mut tokio::process::ChildStdout,
+    id: u64,
+    method: &str,
+    params: serde_json::Value,
+) -> serde_json::Value {
     let req = serde_json::json!({
         "jsonrpc": "2.0",
         "id": id,
@@ -122,20 +128,41 @@ async fn test_mcp_initialize_lists_tools_and_calls() {
         }),
     )
     .await;
-    assert!(resp["result"]["protocolVersion"].is_string(), "握手应返回协议版本: {resp}");
+    assert!(
+        resp["result"]["protocolVersion"].is_string(),
+        "握手应返回协议版本: {resp}"
+    );
 
     // 2. notifications/initialized（通知：无 id、不读响应，协议合规发法）
-    notify(&mut stdin, "notifications/initialized", serde_json::json!({})).await;
+    notify(
+        &mut stdin,
+        "notifications/initialized",
+        serde_json::json!({}),
+    )
+    .await;
 
     // 3. tools/list：5 个工具全部注册
-    let resp = rpc_call(&mut stdin, &mut stdout, 3, "tools/list", serde_json::json!({})).await;
+    let resp = rpc_call(
+        &mut stdin,
+        &mut stdout,
+        3,
+        "tools/list",
+        serde_json::json!({}),
+    )
+    .await;
     let tools = resp["result"]["tools"].as_array().expect("tools 应为数组");
-    let names: Vec<&str> = tools
-        .iter()
-        .filter_map(|t| t["name"].as_str())
-        .collect();
-    for expected in ["wiki_search", "wiki_ast_search", "wiki_read_page", "wiki_read_card", "wiki_status"] {
-        assert!(names.contains(&expected), "工具 {expected} 未注册, 实际: {names:?}");
+    let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+    for expected in [
+        "wiki_search",
+        "wiki_ast_search",
+        "wiki_read_page",
+        "wiki_read_card",
+        "wiki_status",
+    ] {
+        assert!(
+            names.contains(&expected),
+            "工具 {expected} 未注册, 实际: {names:?}"
+        );
     }
 
     // 4. tools/call wiki_ast_search：符号定义可查（不依赖索引，直接扫描）
@@ -156,9 +183,17 @@ async fn test_mcp_initialize_lists_tools_and_calls() {
         serde_json::json!(false),
         "工具成功应置 isError=false: {resp}"
     );
-    let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
-    assert!(text.contains("hello_world"), "wiki_ast_search 应找到符号: {text}");
-    assert!(text.contains("扫描耗时"), "wiki_ast_search 应附带扫描耗时成本提示: {text}");
+    let text = resp["result"]["content"][0]["text"]
+        .as_str()
+        .expect("工具结果应有 text");
+    assert!(
+        text.contains("hello_world"),
+        "wiki_ast_search 应找到符号: {text}"
+    );
+    assert!(
+        text.contains("扫描耗时"),
+        "wiki_ast_search 应附带扫描耗时成本提示: {text}"
+    );
 
     // 5. tools/call status：配置可加载（未生成 wiki → 未就绪提示；status
     //    如实报告状态，属成功输出，isError=false）
@@ -175,7 +210,9 @@ async fn test_mcp_initialize_lists_tools_and_calls() {
         serde_json::json!(false),
         "status 报告未生成属正常输出，isError 应为 false: {resp}"
     );
-    let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
+    let text = resp["result"]["content"][0]["text"]
+        .as_str()
+        .expect("工具结果应有 text");
     assert!(text.contains("Wiki"), "status 应返回 wiki 状态: {text}");
 
     // 6. tools/call wiki_read_page：未生成的页面给出引导提示——工具执行
@@ -193,8 +230,13 @@ async fn test_mcp_initialize_lists_tools_and_calls() {
         serde_json::json!(true),
         "读取不存在的页面应置 isError=true: {resp}"
     );
-    let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
-    assert!(text.contains("code-repo-wiki generate"), "未生成时应有引导提示: {text}");
+    let text = resp["result"]["content"][0]["text"]
+        .as_str()
+        .expect("工具结果应有 text");
+    assert!(
+        text.contains("code-repo-wiki generate"),
+        "未生成时应有引导提示: {text}"
+    );
 
     // 7. tools/call search：索引不存在时给出可读引导错误（不崩溃，
     //    且错误消息精确指明索引缺失并引导运行 generate——索引缺失
@@ -213,7 +255,9 @@ async fn test_mcp_initialize_lists_tools_and_calls() {
         serde_json::json!(true),
         "索引缺失应置 isError=true: {resp}"
     );
-    let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
+    let text = resp["result"]["content"][0]["text"]
+        .as_str()
+        .expect("工具结果应有 text");
     assert!(
         text.contains("搜索索引不存在"),
         "索引缺失应引导运行 generate，实际: {text}"
@@ -237,12 +281,18 @@ async fn test_mcp_lang_traversal_rejected() {
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(dir.join("src").join("main.rs"), "pub fn hello_world() {}\n").unwrap();
     // 仓库根之外放置秘密文件（穿越攻击的目标）
-    let secret = dir.parent().unwrap().join(format!("secret_{}.md", std::process::id()));
+    let secret = dir
+        .parent()
+        .unwrap()
+        .join(format!("secret_{}.md", std::process::id()));
     std::fs::write(&secret, "SECRET-CONTENT").unwrap();
     // 合法产物：wiki/zh/architecture.md（穿越被拒后，合法 lang 应正常读取）
     std::fs::create_dir_all(dir.join(".code-repo-wiki").join("wiki").join("zh")).unwrap();
     std::fs::write(
-        dir.join(".code-repo-wiki").join("wiki").join("zh").join("architecture.md"),
+        dir.join(".code-repo-wiki")
+            .join("wiki")
+            .join("zh")
+            .join("architecture.md"),
         "ok-content",
     )
     .unwrap();
@@ -264,7 +314,12 @@ async fn test_mcp_lang_traversal_rejected() {
     )
     .await;
     assert!(resp["result"]["protocolVersion"].is_string());
-    notify(&mut stdin, "notifications/initialized", serde_json::json!({})).await;
+    notify(
+        &mut stdin,
+        "notifications/initialized",
+        serde_json::json!({}),
+    )
+    .await;
 
     // 1. wiki_read_page lang 穿越（相对穿越 ../..）：拒绝且不泄漏内容——
     //    参数校验失败属工具执行错误，isError=true
@@ -281,8 +336,13 @@ async fn test_mcp_lang_traversal_rejected() {
         serde_json::json!(true),
         "lang 穿越应置 isError=true: {resp}"
     );
-    let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
-    assert!(!text.contains("SECRET-CONTENT"), "穿越必须被拒绝, 泄漏: {text}");
+    let text = resp["result"]["content"][0]["text"]
+        .as_str()
+        .expect("工具结果应有 text");
+    assert!(
+        !text.contains("SECRET-CONTENT"),
+        "穿越必须被拒绝, 泄漏: {text}"
+    );
     assert!(text.contains("非法语言名"), "应返回明确的校验错误: {text}");
 
     // 2. wiki_read_card lang 穿越：同样拒绝（isError=true）
@@ -299,9 +359,17 @@ async fn test_mcp_lang_traversal_rejected() {
         serde_json::json!(true),
         "wiki_read_card 穿越应置 isError=true: {resp}"
     );
-    let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
-    assert!(!text.contains("SECRET-CONTENT"), "wiki_read_card 穿越必须被拒绝: {text}");
-    assert!(text.contains("非法语言名"), "wiki_read_card 应返回明确的校验错误: {text}");
+    let text = resp["result"]["content"][0]["text"]
+        .as_str()
+        .expect("工具结果应有 text");
+    assert!(
+        !text.contains("SECRET-CONTENT"),
+        "wiki_read_card 穿越必须被拒绝: {text}"
+    );
+    assert!(
+        text.contains("非法语言名"),
+        "wiki_read_card 应返回明确的校验错误: {text}"
+    );
 
     // 3. 合法 lang 不受影响：正常读取 wiki/zh/architecture.md（isError=false）
     let resp = rpc_call(
@@ -317,7 +385,9 @@ async fn test_mcp_lang_traversal_rejected() {
         serde_json::json!(false),
         "合法 lang 应置 isError=false: {resp}"
     );
-    let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
+    let text = resp["result"]["content"][0]["text"]
+        .as_str()
+        .expect("工具结果应有 text");
     assert!(text.contains("ok-content"), "合法 lang 应正常读取: {text}");
 
     drop(stdin);
@@ -362,7 +432,9 @@ async fn test_mcp_status_uses_root_and_shows_degradation() {
     // 自己的原因；手工覆盖保证原因内容确定、可精确断言
     std::fs::create_dir_all(dir.join(".code-repo-wiki").join(".search")).unwrap();
     std::fs::write(
-        dir.join(".code-repo-wiki").join(".search").join("semantic_degraded"),
+        dir.join(".code-repo-wiki")
+            .join(".search")
+            .join("semantic_degraded"),
         "embed key 未配置",
     )
     .unwrap();
@@ -402,7 +474,12 @@ async fn test_mcp_status_uses_root_and_shows_degradation() {
     )
     .await;
     assert!(resp["result"]["protocolVersion"].is_string());
-    notify(&mut stdin, "notifications/initialized", serde_json::json!({})).await;
+    notify(
+        &mut stdin,
+        "notifications/initialized",
+        serde_json::json!({}),
+    )
+    .await;
 
     // 1. status：cwd≠root 时仍应就绪（修复前 from_cwd → sub 找不到产物）
     let resp = rpc_call(
@@ -418,8 +495,13 @@ async fn test_mcp_status_uses_root_and_shows_degradation() {
         serde_json::json!(false),
         "status 就绪报告应置 isError=false: {resp}"
     );
-    let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
-    assert!(text.contains("Wiki 就绪"), "status 应就绪（root 化），实际: {text}");
+    let text = resp["result"]["content"][0]["text"]
+        .as_str()
+        .expect("工具结果应有 text");
+    assert!(
+        text.contains("Wiki 就绪"),
+        "status 应就绪（root 化），实际: {text}"
+    );
     // FR-501：status 报告显式提示降级原因
     assert!(
         text.contains("语义索引: 已降级") && text.contains("embed key 未配置"),
@@ -443,14 +525,24 @@ async fn test_mcp_status_uses_root_and_shows_degradation() {
         serde_json::json!(false),
         "search 命中应置 isError=false: {resp}"
     );
-    let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
-    assert!(text.contains("hello_world"), "search 应命中索引实体: {text}");
-    assert!(text.contains("score="), "search 命中应含 score 字段: {text}");
-    assert!(text.contains("callers="), "search 命中应含 callers 字段: {text}");
+    let text = resp["result"]["content"][0]["text"]
+        .as_str()
+        .expect("工具结果应有 text");
+    assert!(
+        text.contains("hello_world"),
+        "search 应命中索引实体: {text}"
+    );
+    assert!(
+        text.contains("score="),
+        "search 命中应含 score 字段: {text}"
+    );
+    assert!(
+        text.contains("callers="),
+        "search 命中应含 callers 字段: {text}"
+    );
     let tail = text.lines().last().map(str::trim).unwrap_or("");
     assert_eq!(
-        tail,
-        "提示: 语义索引已降级（原因: embed key 未配置）",
+        tail, "提示: 语义索引已降级（原因: embed key 未配置）",
         "结果尾部应显式提示降级原因, 实际: {text}"
     );
 
@@ -471,12 +563,16 @@ async fn test_mcp_status_uses_root_and_shows_degradation() {
         serde_json::json!(false),
         "搜索空结果应置 isError=false: {resp}"
     );
-    let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
-    assert!(text.starts_with("未找到匹配结果"), "空结果应报告未找到: {text}");
+    let text = resp["result"]["content"][0]["text"]
+        .as_str()
+        .expect("工具结果应有 text");
+    assert!(
+        text.starts_with("未找到匹配结果"),
+        "空结果应报告未找到: {text}"
+    );
     let tail = text.lines().last().map(str::trim).unwrap_or("");
     assert_eq!(
-        tail,
-        "提示: 语义索引已降级（原因: embed key 未配置）",
+        tail, "提示: 语义索引已降级（原因: embed key 未配置）",
         "空结果尾部也应显式提示降级原因, 实际: {text}"
     );
 

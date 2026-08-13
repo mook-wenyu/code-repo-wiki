@@ -316,10 +316,7 @@ fn default_embed_model() -> String {
 }
 
 fn default_embed_base_url() -> Option<String> {
-    Some(
-        "https://llm-q0265e4he9m0qs23.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
-            .to_string(),
-    )
+    Some("https://llm-q0265e4he9m0qs23.cn-beijing.maas.aliyuncs.com/compatible-mode/v1".to_string())
 }
 
 fn default_embed_api_key_env() -> String {

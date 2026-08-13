@@ -23,8 +23,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use code_repo_wiki::config::schema::WikiSection;
 use code_repo_wiki::config::schema::{LlmProviderType, LlmSection, WikiConfig};
-use code_repo_wiki::config::schema::{WikiSection};
 
 /// 构造带跨社区调用的临时 git 仓库：net 与 http 两个独立社区
 fn build_repo(repo: &Path) -> anyhow::Result<()> {
@@ -81,8 +81,10 @@ fn wiki_pages_snapshot(repo: &Path) -> HashMap<String, String> {
         for e in es.flatten() {
             let p = e.path();
             if p.extension().is_some_and(|x| x == "md")
-                && let (Some(name), Ok(content)) =
-                    (p.file_name().map(|s| s.to_string_lossy().into_owned()), std::fs::read_to_string(&p))
+                && let (Some(name), Ok(content)) = (
+                    p.file_name().map(|s| s.to_string_lossy().into_owned()),
+                    std::fs::read_to_string(&p),
+                )
             {
                 map.insert(name, content);
             }
@@ -108,15 +110,25 @@ fn test_incremental_unchanged_module_stays_in_sitemap() {
 
     // ---- 首次提交 + 全量生成（基线：llms.txt/_toc 均含两模块） ----
     git_commit_all(&repo, "init");
-    code_repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &code_repo_wiki::GenerationMode::Full)
-        .expect("全量生成失败");
+    code_repo_wiki::run_pipeline(
+        Some(&config_path),
+        None,
+        false,
+        &root,
+        &code_repo_wiki::GenerationMode::Full,
+    )
+    .expect("全量生成失败");
     let base_pages = wiki_pages_snapshot(&repo);
-    let base_llms = std::fs::read_to_string(output_dir.join("llms.txt")).expect("基线 llms.txt 应存在");
+    let base_llms =
+        std::fs::read_to_string(output_dir.join("llms.txt")).expect("基线 llms.txt 应存在");
     assert!(
         base_llms.contains("src::http") && base_llms.contains("src::net"),
         "基线 llms.txt 应含两模块，实际:\n{base_llms}"
     );
-    assert!(base_pages.contains_key("src_http.md"), "基线应有 http 模块页");
+    assert!(
+        base_pages.contains_key("src_http.md"),
+        "基线应有 http 模块页"
+    );
 
     // ---- 修改 net 模块 2 个文件（多行 body 使 line_end 变化 → BodyChanged） ----
     std::fs::write(
@@ -135,31 +147,50 @@ fn test_incremental_unchanged_module_stays_in_sitemap() {
         None,
         false,
         &root,
-        &code_repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None },
+        &code_repo_wiki::GenerationMode::Incremental {
+            watch_paths: vec![],
+            change_kind: None,
+        },
     )
     .expect("增量更新失败");
 
     // 1. llms.txt 仍含未改动模块 http（DEFECT-A 直接断言面）与受影响模块 net
     let llms = std::fs::read_to_string(output_dir.join("llms.txt")).expect("llms.txt 应存在");
-    assert!(llms.contains("src::http"), "llms.txt 必须保留未改动模块 http，实际:\n{llms}");
-    assert!(llms.contains("src::net"), "llms.txt 应含受影响模块 net，实际:\n{llms}");
+    assert!(
+        llms.contains("src::http"),
+        "llms.txt 必须保留未改动模块 http，实际:\n{llms}"
+    );
+    assert!(
+        llms.contains("src::net"),
+        "llms.txt 应含受影响模块 net，实际:\n{llms}"
+    );
 
     // 2. _toc.md 仍含 http
     let toc = std::fs::read_to_string(output_dir.join("_toc.md")).expect("_toc.md 应存在");
-    assert!(toc.contains("src::http"), "_toc.md 必须保留未改动模块 http，实际:\n{toc}");
+    assert!(
+        toc.contains("src::http"),
+        "_toc.md 必须保留未改动模块 http，实际:\n{toc}"
+    );
 
     // 3. export_snapshot.json 仍含 http（导出快照是 export --skip-generate 的契约）
     let snapshot_text =
-        std::fs::read_to_string(output_dir.join(".state").join("export_snapshot.json")).expect("导出快照应存在");
-    let snapshot: serde_json::Value = serde_json::from_str(&snapshot_text).expect("导出快照应可解析");
+        std::fs::read_to_string(output_dir.join(".state").join("export_snapshot.json"))
+            .expect("导出快照应存在");
+    let snapshot: serde_json::Value =
+        serde_json::from_str(&snapshot_text).expect("导出快照应可解析");
     // 精确断言 documents/cards 数组（不可用原始文本——net 卡片的 dependents
     // 含 http 是合法数据，文本匹配会假阳性）
-    let docs_have_http = snapshot["documents"]
-        .as_array()
-        .is_some_and(|arr| arr.iter().any(|d| d["title"].as_str().is_some_and(|t| t.contains("http"))));
-    let cards_have_http = snapshot["cards"]
-        .as_array()
-        .is_some_and(|arr| arr.iter().any(|c| c["module_name"].as_str().is_some_and(|m| m.contains("http"))));
+    let docs_have_http = snapshot["documents"].as_array().is_some_and(|arr| {
+        arr.iter()
+            .any(|d| d["title"].as_str().is_some_and(|t| t.contains("http")))
+    });
+    let cards_have_http = snapshot["cards"].as_array().is_some_and(|arr| {
+        arr.iter().any(|c| {
+            c["module_name"]
+                .as_str()
+                .is_some_and(|m| m.contains("http"))
+        })
+    });
     assert!(
         docs_have_http || cards_have_http,
         "导出快照必须含未改动模块 http（documents={docs_have_http}, cards={cards_have_http}）"
@@ -167,8 +198,9 @@ fn test_incremental_unchanged_module_stays_in_sitemap() {
 
     // 4. generation_state 指纹含 http 页（record_doc_fingerprints 消费完整文档集，
     //    下次人工修改检测/增量 diff 以完整集为基线）
-    let state_text = std::fs::read_to_string(output_dir.join(".state").join("generation_state.json"))
-        .expect("generation_state.json 应存在");
+    let state_text =
+        std::fs::read_to_string(output_dir.join(".state").join("generation_state.json"))
+            .expect("generation_state.json 应存在");
     assert!(
         state_text.contains("src_http.md"),
         "generation_state 指纹必须含 http 页，实际:\n{state_text}"
@@ -200,7 +232,10 @@ fn test_incremental_unchanged_module_stays_in_sitemap() {
 /// 含 http、磁盘 http 页被清理、导出快照不再含 http（不复活已删模块）。
 #[test]
 fn test_incremental_delete_module_removes_from_sitemap() {
-    let repo = std::env::temp_dir().join(format!("code_repo_wiki_backfill_del_{}", std::process::id()));
+    let repo = std::env::temp_dir().join(format!(
+        "code_repo_wiki_backfill_del_{}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&repo);
     std::fs::create_dir_all(&repo).expect("构造临时仓库失败");
     build_repo(&repo).expect("构造 fixture 失败");
@@ -210,9 +245,16 @@ fn test_incremental_delete_module_removes_from_sitemap() {
     let output_dir = repo.join(".code-repo-wiki");
 
     git_commit_all(&repo, "init");
-    code_repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &code_repo_wiki::GenerationMode::Full)
-        .expect("全量生成失败");
-    let base_llms = std::fs::read_to_string(output_dir.join("llms.txt")).expect("基线 llms.txt 应存在");
+    code_repo_wiki::run_pipeline(
+        Some(&config_path),
+        None,
+        false,
+        &root,
+        &code_repo_wiki::GenerationMode::Full,
+    )
+    .expect("全量生成失败");
+    let base_llms =
+        std::fs::read_to_string(output_dir.join("llms.txt")).expect("基线 llms.txt 应存在");
     assert!(base_llms.contains("src::http"), "基线 llms.txt 应含 http");
 
     // 删 http 模块全部文件（server.rs + client.rs）
@@ -224,32 +266,52 @@ fn test_incremental_delete_module_removes_from_sitemap() {
         None,
         false,
         &root,
-        &code_repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None },
+        &code_repo_wiki::GenerationMode::Incremental {
+            watch_paths: vec![],
+            change_kind: None,
+        },
     )
     .expect("删除模块增量失败");
 
     // 1. llms.txt 不再含已删模块 http（不复活）
     let llms = std::fs::read_to_string(output_dir.join("llms.txt")).expect("llms.txt 应存在");
-    assert!(!llms.contains("src::http"), "llms.txt 不得含已删模块 http，实际:\n{llms}");
+    assert!(
+        !llms.contains("src::http"),
+        "llms.txt 不得含已删模块 http，实际:\n{llms}"
+    );
 
     // 2. 磁盘 http 页被清理（cleanup 差集语义）
     let pages = wiki_pages_snapshot(&repo);
-    assert!(!pages.contains_key("src_http.md"), "已删模块 http 页应被清理");
+    assert!(
+        !pages.contains_key("src_http.md"),
+        "已删模块 http 页应被清理"
+    );
 
     // 3. 存活模块 net 页保留
-    assert!(pages.contains_key("src_net.md"), "存活模块 net 页必须保留，实际: {:?}", pages.keys().collect::<Vec<_>>());
+    assert!(
+        pages.contains_key("src_net.md"),
+        "存活模块 net 页必须保留，实际: {:?}",
+        pages.keys().collect::<Vec<_>>()
+    );
 
     // 4. 导出快照不再含 http 文档/卡片（增量后快照 = 当前完整文档集；
     //    不可用原始文本匹配——net 卡片的 dependents 含 http 是合法数据）
     let snapshot_text =
-        std::fs::read_to_string(output_dir.join(".state").join("export_snapshot.json")).expect("导出快照应存在");
-    let snapshot: serde_json::Value = serde_json::from_str(&snapshot_text).expect("导出快照应可解析");
-    let doc_has_http = snapshot["documents"]
-        .as_array()
-        .is_some_and(|arr| arr.iter().any(|d| d["title"].as_str().is_some_and(|t| t.contains("http"))));
-    let card_has_http = snapshot["cards"]
-        .as_array()
-        .is_some_and(|arr| arr.iter().any(|c| c["module_name"].as_str().is_some_and(|m| m.contains("http"))));
+        std::fs::read_to_string(output_dir.join(".state").join("export_snapshot.json"))
+            .expect("导出快照应存在");
+    let snapshot: serde_json::Value =
+        serde_json::from_str(&snapshot_text).expect("导出快照应可解析");
+    let doc_has_http = snapshot["documents"].as_array().is_some_and(|arr| {
+        arr.iter()
+            .any(|d| d["title"].as_str().is_some_and(|t| t.contains("http")))
+    });
+    let card_has_http = snapshot["cards"].as_array().is_some_and(|arr| {
+        arr.iter().any(|c| {
+            c["module_name"]
+                .as_str()
+                .is_some_and(|m| m.contains("http"))
+        })
+    });
     assert!(
         !doc_has_http && !card_has_http,
         "导出快照不得含已删模块 http（documents={doc_has_http}, cards={card_has_http}）"
@@ -262,7 +324,10 @@ fn test_incremental_delete_module_removes_from_sitemap() {
 /// 集合照常返回（未受影响模块回填跳过，不影响主流程）。
 #[test]
 fn test_incremental_snapshot_missing_does_not_crash() {
-    let repo = std::env::temp_dir().join(format!("code_repo_wiki_backfill_nosnap_{}", std::process::id()));
+    let repo = std::env::temp_dir().join(format!(
+        "code_repo_wiki_backfill_nosnap_{}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&repo);
     std::fs::create_dir_all(&repo).expect("构造临时仓库失败");
     build_repo(&repo).expect("构造 fixture 失败");
@@ -272,8 +337,14 @@ fn test_incremental_snapshot_missing_does_not_crash() {
     let output_dir = repo.join(".code-repo-wiki");
 
     git_commit_all(&repo, "init");
-    code_repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &code_repo_wiki::GenerationMode::Full)
-        .expect("全量生成失败");
+    code_repo_wiki::run_pipeline(
+        Some(&config_path),
+        None,
+        false,
+        &root,
+        &code_repo_wiki::GenerationMode::Full,
+    )
+    .expect("全量生成失败");
 
     // 删导出快照（模拟异常/损坏）
     std::fs::remove_file(output_dir.join(".state").join("export_snapshot.json")).unwrap();
@@ -290,7 +361,10 @@ fn test_incremental_snapshot_missing_does_not_crash() {
         None,
         false,
         &root,
-        &code_repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None },
+        &code_repo_wiki::GenerationMode::Incremental {
+            watch_paths: vec![],
+            change_kind: None,
+        },
     )
     .expect("快照缺失时增量不得崩溃");
 

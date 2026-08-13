@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::config::schema::WikiConfig;
 use crate::incremental::state::GenerationState;
-use crate::output::lint::{lint, LintIssue};
+use crate::output::lint::{LintIssue, lint};
 
 /// status 报告（结构化，main 只做格式化）
 pub struct StatusReport {
@@ -24,10 +24,7 @@ pub fn status_report(config: &WikiConfig, root: &crate::project::ProjectRoot) ->
     let cards = collect_md_files(&output_dir.join("cards")).len();
     // 源码根必须相对 root 解析（见 source_roots）：status 跨 cwd 运行时
     // （--root 指向其他仓库）lint 才能扫到目标仓库
-    let issues = lint(
-        output_dir,
-        &source_roots(root),
-    );
+    let issues = lint(output_dir, &source_roots(root));
     StatusReport {
         ready: wiki_pages > 0,
         wiki_pages,
@@ -71,8 +68,12 @@ pub fn sync_from_git(output_dir: &Path) -> Result<()> {
             failed_modules: vec![],
         }
     } else {
-        GenerationState::load(&state_dir)
-            .with_context(|| format!("状态文件损坏，拒绝静默重置（保护信息会丢失）: {}", state_path.display()))?
+        GenerationState::load(&state_dir).with_context(|| {
+            format!(
+                "状态文件损坏，拒绝静默重置（保护信息会丢失）: {}",
+                state_path.display()
+            )
+        })?
     };
 
     let mut updated = 0usize;
@@ -95,7 +96,11 @@ pub fn sync_from_git(output_dir: &Path) -> Result<()> {
     }
 
     state.save(&state_dir)?;
-    tracing::info!("同步完成: 指纹更新 {} 个, 跳过受保护 {} 个", updated, skipped);
+    tracing::info!(
+        "同步完成: 指纹更新 {} 个, 跳过受保护 {} 个",
+        updated,
+        skipped
+    );
     Ok(())
 }
 
@@ -122,12 +127,7 @@ pub fn append_note(output_dir: &Path, language: &str, text: &str) -> Result<()> 
     let today_seq = existing
         .split(&today_header)
         .nth(1)
-        .map(|after| {
-            after
-                .lines()
-                .filter(|l| l.trim().starts_with("- "))
-                .count()
-        })
+        .map(|after| after.lines().filter(|l| l.trim().starts_with("- ")).count())
         .unwrap_or(0);
 
     // 追加：无今天节则新建节，否则续写
@@ -215,14 +215,14 @@ pub fn install(root: &crate::project::ProjectRoot, opts: &InstallOptions) -> Res
     let project_root = root.path();
 
     // MCP 与插件共用当前可执行文件绝对路径（t02：不依赖 PATH）
-    let exe_path = std::env::current_exe()
-        .context("无法定位当前可执行文件路径（集成无法绑定绝对路径）")?;
+    let exe_path =
+        std::env::current_exe().context("无法定位当前可执行文件路径（集成无法绑定绝对路径）")?;
     let exe_str = exe_path.to_string_lossy().into_owned();
     let mcp_args = ["mcp".to_string()];
 
     // 1. OpenCode 插件（用户级配置根——v39：Agent 配置根目录安装）
-    let mut oc = crate::config::opencode::OpenCodeConfig::new(root)
-        .context("读取 OpenCode 配置失败")?;
+    let mut oc =
+        crate::config::opencode::OpenCodeConfig::new(root).context("读取 OpenCode 配置失败")?;
     oc.install_plugin()?;
     if oc.install_plugin_file()? {
         println!("✓ OpenCode 插件已安装（用户级: ~/.config/opencode/plugins/）");
@@ -277,9 +277,7 @@ pub fn install(root: &crate::project::ProjectRoot, opts: &InstallOptions) -> Res
     if hooks_present {
         println!("  1. git commit 后 wiki 自动增量更新（post-commit/post-merge hook 已配置）");
     } else {
-        println!(
-            "  1. git commit 后 wiki 自动增量更新——hook 未安装（未检测到 .git 目录），"
-        );
+        println!("  1. git commit 后 wiki 自动增量更新——hook 未安装（未检测到 .git 目录），");
         println!("     使用命令 2/3 手动/常驻更新");
     }
     println!("  2. 手动一条命令：code-repo-wiki update（首次自动全量生成，之后自动增量；");
@@ -409,11 +407,7 @@ fn detect_core_hooks_path(project_root: &std::path::Path) -> Option<String> {
         return None;
     }
     let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
+    if value.is_empty() { None } else { Some(value) }
 }
 
 /// 安装 git hooks（post-commit/post-merge）；返回（新装/升级数量,
@@ -438,7 +432,9 @@ fn install_hooks(project_root: &std::path::Path) -> Result<bool> {
     if let Some(path) = detect_core_hooks_path(project_root) {
         // hooksPath 指向 .git/hooks 本身 = 等同默认，无影响；指向其他
         // 目录才提示（写入 .git/hooks 不会生效）
-        let hooks_dir_abs = hooks_dir.canonicalize().unwrap_or_else(|_| hooks_dir.clone());
+        let hooks_dir_abs = hooks_dir
+            .canonicalize()
+            .unwrap_or_else(|_| hooks_dir.clone());
         let hooks_path_abs = std::path::Path::new(&path)
             .canonicalize()
             .unwrap_or_else(|_| std::path::PathBuf::from(&path));
@@ -555,8 +551,8 @@ pub fn uninstall(force: bool, root: &crate::project::ProjectRoot) -> Result<()> 
     }
 
     // 2. OpenCode 插件（用户级配置根 + 旧版项目级产物迁移清理）
-    let mut oc = crate::config::opencode::OpenCodeConfig::new(root)
-        .context("读取 OpenCode 配置失败")?;
+    let mut oc =
+        crate::config::opencode::OpenCodeConfig::new(root).context("读取 OpenCode 配置失败")?;
     oc.uninstall_plugin()?;
     oc.uninstall_plugin_file()?;
     println!("✓ OpenCode 插件已移除（用户级全局——所有仓库的 opencode 会话不再自动加载）");
@@ -566,7 +562,9 @@ pub fn uninstall(force: bool, root: &crate::project::ProjectRoot) -> Result<()> 
         path: crate::config::mcp::ClaudeMcp::user_global_path()?,
     };
     if claude.remove("code-repo-wiki")? {
-        println!("✓ Claude Code MCP 条目已移除（~/.claude.json——其他仓库如需继续使用请重新 install）");
+        println!(
+            "✓ Claude Code MCP 条目已移除（~/.claude.json——其他仓库如需继续使用请重新 install）"
+        );
     } else {
         println!("✓ Claude Code MCP 条目不存在，跳过（~/.claude.json）");
     }
@@ -689,9 +687,10 @@ enum WikiBlockState {
 fn wiki_block_state(content: &str) -> WikiBlockState {
     // 探测顺序：新标记对优先，其次旧标记对；两套都存在时只处理新对
     // （旧对残留由 remove 循环删除清理，inject 不重复迁移）
-    for (start_marker, end_marker) in
-        [(WIKI_BLOCK_START, WIKI_BLOCK_END), (LEGACY_WIKI_BLOCK_START, LEGACY_WIKI_BLOCK_END)]
-    {
+    for (start_marker, end_marker) in [
+        (WIKI_BLOCK_START, WIKI_BLOCK_END),
+        (LEGACY_WIKI_BLOCK_START, LEGACY_WIKI_BLOCK_END),
+    ] {
         let start = content.find(start_marker);
         let end = content.find(end_marker);
         match (start, end) {
@@ -734,7 +733,9 @@ pub fn inject_wiki_block(content: &str, block: &str) -> Result<String> {
             Ok(out)
         }
         WikiBlockState::Half => {
-            anyhow::bail!("检测到不完整的 wiki 标记对（只出现 {WIKI_BLOCK_START} 或 {WIKI_BLOCK_END} 之一，或顺序颠倒），拒绝修改，请人工检查文件")
+            anyhow::bail!(
+                "检测到不完整的 wiki 标记对（只出现 {WIKI_BLOCK_START} 或 {WIKI_BLOCK_END} 之一，或顺序颠倒），拒绝修改，请人工检查文件"
+            )
         }
     }
 }
@@ -761,7 +762,9 @@ pub fn remove_wiki_block(content: &str) -> Result<Option<String>> {
             }
             WikiBlockState::None => break,
             WikiBlockState::Half => {
-                anyhow::bail!("检测到不完整的 wiki 标记对（只出现 {WIKI_BLOCK_START} 或 {WIKI_BLOCK_END} 之一，或顺序颠倒），拒绝修改，请人工检查文件")
+                anyhow::bail!(
+                    "检测到不完整的 wiki 标记对（只出现 {WIKI_BLOCK_START} 或 {WIKI_BLOCK_END} 之一，或顺序颠倒），拒绝修改，请人工检查文件"
+                )
             }
         }
     }
@@ -815,11 +818,11 @@ pub fn install_wiki(root: &crate::project::ProjectRoot, also_claude: bool) -> Re
         // 配置畸形（如 TOML 语法错误）：按默认值继续注入——wiki 块缺失
         // 比注入失败更隐蔽（U02 语义保持）
         Err(e) => {
-            println!(
-                "提示: 配置解析失败（{e}），注入块按默认产物路径 (.code-repo-wiki / zh) 渲染"
-            );
-            let cfg = crate::config::load_config(&root.join(Path::new(crate::config::PROJECT_CONFIG_FILE)))
-                .unwrap_or_else(|_| crate::config::schema::WikiConfig::default());
+            println!("提示: 配置解析失败（{e}），注入块按默认产物路径 (.code-repo-wiki / zh) 渲染");
+            let cfg = crate::config::load_config(
+                &root.join(Path::new(crate::config::PROJECT_CONFIG_FILE)),
+            )
+            .unwrap_or_else(|_| crate::config::schema::WikiConfig::default());
             let output_dir = cfg.output_dir().to_string_lossy().into_owned();
             let lang = cfg.wiki.language;
             let block = wiki_block_template(&output_dir, &lang);
@@ -880,10 +883,7 @@ mod tests {
     /// append_note 追加式日志：同一日期节内序号递增；两次调用不覆盖历史
     #[test]
     fn test_append_note_increments_sequence() {
-        let dir = std::env::temp_dir().join(format!(
-            "code_repo_wiki_note_{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_note_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -892,13 +892,15 @@ mod tests {
 
         let log = std::fs::read_to_string(dir.join("wiki").join("zh").join("_log.md")).unwrap();
         assert!(log.contains("## "), "应含日期节");
-        assert!(log.contains("- 1. 第一条记录"), "第一条应编号 1, 实际: {log}");
-        assert!(log.contains("- 2. 第二条记录"), "第二条应编号 2, 实际: {log}");
-        assert_eq!(
-            log.matches("- ").count(),
-            2,
-            "应恰好 2 条记录, 实际: {log}"
+        assert!(
+            log.contains("- 1. 第一条记录"),
+            "第一条应编号 1, 实际: {log}"
         );
+        assert!(
+            log.contains("- 2. 第二条记录"),
+            "第二条应编号 2, 实际: {log}"
+        );
+        assert_eq!(log.matches("- ").count(), 2, "应恰好 2 条记录, 实际: {log}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -906,10 +908,8 @@ mod tests {
     /// 空内容拒绝写入（显式报错，不产生空记录）
     #[test]
     fn test_append_note_rejects_empty() {
-        let dir = std::env::temp_dir().join(format!(
-            "code_repo_wiki_note_empty_{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("code_repo_wiki_note_empty_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         assert!(append_note(&dir, "zh", "   ").is_err(), "空内容应报错");
         let _ = std::fs::remove_dir_all(&dir);
@@ -928,12 +928,17 @@ mod tests {
     /// 幂等替换：已含完整标记对 → 旧块整体替换为模板，用户前后内容保留
     #[test]
     fn test_inject_wiki_block_replaces_existing() {
-        let before =
-            "用户头部\n\n<!-- CODE-REPO-WIKI:START -->\n旧块内容\n<!-- CODE-REPO-WIKI:END -->\n\n用户尾部\n";
+        let before = "用户头部\n\n<!-- CODE-REPO-WIKI:START -->\n旧块内容\n<!-- CODE-REPO-WIKI:END -->\n\n用户尾部\n";
         let out = inject_wiki_block(before, &test_template()).unwrap();
-        assert!(out.starts_with("用户头部\n\n"), "用户头部应保留, 实际: {out}");
+        assert!(
+            out.starts_with("用户头部\n\n"),
+            "用户头部应保留, 实际: {out}"
+        );
         assert!(out.ends_with("用户尾部\n"), "用户尾部应保留, 实际: {out}");
-        assert!(out.contains(&test_template()), "旧块应被替换为模板, 实际: {out}");
+        assert!(
+            out.contains(&test_template()),
+            "旧块应被替换为模板, 实际: {out}"
+        );
         assert!(!out.contains("旧块内容"), "旧块内容应被替换掉, 实际: {out}");
     }
 
@@ -949,8 +954,14 @@ mod tests {
             !out.contains("<!-- REPO-WIKI:START -->") && !out.contains("<!-- REPO-WIKI:END -->"),
             "旧标记应随迁移消失, 实际: {out}"
         );
-        assert!(!out.contains("旧名块内容"), "旧块内容应被替换掉, 实际: {out}");
-        assert!(out.contains("用户头部") && out.contains("用户尾部"), "用户内容应保留: {out}");
+        assert!(
+            !out.contains("旧名块内容"),
+            "旧块内容应被替换掉, 实际: {out}"
+        );
+        assert!(
+            out.contains("用户头部") && out.contains("用户尾部"),
+            "用户内容应保留: {out}"
+        );
     }
 
     /// 幂等：同一文档注入两次 → 结果一致（第二次走替换路径）
@@ -1000,11 +1011,16 @@ mod tests {
     /// remove：完整标记对 → 移除标记及内容，用户前后内容保留
     #[test]
     fn test_remove_wiki_block_removes_only_block() {
-        let content =
-            "用户头部\n\n<!-- CODE-REPO-WIKI:START -->\n块内容\n<!-- CODE-REPO-WIKI:END -->\n用户尾部\n";
+        let content = "用户头部\n\n<!-- CODE-REPO-WIKI:START -->\n块内容\n<!-- CODE-REPO-WIKI:END -->\n用户尾部\n";
         let out = remove_wiki_block(content).unwrap().unwrap();
-        assert!(!out.contains(WIKI_BLOCK_START) && !out.contains(WIKI_BLOCK_END), "标记应被移除: {out}");
-        assert!(out.contains("用户头部") && out.contains("用户尾部"), "用户内容应保留: {out}");
+        assert!(
+            !out.contains(WIKI_BLOCK_START) && !out.contains(WIKI_BLOCK_END),
+            "标记应被移除: {out}"
+        );
+        assert!(
+            out.contains("用户头部") && out.contains("用户尾部"),
+            "用户内容应保留: {out}"
+        );
     }
 
     /// remove：新旧标记块并存（升级残留的双块）→ 一并移除，用户内容保留
@@ -1016,7 +1032,10 @@ mod tests {
             !out.contains("REPO-WIKI") && !out.contains("CODE-REPO-WIKI"),
             "两代标记都应被移除, 实际: {out}"
         );
-        assert!(out.contains("用户头部") && out.contains("用户尾部"), "用户内容应保留: {out}");
+        assert!(
+            out.contains("用户头部") && out.contains("用户尾部"),
+            "用户内容应保留: {out}"
+        );
     }
 
     /// remove：半标记同样报错（当前标记与旧标记都检）
@@ -1025,7 +1044,9 @@ mod tests {
         let err = remove_wiki_block("<!-- CODE-REPO-WIKI:START -->\n").unwrap_err();
         assert!(err.to_string().contains("不完整"), "半标记应报错: {err}");
         let err = remove_wiki_block("<!-- REPO-WIKI:START -->\n").unwrap_err();
-        assert!(err.to_string().contains("不完整"), "旧标记半标记应报错: {err}");
+        assert!(
+            err.to_string().contains("不完整"),
+            "旧标记半标记应报错: {err}"
+        );
     }
 }
-

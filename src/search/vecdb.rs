@@ -110,8 +110,7 @@ impl VecDb {
     /// 打开或创建向量数据库（注册扩展 + 建表延迟到首次插入）
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         ensure_extension_registered();
-        let conn = Connection::open(path.as_ref())
-            .context("打开向量数据库失败")?;
+        let conn = Connection::open(path.as_ref()).context("打开向量数据库失败")?;
         // WAL 模式：与 FTS5 存储同并发契约（多读单写）
         conn.pragma_update(None, "journal_mode", "WAL")
             .context("设置 WAL 模式失败")?;
@@ -189,7 +188,8 @@ impl VecDb {
             Some(existing) if existing != dim => {
                 tracing::warn!(
                     "向量维度变化（{} → {}），重建语义索引（embedding 模型变更需全量重新索引）",
-                    existing, dim
+                    existing,
+                    dim
                 );
                 self.rebuild_table(dim)
             }
@@ -286,7 +286,13 @@ impl VecDb {
             // 2. 采样内最后一行 > 阈值——阈值边界之后的（更远）行必然也 > 阈值
             //    （distance 升序），无更多可并入结果
             // 3. 达到扩样上限——防御全表相似退化
-            if rows.len() < sample || rows.last().map(|r| r.distance > max_distance).unwrap_or(true) || sample >= MAX_KNN_CANDIDATES {
+            if rows.len() < sample
+                || rows
+                    .last()
+                    .map(|r| r.distance > max_distance)
+                    .unwrap_or(true)
+                || sample >= MAX_KNN_CANDIDATES
+            {
                 break;
             }
             sample = (sample * 2).min(MAX_KNN_CANDIDATES);
@@ -302,7 +308,10 @@ impl VecDb {
         let sql = format!("DELETE FROM {VECTOR_TABLE} WHERE file_path = ?1");
         let count = self
             .conn
-            .execute(&sql, rusqlite::params![crate::incremental::norm_sep(file_path)])
+            .execute(
+                &sql,
+                rusqlite::params![crate::incremental::norm_sep(file_path)],
+            )
             .context("删除向量失败")?;
         Ok(count)
     }
@@ -357,9 +366,21 @@ mod tests {
 
     fn make_items() -> Vec<(String, String, Vec<f32>)> {
         vec![
-            ("src/a.rs".into(), r#"{"name":"alpha"}"#.into(), vec![1.0, 0.0, 0.0]),
-            ("src/b.rs".into(), r#"{"name":"beta"}"#.into(), vec![0.0, 1.0, 0.0]),
-            ("src/c.rs".into(), r#"{"name":"gamma"}"#.into(), vec![-1.0, 0.0, 0.0]),
+            (
+                "src/a.rs".into(),
+                r#"{"name":"alpha"}"#.into(),
+                vec![1.0, 0.0, 0.0],
+            ),
+            (
+                "src/b.rs".into(),
+                r#"{"name":"beta"}"#.into(),
+                vec![0.0, 1.0, 0.0],
+            ),
+            (
+                "src/c.rs".into(),
+                r#"{"name":"gamma"}"#.into(),
+                vec![-1.0, 0.0, 0.0],
+            ),
         ]
     }
 
@@ -402,7 +423,13 @@ mod tests {
         // limit=5。若不做扩样只取 5 条会漏掉；循环扩样必须返回全部 30 条。
         let db = VecDb::open(tmp_db("expand")).unwrap();
         let items: Vec<(String, String, Vec<f32>)> = (0..30)
-            .map(|i| (format!("src/f{i}.rs"), format!(r#"{{"name":"f{i}"}}"#), vec![1.0, 0.0, 0.0]))
+            .map(|i| {
+                (
+                    format!("src/f{i}.rs"),
+                    format!(r#"{{"name":"f{i}"}}"#),
+                    vec![1.0, 0.0, 0.0],
+                )
+            })
             .collect();
         db.insert_batch(&items).unwrap();
 
@@ -447,14 +474,22 @@ mod tests {
     fn test_empty_batch_and_zero_dim() {
         let db = VecDb::open(tmp_db("empty")).unwrap();
         db.insert_batch(&[]).unwrap(); // 空批次静默成功
-        assert!(db.insert_batch(&[("a".into(), "b".into(), vec![])]).is_err(), "零维向量应报错");
+        assert!(
+            db.insert_batch(&[("a".into(), "b".into(), vec![])])
+                .is_err(),
+            "零维向量应报错"
+        );
     }
 
     #[test]
     fn test_empty_db_operations_are_noop() {
         let db = VecDb::open(tmp_db("no_table")).unwrap();
         assert_eq!(db.entry_count().unwrap(), 0);
-        assert!(db.knn("[1,0,0]", 10, MAX_COSINE_DISTANCE).unwrap().is_empty());
+        assert!(
+            db.knn("[1,0,0]", 10, MAX_COSINE_DISTANCE)
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(db.remove_by_file("src/a.rs").unwrap(), 0);
         db.clear().unwrap(); // 表不存在时静默成功
     }
@@ -473,8 +508,16 @@ mod tests {
         // 首批 5 条：其中 2 条共用同一 file_path（模拟单文件多实体，
         // remove_by_file 一次删整组，与增量路径的删旧行语义一致）
         let mut items = make_items();
-        items.push(("src/shared.rs".into(), r#"{"name":"delta"}"#.into(), vec![0.0, 0.0, 1.0]));
-        items.push(("src/shared.rs".into(), r#"{"name":"epsilon"}"#.into(), vec![0.5, 0.5, 0.0]));
+        items.push((
+            "src/shared.rs".into(),
+            r#"{"name":"delta"}"#.into(),
+            vec![0.0, 0.0, 1.0],
+        ));
+        items.push((
+            "src/shared.rs".into(),
+            r#"{"name":"epsilon"}"#.into(),
+            vec![0.5, 0.5, 0.0],
+        ));
         db.insert_batch(&items).unwrap();
         assert_eq!(db.entry_count().unwrap(), 5);
 
@@ -485,13 +528,23 @@ mod tests {
 
         // 增量第二步：再次 insert_batch 3 条新路径（表非空 + rowid 残值）
         let second: Vec<(String, String, Vec<f32>)> = (0..3)
-            .map(|i| (format!("src/next{i}.rs"), format!(r#"{{"name":"next{i}"}}"#), vec![0.2, 0.8, 0.0]))
+            .map(|i| {
+                (
+                    format!("src/next{i}.rs"),
+                    format!(r#"{{"name":"next{i}"}}"#),
+                    vec![0.2, 0.8, 0.0],
+                )
+            })
             .collect();
         db.insert_batch(&second).unwrap();
 
         // 全表查询（max_distance=2.0 放行全部，同既有测试范式）：6 条且含新增路径
         let rows = db.knn("[1,0,0]", 10, 2.0).unwrap();
-        assert_eq!(rows.len(), 6, "非空表 remove 后 insert_batch 必须成功且行数正确");
+        assert_eq!(
+            rows.len(),
+            6,
+            "非空表 remove 后 insert_batch 必须成功且行数正确"
+        );
         assert!(rows.iter().any(|r| r.node_json.contains("next0")));
         assert!(rows.iter().any(|r| r.node_json.contains("next2")));
         assert_eq!(db.entry_count().unwrap(), 6);

@@ -345,8 +345,7 @@ pub struct TqsReport {
 
 /// t04：判定尺度声明（2606.00093 item 1）——0-10 连续五维点分，
 /// 解析后 clamp 到 [0,10]（prompt 示例为整数，解析接受小数并收敛越界）
-const TQS_JUDGMENT_SCALE: &str =
-    "0-10 连续五维点分（clarity/readability/conciseness/richness/structure），解析后 clamp 到 [0,10]";
+const TQS_JUDGMENT_SCALE: &str = "0-10 连续五维点分（clarity/readability/conciseness/richness/structure），解析后 clamp 到 [0,10]";
 
 /// t04：聚合层级声明（2606.00093 item 10）——模块级 macro average
 const TQS_AGGREGATION_LEVEL: &str = "模块级 macro average（每模块五维均值后跨模块平均）";
@@ -354,8 +353,7 @@ const TQS_AGGREGATION_LEVEL: &str = "模块级 macro average（每模块五维�
 /// t04：tie/abstain 处理声明（2606.00093 item 6）——三态判定口径：
 /// 平局不进胜；AB/BA 判定相异计位置翻转；2×2 一致表平局按 B 胜计入；
 /// 解析/调用失败 → 模块排除（计入 low_confidence，不 recode）
-const TQS_TIE_HANDLING: &str =
-    "判定三态（A胜/平/B胜）：平局不进胜；AB 与 BA 顺序判定相异计位置翻转；2×2 一致表平局按 B 胜计入；解析/调用失败的模块排除并计入 low_confidence（不 recode）";
+const TQS_TIE_HANDLING: &str = "判定三态（A胜/平/B胜）：平局不进胜；AB 与 BA 顺序判定相异计位置翻转；2×2 一致表平局按 B 胜计入；解析/调用失败的模块排除并计入 low_confidence（不 recode）";
 
 /// t04（Phase 2）：TQS 基础复测轮数（AB/BA 各 N 轮）——2606.13685：
 /// 单次判定翻转率均值 13.6%，多数投票 90% 保真需约 3 trials、95% 需
@@ -437,8 +435,16 @@ fn measure_coverage(root: &ProjectRoot, pages: &[(PathBuf, String)]) -> Result<C
         .iter()
         .filter(|name| corpus.contains(name.as_str()))
         .count();
-    let ratio = if total == 0 { 1.0 } else { covered as f64 / total as f64 };
-    Ok(CoverageReport { total_entities: total, covered_entities: covered, ratio })
+    let ratio = if total == 0 {
+        1.0
+    } else {
+        covered as f64 / total as f64
+    };
+    Ok(CoverageReport {
+        total_entities: total,
+        covered_entities: covered,
+        ratio,
+    })
 }
 
 /// 模块名派生（与 chunk_by_file/collect_index_items 同规则）：
@@ -482,7 +488,9 @@ fn measure_completeness_at_k(
         .iter()
         .flat_map(|i| {
             let module = module_of(&i.path);
-            i.entities.iter().map(move |e| (e.name.clone(), module.clone()))
+            i.entities
+                .iter()
+                .map(move |e| (e.name.clone(), module.clone()))
         })
         .collect();
     entities.sort();
@@ -558,7 +566,11 @@ fn measure_completeness_at_k(
             hit += 1;
         }
     }
-    let ratio = if total == 0 { 1.0 } else { hit as f64 / total as f64 };
+    let ratio = if total == 0 {
+        1.0
+    } else {
+        hit as f64 / total as f64
+    };
     Ok(CompletenessReport {
         total_entities: total,
         hit_entities: hit,
@@ -580,10 +592,16 @@ fn measure_doc_info(pages: &[(PathBuf, String)]) -> DocInfoReport {
         // 交叉引用：[文本](目标) 形态（粗粒度统计：`](` 出现次数）
         cross_references += content.matches("](").count();
         // 代码块围栏对数：``` 行数 / 2（未闭合按 1 对计，结构损坏由 lint 暴露）
-        let fences = content.lines().filter(|l| l.trim_start().starts_with("```")).count();
+        let fences = content
+            .lines()
+            .filter(|l| l.trim_start().starts_with("```"))
+            .count();
         code_blocks += fences.div_ceil(2);
         // Mermaid 图数：```mermaid 起始围栏数
-        diagrams += content.lines().filter(|l| l.trim_start().starts_with("```mermaid")).count();
+        diagrams += content
+            .lines()
+            .filter(|l| l.trim_start().starts_with("```mermaid"))
+            .count();
     }
 
     DocInfoReport {
@@ -620,7 +638,11 @@ struct DocInfoLlmOutcome {
 /// v32（6.2）：Doc Info 信息性裁判 prompt——要求 0-10 评分；
 /// 页面过少/与模块无关时允许输出 uncertain（证据不足显式声明，
 /// 不猜测——与 rubric 三态同协议）
-fn doc_info_judge_prompt(module: &str, summary: &str, references: &str) -> Vec<crate::generate::llm::Message> {
+fn doc_info_judge_prompt(
+    module: &str,
+    summary: &str,
+    references: &str,
+) -> Vec<crate::generate::llm::Message> {
     vec![
         crate::generate::llm::Message::system(
             "你是 Wiki 文档信息性裁判。判断模块文档页是否提供了关于该模块的实质信息（职责/实体/关系/用法示例）。只输出 JSON：{\"score\": 0-10}。若页面内容过少或与模块无关，输出 {\"verdict\": \"uncertain\"}，不要猜测。\n\n示例：\n页面详述模块职责、核心实体与用法时 → {\"score\": 9}；页面内容过少或与模块无关时 → {\"verdict\": \"uncertain\"}",
@@ -728,7 +750,11 @@ fn measure_doc_info_llm(
     }
     DocInfoLlmOutcome {
         judged: true,
-        score: if judged_n == 0 { 0.0 } else { total / judged_n as f64 },
+        score: if judged_n == 0 {
+            0.0
+        } else {
+            total / judged_n as f64
+        },
         judged_modules: judged_n,
         abstain_modules: abstain_n,
     }
@@ -747,7 +773,10 @@ fn measure_lint(output_dir: &Path, root: &ProjectRoot) -> LintReport {
     for issue in &issues {
         *by_kind.entry(issue.kind.to_string()).or_default() += 1;
     }
-    LintReport { total_issues: issues.len(), by_kind }
+    LintReport {
+        total_issues: issues.len(),
+        by_kind,
+    }
 }
 
 /// 维度 4：增量召回（git commit 回放）
@@ -758,10 +787,7 @@ fn measure_lint(output_dir: &Path, root: &ProjectRoot) -> LintReport {
 /// 召回率 = 触发重生成的变更 commit / 有变更的 commit。
 /// 边界：非 git 仓库返回空集（recall = 1.0 空集约定）；commit 不足 20 个
 /// 按实际数量回放；checkout 失败（脏工作区/文件冲突）跳过该 commit 并告警。
-fn measure_update_recall(
-    config: &WikiConfig,
-    root: &ProjectRoot,
-) -> Result<UpdateRecallReport> {
+fn measure_update_recall(config: &WikiConfig, root: &ProjectRoot) -> Result<UpdateRecallReport> {
     let repo = match git2::Repository::open(root.path()) {
         Ok(r) => r,
         Err(_) => {
@@ -783,9 +809,7 @@ fn measure_update_recall(
     // 有未提交改动即拒绝执行——安全边界优先于评测便利性，宁可拒绝也不
     // 静默破坏用户数据（与"禁止兜底掩盖 bug"同源：这里是禁止兜底掩盖
     // 数据丢失）。
-    let statuses = repo
-        .statuses(None)
-        .context("bench: 读取 git 状态失败")?;
+    let statuses = repo.statuses(None).context("bench: 读取 git 状态失败")?;
     // 过滤被忽略条目：git reset --hard 只回滚 tracked 内容，ignored
     // 未跟踪文件（产物目录/依赖缓存等）不受回放影响，不构成数据丢失风险
     //（实测事故是 tracked 未提交改动被吞，与被忽略文件无关）
@@ -803,11 +827,21 @@ fn measure_update_recall(
             .map(|e| {
                 let path = e.path().unwrap_or("(unknown)");
                 let mut tags = Vec::new();
-                if e.status().contains(git2::Status::INDEX_NEW) { tags.push("已暂存新增"); }
-                if e.status().contains(git2::Status::WT_NEW) { tags.push("未跟踪"); }
-                if e.status().contains(git2::Status::WT_MODIFIED) { tags.push("已修改"); }
-                if e.status().contains(git2::Status::WT_DELETED) { tags.push("已删除"); }
-                if e.status().contains(git2::Status::IGNORED) { tags.push("被忽略"); }
+                if e.status().contains(git2::Status::INDEX_NEW) {
+                    tags.push("已暂存新增");
+                }
+                if e.status().contains(git2::Status::WT_NEW) {
+                    tags.push("未跟踪");
+                }
+                if e.status().contains(git2::Status::WT_MODIFIED) {
+                    tags.push("已修改");
+                }
+                if e.status().contains(git2::Status::WT_DELETED) {
+                    tags.push("已删除");
+                }
+                if e.status().contains(git2::Status::IGNORED) {
+                    tags.push("被忽略");
+                }
                 format!("{} [{}]", path, tags.join(","))
             })
             .collect();
@@ -872,14 +906,22 @@ fn measure_update_recall(
             let prev_tree = match commits[i - 1].tree() {
                 Ok(t) => Some(t),
                 Err(e) => {
-                    tracing::warn!("bench: commit {} tree 读取失败，按有变更计入: {}", commits[i - 1].id(), e);
+                    tracing::warn!(
+                        "bench: commit {} tree 读取失败，按有变更计入: {}",
+                        commits[i - 1].id(),
+                        e
+                    );
                     None
                 }
             };
             let cur_tree = match commit.tree() {
                 Ok(t) => Some(t),
                 Err(e) => {
-                    tracing::warn!("bench: commit {} tree 读取失败，按有变更计入: {}", commit_id, e);
+                    tracing::warn!(
+                        "bench: commit {} tree 读取失败，按有变更计入: {}",
+                        commit_id,
+                        e
+                    );
                     None
                 }
             };
@@ -950,7 +992,11 @@ fn measure_update_recall(
             .with_context(|| "回放后恢复原 HEAD 失败（用户仓库停留在回放 commit）")?;
     }
 
-    let recall = if with_changes == 0 { 1.0 } else { correctly_updated as f64 / with_changes as f64 };
+    let recall = if with_changes == 0 {
+        1.0
+    } else {
+        correctly_updated as f64 / with_changes as f64
+    };
     Ok(UpdateRecallReport {
         commits_scanned: scanned,
         commits_with_changes: with_changes,
@@ -1031,11 +1077,7 @@ pub fn run_bench(
     // v32 8.1：回放生成后读取分段计时（无回放/文件缺失 → None 不渲染）
     let timings = read_last_timings(config.output_dir());
 
-    let tqs = if judge {
-        measure_tqs(config)?
-    } else {
-        None
-    };
+    let tqs = if judge { measure_tqs(config)? } else { None };
     // v14 C 组：维度 7 Rubric（docs_tree 缺失/LLM 不可用 → None 不中断）
     let rubric = if judge {
         measure_rubrics(config, root, &references)?
@@ -1140,8 +1182,8 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
         tracing::warn!("TQS 跳过：导出快照不存在（先运行 generate 落盘快照）");
         return Ok(None);
     };
-    let snapshot: crate::output::ExportSnapshot = serde_json::from_str(&snapshot_content)
-        .with_context(|| "解析导出快照失败")?;
+    let snapshot: crate::output::ExportSnapshot =
+        serde_json::from_str(&snapshot_content).with_context(|| "解析导出快照失败")?;
     // 只评模块页（WikiPage）；旧文档按 title 索引
     let old_docs: std::collections::HashMap<String, String> = snapshot
         .documents
@@ -1228,7 +1270,9 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
             for a_first in [true, false] {
                 parse_total += 1;
                 let messages = tqs_prompt(&config.wiki.language, old, new, a_first);
-                match rt.block_on(provider.complete_with_budget(&messages, Some(BENCH_MAX_OUTPUT_TOKENS))) {
+                match rt.block_on(
+                    provider.complete_with_budget(&messages, Some(BENCH_MAX_OUTPUT_TOKENS)),
+                ) {
                     Ok(content) => match parse_tqs_score(&content) {
                         Ok((a, b)) => {
                             parse_ok += 1;
@@ -1285,7 +1329,8 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
             sums[i] += dim_sum / scores.len() as f64;
             // 该维标准差（复测波动幅度）
             let mean = dim_sum / scores.len() as f64;
-            let var: f64 = scores.iter().map(|s| (s[i] - mean).powi(2)).sum::<f64>() / scores.len() as f64;
+            let var: f64 =
+                scores.iter().map(|s| (s[i] - mean).powi(2)).sum::<f64>() / scores.len() as f64;
             std_sum += var.sqrt();
         }
         // κ 一致性：该模块内任意两轮、同一维度分数绝对差 ≤1 的比例
@@ -1304,8 +1349,16 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
         // v14 C 组（MVVP 缺口）：位置偏差——每维度比较 AB 组与 BA 组
         // 均值，A 胜判定累计（P(A 胜) 偏离 0.5 即位置敏感）
         for i in 0..5 {
-            let ab: Vec<f64> = round_scores.iter().filter(|(af, _, _)| *af).map(|(_, a, _)| a[i]).collect();
-            let ba: Vec<f64> = round_scores.iter().filter(|(af, _, _)| !*af).map(|(_, _, b)| b[i]).collect();
+            let ab: Vec<f64> = round_scores
+                .iter()
+                .filter(|(af, _, _)| *af)
+                .map(|(_, a, _)| a[i])
+                .collect();
+            let ba: Vec<f64> = round_scores
+                .iter()
+                .filter(|(af, _, _)| !*af)
+                .map(|(_, _, b)| b[i])
+                .collect();
             if !ab.is_empty() && !ba.is_empty() {
                 position_pairs += 1;
                 let ab_mean = ab.iter().sum::<f64>() / ab.len() as f64;
@@ -1479,13 +1532,17 @@ struct ModuleJudgmentMetrics {
 }
 
 fn module_judgment_metrics(round_scores: &[(bool, [f64; 5], [f64; 5])]) -> ModuleJudgmentMetrics {
-    let judgments: Vec<i8> = round_scores.iter().map(|(_, a, b)| judgment(a, b)).collect();
+    let judgments: Vec<i8> = round_scores
+        .iter()
+        .map(|(_, a, b)| judgment(a, b))
+        .collect();
     let majority = majority_judgment(&judgments);
     let flips = judgments.iter().filter(|&&j| j != majority).count();
     let mut pos_flips = 0usize;
     let mut pairs = 0usize;
     for k in (0..round_scores.len()).step_by(2) {
-        let (Some((_, a1, b1)), Some((_, a2, b2))) = (round_scores.get(k), round_scores.get(k + 1)) else {
+        let (Some((_, a1, b1)), Some((_, a2, b2))) = (round_scores.get(k), round_scores.get(k + 1))
+        else {
             continue;
         };
         if judgment(a1, b1) != judgment(a2, b2) {
@@ -1499,7 +1556,11 @@ fn module_judgment_metrics(round_scores: &[(bool, [f64; 5], [f64; 5])]) -> Modul
         } else {
             flips as f64 / round_scores.len() as f64
         },
-        position_flip_rate: if pairs == 0 { 0.0 } else { pos_flips as f64 / pairs as f64 },
+        position_flip_rate: if pairs == 0 {
+            0.0
+        } else {
+            pos_flips as f64 / pairs as f64
+        },
     }
 }
 
@@ -1542,7 +1603,8 @@ fn module_tie_rate(round_scores: &[(bool, [f64; 5], [f64; 5])]) -> f64 {
 fn module_kappa_table(round_scores: &[(bool, [f64; 5], [f64; 5])]) -> [[usize; 2]; 2] {
     let mut table = [[0usize; 2]; 2];
     for k in (0..round_scores.len()).step_by(2) {
-        let (Some((_, a1, b1)), Some((_, a2, b2))) = (round_scores.get(k), round_scores.get(k + 1)) else {
+        let (Some((_, a1, b1)), Some((_, a2, b2))) = (round_scores.get(k), round_scores.get(k + 1))
+        else {
             continue;
         };
         for d in 0..5 {
@@ -1592,7 +1654,8 @@ const RUBRIC_LEAF_REPEATS_ESCALATED: usize = 5;
 
 /// t04：Rubric 聚合层级声明（2606.00093 item 10）——叶子级多数投票
 /// → 权重自底向上聚合
-const RUBRIC_AGGREGATION_LEVEL: &str = "叶子级 3 次多数投票（争议升级 5 次）→ 权重自底向上聚合（abstain 叶子排除）";
+const RUBRIC_AGGREGATION_LEVEL: &str =
+    "叶子级 3 次多数投票（争议升级 5 次）→ 权重自底向上聚合（abstain 叶子排除）";
 
 /// Rubric 打分执行（维度 7）：docs_tree → 3 次独立生成 → 1 次合并 →
 /// 叶子 0/1 判定 → 加权自底向上聚合
@@ -1600,7 +1663,11 @@ const RUBRIC_AGGREGATION_LEVEL: &str = "叶子级 3 次多数投票（争议升�
 /// root 为被测仓库根（README/docs 收集基准）；产物证据从 config.output_dir().display()
 /// 读取（overview + api + 模块页标题，截断控制 token 成本）。
 /// LLM 不可用或 docs_tree 缺失时返回 None（"失败只告警"，不中断评测）。
-fn measure_rubrics(config: &WikiConfig, root: &ProjectRoot, references: &str) -> Result<Option<RubricReport>> {
+fn measure_rubrics(
+    config: &WikiConfig,
+    root: &ProjectRoot,
+    references: &str,
+) -> Result<Option<RubricReport>> {
     // 1. docs_tree 收集：README + docs/*.md（仓库意图的权威来源；
     //    缺失时无法推导需求，跳过本维度——不是文档质量问题）
     let mut docs_text = String::new();
@@ -1660,10 +1727,9 @@ fn measure_rubrics(config: &WikiConfig, root: &ProjectRoot, references: &str) ->
     }
     // 3. 第 4 次调用语义合并（>70% 相似度节点合并由 LLM 执行；合并失败
     //    降级为第一份生成结果——合并是质量增强而非契约）
-    let merged = match rt.block_on(provider.complete_with_budget(
-        &rubric_merge_prompt(&trees),
-        Some(BENCH_MAX_OUTPUT_TOKENS),
-    )) {
+    let merged = match rt.block_on(
+        provider.complete_with_budget(&rubric_merge_prompt(&trees), Some(BENCH_MAX_OUTPUT_TOKENS)),
+    ) {
         Ok(content) => match parse_rubric_tree(&content) {
             Ok(tree) => tree,
             Err(e) => {
@@ -1727,7 +1793,9 @@ fn measure_rubrics(config: &WikiConfig, root: &ProjectRoot, references: &str) ->
             attempts += 1;
             // 同生成轮：判定输出短但需完整 message（推理型模型预算吞没
             // 风险一致），与 TQS/合并同口径给足预算
-            match rt.block_on(provider.complete_with_budget(&messages, Some(BENCH_MAX_OUTPUT_TOKENS))) {
+            match rt
+                .block_on(provider.complete_with_budget(&messages, Some(BENCH_MAX_OUTPUT_TOKENS)))
+            {
                 Ok(content) => match parse_rubric_verdict(&content) {
                     Some(RubricVerdict::Satisfied) => votes.push(Some(true)),
                     Some(RubricVerdict::Unsatisfied) => votes.push(Some(false)),
@@ -1745,7 +1813,10 @@ fn measure_rubrics(config: &WikiConfig, root: &ProjectRoot, references: &str) ->
                         votes.push(None);
                     }
                     None => {
-                        tracing::warn!("Rubric 叶子判定解析失败（计 abstain）: {}", leaf.requirement);
+                        tracing::warn!(
+                            "Rubric 叶子判定解析失败（计 abstain）: {}",
+                            leaf.requirement
+                        );
                         votes.push(None);
                     }
                 },
@@ -1814,7 +1885,9 @@ fn rubric_generation_prompt(docs_text: &str) -> Vec<crate::generate::llm::Messag
 
 /// Rubric 合并 prompt：多份独立生成的 rubric 树 → 语义合并后的单树
 fn rubric_merge_prompt(trees: &[Vec<RubricNode>]) -> Vec<crate::generate::llm::Message> {
-    let mut user = String::from("合并以下多份独立生成的 rubrics 为一份：语义相同或高度相似（>70%）的需求合并为一条（权重取均值），其余保留；保持层级结构（最多 3 层）。只输出合并后的 JSON：{\"rubrics\": [...]}。\n\n示例：\n两份输入各含\"说明安装步骤\"需求时，合并为一条：{\"rubrics\": [{\"requirement\": \"说明安装步骤\", \"weight\": 3, \"sub_tasks\": []}]}\n\n");
+    let mut user = String::from(
+        "合并以下多份独立生成的 rubrics 为一份：语义相同或高度相似（>70%）的需求合并为一条（权重取均值），其余保留；保持层级结构（最多 3 层）。只输出合并后的 JSON：{\"rubrics\": [...]}。\n\n示例：\n两份输入各含\"说明安装步骤\"需求时，合并为一条：{\"rubrics\": [{\"requirement\": \"说明安装步骤\", \"weight\": 3, \"sub_tasks\": []}]}\n\n",
+    );
     for (i, tree) in trees.iter().enumerate() {
         user.push_str(&format!(
             "--- 第 {} 份 ---\n{}\n",
@@ -1838,7 +1911,12 @@ fn rubric_merge_prompt(trees: &[Vec<RubricNode>]) -> Vec<crate::generate::llm::M
 /// v32（6.1 FR-102）：三态协议——uncertain 表示 LLM 主动声明证据
 /// 不足以判定（区别于解析/调用失败的管线 abstain）；uncertain 由
 /// 调用方重试一次，仍不确定才记 abstain（不计入分母）。
-fn rubric_judge_prompt(requirement: &str, evidence: &str, reverse_options: bool, references: &str) -> Vec<crate::generate::llm::Message> {
+fn rubric_judge_prompt(
+    requirement: &str,
+    evidence: &str,
+    reverse_options: bool,
+    references: &str,
+) -> Vec<crate::generate::llm::Message> {
     let options = if reverse_options {
         "\"unsatisfied\" 或 \"satisfied\""
     } else {
@@ -1850,7 +1928,10 @@ fn rubric_judge_prompt(requirement: &str, evidence: &str, reverse_options: bool,
     vec![
         crate::generate::llm::Message::system(system),
         crate::generate::llm::Message::user(if references.is_empty() {
-            format!("需求：{}\n\n--- 文档产物摘要 ---\n{}", requirement, evidence)
+            format!(
+                "需求：{}\n\n--- 文档产物摘要 ---\n{}",
+                requirement, evidence
+            )
         } else {
             format!(
                 "需求：{}\n\n--- 文档产物摘要 ---\n{}\n\n## 参考材料（人工对照，评判符合性时优先参考）\n{}",
@@ -1878,8 +1959,8 @@ fn parse_rubric_tree(content: &str) -> Result<Vec<RubricNode>> {
         .trim_start_matches("```")
         .trim_end_matches("```")
         .trim();
-    let value: serde_json::Value = serde_json::from_str(stripped)
-        .with_context(|| "解析 Rubric JSON 失败")?;
+    let value: serde_json::Value =
+        serde_json::from_str(stripped).with_context(|| "解析 Rubric JSON 失败")?;
     // 数组形态直接取；对象形态取 rubrics 键；单对象形态视为单节点树
     let nodes: Vec<serde_json::Value> = match &value {
         serde_json::Value::Array(arr) => arr.clone(),
@@ -1902,9 +1983,7 @@ fn parse_rubric_tree(content: &str) -> Result<Vec<RubricNode>> {
 /// - `sub_tasks` 数组元素为字符串时视为叶子节点（LLM 偶发输出字符串
 ///   数组而非对象数组，实测 8192 预算档复现；字符串语义=需求文本）
 fn parse_rubric_node(v: &serde_json::Value) -> Result<RubricNode> {
-    let map = v
-        .as_object()
-        .with_context(|| "Rubric 节点必须是对象")?;
+    let map = v.as_object().with_context(|| "Rubric 节点必须是对象")?;
     let requirement = map
         .get("requirement")
         .and_then(|r| r.as_str())
@@ -1912,7 +1991,10 @@ fn parse_rubric_node(v: &serde_json::Value) -> Result<RubricNode> {
         .to_string();
     let weight = map
         .get("weight")
-        .and_then(|w| w.as_f64().or_else(|| w.as_str().and_then(|s| s.parse().ok())))
+        .and_then(|w| {
+            w.as_f64()
+                .or_else(|| w.as_str().and_then(|s| s.parse().ok()))
+        })
         .unwrap_or(1.0);
     let sub_tasks = match map.get("sub_tasks") {
         Some(serde_json::Value::Array(arr)) => {
@@ -1975,10 +2057,7 @@ fn collect_leaves(nodes: &[RubricNode]) -> Vec<&RubricNode> {
 
 /// 节点总数（含非叶子）
 fn count_nodes(nodes: &[RubricNode]) -> usize {
-    nodes
-        .iter()
-        .map(|n| 1 + count_nodes(&n.sub_tasks))
-        .sum()
+    nodes.iter().map(|n| 1 + count_nodes(&n.sub_tasks)).sum()
 }
 
 /// 权重 clamp 到 [1, 3]（LLM 输出越界时收敛，聚合分母不因异常权重变形）
@@ -1993,15 +2072,34 @@ fn node_weight(w: f64) -> f64 {
 /// （t04：abstain 叶子显式排除——不贡献权重/分数/σ/叶子计数，
 /// 与 2606.00093 item 6 的 exclude 模式一致，coverage 由调用方以
 /// 有效判定叶子为分母）
-fn aggregate_score(node: &RubricNode, verdicts: &[Option<bool>], leaf_idx: &mut usize) -> RubricScore {
+fn aggregate_score(
+    node: &RubricNode,
+    verdicts: &[Option<bool>],
+    leaf_idx: &mut usize,
+) -> RubricScore {
     if node.sub_tasks.is_empty() {
         let satisfied = verdicts.get(*leaf_idx).copied().flatten();
         *leaf_idx += 1;
         return match satisfied {
-            Some(true) => RubricScore { score: 1.0, std: 0.0, leaves: 1, satisfied: 1 },
-            Some(false) => RubricScore { score: 0.0, std: 0.0, leaves: 1, satisfied: 0 },
+            Some(true) => RubricScore {
+                score: 1.0,
+                std: 0.0,
+                leaves: 1,
+                satisfied: 1,
+            },
+            Some(false) => RubricScore {
+                score: 0.0,
+                std: 0.0,
+                leaves: 1,
+                satisfied: 0,
+            },
             // abstain：整叶子从聚合中排除（权重不进分母、不计数）
-            None => RubricScore { score: 0.0, std: 0.0, leaves: 0, satisfied: 0 },
+            None => RubricScore {
+                score: 0.0,
+                std: 0.0,
+                leaves: 0,
+                satisfied: 0,
+            },
         };
     }
     let mut w_sum = 0.0f64;
@@ -2025,7 +2123,11 @@ fn aggregate_score(node: &RubricNode, verdicts: &[Option<bool>], leaf_idx: &mut 
     }
     RubricScore {
         score: if w_sum > 0.0 { s_sum / w_sum } else { 0.0 },
-        std: if w2_sum > 0.0 { (s2_sum / w2_sum).sqrt() } else { 0.0 },
+        std: if w2_sum > 0.0 {
+            (s2_sum / w2_sum).sqrt()
+        } else {
+            0.0
+        },
         leaves,
         satisfied,
     }
@@ -2104,7 +2206,11 @@ fn build_evidence(output_dir: &Path, lang: &str) -> String {
         titles.sort();
         evidence.push_str(&format!(
             "# 模块页\n{}\n",
-            titles.iter().map(|t| format!("- {t}")).collect::<Vec<_>>().join("\n")
+            titles
+                .iter()
+                .map(|t| format!("- {t}"))
+                .collect::<Vec<_>>()
+                .join("\n")
         ));
     }
     truncate(&evidence, 20_000)
@@ -2120,7 +2226,11 @@ fn truncate(s: &str, max_chars: usize) -> String {
 /// 按命中数降序取 top_k（平局按页名字典序），每页正文截断 3000 字符
 /// （与 build_evidence 同口径控制 token）。返回 (页名, 正文片段)；
 /// 无命中或关键词为空返回空 Vec，调用方维持现状证据（退化安全）。
-fn search_pages(pages: &[(PathBuf, String)], keywords: &[String], top_k: usize) -> Vec<(String, String)> {
+fn search_pages(
+    pages: &[(PathBuf, String)],
+    keywords: &[String],
+    top_k: usize,
+) -> Vec<(String, String)> {
     if keywords.is_empty() || top_k == 0 {
         return Vec::new();
     }
@@ -2138,12 +2248,23 @@ fn search_pages(pages: &[(PathBuf, String)], keywords: &[String], top_k: usize) 
         .collect();
     hits.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     hits.truncate(top_k);
-    hits.into_iter().map(|(name, _, snippet)| (name, snippet)).collect()
+    hits.into_iter()
+        .map(|(name, _, snippet)| (name, snippet))
+        .collect()
 }
 
 /// TQS 裁判 prompt（五维定义固定措辞 + 0-10 量表 + strict JSON）
-fn tqs_prompt(lang: &str, doc_a: &str, doc_b: &str, a_first: bool) -> Vec<crate::generate::llm::Message> {
-    let (first, second) = if a_first { (doc_a, doc_b) } else { (doc_b, doc_a) };
+fn tqs_prompt(
+    lang: &str,
+    doc_a: &str,
+    doc_b: &str,
+    a_first: bool,
+) -> Vec<crate::generate::llm::Message> {
+    let (first, second) = if a_first {
+        (doc_a, doc_b)
+    } else {
+        (doc_b, doc_a)
+    };
     let system = format!(
         r#"你是代码仓库 Wiki 文档质量裁判。对下面两份同一模块的文档（顺序 A、B）分别打五维分，每维 0-10 分：
 - clarity（清晰度）：意图表达是否一目了然
@@ -2190,11 +2311,15 @@ fn parse_tqs_score(content: &str) -> Result<([f64; 5], [f64; 5])> {
         .map(|s| s.trim().trim_end_matches("```").trim())
         .unwrap_or(trimmed);
     // 定位首个 '{' 到最后一个 '}'（裁判可能在 JSON 前写了理由）
-    let start = inner.find('{').ok_or_else(|| anyhow::anyhow!("输出不含 JSON 对象"))?;
-    let end = inner.rfind('}').ok_or_else(|| anyhow::anyhow!("JSON 对象未闭合"))?;
+    let start = inner
+        .find('{')
+        .ok_or_else(|| anyhow::anyhow!("输出不含 JSON 对象"))?;
+    let end = inner
+        .rfind('}')
+        .ok_or_else(|| anyhow::anyhow!("JSON 对象未闭合"))?;
     let json_str = &inner[start..=end];
-    let v: serde_json::Value = serde_json::from_str(json_str)
-        .with_context(|| "裁判输出不是合法 JSON")?;
+    let v: serde_json::Value =
+        serde_json::from_str(json_str).with_context(|| "裁判输出不是合法 JSON")?;
     // 顺序 AB 与 BA 都返回 {A:…, B:…}：A/B 缺任一即报错（输出畸形作废，
     // 不把 B 当 A 兜底——判定的 A 胜/平/B 胜三态依赖两份分数）
     let parse_doc = |key: &str| -> Result<[f64; 5]> {
@@ -2202,9 +2327,15 @@ fn parse_tqs_score(content: &str) -> Result<([f64; 5], [f64; 5])> {
             .get(key)
             .ok_or_else(|| anyhow::anyhow!("缺少 {key} 文档分数"))?;
         let mut scores = [0.0f64; 5];
-        for (i, dim) in ["clarity", "readability", "conciseness", "richness", "structure"]
-            .iter()
-            .enumerate()
+        for (i, dim) in [
+            "clarity",
+            "readability",
+            "conciseness",
+            "richness",
+            "structure",
+        ]
+        .iter()
+        .enumerate()
         {
             scores[i] = doc
                 .get(*dim)
@@ -2229,9 +2360,7 @@ pub fn render_repodoc(report: &BenchReport) -> String {
     // 维度 1：Coverage（实体提及率）——恒可计算，无降级路径
     out.push_str(&format!(
         "- **Coverage 实体提及率**: {:.2}（{}/{} 实体被产物提及）\n",
-        report.coverage.ratio,
-        report.coverage.covered_entities,
-        report.coverage.total_entities
+        report.coverage.ratio, report.coverage.covered_entities, report.coverage.total_entities
     ));
     // 维度 2：Doc Information——LLM 判定与文本统计并存；LLM 不可用时
     // 判定维降级跳过（llm_judged=false 由 measure_doc_info_llm 显式标注）
@@ -2467,19 +2596,38 @@ mod tests {
 
     /// 构造临时小仓库：src/a.rs + src/b.rs（含 git 仓库，供增量回放）
     fn bench_repo(tag: &str) -> (ProjectRoot, PathBuf, WikiConfig) {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_bench_{tag}_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("code_repo_wiki_bench_{tag}_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).unwrap();
-        std::fs::write(dir.join("src").join("a.rs"), "pub fn alpha(x: u32) -> u32 { x + 1 }\n").unwrap();
-        std::fs::write(dir.join("src").join("b.rs"), "pub fn beta(x: u32) -> u32 { x + 2 }\n").unwrap();
+        std::fs::write(
+            dir.join("src").join("a.rs"),
+            "pub fn alpha(x: u32) -> u32 { x + 1 }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("src").join("b.rs"),
+            "pub fn beta(x: u32) -> u32 { x + 2 }\n",
+        )
+        .unwrap();
 
         let config = WikiConfig {
             output_dir: Some((dir.join(".code-repo-wiki").to_string_lossy().into_owned()).into()),
-            wiki: WikiSection { language: "zh".into(), guide: Default::default() },
-            llm: LlmSection { provider: LlmProviderType::Mock, ..Default::default() },
+            wiki: WikiSection {
+                language: "zh".into(),
+                guide: Default::default(),
+            },
+            llm: LlmSection {
+                provider: LlmProviderType::Mock,
+                ..Default::default()
+            },
             ..Default::default()
         };
-        std::fs::write(dir.join("config.toml"), toml::to_string_pretty(&config).unwrap()).unwrap();
+        std::fs::write(
+            dir.join("config.toml"),
+            toml::to_string_pretty(&config).unwrap(),
+        )
+        .unwrap();
 
         // git init（增量回放的前置条件；首次提交需签名）
         let git = git2::Repository::init(&dir).unwrap();
@@ -2502,7 +2650,14 @@ mod tests {
     fn test_coverage_after_generate() {
         let (root, config_path, config) = bench_repo("cov");
         commit_all(root.path(), "init");
-        crate::run_pipeline(Some(&config_path), None, false, &root, &crate::GenerationMode::Full).unwrap();
+        crate::run_pipeline(
+            Some(&config_path),
+            None,
+            false,
+            &root,
+            &crate::GenerationMode::Full,
+        )
+        .unwrap();
 
         let pages = collect_wiki_pages(config.output_dir());
         assert!(!pages.is_empty(), "全量生成后应有产物页");
@@ -2521,8 +2676,8 @@ mod tests {
     /// 产物模块页 src_net_tcp.md（wiki_file_name 同规则）存在。
     #[test]
     fn test_completeness_hit_when_module_page_exists() {
-        let dir = std::env::temp_dir()
-            .join(format!("code_repo_wiki_bench_ckhit_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("code_repo_wiki_bench_ckhit_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src").join("net")).unwrap();
         std::fs::write(
@@ -2533,14 +2688,21 @@ mod tests {
 
         let config = WikiConfig {
             output_dir: Some((dir.join(".code-repo-wiki").to_string_lossy().into_owned()).into()),
-            wiki: WikiSection { language: "zh".into(), guide: Default::default() },
-            llm: LlmSection { provider: LlmProviderType::Mock, ..Default::default() },
+            wiki: WikiSection {
+                language: "zh".into(),
+                guide: Default::default(),
+            },
+            llm: LlmSection {
+                provider: LlmProviderType::Mock,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let index_dir = crate::search_index_dir(&config);
         std::fs::create_dir_all(&index_dir).unwrap();
-        let mut engine =
-            crate::search::text::TextEngine::open(index_dir.join("text_index.db")).unwrap().0;
+        let mut engine = crate::search::text::TextEngine::open(index_dir.join("text_index.db"))
+            .unwrap()
+            .0;
         engine
             .index_batch(&[(
                 crate::model::CodeNode {
@@ -2569,7 +2731,10 @@ mod tests {
 
         let root = ProjectRoot::new(dir.clone());
         // 模块页 src_net.md（模块名 src::net 的页面，wiki_file_name 同规则）
-        let pages = vec![(dir.join(".code-repo-wiki/wiki/zh/src_net.md"), "content".to_string())];
+        let pages = vec![(
+            dir.join(".code-repo-wiki/wiki/zh/src_net.md"),
+            "content".to_string(),
+        )];
         let rep = measure_completeness_at_k(&root, &config, &pages).unwrap();
         assert!(rep.judged, "索引存在应执行判定");
         assert_eq!(rep.total_entities, 1);
@@ -2586,8 +2751,10 @@ mod tests {
     /// v32（6.3 FR-104）：产物缺模块页时同模块条目不命中（可检索性判定）
     #[test]
     fn test_completeness_miss_when_module_page_absent() {
-        let dir = std::env::temp_dir()
-            .join(format!("code_repo_wiki_bench_ckmiss_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_bench_ckmiss_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(
@@ -2598,14 +2765,21 @@ mod tests {
 
         let config = WikiConfig {
             output_dir: Some((dir.join(".code-repo-wiki").to_string_lossy().into_owned()).into()),
-            wiki: WikiSection { language: "zh".into(), guide: Default::default() },
-            llm: LlmSection { provider: LlmProviderType::Mock, ..Default::default() },
+            wiki: WikiSection {
+                language: "zh".into(),
+                guide: Default::default(),
+            },
+            llm: LlmSection {
+                provider: LlmProviderType::Mock,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let index_dir = crate::search_index_dir(&config);
         std::fs::create_dir_all(&index_dir).unwrap();
-        let mut engine =
-            crate::search::text::TextEngine::open(index_dir.join("text_index.db")).unwrap().0;
+        let mut engine = crate::search::text::TextEngine::open(index_dir.join("text_index.db"))
+            .unwrap()
+            .0;
         engine
             .index_batch(&[(
                 crate::model::CodeNode {
@@ -2638,8 +2812,8 @@ mod tests {
     /// v32（6.3 FR-101）：text 索引缺失 → 降级跳过（judged=false 显式标注）
     #[test]
     fn test_completeness_degrades_without_index() {
-        let dir = std::env::temp_dir()
-            .join(format!("code_repo_wiki_bench_ckdeg_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("code_repo_wiki_bench_ckdeg_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(
@@ -2650,8 +2824,14 @@ mod tests {
 
         let config = WikiConfig {
             output_dir: Some((dir.join(".code-repo-wiki").to_string_lossy().into_owned()).into()),
-            wiki: WikiSection { language: "zh".into(), guide: Default::default() },
-            llm: LlmSection { provider: LlmProviderType::Mock, ..Default::default() },
+            wiki: WikiSection {
+                language: "zh".into(),
+                guide: Default::default(),
+            },
+            llm: LlmSection {
+                provider: LlmProviderType::Mock,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let root = ProjectRoot::new(dir.clone());
@@ -2667,7 +2847,10 @@ mod tests {
     /// v32（6.3）：模块名派生规则（与 chunk_by_file/collect_index_items 同规则）
     #[test]
     fn test_module_of_rules() {
-        assert_eq!(module_of(std::path::Path::new("src/net/tcp.rs")), "src::net");
+        assert_eq!(
+            module_of(std::path::Path::new("src/net/tcp.rs")),
+            "src::net"
+        );
         assert_eq!(
             module_of(std::path::Path::new("tcp.rs")),
             "",
@@ -2715,21 +2898,36 @@ mod tests {
             parse_doc_info_score(r#"{"score": 8}"#),
             DocInfoVerdict::Score(s) if (s - 8.0).abs() < 1e-9
         ));
-        assert!(matches!(
-            parse_doc_info_score("```json\n{\"score\": 11}\n```"),
-            DocInfoVerdict::Score(s) if (s - 10.0).abs() < 1e-9
-        ), "越界评分应 clamp 到 10");
-        assert!(matches!(
-            parse_doc_info_score(r#"{"score": -3}"#),
-            DocInfoVerdict::Score(s) if s.abs() < 1e-9
-        ), "负分应 clamp 到 0");
+        assert!(
+            matches!(
+                parse_doc_info_score("```json\n{\"score\": 11}\n```"),
+                DocInfoVerdict::Score(s) if (s - 10.0).abs() < 1e-9
+            ),
+            "越界评分应 clamp 到 10"
+        );
+        assert!(
+            matches!(
+                parse_doc_info_score(r#"{"score": -3}"#),
+                DocInfoVerdict::Score(s) if s.abs() < 1e-9
+            ),
+            "负分应 clamp 到 0"
+        );
         assert!(matches!(
             parse_doc_info_score(r#"{"verdict": "uncertain"}"#),
             DocInfoVerdict::Uncertain
         ));
-        assert!(matches!(parse_doc_info_score("no json"), DocInfoVerdict::Unparseable));
-        assert!(matches!(parse_doc_info_score(r#"{"score": "高"}"#), DocInfoVerdict::Unparseable));
-        assert!(matches!(parse_doc_info_score(r#"{}"#), DocInfoVerdict::Unparseable));
+        assert!(matches!(
+            parse_doc_info_score("no json"),
+            DocInfoVerdict::Unparseable
+        ));
+        assert!(matches!(
+            parse_doc_info_score(r#"{"score": "高"}"#),
+            DocInfoVerdict::Unparseable
+        ));
+        assert!(matches!(
+            parse_doc_info_score(r#"{}"#),
+            DocInfoVerdict::Unparseable
+        ));
     }
 
     /// 增量召回：有变更的 commit 应全部触发重生成（mock 下正确更新）
@@ -2737,10 +2935,21 @@ mod tests {
     fn test_update_recall_with_changes() {
         let (root, config_path, config) = bench_repo("recall");
         commit_all(root.path(), "init");
-        crate::run_pipeline(Some(&config_path), None, false, &root, &crate::GenerationMode::Full).unwrap();
+        crate::run_pipeline(
+            Some(&config_path),
+            None,
+            false,
+            &root,
+            &crate::GenerationMode::Full,
+        )
+        .unwrap();
 
         // 第二个 commit：修改 b.rs
-        std::fs::write(root.path().join("src").join("b.rs"), "pub fn beta(x: u32) -> u32 { x + 100 }\n").unwrap();
+        std::fs::write(
+            root.path().join("src").join("b.rs"),
+            "pub fn beta(x: u32) -> u32 { x + 100 }\n",
+        )
+        .unwrap();
         commit_all(root.path(), "change beta");
 
         let report = measure_update_recall(&config, &root).unwrap();
@@ -2758,19 +2967,42 @@ mod tests {
     fn test_run_rubrics_only_skips_replay() {
         let (root, config_path, config) = bench_repo("rubonly");
         commit_all(root.path(), "init");
-        crate::run_pipeline(Some(&config_path), None, false, &root, &crate::GenerationMode::Full).unwrap();
-        std::fs::write(root.path().join("src").join("b.rs"), "pub fn beta(x: u32) -> u32 { x + 100 }\n").unwrap();
+        crate::run_pipeline(
+            Some(&config_path),
+            None,
+            false,
+            &root,
+            &crate::GenerationMode::Full,
+        )
+        .unwrap();
+        std::fs::write(
+            root.path().join("src").join("b.rs"),
+            "pub fn beta(x: u32) -> u32 { x + 100 }\n",
+        )
+        .unwrap();
         commit_all(root.path(), "change beta");
 
         let report = run_rubrics_only(&root, &config, "demo", &[]).unwrap();
-        assert_eq!(report.update_recall.commits_scanned, 0, "rubrics-only 不执行回放");
+        assert_eq!(
+            report.update_recall.commits_scanned, 0,
+            "rubrics-only 不执行回放"
+        );
         assert_eq!(report.update_recall.correctly_updated, 0);
         assert_eq!(report.time.generate_ms, 0, "无生成耗时");
-        assert_eq!(report.coverage.total_entities, 2, "快维度（Coverage）仍正常");
-        assert!(report.doc_info.pages > 0, "mock 生成后应有产物页（快维度 Doc Info 正常）");
+        assert_eq!(
+            report.coverage.total_entities, 2,
+            "快维度（Coverage）仍正常"
+        );
+        assert!(
+            report.doc_info.pages > 0,
+            "mock 生成后应有产物页（快维度 Doc Info 正常）"
+        );
         // lint 计数本身有效即可（mock 产物可能存在已知噪声，不在此处断言为 0）
         let md = render_markdown(&report);
-        assert!(md.contains("跳过（--rubrics-only 模式"), "渲染应标注回放跳过: {md}");
+        assert!(
+            md.contains("跳过（--rubrics-only 模式"),
+            "渲染应标注回放跳过: {md}"
+        );
 
         let _ = std::fs::remove_dir_all(root.path());
     }
@@ -2781,21 +3013,37 @@ mod tests {
         let report = BenchReport {
             repo_name: "demo".into(),
             generated_at: "2026-08-03T00:00:00Z".into(),
-            coverage: CoverageReport { total_entities: 0, covered_entities: 0, ratio: 1.0 },
+            coverage: CoverageReport {
+                total_entities: 0,
+                covered_entities: 0,
+                ratio: 1.0,
+            },
             doc_info: DocInfoReport {
-    pages: 0,
-    words: 0,
-    cross_references: 0,
-    code_blocks: 0,
-    diagrams: 0,
-    llm_judged: false,
-    llm_score: 0.0,
-    llm_judged_modules: 0,
-    llm_abstain_modules: 0,
-},
-            lint: LintReport { total_issues: 0, by_kind: Default::default() },
-            update_recall: UpdateRecallReport { commits_scanned: 0, commits_with_changes: 0, correctly_updated: 0, recall: 1.0 },
-            time: TimeReport { scan_ms: 0, generate_ms: 0, total_ms: 0 },
+                pages: 0,
+                words: 0,
+                cross_references: 0,
+                code_blocks: 0,
+                diagrams: 0,
+                llm_judged: false,
+                llm_score: 0.0,
+                llm_judged_modules: 0,
+                llm_abstain_modules: 0,
+            },
+            lint: LintReport {
+                total_issues: 0,
+                by_kind: Default::default(),
+            },
+            update_recall: UpdateRecallReport {
+                commits_scanned: 0,
+                commits_with_changes: 0,
+                correctly_updated: 0,
+                recall: 1.0,
+            },
+            time: TimeReport {
+                scan_ms: 0,
+                generate_ms: 0,
+                total_ms: 0,
+            },
             timings: None,
             tqs: None,
             rubric: None,
@@ -2808,7 +3056,8 @@ mod tests {
             },
         };
         let md = render_markdown(&report);
-        for section in ["实体覆盖率", "文本统计", "lint 健康", "增量召回", "耗时"] {
+        for section in ["实体覆盖率", "文本统计", "lint 健康", "增量召回", "耗时"]
+        {
             assert!(md.contains(section), "报告应含 {section} 节: {md}");
         }
     }
@@ -2840,7 +3089,10 @@ mod tests {
         assert_eq!(first.requirement, "架构文档应描述流水线");
         assert_eq!(first.sub_tasks.len(), 3, "字符串子任务应转叶子节点");
         assert_eq!(first.sub_tasks[0].requirement, "介绍解析阶段");
-        assert!(first.sub_tasks[0].sub_tasks.is_empty(), "字符串子任务是叶子");
+        assert!(
+            first.sub_tasks[0].sub_tasks.is_empty(),
+            "字符串子任务是叶子"
+        );
         assert_eq!(first.sub_tasks[1].weight, 1.0, "字符串叶子权重取 1.0");
         assert_eq!(first.sub_tasks[2].weight, 3.0, "字符串权重应可解析为数字");
         assert_eq!(nodes[1].weight, 1.0, "缺省 weight 回落 1.0");
@@ -2865,7 +3117,11 @@ mod tests {
         let report = BenchReport {
             repo_name: "demo".into(),
             generated_at: "2026-08-03T00:00:00Z".into(),
-            coverage: CoverageReport { total_entities: 100, covered_entities: 87, ratio: 0.87 },
+            coverage: CoverageReport {
+                total_entities: 100,
+                covered_entities: 87,
+                ratio: 0.87,
+            },
             doc_info: DocInfoReport {
                 pages: 5,
                 words: 1200,
@@ -2877,14 +3133,21 @@ mod tests {
                 llm_judged_modules: 5,
                 llm_abstain_modules: 1,
             },
-            lint: LintReport { total_issues: 0, by_kind: Default::default() },
+            lint: LintReport {
+                total_issues: 0,
+                by_kind: Default::default(),
+            },
             update_recall: UpdateRecallReport {
                 commits_scanned: 2,
                 commits_with_changes: 2,
                 correctly_updated: 2,
                 recall: 1.0,
             },
-            time: TimeReport { scan_ms: 1, generate_ms: 2, total_ms: 3 },
+            time: TimeReport {
+                scan_ms: 1,
+                generate_ms: 2,
+                total_ms: 3,
+            },
             timings: None,
             tqs: Some(TqsReport {
                 judged_modules: 2,
@@ -2924,12 +3187,21 @@ mod tests {
             },
         };
         let s = render_repodoc(&report);
-        assert!(s.contains("**Coverage 实体提及率**: 0.87"), "Coverage 行: {s}");
+        assert!(
+            s.contains("**Coverage 实体提及率**: 0.87"),
+            "Coverage 行: {s}"
+        );
         assert!(s.contains("LLM 判定 6.50/10"), "Doc Info LLM 判定行: {s}");
         assert!(s.contains("5 页判定，1 abstain"), "abstain 数暴露: {s}");
-        assert!(s.contains("**Completeness@K**: 0.80"), "Completeness 行: {s}");
+        assert!(
+            s.contains("**Completeness@K**: 0.80"),
+            "Completeness 行: {s}"
+        );
         assert!(s.contains("**TQS**: 7.40"), "TQS 行: {s}");
-        assert!(s.contains("**Update Recall**: 1.00"), "Update Recall 行: {s}");
+        assert!(
+            s.contains("**Update Recall**: 1.00"),
+            "Update Recall 行: {s}"
+        );
         assert!(!s.contains("降级跳过"), "全维可用时不应出现降级标注: {s}");
     }
 
@@ -2939,7 +3211,11 @@ mod tests {
         let report = BenchReport {
             repo_name: "demo".into(),
             generated_at: "2026-08-03T00:00:00Z".into(),
-            coverage: CoverageReport { total_entities: 10, covered_entities: 5, ratio: 0.5 },
+            coverage: CoverageReport {
+                total_entities: 10,
+                covered_entities: 5,
+                ratio: 0.5,
+            },
             doc_info: DocInfoReport {
                 pages: 2,
                 words: 300,
@@ -2951,14 +3227,21 @@ mod tests {
                 llm_judged_modules: 0,
                 llm_abstain_modules: 0,
             },
-            lint: LintReport { total_issues: 0, by_kind: Default::default() },
+            lint: LintReport {
+                total_issues: 0,
+                by_kind: Default::default(),
+            },
             update_recall: UpdateRecallReport {
                 commits_scanned: 0,
                 commits_with_changes: 0,
                 correctly_updated: 0,
                 recall: 1.0,
             },
-            time: TimeReport { scan_ms: 0, generate_ms: 0, total_ms: 0 },
+            time: TimeReport {
+                scan_ms: 0,
+                generate_ms: 0,
+                total_ms: 0,
+            },
             timings: None,
             tqs: None,
             rubric: None,
@@ -2971,13 +3254,28 @@ mod tests {
             },
         };
         let s = render_repodoc(&report);
-        assert!(s.contains("**Doc Information**: LLM 判定降级跳过"), "LLM 判定降级标注: {s}");
-        assert!(s.contains("**Completeness@K**: 降级跳过"), "Completeness 降级标注: {s}");
+        assert!(
+            s.contains("**Doc Information**: LLM 判定降级跳过"),
+            "LLM 判定降级标注: {s}"
+        );
+        assert!(
+            s.contains("**Completeness@K**: 降级跳过"),
+            "Completeness 降级标注: {s}"
+        );
         assert!(s.contains("**TQS**: 降级跳过"), "TQS 降级标注: {s}");
-        assert!(s.contains("**Update Recall**: 降级跳过"), "Update Recall 降级标注: {s}");
+        assert!(
+            s.contains("**Update Recall**: 降级跳过"),
+            "Update Recall 降级标注: {s}"
+        );
         assert!(s.contains("文本统计 2 页"), "降级时文本统计仍输出: {s}");
-        assert!(s.contains("**Coverage 实体提及率**: 0.50"), "Coverage 恒输出: {s}");
-        assert!(!s.contains("LLM 判定 0.00/10"), "降级分支不得伪装成执行: {s}");
+        assert!(
+            s.contains("**Coverage 实体提及率**: 0.50"),
+            "Coverage 恒输出: {s}"
+        );
+        assert!(
+            !s.contains("LLM 判定 0.00/10"),
+            "降级分支不得伪装成执行: {s}"
+        );
     }
 
     /// U11：报告渲染——启用时输出五维分数，未启用时提示 --judge
@@ -2986,7 +3284,11 @@ mod tests {
         let mut report = BenchReport {
             repo_name: "demo".into(),
             generated_at: "2026-08-03T00:00:00Z".into(),
-            coverage: CoverageReport { total_entities: 0, covered_entities: 0, ratio: 1.0 },
+            coverage: CoverageReport {
+                total_entities: 0,
+                covered_entities: 0,
+                ratio: 1.0,
+            },
             doc_info: DocInfoReport {
                 pages: 0,
                 words: 0,
@@ -2998,9 +3300,21 @@ mod tests {
                 llm_judged_modules: 0,
                 llm_abstain_modules: 0,
             },
-            lint: LintReport { total_issues: 0, by_kind: Default::default() },
-            update_recall: UpdateRecallReport { commits_scanned: 0, commits_with_changes: 0, correctly_updated: 0, recall: 1.0 },
-            time: TimeReport { scan_ms: 0, generate_ms: 0, total_ms: 0 },
+            lint: LintReport {
+                total_issues: 0,
+                by_kind: Default::default(),
+            },
+            update_recall: UpdateRecallReport {
+                commits_scanned: 0,
+                commits_with_changes: 0,
+                correctly_updated: 0,
+                recall: 1.0,
+            },
+            time: TimeReport {
+                scan_ms: 0,
+                generate_ms: 0,
+                total_ms: 0,
+            },
             timings: None,
             tqs: None,
             rubric: None,
@@ -3013,7 +3327,10 @@ mod tests {
             },
         };
         let md_off = render_markdown(&report);
-        assert!(md_off.contains("--judge"), "未启用时应提示 --judge: {md_off}");
+        assert!(
+            md_off.contains("--judge"),
+            "未启用时应提示 --judge: {md_off}"
+        );
 
         report.tqs = Some(TqsReport {
             judged_modules: 2,
@@ -3046,7 +3363,10 @@ mod tests {
         let md_on = render_markdown(&report);
         assert!(md_on.contains("判定模块: 2"), "应输出判定模块数: {md_on}");
         assert!(md_on.contains("Clarity: 8.0"), "应输出五维分数: {md_on}");
-        assert!(md_on.contains("复测一致"), "应输出 MVVP 复测一致性: {md_on}");
+        assert!(
+            md_on.contains("复测一致"),
+            "应输出 MVVP 复测一致性: {md_on}"
+        );
         assert!(md_on.contains("位置偏差"), "应输出位置偏差: {md_on}");
         assert!(md_on.contains("标准 Cohen's κ"), "应输出标准 κ: {md_on}");
         assert!(md_on.contains("判定翻转率"), "应输出翻转率: {md_on}");
@@ -3081,16 +3401,34 @@ mod tests {
     #[test]
     fn test_rubric_aggregate_and_verdict() {
         use RubricVerdict as V;
-        assert_eq!(parse_rubric_verdict(r#"{"verdict": "satisfied"}"#), Some(V::Satisfied));
+        assert_eq!(
+            parse_rubric_verdict(r#"{"verdict": "satisfied"}"#),
+            Some(V::Satisfied)
+        );
         assert_eq!(
             parse_rubric_verdict("```json\n{\"verdict\": \"unsatisfied\"}\n```"),
             Some(V::Unsatisfied)
         );
-        assert_eq!(parse_rubric_verdict(r#"{"verdict": "uncertain"}"#), Some(V::Uncertain));
-        assert_eq!(parse_rubric_verdict(r#"{"verdict": "satisfied"}"#), Some(V::Satisfied), "围栏剥离");
+        assert_eq!(
+            parse_rubric_verdict(r#"{"verdict": "uncertain"}"#),
+            Some(V::Uncertain)
+        );
+        assert_eq!(
+            parse_rubric_verdict(r#"{"verdict": "satisfied"}"#),
+            Some(V::Satisfied),
+            "围栏剥离"
+        );
         assert_eq!(parse_rubric_verdict("no json"), None);
-        assert_eq!(parse_rubric_verdict(r#"{"verdict": "maybe"}"#), None, "非法三态值");
-        assert_eq!(parse_rubric_verdict(r#"{"satisfied": true}"#), None, "旧字段不再接受");
+        assert_eq!(
+            parse_rubric_verdict(r#"{"verdict": "maybe"}"#),
+            None,
+            "非法三态值"
+        );
+        assert_eq!(
+            parse_rubric_verdict(r#"{"satisfied": true}"#),
+            None,
+            "旧字段不再接受"
+        );
 
         // 树：根(weight 1) → [a(2): 叶子, b(3): [c(1): 叶子, d(1): 叶子]]
         // 叶子判定 [true, false, true] → a=1, c=0, d=1 → b=(0+1)/2=0.5
@@ -3099,13 +3437,25 @@ mod tests {
             requirement: "root".into(),
             weight: 1.0,
             sub_tasks: vec![
-                RubricNode { requirement: "a".into(), weight: 2.0, sub_tasks: vec![] },
+                RubricNode {
+                    requirement: "a".into(),
+                    weight: 2.0,
+                    sub_tasks: vec![],
+                },
                 RubricNode {
                     requirement: "b".into(),
                     weight: 3.0,
                     sub_tasks: vec![
-                        RubricNode { requirement: "c".into(), weight: 1.0, sub_tasks: vec![] },
-                        RubricNode { requirement: "d".into(), weight: 1.0, sub_tasks: vec![] },
+                        RubricNode {
+                            requirement: "c".into(),
+                            weight: 1.0,
+                            sub_tasks: vec![],
+                        },
+                        RubricNode {
+                            requirement: "d".into(),
+                            weight: 1.0,
+                            sub_tasks: vec![],
+                        },
                     ],
                 },
             ],
@@ -3113,13 +3463,21 @@ mod tests {
         let verdicts = vec![Some(true), Some(false), Some(true)];
         let mut idx = 0usize;
         let s = aggregate_score(&node, &verdicts, &mut idx);
-        assert!((s.score - 0.7).abs() < 1e-9, "加权总分应为 0.7, 实际: {}", s.score);
+        assert!(
+            (s.score - 0.7).abs() < 1e-9,
+            "加权总分应为 0.7, 实际: {}",
+            s.score
+        );
         assert_eq!(s.leaves, 3);
         assert_eq!(s.satisfied, 2);
         assert_eq!(idx, 3, "叶子索引应遍历完");
 
         // 权重越界 clamp：weight=99 → 视为 3（LLM 输出越界收敛）
-        let bad = RubricNode { requirement: "w".into(), weight: 99.0, sub_tasks: vec![] };
+        let bad = RubricNode {
+            requirement: "w".into(),
+            weight: 99.0,
+            sub_tasks: vec![],
+        };
         assert_eq!(node_weight(bad.weight), 3.0);
     }
 
@@ -3129,21 +3487,37 @@ mod tests {
         let mut report = BenchReport {
             repo_name: "demo".into(),
             generated_at: "2026-08-03T00:00:00Z".into(),
-            coverage: CoverageReport { total_entities: 0, covered_entities: 0, ratio: 1.0 },
+            coverage: CoverageReport {
+                total_entities: 0,
+                covered_entities: 0,
+                ratio: 1.0,
+            },
             doc_info: DocInfoReport {
-    pages: 0,
-    words: 0,
-    cross_references: 0,
-    code_blocks: 0,
-    diagrams: 0,
-    llm_judged: false,
-    llm_score: 0.0,
-    llm_judged_modules: 0,
-    llm_abstain_modules: 0,
-},
-            lint: LintReport { total_issues: 0, by_kind: Default::default() },
-            update_recall: UpdateRecallReport { commits_scanned: 0, commits_with_changes: 0, correctly_updated: 0, recall: 1.0 },
-            time: TimeReport { scan_ms: 0, generate_ms: 0, total_ms: 0 },
+                pages: 0,
+                words: 0,
+                cross_references: 0,
+                code_blocks: 0,
+                diagrams: 0,
+                llm_judged: false,
+                llm_score: 0.0,
+                llm_judged_modules: 0,
+                llm_abstain_modules: 0,
+            },
+            lint: LintReport {
+                total_issues: 0,
+                by_kind: Default::default(),
+            },
+            update_recall: UpdateRecallReport {
+                commits_scanned: 0,
+                commits_with_changes: 0,
+                correctly_updated: 0,
+                recall: 1.0,
+            },
+            time: TimeReport {
+                scan_ms: 0,
+                generate_ms: 0,
+                total_ms: 0,
+            },
             timings: None,
             tqs: None,
             rubric: None,
@@ -3174,8 +3548,14 @@ mod tests {
         });
         let md_on = render_markdown(&report);
         assert!(md_on.contains("覆盖率: 66.7%"), "应输出覆盖率: {md_on}");
-        assert!(md_on.contains("加权总分 S: 0.700"), "应输出加权总分: {md_on}");
-        assert!(md_on.contains("abstain 叶子"), "应输出 abstain 指标: {md_on}");
+        assert!(
+            md_on.contains("加权总分 S: 0.700"),
+            "应输出加权总分: {md_on}"
+        );
+        assert!(
+            md_on.contains("abstain 叶子"),
+            "应输出 abstain 指标: {md_on}"
+        );
         assert!(md_on.contains("多数投票"), "应输出叶子判定协议: {md_on}");
     }
 
@@ -3189,8 +3569,14 @@ mod tests {
             .filter(|m| m.role == "user")
             .map(|m| m.content.clone())
             .collect();
-        assert!(joined.contains("## 参考材料"), "非空参考应注入参考段: {joined}");
-        assert!(joined.contains("人工参考文档内容"), "参考内容应出现在 prompt: {joined}");
+        assert!(
+            joined.contains("## 参考材料"),
+            "非空参考应注入参考段: {joined}"
+        );
+        assert!(
+            joined.contains("人工参考文档内容"),
+            "参考内容应出现在 prompt: {joined}"
+        );
 
         let without_ref = doc_info_judge_prompt("mod", "summary", "");
         let joined_empty: String = without_ref
@@ -3198,7 +3584,10 @@ mod tests {
             .filter(|m| m.role == "user")
             .map(|m| m.content.clone())
             .collect();
-        assert!(!joined_empty.contains("## 参考材料"), "空参考不应注入参考段: {joined_empty}");
+        assert!(
+            !joined_empty.contains("## 参考材料"),
+            "空参考不应注入参考段: {joined_empty}"
+        );
     }
 
     /// T05：Rubric 裁判参考材料注入——同上协议（非空注入/空串不注入）
@@ -3210,8 +3599,14 @@ mod tests {
             .filter(|m| m.role == "user")
             .map(|m| m.content.clone())
             .collect();
-        assert!(joined.contains("## 参考材料"), "非空参考应注入参考段: {joined}");
-        assert!(joined.contains("人工对照要求"), "参考内容应出现在 prompt: {joined}");
+        assert!(
+            joined.contains("## 参考材料"),
+            "非空参考应注入参考段: {joined}"
+        );
+        assert!(
+            joined.contains("人工对照要求"),
+            "参考内容应出现在 prompt: {joined}"
+        );
 
         let without_ref = rubric_judge_prompt("req", "evidence", false, "");
         let joined_empty: String = without_ref
@@ -3219,7 +3614,10 @@ mod tests {
             .filter(|m| m.role == "user")
             .map(|m| m.content.clone())
             .collect();
-        assert!(!joined_empty.contains("## 参考材料"), "空参考不应注入参考段: {joined_empty}");
+        assert!(
+            !joined_empty.contains("## 参考材料"),
+            "空参考不应注入参考段: {joined_empty}"
+        );
     }
 
     /// C-008（Phase 16.4）：提取字符串中所有 {…} 平衡片段并尝试解析为 JSON
@@ -3269,10 +3667,15 @@ mod tests {
         let di = doc_info_judge_prompt("mod", "summary", "");
         let di_sys = di[0].content.clone();
         assert!(di_sys.contains("示例："), "doc_info 应含示例标记: {di_sys}");
-        assert!(di_sys.contains("只输出 JSON"), "doc_info 应含 JSON 输出约束: {di_sys}");
+        assert!(
+            di_sys.contains("只输出 JSON"),
+            "doc_info 应含 JSON 输出约束: {di_sys}"
+        );
         let di_json = extract_json(&di_sys);
         assert!(
-            di_json.iter().any(|v| v.get("score").and_then(|s| s.as_f64()) == Some(9.0)),
+            di_json
+                .iter()
+                .any(|v| v.get("score").and_then(|s| s.as_f64()) == Some(9.0)),
             "doc_info 应含 score 高分示例: {di_sys}"
         );
         assert!(
@@ -3285,33 +3688,52 @@ mod tests {
         // rubric_generation：合法 rubrics 树示例（叶子无 sub_tasks）
         let rg = rubric_generation_prompt("docs 内容");
         let rg_sys = rg[0].content.clone();
-        assert!(rg_sys.contains("示例："), "rubric_generation 应含示例标记: {rg_sys}");
-        assert!(rg_sys.contains("只输出 JSON"), "rubric_generation 应含 JSON 输出约束: {rg_sys}");
+        assert!(
+            rg_sys.contains("示例："),
+            "rubric_generation 应含示例标记: {rg_sys}"
+        );
+        assert!(
+            rg_sys.contains("只输出 JSON"),
+            "rubric_generation 应含 JSON 输出约束: {rg_sys}"
+        );
         let rg_json = extract_json(&rg_sys);
         assert!(
-            rg_json
-                .iter()
-                .any(|v| v.get("rubrics").and_then(|r| r.as_array()).map(|a| !a.is_empty()) == Some(true)),
+            rg_json.iter().any(|v| v
+                .get("rubrics")
+                .and_then(|r| r.as_array())
+                .map(|a| !a.is_empty())
+                == Some(true)),
             "rubric_generation 应含非空 rubrics 树示例: {rg_sys}"
         );
 
         // rubric_merge：合并后 JSON 示例
         let rm = rubric_merge_prompt(&[]);
         let rm_user = rm[1].content.clone();
-        assert!(rm_user.contains("示例："), "rubric_merge 应含示例标记: {rm_user}");
+        assert!(
+            rm_user.contains("示例："),
+            "rubric_merge 应含示例标记: {rm_user}"
+        );
         let rm_json = extract_json(&rm_user);
         assert!(
-            rm_json
-                .iter()
-                .any(|v| v.get("rubrics").and_then(|r| r.as_array()).map(|a| !a.is_empty()) == Some(true)),
+            rm_json.iter().any(|v| v
+                .get("rubrics")
+                .and_then(|r| r.as_array())
+                .map(|a| !a.is_empty())
+                == Some(true)),
             "rubric_merge 应含合并后 rubrics 示例: {rm_user}"
         );
 
         // rubric_judge：satisfied 与 unsatisfied 正反例
         let rj = rubric_judge_prompt("需求", "证据", false, "");
         let rj_sys = rj[0].content.clone();
-        assert!(rj_sys.contains("示例："), "rubric_judge 应含示例标记: {rj_sys}");
-        assert!(rj_sys.contains("只输出 JSON"), "rubric_judge 应含 JSON 输出约束: {rj_sys}");
+        assert!(
+            rj_sys.contains("示例："),
+            "rubric_judge 应含示例标记: {rj_sys}"
+        );
+        assert!(
+            rj_sys.contains("只输出 JSON"),
+            "rubric_judge 应含 JSON 输出约束: {rj_sys}"
+        );
         let rj_json = extract_json(&rj_sys);
         assert!(
             rj_json
@@ -3332,9 +3754,11 @@ mod tests {
         assert!(tqs_sys.contains("示例："), "tqs 应含示例标记: {tqs_sys}");
         let tqs_json = extract_json(&tqs_sys);
         assert!(
-            tqs_json
-                .iter()
-                .any(|v| v.get("A").and_then(|a| a.get("richness")).and_then(|r| r.as_f64()) == Some(9.0)),
+            tqs_json.iter().any(|v| v
+                .get("A")
+                .and_then(|a| a.get("richness"))
+                .and_then(|r| r.as_f64())
+                == Some(9.0)),
             "tqs 应含非零五维示例: {tqs_sys}"
         );
     }
@@ -3345,7 +3769,10 @@ mod tests {
     fn test_search_pages_ranks() {
         let pages = vec![
             (PathBuf::from("wiki/zh/a.md"), "安装 安装 安装 说明".into()),
-            (PathBuf::from("wiki/zh/b.md"), "安装 安装 配置 配置 指南".into()),
+            (
+                PathBuf::from("wiki/zh/b.md"),
+                "安装 安装 配置 配置 指南".into(),
+            ),
             (PathBuf::from("wiki/zh/c.md"), "与本需求无关的内容".into()),
         ];
         let kws = vec!["安装".to_string(), "配置".to_string()];
@@ -3355,7 +3782,10 @@ mod tests {
         assert_eq!(ranked[1].0, "a", "命中 3 次排后");
         assert!(!ranked.iter().any(|(n, _)| n == "c"), "无命中页不返回");
 
-        assert!(search_pages(&pages, &["不存在的关键词".to_string()], 2).is_empty(), "无命中返回空");
+        assert!(
+            search_pages(&pages, &["不存在的关键词".to_string()], 2).is_empty(),
+            "无命中返回空"
+        );
         assert!(search_pages(&pages, &[], 2).is_empty(), "空关键词返回空");
     }
 
@@ -3364,7 +3794,8 @@ mod tests {
     /// 「# 检索到的页面正文」节；tempdir 模式与既有测试一致）
     #[test]
     fn test_build_evidence_includes_retrieved_pages() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_bench_retr_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("code_repo_wiki_bench_retr_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let wiki_zh = dir.join("wiki").join("zh");
         std::fs::create_dir_all(&wiki_zh).unwrap();
@@ -3377,7 +3808,12 @@ mod tests {
 
         let pages = collect_wiki_pages(&dir);
         let retrieved = search_pages(&pages, &extract_keywords("认证"), 2);
-        assert_eq!(retrieved.len(), 1, "仅含「认证」正文的页被检索出: {:?}", retrieved);
+        assert_eq!(
+            retrieved.len(),
+            1,
+            "仅含「认证」正文的页被检索出: {:?}",
+            retrieved
+        );
         assert_eq!(retrieved[0].0, "b", "命中的应是 b 页");
 
         // 与 measure_rubrics 相同的拼接路径：摘要证据 + 检索节 + 整体 cap
@@ -3389,8 +3825,14 @@ mod tests {
             }
             evidence = truncate(&evidence, 20_000);
         }
-        assert!(evidence.contains("# 检索到的页面正文"), "证据应含检索节标题: {evidence}");
-        assert!(evidence.contains("- b: "), "证据应含命中的 b 页: {evidence}");
+        assert!(
+            evidence.contains("# 检索到的页面正文"),
+            "证据应含检索节标题: {evidence}"
+        );
+        assert!(
+            evidence.contains("- b: "),
+            "证据应含命中的 b 页: {evidence}"
+        );
         assert!(evidence.contains("认证"), "检索节应含关键词命中正文");
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -3415,15 +3857,20 @@ mod tests {
         assert_eq!(majority_judgment(&[1, -1]), 1, "并列按 A 胜优先");
         assert_eq!(majority_judgment(&[-1, -1, 1]), -1);
         // 与多数不一致：B 胜 ×2 + 平 ×1 = 3/6
-        assert!((m.flip_rate - 0.5).abs() < 1e-9, "flip_rate 应为 0.5: {}", m.flip_rate);
+        assert!(
+            (m.flip_rate - 0.5).abs() < 1e-9,
+            "flip_rate 应为 0.5: {}",
+            m.flip_rate
+        );
         // 每轮 AB 与 BA 判定都不同：3/3
-        assert!((m.position_flip_rate - 1.0).abs() < 1e-9, "position_flip_rate 应为 1.0: {}", m.position_flip_rate);
+        assert!(
+            (m.position_flip_rate - 1.0).abs() < 1e-9,
+            "position_flip_rate 应为 1.0: {}",
+            m.position_flip_rate
+        );
 
         // 全一致：无翻转
-        let consistent = vec![
-            (true, [10.0; 5], [5.0; 5]),
-            (false, [9.0; 5], [6.0; 5]),
-        ];
+        let consistent = vec![(true, [10.0; 5], [5.0; 5]), (false, [9.0; 5], [6.0; 5])];
         let m2 = module_judgment_metrics(&consistent);
         assert!(m2.flip_rate.abs() < 1e-9);
         assert!(m2.position_flip_rate.abs() < 1e-9);
@@ -3447,7 +3894,11 @@ mod tests {
             (true, [6.0; 5], [6.0; 5]),
             (false, [6.0; 5], [6.0; 5]),
         ];
-        assert!((module_tie_rate(&mixed) - 2.0 / 6.0).abs() < 1e-9, "tie 率应为 1/3: {}", module_tie_rate(&mixed));
+        assert!(
+            (module_tie_rate(&mixed) - 2.0 / 6.0).abs() < 1e-9,
+            "tie 率应为 1/3: {}",
+            module_tie_rate(&mixed)
+        );
         // 无平局
         let no_tie = vec![(true, [10.0; 5], [5.0; 5]), (false, [4.0; 5], [8.0; 5])];
         assert_eq!(module_tie_rate(&no_tie), 0.0);
@@ -3484,13 +3935,14 @@ mod tests {
             (false, [6.0; 5], [6.0; 5]),
         ];
         let table = module_kappa_table(&rs);
-        assert_eq!(table, [[0, 15], [0, 0]], "3 轮 × 5 维全落 [AB A 胜][BA B 胜]");
+        assert_eq!(
+            table,
+            [[0, 15], [0, 0]],
+            "3 轮 × 5 维全落 [AB A 胜][BA B 胜]"
+        );
         // 平局（6.0 vs 6.0）按 B 胜计入（tie_handling 声明口径）；
         // 轮内 AB 与 BA 调用都是 A=6,B=6 → 判定相同，双计 B 胜
-        let tie = vec![
-            (true, [6.0; 5], [6.0; 5]),
-            (false, [6.0; 5], [6.0; 5]),
-        ];
+        let tie = vec![(true, [6.0; 5], [6.0; 5]), (false, [6.0; 5], [6.0; 5])];
         let table_tie = module_kappa_table(&tie);
         assert_eq!(table_tie, [[0, 0], [0, 5]], "平局双计 B 胜");
     }
@@ -3499,22 +3951,53 @@ mod tests {
     /// abstain 票不影响已定多数
     #[test]
     fn test_majority_verdict_and_escalation() {
-        assert_eq!(majority_verdict(&[Some(true), Some(true), Some(false)]), Some(true));
-        assert_eq!(majority_verdict(&[Some(true), Some(false), Some(false)]), Some(false));
-        assert_eq!(majority_verdict(&[Some(true), Some(false), None]), None, "1:1 平票无多数");
+        assert_eq!(
+            majority_verdict(&[Some(true), Some(true), Some(false)]),
+            Some(true)
+        );
+        assert_eq!(
+            majority_verdict(&[Some(true), Some(false), Some(false)]),
+            Some(false)
+        );
+        assert_eq!(
+            majority_verdict(&[Some(true), Some(false), None]),
+            None,
+            "1:1 平票无多数"
+        );
         assert_eq!(
             majority_verdict(&[Some(true), Some(false), Some(true), Some(false), None]),
             None,
             "2:2 平票无多数"
         );
-        assert_eq!(majority_verdict(&[Some(true), Some(true), None]), Some(true), "abstain 不影响已定多数");
-        assert_eq!(majority_verdict(&[Some(true), Some(true), Some(true)]), Some(true), "全票");
-        assert_eq!(majority_verdict(&[None, None, None]), None, "全 abstain 无多数");
+        assert_eq!(
+            majority_verdict(&[Some(true), Some(true), None]),
+            Some(true),
+            "abstain 不影响已定多数"
+        );
+        assert_eq!(
+            majority_verdict(&[Some(true), Some(true), Some(true)]),
+            Some(true),
+            "全票"
+        );
+        assert_eq!(
+            majority_verdict(&[None, None, None]),
+            None,
+            "全 abstain 无多数"
+        );
 
         // 升级判定：3 票时多数已定则停，否则升级 5 票
-        assert!(verdict_resolved(&[Some(true), Some(true), Some(false)]), "2:1 已定案");
-        assert!(!verdict_resolved(&[Some(true), Some(false), None]), "1:1+abstain 争议需升级");
-        assert!(verdict_resolved(&[Some(true), Some(true), None]), "2:0+abstain 已定案");
+        assert!(
+            verdict_resolved(&[Some(true), Some(true), Some(false)]),
+            "2:1 已定案"
+        );
+        assert!(
+            !verdict_resolved(&[Some(true), Some(false), None]),
+            "1:1+abstain 争议需升级"
+        );
+        assert!(
+            verdict_resolved(&[Some(true), Some(true), None]),
+            "2:0+abstain 已定案"
+        );
     }
 
     /// t04：abstain 叶子从聚合中显式排除——不贡献权重/分数/叶子计数，
@@ -3526,13 +4009,25 @@ mod tests {
             requirement: "root".into(),
             weight: 1.0,
             sub_tasks: vec![
-                RubricNode { requirement: "a".into(), weight: 2.0, sub_tasks: vec![] },
+                RubricNode {
+                    requirement: "a".into(),
+                    weight: 2.0,
+                    sub_tasks: vec![],
+                },
                 RubricNode {
                     requirement: "b".into(),
                     weight: 3.0,
                     sub_tasks: vec![
-                        RubricNode { requirement: "c".into(), weight: 1.0, sub_tasks: vec![] },
-                        RubricNode { requirement: "d".into(), weight: 1.0, sub_tasks: vec![] },
+                        RubricNode {
+                            requirement: "c".into(),
+                            weight: 1.0,
+                            sub_tasks: vec![],
+                        },
+                        RubricNode {
+                            requirement: "d".into(),
+                            weight: 1.0,
+                            sub_tasks: vec![],
+                        },
                     ],
                 },
             ],
@@ -3542,7 +4037,11 @@ mod tests {
         let verdicts = vec![Some(true), None, Some(true)];
         let mut idx = 0usize;
         let s = aggregate_score(&node, &verdicts, &mut idx);
-        assert!((s.score - 1.0).abs() < 1e-9, "abstain 排除后总分应为 1.0: {}", s.score);
+        assert!(
+            (s.score - 1.0).abs() < 1e-9,
+            "abstain 排除后总分应为 1.0: {}",
+            s.score
+        );
         assert_eq!(s.leaves, 2, "abstain 叶子不计数");
         assert_eq!(s.satisfied, 2);
         assert_eq!(idx, 3, "索引仍遍历全部叶子");
@@ -3568,6 +4067,9 @@ mod tests {
             "同一输入应可复现"
         );
         let variants: Vec<bool> = (0..3).map(|k| option_variant("需要认证", k)).collect();
-        assert!(variants.contains(&true) && variants.contains(&false), "3 次调用应覆盖两种顺序: {variants:?}");
+        assert!(
+            variants.contains(&true) && variants.contains(&false),
+            "3 次调用应覆盖两种顺序: {variants:?}"
+        );
     }
 }

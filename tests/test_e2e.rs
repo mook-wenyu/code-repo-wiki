@@ -10,8 +10,8 @@
 
 use std::path::Path;
 
+use code_repo_wiki::config::schema::WikiSection;
 use code_repo_wiki::config::schema::{LlmProviderType, LlmSection, WikiConfig};
-use code_repo_wiki::config::schema::{WikiSection};
 
 /// 构造临时仓库（src/a.rs + src/b.rs + config.toml，provider=mock）
 fn build_fixture_repo(repo: &Path) -> anyhow::Result<()> {
@@ -54,10 +54,7 @@ pub fn beta() -> &'static str { "beta" }
         },
         ..Default::default()
     };
-    std::fs::write(
-        repo.join("config.toml"),
-        toml::to_string_pretty(&config)?,
-    )?;
+    std::fs::write(repo.join("config.toml"), toml::to_string_pretty(&config)?)?;
     Ok(())
 }
 
@@ -90,7 +87,14 @@ fn test_e2e_full_pipeline() {
     let config_path = repo.join("config.toml");
 
     // ---- 1. 全量生成：断言产物完整 ----
-    let result = code_repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &code_repo_wiki::GenerationMode::Full).expect("全量生成失败");
+    let result = code_repo_wiki::run_pipeline(
+        Some(&config_path),
+        None,
+        false,
+        &root,
+        &code_repo_wiki::GenerationMode::Full,
+    )
+    .expect("全量生成失败");
     assert!(result.stats.files_scanned >= 2, "应扫描到至少 2 个文件");
     assert!(result.stats.total_entities >= 2, "应解析出至少 2 个实体");
     assert!(!result.documents.is_empty(), "应生成文档");
@@ -137,8 +141,17 @@ impl Alpha {
     )
     .expect("修改 a/mod.rs 失败");
 
-    let inc = code_repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &code_repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
-        .expect("增量更新失败");
+    let inc = code_repo_wiki::run_pipeline(
+        Some(&config_path),
+        None,
+        false,
+        &root,
+        &code_repo_wiki::GenerationMode::Incremental {
+            watch_paths: vec![],
+            change_kind: None,
+        },
+    )
+    .expect("增量更新失败");
     assert!(!inc.documents.is_empty(), "增量更新应重新生成文档");
 
     // 受影响模块页应重新生成（新文档含模块 A 相关），
@@ -167,7 +180,11 @@ impl Alpha {
 
     // a 文件被删除:增量重建后 src 模块(合并 a+b)内容不再包含模块 A 实体;
     // 删除清理路径不再依赖 exists() 推断,由 Deleted 事件显式驱动
-    let src_page = repo.join(".code-repo-wiki").join("wiki").join("zh").join("src.md");
+    let src_page = repo
+        .join(".code-repo-wiki")
+        .join("wiki")
+        .join("zh")
+        .join("src.md");
     let src_content = std::fs::read_to_string(&src_page).unwrap_or_default();
     assert!(
         !src_content.contains("Alpha"),
@@ -175,7 +192,9 @@ impl Alpha {
         src_content
     );
     assert!(
-        del.documents.iter().all(|d| d.module_path.first() != Some(&"a".to_string())),
+        del.documents
+            .iter()
+            .all(|d| d.module_path.first() != Some(&"a".to_string())),
         "删除路径不应再生成模块 A 的文档"
     );
 
@@ -191,7 +210,8 @@ impl Alpha {
 /// true），未覆盖此边界。
 #[test]
 fn test_e2e_delete_only_module_keeps_other_modules() {
-    let repo = std::env::temp_dir().join(format!("code_repo_wiki_e2e_delonly_{}", std::process::id()));
+    let repo =
+        std::env::temp_dir().join(format!("code_repo_wiki_e2e_delonly_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&repo);
     std::fs::create_dir_all(&repo).expect("创建临时仓库失败");
     build_fixture_repo(&repo).expect("构造测试仓库失败");
@@ -200,10 +220,20 @@ fn test_e2e_delete_only_module_keeps_other_modules() {
     let config_path = repo.join("config.toml");
 
     // 1. 全量生成：a、b 两模块页面均落盘
-    code_repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &code_repo_wiki::GenerationMode::Full)
-        .expect("全量生成失败");
+    code_repo_wiki::run_pipeline(
+        Some(&config_path),
+        None,
+        false,
+        &root,
+        &code_repo_wiki::GenerationMode::Full,
+    )
+    .expect("全量生成失败");
     let before = list_wiki_pages(&repo);
-    let b_page = repo.join(".code-repo-wiki").join("wiki").join("zh").join("src_b.md");
+    let b_page = repo
+        .join(".code-repo-wiki")
+        .join("wiki")
+        .join("zh")
+        .join("src_b.md");
     assert!(b_page.exists(), "模块 b 页面应存在: {:?}", before);
 
     // 2. 删除模块 a 的唯一文件（b 无依赖不受影响）

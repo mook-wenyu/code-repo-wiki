@@ -37,7 +37,8 @@ pub fn render_wiki_page(doc: &WikiDocument) -> String {
             };
             output.push_str(&format!(
                 "- {} — {}\n",
-                render_cite_link(&reference.target_title, &reference.target_path), rel
+                render_cite_link(&reference.target_title, &reference.target_path),
+                rel
             ));
         }
     }
@@ -149,10 +150,7 @@ pub fn render_knowledge_card(card: &KnowledgeCard) -> String {
         ));
     }
     if !card.dependents.is_empty() {
-        output.push_str(&format!(
-            "dependents: [{}]\n",
-            card.dependents.join(", ")
-        ));
+        output.push_str(&format!("dependents: [{}]\n", card.dependents.join(", ")));
     }
     if !card.design_patterns.is_empty() {
         output.push_str(&format!(
@@ -249,7 +247,8 @@ pub fn render_table_of_contents(documents: &[WikiDocument]) -> String {
     output.push_str(&format!("> 共 {} 个页面\n\n", documents.len()));
 
     // 按 module_path 前缀分组:模块文档归入各自模块,全局文档单列
-    let mut module_docs: std::collections::BTreeMap<String, Vec<&WikiDocument>> = Default::default();
+    let mut module_docs: std::collections::BTreeMap<String, Vec<&WikiDocument>> =
+        Default::default();
     let mut global_docs: Vec<&WikiDocument> = Vec::new();
     for doc in documents {
         if doc.module_path.is_empty() {
@@ -359,7 +358,10 @@ mod tests {
         WikiDocument {
             title: title.into(),
             kind: DocumentKind::WikiPage,
-            content: format!("## 概述\n\n这是 {} 的文档。\n\n## 核心实体\n\n- `Foo` — 核心结构体", title),
+            content: format!(
+                "## 概述\n\n这是 {} 的文档。\n\n## 核心实体\n\n- `Foo` — 核心结构体",
+                title
+            ),
             language: "zh".into(),
             module_path: vec!["crate".into(), title.to_lowercase()],
             references: vec![Reference {
@@ -406,7 +408,9 @@ mod tests {
             coding_spec: Some("遵循 rustfmt".into()),
             tech_stack: vec!["serde".into()],
             architecture: Some("分层".into()),
-            pending_manual_edits: vec!["人工修改待同步: wiki/zh/src_config.md 内容摘要: 手动改".into()],
+            pending_manual_edits: vec![
+                "人工修改待同步: wiki/zh/src_config.md 内容摘要: 手动改".into(),
+            ],
             features: Vec::new(),
         };
 
@@ -527,7 +531,8 @@ mod tests {
             file_path: Some("src/config.rs".into()),
             line_range: None,
             doc_comment: None,
-            signature: None, visibility: None,
+            signature: None,
+            visibility: None,
             module_path: vec!["crate".into(), "config".into()],
         });
         let fn_id = g.add_node(crate::model::CodeNode {
@@ -537,7 +542,8 @@ mod tests {
             file_path: Some("src/config.rs".into()),
             line_range: Some((12, 20)),
             doc_comment: Some("加载配置\n\n多行注释".into()),
-            signature: Some("pub fn load(path: &str) -> Result<Config>".into()), visibility: Some("pub".into()),
+            signature: Some("pub fn load(path: &str) -> Result<Config>".into()),
+            visibility: Some("pub".into()),
             module_path: vec!["crate".into(), "config".into()],
         });
         let graph = KnowledgeGraph {
@@ -575,7 +581,8 @@ mod tests {
             file_path: Some("src/main.py".into()),
             line_range: Some((1, 3)),
             doc_comment: None,
-            signature: Some("def run()".into()), visibility: None,
+            signature: Some("def run()".into()),
+            visibility: None,
             module_path: vec!["main".into()],
         });
         let graph = KnowledgeGraph {
@@ -590,7 +597,10 @@ mod tests {
             features: Vec::new(),
         };
         let doc = render_api_reference(&graph);
-        assert!(doc.content.contains("- `def run()` (函数) —  — src/main.py:1"));
+        assert!(
+            doc.content
+                .contains("- `def run()` (函数) —  — src/main.py:1")
+        );
         assert!(!doc.content.contains(", pub)"));
     }
 
@@ -603,7 +613,12 @@ mod tests {
 
         write_document(&doc, &dir, "zh").unwrap();
 
-        assert!(dir.join("wiki").join("zh").join("crate_testmodule.md").exists());
+        assert!(
+            dir.join("wiki")
+                .join("zh")
+                .join("crate_testmodule.md")
+                .exists()
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

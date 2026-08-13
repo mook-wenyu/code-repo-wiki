@@ -1,15 +1,15 @@
 //! 渲染与导出层（单进程契约：export_snapshot.json 等状态文件无锁，
 //! 同一输出目录并发运行不被支持，见 README 限制项）
-pub mod crossref;
 pub mod citation;
+pub mod crossref;
+pub mod html;
 pub mod lint;
 pub mod llms_txt;
-pub mod semantic_lint;
 pub mod markdown;
 pub mod mermaid;
 pub mod mermaid_check;
 pub mod residue_check;
-pub mod html;
+pub mod semantic_lint;
 
 use std::path::{Path, PathBuf};
 
@@ -78,7 +78,10 @@ pub(crate) fn wiki_page_path(output_dir: &Path, lang: &str, doc: &WikiDocument) 
     } else if doc.kind == crate::model::DocumentKind::ProjectOverview {
         output_dir.join("wiki").join(lang).join("overview.md")
     } else {
-        output_dir.join("wiki").join(lang).join(markdown::wiki_file_name(doc))
+        output_dir
+            .join("wiki")
+            .join(lang)
+            .join(markdown::wiki_file_name(doc))
     }
 }
 
@@ -161,7 +164,10 @@ pub fn latest_wiki_page_mtime(output_dir: &Path) -> Option<std::time::SystemTime
 }
 
 /// 从图与卡片提取快照模块列表（按模块名排序保证确定性）
-pub fn export_modules(graph: &KnowledgeGraph, cards: &[KnowledgeCard]) -> Vec<ExportModuleSnapshot> {
+pub fn export_modules(
+    graph: &KnowledgeGraph,
+    cards: &[KnowledgeCard],
+) -> Vec<ExportModuleSnapshot> {
     // U05/D9：实体节点 → 所属模块映射（先到先得，与 index.rs/community
     // 的同规则），用于聚合跨模块依赖边（Calls + Imports，排除 Contains）
     use petgraph::visit::{EdgeRef, IntoEdgeReferences};
@@ -201,7 +207,12 @@ pub fn export_modules(graph: &KnowledgeGraph, cards: &[KnowledgeCard]) -> Vec<Ex
             let mut files: Vec<String> = m
                 .node_ids
                 .iter()
-                .filter_map(|nid| graph.graph.node_weight(*nid).and_then(|n| n.file_path.clone()))
+                .filter_map(|nid| {
+                    graph
+                        .graph
+                        .node_weight(*nid)
+                        .and_then(|n| n.file_path.clone())
+                })
                 .collect();
             files.sort();
             files.dedup();
@@ -339,10 +350,7 @@ pub fn render_all(
         if protected.contains(&card_path.to_string_lossy().to_string()) {
             continue;
         }
-        crate::fs::write_file_atomic(
-            &card_path,
-            &markdown::render_knowledge_card(card),
-        )?;
+        crate::fs::write_file_atomic(&card_path, &markdown::render_knowledge_card(card))?;
     }
 
     // 1.5 写入 API 参考页（按模块分组的实体清单；内容与语言无关，只写主语言一份；
@@ -373,8 +381,14 @@ pub fn render_all(
             })
         }).collect::<Vec<_>>(),
     });
-    let cards_index = output_dir.join("cards").join(&primary_lang).join("_index.json");
-    crate::fs::write_file_atomic(&cards_index, &serde_json::to_string_pretty(&cards_index_json)?)?;
+    let cards_index = output_dir
+        .join("cards")
+        .join(&primary_lang)
+        .join("_index.json");
+    crate::fs::write_file_atomic(
+        &cards_index,
+        &serde_json::to_string_pretty(&cards_index_json)?,
+    )?;
 
     // 4. 生成目录页（命中保护集跳过写盘）
     let toc_path = toc_doc_path(output_dir);
@@ -390,7 +404,10 @@ pub fn render_all(
     if let Err(e) = llms_txt::write_llms_txt(output_dir, documents, cards, config) {
         // t05（v21）：llms.txt 是外部 Agent 的入口文件（站点地图），缺失
         // 会静默削弱 Agent 的发现路径——失败必须显式说明影响面。
-        tracing::warn!("llms.txt 写入失败（Agent 入口文件缺失，搜索类 Agent 将无法发现本 Wiki）: {}", e);
+        tracing::warn!(
+            "llms.txt 写入失败（Agent 入口文件缺失，搜索类 Agent 将无法发现本 Wiki）: {}",
+            e
+        );
     }
 
     // 4.2 llms-full.txt（v19 t05）：模块职责 + 实体清单内联索引
@@ -409,8 +426,10 @@ pub fn render_all(
 
     // 5.1 模块级调用关系图（Calls 边按模块聚合）
     let call_graph_content = mermaid::render_module_call_graph(graph);
-    crate::fs::write_file_atomic(&diagrams_dir.join("call-graph.mermaid"), &call_graph_content)?;
-
+    crate::fs::write_file_atomic(
+        &diagrams_dir.join("call-graph.mermaid"),
+        &call_graph_content,
+    )?;
 
     tracing::info!(
         "输出完成: {} 个页面, {} 个卡片, {} 个模块, 目录: {}",
@@ -572,7 +591,10 @@ mod tests {
         let doc = make_doc("zh");
         assert_eq!(
             wiki_page_path(Path::new("out"), "zh", &doc),
-            Path::new("out").join("wiki").join("zh").join("src_testmodule.md")
+            Path::new("out")
+                .join("wiki")
+                .join("zh")
+                .join("src_testmodule.md")
         );
         // ArchitectureOverview 特判写 architecture.md
         let arch = WikiDocument {
@@ -581,7 +603,10 @@ mod tests {
         };
         assert_eq!(
             wiki_page_path(Path::new("out"), "zh", &arch),
-            Path::new("out").join("wiki").join("zh").join("architecture.md")
+            Path::new("out")
+                .join("wiki")
+                .join("zh")
+                .join("architecture.md")
         );
         // ProjectOverview 特判写 overview.md
         let overview = WikiDocument {
@@ -595,17 +620,25 @@ mod tests {
         // 卡片命名：module.replace("::","_")，与 card.rs 的 card_path 一致
         assert_eq!(
             card_page_path(Path::new("out"), "zh", "src::testmodule"),
-            Path::new("out").join("cards").join("zh").join("src_testmodule.md")
+            Path::new("out")
+                .join("cards")
+                .join("zh")
+                .join("src_testmodule.md")
         );
     }
 
     /// A3：人工编辑过的卡片进入保护集后，全量 generate 不覆盖（保留人工编辑版）
     #[test]
     fn test_render_all_skips_protected_card() {
-        let dir = std::env::temp_dir()
-            .join(format!("code_repo_wiki_test_protected_card_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_protected_card_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
-        let config = WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
+        let config = WikiConfig {
+            output_dir: Some(dir.to_path_buf()),
+            ..Default::default()
+        };
 
         let card = make_card();
         let doc = make_doc("zh");
@@ -618,10 +651,22 @@ mod tests {
 
         // 保护集命中卡片路径 → 写盘跳过，人工编辑版保留
         let protected: std::collections::HashSet<String> =
-            [card_file.to_string_lossy().to_string()].into_iter().collect();
-        render_all(std::slice::from_ref(&doc), std::slice::from_ref(&card), &graph, &config, &protected).unwrap();
+            [card_file.to_string_lossy().to_string()]
+                .into_iter()
+                .collect();
+        render_all(
+            std::slice::from_ref(&doc),
+            std::slice::from_ref(&card),
+            &graph,
+            &config,
+            &protected,
+        )
+        .unwrap();
         let kept = std::fs::read_to_string(&card_file).unwrap();
-        assert_eq!(kept, "人工编辑的内容", "被保护的卡片不应被全量 generate 覆盖");
+        assert_eq!(
+            kept, "人工编辑的内容",
+            "被保护的卡片不应被全量 generate 覆盖"
+        );
 
         // 无保护时卡片正常写盘（保护语义开关验证）
         let _ = std::fs::remove_file(&card_file);
@@ -629,7 +674,10 @@ mod tests {
         render_all(&[doc], &[card], &graph, &config, &empty).unwrap();
         assert!(card_file.exists(), "未保护的卡片应正常写盘");
         assert!(
-            dir.join("wiki").join("zh").join("src_testmodule.md").exists(),
+            dir.join("wiki")
+                .join("zh")
+                .join("src_testmodule.md")
+                .exists(),
             "wiki 页应正常写盘"
         );
 
@@ -642,25 +690,42 @@ mod tests {
     /// write_document，页面 LLM 失败即连带丢卡）。
     #[test]
     fn test_render_all_writes_cards_without_documents() {
-        let dir = std::env::temp_dir()
-            .join(format!("code_repo_wiki_test_cards_no_docs_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_cards_no_docs_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
-        let config = WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
+        let config = WikiConfig {
+            output_dir: Some(dir.to_path_buf()),
+            ..Default::default()
+        };
 
         let card = make_card();
         let graph = KnowledgeGraph::default();
         let empty_docs: [WikiDocument; 0] = [];
         let empty_protected = std::collections::HashSet::new();
 
-        render_all(&empty_docs, std::slice::from_ref(&card), &graph, &config, &empty_protected)
-            .unwrap();
+        render_all(
+            &empty_docs,
+            std::slice::from_ref(&card),
+            &graph,
+            &config,
+            &empty_protected,
+        )
+        .unwrap();
 
         assert!(
-            dir.join("cards").join("zh").join("src_testmodule.md").exists(),
+            dir.join("cards")
+                .join("zh")
+                .join("src_testmodule.md")
+                .exists(),
             "页面全部失败时卡片必须独立落盘"
         );
         assert!(
-            !dir.join("wiki").join("zh").join("src_testmodule.md").exists(),
+            !dir.join("wiki")
+                .join("zh")
+                .join("src_testmodule.md")
+                .exists(),
             "无文档时不应产出页面"
         );
 
@@ -672,8 +737,10 @@ mod tests {
     /// 指引与搜索建议；只生成 AGENTS.md 不生成 CLAUDE.md（单一基线不双发）
     #[test]
     fn test_generate_agents_md_template_aligned() {
-        let dir = std::env::temp_dir()
-            .join(format!("code_repo_wiki_test_agents_md_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_agents_md_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let output_dir = dir.join("out");
         std::fs::create_dir_all(&output_dir).unwrap();
@@ -692,11 +759,23 @@ mod tests {
         assert!(content.contains("## 常用命令"), "应含常用命令节: {content}");
         assert!(content.contains("## 开发规范"), "应含开发规范节: {content}");
         // 保留既有功能：llms.txt / llms-full.txt 指引 + 搜索建议
-        assert!(content.contains("llms.txt"), "应保留 llms.txt 指引: {content}");
-        assert!(content.contains("llms-full.txt"), "应保留 llms-full.txt 指引: {content}");
-        assert!(content.contains("code-repo-wiki search"), "应保留搜索建议: {content}");
+        assert!(
+            content.contains("llms.txt"),
+            "应保留 llms.txt 指引: {content}"
+        );
+        assert!(
+            content.contains("llms-full.txt"),
+            "应保留 llms-full.txt 指引: {content}"
+        );
+        assert!(
+            content.contains("code-repo-wiki search"),
+            "应保留搜索建议: {content}"
+        );
         // 可证伪措辞：每节明确「何时做/何时不做」
-        assert!(content.contains("何时"), "指令须可证伪（含何时）: {content}");
+        assert!(
+            content.contains("何时"),
+            "指令须可证伪（含何时）: {content}"
+        );
         // 单一基线不双发：不生成 CLAUDE.md
         assert!(
             !dir.join("CLAUDE.md").exists(),

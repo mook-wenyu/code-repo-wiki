@@ -102,8 +102,14 @@ mod tests {
     #[test]
     fn test_retry_feedback_lists_lines() {
         let residues = vec![
-            TemplateResidue { line: 3, snippet: "{{summary}}".into() },
-            TemplateResidue { line: 5, snippet: "{{entity_name}}".into() },
+            TemplateResidue {
+                line: 3,
+                snippet: "{{summary}}".into(),
+            },
+            TemplateResidue {
+                line: 5,
+                snippet: "{{entity_name}}".into(),
+            },
         ];
         let fb = residue_retry_feedback(&residues);
         assert!(fb.contains("第 3 行"), "反馈应含行号: {fb}");

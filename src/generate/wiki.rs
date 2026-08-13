@@ -3,11 +3,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::Result;
 
-use crate::config::schema::{trim_guide_notes, WikiConfig};
+use crate::config::schema::{WikiConfig, trim_guide_notes};
+use crate::generate::GenerationOutput;
 use crate::generate::chunk::Chunk;
 use crate::generate::llm::{LlmProvider, Message};
 use crate::generate::prompt;
-use crate::generate::GenerationOutput;
 use crate::model::{DocumentKind, EdgeKind, KnowledgeGraph, NodeId, Reference, WikiDocument};
 
 /// Wiki 页面生成器
@@ -37,9 +37,7 @@ pub struct WikiGenerator<'a, P: LlmProvider> {
 impl<P: LlmProvider> WikiGenerator<'_, P> {
     /// HEAD 短哈希（每轮生成首次调用计算一次，此后复用）
     fn head_short_for(&self, root: &crate::project::ProjectRoot) -> Option<String> {
-        self.head_short
-            .get_or_init(|| git_head_short(root))
-            .clone()
+        self.head_short.get_or_init(|| git_head_short(root)).clone()
     }
 }
 
@@ -53,27 +51,27 @@ struct CacheEntry {
     description: String,
 }
 
-    /// 模块职责描述缓存（v31 C-02）
-    ///
-    /// 落盘位置 `{output_dir}/.state/module_descriptions.json`（与
-    /// generation_state.json 同目录）。加载损坏/缺失时返回空缓存并告警——
-    /// 描述按需回退 LLM 重新生成，缓存故障绝不阻断主流程。
-    struct ModuleDescCache {
-        entries: std::collections::HashMap<String, CacheEntry>,
-    }
+/// 模块职责描述缓存（v31 C-02）
+///
+/// 落盘位置 `{output_dir}/.state/module_descriptions.json`（与
+/// generation_state.json 同目录）。加载损坏/缺失时返回空缓存并告警——
+/// 描述按需回退 LLM 重新生成，缓存故障绝不阻断主流程。
+struct ModuleDescCache {
+    entries: std::collections::HashMap<String, CacheEntry>,
+}
 
-    /// 读取仓库 HEAD 短哈希（v32 10.2 页面基线行）
-    ///
-    /// git2 打开失败（非 git 仓库/无 HEAD/权限）一律返回 None——基线行
-    /// 是附加信息，任何 git 读取问题都不应中断生成。短哈希取前 8 位，
-    /// 与 `git log --oneline` 的默认缩写一致，足够人工核对版本。
-    fn git_head_short(root: &crate::project::ProjectRoot) -> Option<String> {
-        let repo = git2::Repository::open(root.path()).ok()?;
-        let head = repo.head().ok()?;
-        let commit = head.peel_to_commit().ok()?;
-        let id = commit.id().to_string();
-        Some(id[..id.len().min(8)].to_string())
-    }
+/// 读取仓库 HEAD 短哈希（v32 10.2 页面基线行）
+///
+/// git2 打开失败（非 git 仓库/无 HEAD/权限）一律返回 None——基线行
+/// 是附加信息，任何 git 读取问题都不应中断生成。短哈希取前 8 位，
+/// 与 `git log --oneline` 的默认缩写一致，足够人工核对版本。
+fn git_head_short(root: &crate::project::ProjectRoot) -> Option<String> {
+    let repo = git2::Repository::open(root.path()).ok()?;
+    let head = repo.head().ok()?;
+    let commit = head.peel_to_commit().ok()?;
+    let id = commit.id().to_string();
+    Some(id[..id.len().min(8)].to_string())
+}
 
 impl ModuleDescCache {
     fn new() -> Self {
@@ -207,7 +205,11 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
     pub fn new(provider: &'a P, max_concurrent: usize) -> Self {
         // tokio Semaphore 许可数有 MAX_PERMITS 上限（约 2^61），usize::MAX 会 panic；
         // "0=不限制" 用足够大的许可数表达（对真实并发规模永不构成瓶颈）
-        let max = if max_concurrent == 0 { 1_000_000_000 } else { max_concurrent };
+        let max = if max_concurrent == 0 {
+            1_000_000_000
+        } else {
+            max_concurrent
+        };
         Self {
             provider,
             call_count: AtomicUsize::new(0),
@@ -299,13 +301,11 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
                 // v14 B 组（t03 拍板）：生产路径传实体行区间表 → 两级校验
                 // （文件级 + 区间重叠）；None（测试/无表场景）退化为文件级。
                 match entity_ranges {
-                    Some(ranges) => {
-                        crate::output::citation::validate_citations_against_entities(
-                            root.path(),
-                            &content,
-                            ranges,
-                        )
-                    }
+                    Some(ranges) => crate::output::citation::validate_citations_against_entities(
+                        root.path(),
+                        &content,
+                        ranges,
+                    ),
                     None => crate::output::citation::validate_citations(root.path(), &content),
                 }
             };
@@ -343,9 +343,9 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
                 break;
             }
             if !last_invalid.is_empty() {
-                messages.push(Message::user(
-                    crate::output::citation::retry_feedback(&last_invalid),
-                ));
+                messages.push(Message::user(crate::output::citation::retry_feedback(
+                    &last_invalid,
+                )));
             }
             if !last_mermaid.is_empty() {
                 messages.push(Message::user(
@@ -445,10 +445,11 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
     ) -> Result<WikiDocument> {
         let language = &config.wiki.language;
         let modules = self.describe_modules(graph, language, config, root).await;
-        let messages =
-            prompt::architecture_overview_prompt(&modules, graph, language);
+        let messages = prompt::architecture_overview_prompt(&modules, graph, language);
         // LLM 调用计数在 complete_with_mermaid_guard 内部（含重试）
-        let content = self.complete_with_mermaid_guard(messages, "架构概览").await?;
+        let content = self
+            .complete_with_mermaid_guard(messages, "架构概览")
+            .await?;
         let now = chrono::Utc::now().to_rfc3339();
         // v32 10.2：架构页也带基线行（与模块页一致；OnceCell 复用同值）
         let based_on_commit = self.head_short_for(root);
@@ -501,7 +502,10 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
     ) -> Vec<crate::model::ModuleCluster> {
         // 缓存文件路径与 generation_state.json 同目录（.state/），
         // 随输出目录隔离（不同仓库/不同输出互不污染）
-        let cache_path = config.output_dir().join(".state").join("module_descriptions.json");
+        let cache_path = config
+            .output_dir()
+            .join(".state")
+            .join("module_descriptions.json");
         // 懒加载：首次调用读盘（损坏→空缓存，回退 LLM 重新生成不阻断）
         {
             let mut guard = self.desc_cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -547,7 +551,8 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
                             // 写回缓存（锁内短操作，不跨 await）——失败不缓存，
                             // 下次调用重新尝试 LLM
                             {
-                                let mut guard = self.desc_cache.lock().unwrap_or_else(|e| e.into_inner());
+                                let mut guard =
+                                    self.desc_cache.lock().unwrap_or_else(|e| e.into_inner());
                                 if let Some(cache) = guard.as_mut() {
                                     cache.entries.insert(
                                         cache_key,
@@ -568,16 +573,16 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
                                 "模块 {} 描述生成为空文本，保留空描述（无职责描述可用）",
                                 module.name
                             );
-                            self.failed.lock().unwrap_or_else(|e| e.into_inner())
+                            self.failed
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
                                 .push(module.name.clone());
                         }
                         Err(e) => {
-                            tracing::warn!(
-                                "模块 {} 描述生成失败，保留空描述: {}",
-                                module.name,
-                                e
-                            );
-                            self.failed.lock().unwrap_or_else(|e| e.into_inner())
+                            tracing::warn!("模块 {} 描述生成失败，保留空描述: {}", module.name, e);
+                            self.failed
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
                                 .push(module.name.clone());
                         }
                     }
@@ -608,11 +613,7 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
         // 模块职责描述输入：实体名收集（t02 拍板：行为型优先排序 + 排除字段级）
         let entity_names = collect_module_entity_names(module, graph);
 
-        let messages = prompt::module_description_prompt(
-            &module.name,
-            &entity_names,
-            language,
-        );
+        let messages = prompt::module_description_prompt(&module.name, &entity_names, language);
         self.provider.complete(&messages).await
     }
 
@@ -631,14 +632,18 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
         // 表达"模块负责什么"；再叠加卡片摘要（自底向上合成：父概览基于
         // 子模块的职责描述 + 卡片摘要生成，而非仅模块名/节点数/边计数）
         // LLM 调用计数在 complete_with_mermaid_guard 内部（含重试）
-        let modules = self.describe_modules(graph, &config.wiki.language, config, root).await;
+        let modules = self
+            .describe_modules(graph, &config.wiki.language, config, root)
+            .await;
         // C-002（Phase 16.4）：指令在 system、数据在 user（注入防御——模块
         // 聚类/职责/卡片摘要/依赖摘要均声明为数据而非指令）
         let messages = vec![
             Message::system(overview_system_prompt(&config.wiki.language)),
             Message::user(overview_user_prompt(&modules, &output.cards, graph, config)),
         ];
-        let content = self.complete_with_mermaid_guard(messages, "项目概览").await?;
+        let content = self
+            .complete_with_mermaid_guard(messages, "项目概览")
+            .await?;
         let now = chrono::Utc::now().to_rfc3339();
         // v32 10.2：概览页也带基线行（与模块页一致；OnceCell 复用同值）
         let based_on_commit = self.head_short_for(root);
@@ -745,7 +750,10 @@ pub(crate) fn annotate_mermaid_degraded(degraded: &str) -> String {
     for line in degraded.lines() {
         out.push_str(line);
         out.push('\n');
-        if line.trim_start().starts_with("<!-- code-repo-wiki: mermaid parse failed") {
+        if line
+            .trim_start()
+            .starts_with("<!-- code-repo-wiki: mermaid parse failed")
+        {
             out.push_str("> ⚠️ **原 Mermaid 图生成失败，已降级为文本块**（语法错误见上方注释，内容保留在下文，供人工修复参考）\n");
         }
     }
@@ -816,7 +824,10 @@ pub async fn complete_with_mermaid_guard_free<P: LlmProvider>(
         );
     }
 
-    tracing::warn!("{label} Mermaid 重试耗尽（{} 个坏块），降级为 text 块并显式标注", last_mermaid.len());
+    tracing::warn!(
+        "{label} Mermaid 重试耗尽（{} 个坏块），降级为 text 块并显式标注",
+        last_mermaid.len()
+    );
     Ok(annotate_mermaid_degraded(
         &crate::output::mermaid_check::degrade_mermaid_blocks(&content, &last_mermaid),
     ))
@@ -829,7 +840,11 @@ pub async fn complete_with_mermaid_guard_free<P: LlmProvider>(
 /// 二次产出（describe_modules / 卡片摘要）或代码图，属**数据**而非指令，
 /// 与 Anthropic 官方 prompt 安全实践一致。
 fn overview_system_prompt(language: &str) -> String {
-    let output_lang = if language == "zh" { "简体中文" } else { language };
+    let output_lang = if language == "zh" {
+        "简体中文"
+    } else {
+        language
+    };
     format!(
         r#"### 角色
 你是一个资深软件架构师，负责为整个项目生成人类可读的项目概览文档。
@@ -1007,11 +1022,18 @@ pub fn fallback_architecture_doc(
         "# {title}\n\n> LLM 生成不可用，本页为确定性骨架：模块与依赖关系由知识图谱自动生成（无 LLM 摘要）。\n\n## 模块\n\n"
     );
     for module in &graph.modules {
-        body.push_str(&format!("- `{}`（{} 个实体）", module.name, module.node_ids.len()));
+        body.push_str(&format!(
+            "- `{}`（{} 个实体）",
+            module.name,
+            module.node_ids.len()
+        ));
         if let Some(dl) = deps.get(&module.name)
             && !dl.is_empty()
         {
-            body.push_str(&format!(" — 依赖 {}", dl.iter().cloned().collect::<Vec<_>>().join(", ")));
+            body.push_str(&format!(
+                " — 依赖 {}",
+                dl.iter().cloned().collect::<Vec<_>>().join(", ")
+            ));
         }
         body.push('\n');
     }
@@ -1052,7 +1074,7 @@ mod tests {
     use crate::generate::chunk::chunk_by_file;
     use crate::generate::llm::MockProvider;
     use crate::ingest::parser::{Entity, FileInsight, ImportStmt};
-    
+
     use std::path::PathBuf;
 
     /// 可编程 mock：按调用次数依次返回预设响应（引用重试测试用）
@@ -1072,7 +1094,8 @@ mod tests {
 
     impl LlmProvider for ScriptedProvider {
         async fn complete(&self, _messages: &[Message]) -> Result<String> {
-            self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             self.responses
                 .lock()
                 .unwrap()
@@ -1098,9 +1121,12 @@ mod tests {
 
     impl LlmProvider for FlakyProvider {
         async fn complete(&self, _messages: &[Message]) -> Result<String> {
-            self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             // 剩余失败次数 > 0 时失败，减到 0 后成功
-            let remaining = self.fail_times.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            let remaining = self
+                .fail_times
+                .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
             if remaining > 0 {
                 Err(anyhow::anyhow!("模拟瞬时网络错误"))
             } else {
@@ -1113,7 +1139,9 @@ mod tests {
     async fn test_complete_with_retry_passthrough_success() {
         // v50：成功路径一次调用直接返回内容（上层无重试循环）
         let provider = FlakyProvider::new(0);
-        let content = complete_with_retry(&provider, &[], "src::test").await.unwrap();
+        let content = complete_with_retry(&provider, &[], "src::test")
+            .await
+            .unwrap();
         assert_eq!(content, "重试成功");
         assert_eq!(provider.calls.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
@@ -1139,7 +1167,8 @@ mod tests {
             line_start: 1,
             line_end: 50,
             doc_comment: Some("HTTP 服务".into()),
-            signature: None, visibility: None,
+            signature: None,
+            visibility: None,
         };
         let insight = FileInsight {
             path: PathBuf::from("src/server.rs"),
@@ -1171,7 +1200,9 @@ mod tests {
             entity_sources: vec![],
         };
 
-        let result = generator.generate_wiki_page(&empty_chunk, "", &config, &root, None).await;
+        let result = generator
+            .generate_wiki_page(&empty_chunk, "", &config, &root, None)
+            .await;
         assert!(result.is_err());
     }
 
@@ -1179,7 +1210,10 @@ mod tests {
     #[tokio::test]
     async fn test_wiki_page_retries_on_invalid_citation() {
         // 临时目录放一个真实文件 src/server.rs（3 行），使有效引用通过校验
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_cite_retry_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_cite_retry_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let src = dir.join("src");
         std::fs::create_dir_all(&src).unwrap();
@@ -1195,9 +1229,19 @@ mod tests {
         let config = WikiConfig::default();
         let chunk = make_test_chunk();
 
-        let doc = generator.generate_wiki_page(&chunk, "摘要", &config, &root, None).await.unwrap();
-        assert!(doc.content.contains("src/server.rs:1"), "重试后应使用有效引用");
-        assert_eq!(provider.calls.load(std::sync::atomic::Ordering::Relaxed), 2, "应调用 2 次（1 次失败 + 1 次重试）");
+        let doc = generator
+            .generate_wiki_page(&chunk, "摘要", &config, &root, None)
+            .await
+            .unwrap();
+        assert!(
+            doc.content.contains("src/server.rs:1"),
+            "重试后应使用有效引用"
+        );
+        assert_eq!(
+            provider.calls.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "应调用 2 次（1 次失败 + 1 次重试）"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1205,7 +1249,10 @@ mod tests {
     /// 引用契约重试耗尽：超过 CITATION_RETRY_MAX 仍无效 → 报错
     #[tokio::test]
     async fn test_wiki_page_bails_when_citations_never_valid() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_cite_fail_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_cite_fail_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let root = crate::project::ProjectRoot::new(dir.clone());
 
@@ -1219,10 +1266,15 @@ mod tests {
         let config = WikiConfig::default();
         let chunk = make_test_chunk();
 
-        let result = generator.generate_wiki_page(&chunk, "摘要", &config, &root, None).await;
+        let result = generator
+            .generate_wiki_page(&chunk, "摘要", &config, &root, None)
+            .await;
         assert!(result.is_err(), "重试耗尽后应报错");
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("引用校验失败"), "错误信息应说明引用校验失败: {err}");
+        assert!(
+            err.contains("引用校验失败"),
+            "错误信息应说明引用校验失败: {err}"
+        );
         assert_eq!(
             provider.calls.load(std::sync::atomic::Ordering::Relaxed),
             CITATION_RETRY_MAX + 1,
@@ -1235,7 +1287,10 @@ mod tests {
     /// 引用契约放行：无引用的输出直接通过（契约只惩罚编造引用，不强制必须有）
     #[tokio::test]
     async fn test_wiki_page_without_citations_passes() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_cite_ok_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_cite_ok_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let root = crate::project::ProjectRoot::new(dir.clone());
 
@@ -1244,9 +1299,16 @@ mod tests {
         let config = WikiConfig::default();
         let chunk = make_test_chunk();
 
-        let doc = generator.generate_wiki_page(&chunk, "摘要", &config, &root, None).await.unwrap();
+        let doc = generator
+            .generate_wiki_page(&chunk, "摘要", &config, &root, None)
+            .await
+            .unwrap();
         assert_eq!(doc.content, "模块职责是管理连接。");
-        assert_eq!(provider.calls.load(std::sync::atomic::Ordering::Relaxed), 1, "无引用无需重试");
+        assert_eq!(
+            provider.calls.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "无引用无需重试"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1254,7 +1316,10 @@ mod tests {
     /// G2 Mermaid 契约重试：坏图 → 重试注入错误反馈 → 第二次输出好图则成功
     #[tokio::test]
     async fn test_wiki_page_retries_on_bad_mermaid() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_mermaid_retry_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_mermaid_retry_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let root = crate::project::ProjectRoot::new(dir.clone());
 
@@ -1267,9 +1332,19 @@ mod tests {
         let config = WikiConfig::default();
         let chunk = make_test_chunk();
 
-        let doc = generator.generate_wiki_page(&chunk, "摘要", &config, &root, None).await.unwrap();
-        assert!(doc.content.contains("A[Start] --> B[End]"), "重试后应保留好图");
-        assert_eq!(provider.calls.load(std::sync::atomic::Ordering::Relaxed), 2, "应调用 2 次（1 次坏图 + 1 次重试）");
+        let doc = generator
+            .generate_wiki_page(&chunk, "摘要", &config, &root, None)
+            .await
+            .unwrap();
+        assert!(
+            doc.content.contains("A[Start] --> B[End]"),
+            "重试后应保留好图"
+        );
+        assert_eq!(
+            provider.calls.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "应调用 2 次（1 次坏图 + 1 次重试）"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1278,7 +1353,10 @@ mod tests {
     /// （行号对但内容错）→ 校验失败 → 重试反馈注入 → 修正后成功
     #[tokio::test]
     async fn test_wiki_page_retries_on_overlap_citation() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_cite_overlap_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_cite_overlap_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let src = dir.join("src");
         std::fs::create_dir_all(&src).unwrap();
@@ -1304,7 +1382,10 @@ mod tests {
             .generate_wiki_page(&chunk, "摘要", &config, &root, Some(&ranges))
             .await
             .unwrap();
-        assert!(doc.content.contains("src/server.rs:2"), "重试后应使用覆盖实体的引用");
+        assert!(
+            doc.content.contains("src/server.rs:2"),
+            "重试后应使用覆盖实体的引用"
+        );
         assert_eq!(
             provider.calls.load(std::sync::atomic::Ordering::Relaxed),
             2,
@@ -1318,7 +1399,10 @@ mod tests {
     /// 与文件级引用校验同一失败语义，Mermaid 才是唯一降级路径）
     #[tokio::test]
     async fn test_wiki_page_bails_when_overlap_never_valid() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_cite_overlap_fail_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_cite_overlap_fail_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let src = dir.join("src");
         std::fs::create_dir_all(&src).unwrap();
@@ -1345,7 +1429,10 @@ mod tests {
             .await;
         assert!(result.is_err(), "区间重叠校验重试耗尽应报错");
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("引用校验失败"), "错误信息应说明引用校验失败: {err}");
+        assert!(
+            err.contains("引用校验失败"),
+            "错误信息应说明引用校验失败: {err}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1354,7 +1441,10 @@ mod tests {
     /// 校验只对有实体的文件生效（引用配置/说明文件是合法行为）
     #[tokio::test]
     async fn test_wiki_page_passes_non_code_file_citation() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_cite_noncode_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_cite_noncode_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("README.md"), "docs\n").unwrap();
@@ -1363,9 +1453,7 @@ mod tests {
         // 实体表不含 README.md（无实体）
         let ranges: crate::output::citation::EntityRanges =
             crate::output::citation::EntityRanges::new();
-        let provider = ScriptedProvider::new(vec![
-            "模块说明见 README.md:1。".to_string(),
-        ]);
+        let provider = ScriptedProvider::new(vec!["模块说明见 README.md:1。".to_string()]);
         let generator = WikiGenerator::new(&provider, 0);
         let config = WikiConfig::default();
         let chunk = make_test_chunk();
@@ -1375,7 +1463,11 @@ mod tests {
             .await
             .unwrap();
         assert!(doc.content.contains("README.md:1"), "无实体文件引用应放行");
-        assert_eq!(provider.calls.load(std::sync::atomic::Ordering::Relaxed), 1, "无需重试");
+        assert_eq!(
+            provider.calls.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "无需重试"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1384,7 +1476,10 @@ mod tests {
     /// （坏块替换为 text fence + 标记注释，页面照常产出）
     #[tokio::test]
     async fn test_wiki_page_degrades_when_mermaid_never_valid() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_mermaid_degrade_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_mermaid_degrade_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let root = crate::project::ProjectRoot::new(dir.clone());
 
@@ -1398,10 +1493,19 @@ mod tests {
         let config = WikiConfig::default();
         let chunk = make_test_chunk();
 
-        let doc = generator.generate_wiki_page(&chunk, "摘要", &config, &root, None).await.unwrap();
-        assert!(!doc.content.contains("```mermaid"), "坏图不应再以 mermaid 块出现");
+        let doc = generator
+            .generate_wiki_page(&chunk, "摘要", &config, &root, None)
+            .await
+            .unwrap();
+        assert!(
+            !doc.content.contains("```mermaid"),
+            "坏图不应再以 mermaid 块出现"
+        );
         assert!(doc.content.contains("```text"), "坏块应降级为 text fence");
-        assert!(doc.content.contains("code-repo-wiki: mermaid parse failed"), "应含降级标记注释");
+        assert!(
+            doc.content.contains("code-repo-wiki: mermaid parse failed"),
+            "应含降级标记注释"
+        );
         assert_eq!(
             provider.calls.load(std::sync::atomic::Ordering::Relaxed),
             MERMAID_RETRY_MAX + 1,
@@ -1437,8 +1541,14 @@ mod tests {
             .generate_architecture(&output, &graph, &config, &root)
             .await
             .unwrap();
-        assert!(!doc.content.contains("```mermaid"), "坏图不应再以 mermaid 块出现");
-        assert!(doc.content.contains("code-repo-wiki: mermaid parse failed"), "应含降级标记注释");
+        assert!(
+            !doc.content.contains("```mermaid"),
+            "坏图不应再以 mermaid 块出现"
+        );
+        assert!(
+            doc.content.contains("code-repo-wiki: mermaid parse failed"),
+            "应含降级标记注释"
+        );
         let _ = std::fs::remove_dir_all(root.path());
     }
 
@@ -1507,7 +1617,8 @@ mod tests {
             file_path: Some("src/net.rs".into()),
             line_range: None,
             doc_comment: None,
-            signature: None, visibility: None,
+            signature: None,
+            visibility: None,
             module_path: vec!["src".into(), "net".into()],
         });
         let e = g.add_node(CodeNode {
@@ -1517,7 +1628,8 @@ mod tests {
             file_path: Some("src/net.rs".into()),
             line_range: None,
             doc_comment: None,
-            signature: None, visibility: None,
+            signature: None,
+            visibility: None,
             module_path: vec!["src".into(), "net".into()],
         });
         let kg = KnowledgeGraph {
@@ -1545,8 +1657,7 @@ mod tests {
         // 输出目录指向临时目录，避免缓存文件污染工作区
         let config = crate::config::schema::WikiConfig {
             output_dir: Some(
-                std::env::temp_dir()
-                    .join(format!("rw_desc_cache_test_{}", std::process::id())),
+                std::env::temp_dir().join(format!("rw_desc_cache_test_{}", std::process::id())),
             ),
             ..Default::default()
         };
@@ -1581,15 +1692,13 @@ mod tests {
         });
         let kg = KnowledgeGraph {
             graph: g,
-            modules: vec![
-                ModuleCluster {
-                    name: "src::net".into(),
-                    node_ids: vec![NodeId::new(0)],
-                    cohesion: 1.0,
-                    coupling: 0.0,
-                    description: None,
-                },
-            ],
+            modules: vec![ModuleCluster {
+                name: "src::net".into(),
+                node_ids: vec![NodeId::new(0)],
+                cohesion: 1.0,
+                coupling: 0.0,
+                description: None,
+            }],
             features: Vec::new(),
         };
         let provider = MockProvider::new();
@@ -1597,9 +1706,11 @@ mod tests {
         // 测试泄漏根治（v33 审计发现）：目录按 PID 命名且从不清理——Windows
         // PID 复用时上一进程的落盘缓存被本进程读到，缓存命中断言变成
         // 「残留命中」而偶发失败。开头清理保证从干净基线开始。
-        let out_dir = std::env::temp_dir().join(format!("rw_desc_cache_hit_{}", std::process::id()));
+        let out_dir =
+            std::env::temp_dir().join(format!("rw_desc_cache_hit_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out_dir);
-        let root_dir = std::env::temp_dir().join(format!("rw_desc_root_hit_{}", std::process::id()));
+        let root_dir =
+            std::env::temp_dir().join(format!("rw_desc_root_hit_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root_dir);
         let config = crate::config::schema::WikiConfig {
             output_dir: Some(out_dir),
@@ -1611,7 +1722,10 @@ mod tests {
         let calls_after_first = generator.llm_call_count();
         assert!(calls_after_first > 0, "首次必须真实调用 LLM");
         let second = generator.describe_modules(&kg, "zh", &config, &root).await;
-        assert_eq!(second[0].description, first[0].description, "缓存应返回相同描述");
+        assert_eq!(
+            second[0].description, first[0].description,
+            "缓存应返回相同描述"
+        );
         assert_eq!(
             generator.llm_call_count(),
             calls_after_first,
@@ -1666,7 +1780,11 @@ mod tests {
         let calls_after_first = generator.llm_call_count();
 
         // 修改源文件内容 → 指纹变化 → 缓存失效
-        std::fs::write(dir.join("src/net.rs"), "pub fn connect() {}\npub fn listen() {}\n").unwrap();
+        std::fs::write(
+            dir.join("src/net.rs"),
+            "pub fn connect() {}\npub fn listen() {}\n",
+        )
+        .unwrap();
         generator.describe_modules(&kg, "zh", &config, &root).await;
         assert!(
             generator.llm_call_count() > calls_after_first,
@@ -1682,11 +1800,16 @@ mod tests {
         use crate::model::{CodeEdge, CodeNode, ModuleCluster, NodeId, NodeKind};
         use petgraph::stable_graph::StableDiGraph;
 
-        let dir = std::env::temp_dir().join(format!("rw_desc_cache_corrupt_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("rw_desc_cache_corrupt_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(".code-repo-wiki/.state")).unwrap();
         // 写入损坏的缓存文件（非法 JSON）
-        std::fs::write(dir.join(".code-repo-wiki/.state/module_descriptions.json"), "{not-json").unwrap();
+        std::fs::write(
+            dir.join(".code-repo-wiki/.state/module_descriptions.json"),
+            "{not-json",
+        )
+        .unwrap();
 
         let mut g = StableDiGraph::<CodeNode, CodeEdge>::new();
         g.add_node(CodeNode {
@@ -1720,7 +1843,10 @@ mod tests {
         let root = crate::project::ProjectRoot::new(dir.clone());
         // 损坏缓存不应 panic，应走 LLM 重新生成并获得描述
         let modules = generator.describe_modules(&kg, "zh", &config, &root).await;
-        assert!(modules[0].description.is_some(), "损坏缓存回退后应重新生成描述");
+        assert!(
+            modules[0].description.is_some(),
+            "损坏缓存回退后应重新生成描述"
+        );
         assert!(generator.llm_call_count() > 0, "损坏缓存必须触发 LLM 调用");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1826,9 +1952,15 @@ mod tests {
         let fn_pos = names.iter().position(|n| n == "fn_00").unwrap();
         let struct_pos = names.iter().position(|n| n == "struct_0").unwrap();
         let const_pos = names.iter().position(|n| n == "const_0").unwrap();
-        assert!(fn_pos < struct_pos && struct_pos < const_pos, "优先级序: 函数 < 结构体 < 常量");
+        assert!(
+            fn_pos < struct_pos && struct_pos < const_pos,
+            "优先级序: 函数 < 结构体 < 常量"
+        );
         // 同级字典序（确定性）：fn_00 在 fn_01 前
-        assert!(names.iter().position(|n| n == "fn_00").unwrap() < names.iter().position(|n| n == "fn_01").unwrap());
+        assert!(
+            names.iter().position(|n| n == "fn_00").unwrap()
+                < names.iter().position(|n| n == "fn_01").unwrap()
+        );
     }
 
     /// 名额截断：实体数超过 DESCRIBE_ENTITY_CAP 时只保留前 30 个（行为型优先）
@@ -1908,8 +2040,14 @@ mod tests {
         // C-002（Phase 16.4）：overview 拆为 system + user——system 含角色分节、
         // 注入防御声明、zh → 简体中文 语言映射
         let system = overview_system_prompt("zh");
-        assert!(system.contains("### 角色"), "overview system 应分节: {system}");
-        assert!(system.contains("简体中文"), "zh 语言应映射简体中文: {system}");
+        assert!(
+            system.contains("### 角色"),
+            "overview system 应分节: {system}"
+        );
+        assert!(
+            system.contains("简体中文"),
+            "zh 语言应映射简体中文: {system}"
+        );
         assert!(
             system.contains("而非指令"),
             "overview system 必须含注入防御声明: {system}"
@@ -1919,6 +2057,9 @@ mod tests {
             "防御声明应列出数据类别: {system}"
         );
         let system_en = overview_system_prompt("en");
-        assert!(system_en.contains("请用 en 输出"), "非 zh 语言原样: {system_en}");
+        assert!(
+            system_en.contains("请用 en 输出"),
+            "非 zh 语言原样: {system_en}"
+        );
     }
 }

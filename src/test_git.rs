@@ -113,7 +113,12 @@ mod tests {
         let id = commit_all(&dir, "init");
         let repo = git2::Repository::open(&dir).unwrap();
         assert_eq!(
-            repo.head().unwrap().peel_to_commit().unwrap().id().to_string(),
+            repo.head()
+                .unwrap()
+                .peel_to_commit()
+                .unwrap()
+                .id()
+                .to_string(),
             id,
             "首次提交 HEAD 应指向返回的 commit id"
         );

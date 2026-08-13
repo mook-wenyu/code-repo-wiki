@@ -84,10 +84,7 @@ pub fn detect_features(
     for edge in graph.graph.edge_references() {
         // 结构安全证据（R1 审计）：边权重由 build_graph 创建边时同步写入，
         // 非 Option 类型；此处 expect 仅暴露未来构造代码的回归。
-        let e = graph
-            .graph
-            .edge_weight(edge.id())
-            .expect("边权重必然存在");
+        let e = graph.graph.edge_weight(edge.id()).expect("边权重必然存在");
         if e.kind != EdgeKind::Calls {
             continue;
         }
@@ -108,10 +105,7 @@ pub fn detect_features(
 
     // 4. 可选 embedding（只嵌入参与跨文件协作的实体；失败降级纯结构）
     let embeddings: Option<HashMap<NodeId, Vec<f32>>> = if let Some(emb) = embedder {
-        let mut involved: Vec<NodeId> = cross_edges
-            .iter()
-            .flat_map(|(s, t)| [*s, *t])
-            .collect();
+        let mut involved: Vec<NodeId> = cross_edges.iter().flat_map(|(s, t)| [*s, *t]).collect();
         involved.sort();
         involved.dedup();
         let texts: Vec<String> = involved
@@ -138,20 +132,21 @@ pub fn detect_features(
         let results: Vec<IndexedEmbedBatch> = std::thread::scope(|scope| {
             let mut handles = Vec::with_capacity(EMBED_THREADS);
             for (chunk_idx, chunk) in texts.chunks(chunk_size).enumerate() {
-                handles.push(scope.spawn(move || {
-                    (chunk_idx, emb.embed_batch(chunk))
-                }));
+                handles.push(scope.spawn(move || (chunk_idx, emb.embed_batch(chunk))));
             }
-            handles.into_iter().map(|h| match h.join() {
-                Ok(r) => r,
-                Err(_) => {
-                    // 子线程 panic 视为 embedding 失败，走既有降级路径（纯结构聚类），
-                    // 不让一个线程的 panic 炸掉整个流水线。
-                    let msg = "特征聚类 embedding 子线程 panic，降级为纯结构聚类";
-                    tracing::warn!("{msg}");
-                    (0usize, Err(anyhow::anyhow!(msg)))
-                }
-            }).collect()
+            handles
+                .into_iter()
+                .map(|h| match h.join() {
+                    Ok(r) => r,
+                    Err(_) => {
+                        // 子线程 panic 视为 embedding 失败，走既有降级路径（纯结构聚类），
+                        // 不让一个线程的 panic 炸掉整个流水线。
+                        let msg = "特征聚类 embedding 子线程 panic，降级为纯结构聚类";
+                        tracing::warn!("{msg}");
+                        (0usize, Err(anyhow::anyhow!(msg)))
+                    }
+                })
+                .collect()
         });
         let mut vecs: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
         let mut failed = false;
@@ -164,17 +159,17 @@ pub fn detect_features(
                 }
             }
         }
-        if failed { None } else { Some(involved.into_iter().zip(vecs).collect()) }
+        if failed {
+            None
+        } else {
+            Some(involved.into_iter().zip(vecs).collect())
+        }
     } else {
         None
     };
 
     // 5. 融合边权重
-    let compact: HashMap<NodeId, usize> = funcs
-        .iter()
-        .enumerate()
-        .map(|(i, &n)| (n, i))
-        .collect();
+    let compact: HashMap<NodeId, usize> = funcs.iter().enumerate().map(|(i, &n)| (n, i)).collect();
     let mut weights: HashMap<(usize, usize), f64> = HashMap::new();
     for (s, t) in &cross_edges {
         let structural = 0.5 + 0.5 * jaccard(neighbors.get(s), neighbors.get(t));
@@ -214,9 +209,7 @@ pub fn detect_features(
     };
     // 结构安全证据（R1 审计）：leiden-rs 0.8.1 对用户输入从不 panic
     //（空图/单节点/无边图安全返回），run() 仅内部不变量可失败。
-    let result = Leiden::new(config)
-        .run(&data)
-        .expect("Leiden 特征聚类失败");
+    let result = Leiden::new(config).run(&data).expect("Leiden 特征聚类失败");
     let membership = result.partition.as_slice();
 
     // 7. 组装 Feature（确定性：按社区内最小实体名排序）
@@ -243,7 +236,13 @@ pub fn detect_features(
     features.sort_by(|a, b| {
         let key = |ids: &Vec<NodeId>| {
             ids.iter()
-                .map(|nid| graph.graph.node_weight(*nid).map(|n| n.name.clone()).unwrap_or_default())
+                .map(|nid| {
+                    graph
+                        .graph
+                        .node_weight(*nid)
+                        .map(|n| n.name.clone())
+                        .unwrap_or_default()
+                })
                 .collect::<Vec<String>>()
         };
         let ka = key(a);
@@ -251,7 +250,8 @@ pub fn detect_features(
         // v52 T11（reviewer 修正）：名称序列可相同（不同特征含同名实体），
         // 稳定排序会保留 groups 的 HashMap 迭代序（跨运行随机）——追加
         // NodeId 最小元素比较，排序键唯一化，保证特征编号跨运行确定。
-        ka.cmp(&kb).then_with(|| a.iter().min().cmp(&b.iter().min()))
+        ka.cmp(&kb)
+            .then_with(|| a.iter().min().cmp(&b.iter().min()))
     });
     Ok(features
         .into_iter()
@@ -292,20 +292,30 @@ mod tests {
 
     impl Embedder for MockEmbedder {
         fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
-            Ok(if text.starts_with("fn_src_a_rs") || text.starts_with("fn_src_b_rs") {
-                vec![1.0, 0.0]
-            } else {
-                vec![0.0, 1.0]
-            })
+            Ok(
+                if text.starts_with("fn_src_a_rs") || text.starts_with("fn_src_b_rs") {
+                    vec![1.0, 0.0]
+                } else {
+                    vec![0.0, 1.0]
+                },
+            )
         }
         fn embed_batch(&self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
             texts.iter().map(|t| self.embed(t)).collect()
         }
         fn cosine_similarity(&self, a: &[f32], b: &[f32]) -> f64 {
-            let dot: f64 = a.iter().zip(b).map(|(x, y)| (*x as f64) * (*y as f64)).sum();
+            let dot: f64 = a
+                .iter()
+                .zip(b)
+                .map(|(x, y)| (*x as f64) * (*y as f64))
+                .sum();
             let na: f64 = a.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
             let nb: f64 = b.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
-            if na == 0.0 || nb == 0.0 { 0.0 } else { dot / (na * nb) }
+            if na == 0.0 || nb == 0.0 {
+                0.0
+            } else {
+                dot / (na * nb)
+            }
         }
     }
 
@@ -313,44 +323,45 @@ mod tests {
     fn make_graph() -> KnowledgeGraph {
         let mut kg = KnowledgeGraph::default();
         let g = &mut kg.graph;
-        let add_file =
-            |g: &mut petgraph::stable_graph::StableDiGraph<CodeNode, CodeEdge>,
-             path: &str|
-             -> (NodeId, NodeId) {
-                let nid = g.add_node(CodeNode {
-                    id: NodeId::new(g.node_count()),
-                    kind: NodeKind::File,
-                    name: path.into(),
-                    file_path: Some(path.into()),
-                    line_range: None,
-                    doc_comment: None,
-                    signature: None, visibility: None,
-                    module_path: vec!["src".into()],
-                });
-                let eid = g.add_node(CodeNode {
-                    id: NodeId::new(g.node_count()),
-                    kind: NodeKind::Function,
-                    name: format!("fn_{}", path.replace(['/', '.'], "_")),
-                    file_path: Some(path.into()),
-                    line_range: None,
-                    doc_comment: None,
-                    signature: None, visibility: None,
-                    module_path: Vec::new(),
-                });
-                g.add_edge(
-                    nid,
-                    eid,
-                    CodeEdge {
-                        id: EdgeId::new(g.edge_count()),
-                        kind: EdgeKind::Contains,
-                        source: nid,
-                        target: eid,
-                        weight: 1.0,
-                        location: None,
-                    },
-                );
-                (nid, eid)
-            };
+        let add_file = |g: &mut petgraph::stable_graph::StableDiGraph<CodeNode, CodeEdge>,
+                        path: &str|
+         -> (NodeId, NodeId) {
+            let nid = g.add_node(CodeNode {
+                id: NodeId::new(g.node_count()),
+                kind: NodeKind::File,
+                name: path.into(),
+                file_path: Some(path.into()),
+                line_range: None,
+                doc_comment: None,
+                signature: None,
+                visibility: None,
+                module_path: vec!["src".into()],
+            });
+            let eid = g.add_node(CodeNode {
+                id: NodeId::new(g.node_count()),
+                kind: NodeKind::Function,
+                name: format!("fn_{}", path.replace(['/', '.'], "_")),
+                file_path: Some(path.into()),
+                line_range: None,
+                doc_comment: None,
+                signature: None,
+                visibility: None,
+                module_path: Vec::new(),
+            });
+            g.add_edge(
+                nid,
+                eid,
+                CodeEdge {
+                    id: EdgeId::new(g.edge_count()),
+                    kind: EdgeKind::Contains,
+                    source: nid,
+                    target: eid,
+                    weight: 1.0,
+                    location: None,
+                },
+            );
+            (nid, eid)
+        };
         let (_fa_file, fa) = add_file(g, "src/a.rs");
         let (_fb_file, fb) = add_file(g, "src/b.rs");
         let (_fc_file, fc) = add_file(g, "src/c.rs");
@@ -409,7 +420,8 @@ mod tests {
             file_path: Some("src/a.rs".into()),
             line_range: None,
             doc_comment: None,
-            signature: None, visibility: None,
+            signature: None,
+            visibility: None,
             module_path: vec!["src".into()],
         });
         let e1 = g.add_node(CodeNode {
@@ -419,7 +431,8 @@ mod tests {
             file_path: Some("src/a.rs".into()),
             line_range: None,
             doc_comment: None,
-            signature: None, visibility: None,
+            signature: None,
+            visibility: None,
             module_path: Vec::new(),
         });
         let e2 = g.add_node(CodeNode {
@@ -429,7 +442,8 @@ mod tests {
             file_path: Some("src/a.rs".into()),
             line_range: None,
             doc_comment: None,
-            signature: None, visibility: None,
+            signature: None,
+            visibility: None,
             module_path: Vec::new(),
         });
         for e in [e1, e2] {
@@ -474,8 +488,8 @@ mod tests {
         let mut kg = KnowledgeGraph::default();
         let g = &mut kg.graph;
         let add_entity = |g: &mut petgraph::stable_graph::StableDiGraph<CodeNode, CodeEdge>,
-                              path: &str,
-                              name: &str|
+                          path: &str,
+                          name: &str|
          -> NodeId {
             let fid = g.add_node(CodeNode {
                 id: NodeId::new(g.node_count()),
@@ -541,7 +555,10 @@ mod tests {
         };
         let first_names = names_of(&features[0]);
         let second_names = names_of(&features[1]);
-        assert_eq!(first_names, second_names, "两特征名称序列应相同，以触发 tie-break");
+        assert_eq!(
+            first_names, second_names,
+            "两特征名称序列应相同，以触发 tie-break"
+        );
         let first_min = features[0].node_ids.iter().min().copied().unwrap();
         let second_min = features[1].node_ids.iter().min().copied().unwrap();
         assert!(first_min < second_min, "tie-break 应按 NodeId 最小元素排序");
@@ -591,6 +608,10 @@ mod tests {
         let degraded = detect_features(&kg, Some(&FailingEmbedder)).unwrap();
         let baseline = detect_features(&kg, None).unwrap();
         assert_eq!(degraded.len(), baseline.len(), "降级结果应与纯结构一致");
-        assert!(degraded.is_empty(), "两对互斥调用降级后应无特征: {:?}", degraded);
+        assert!(
+            degraded.is_empty(),
+            "两对互斥调用降级后应无特征: {:?}",
+            degraded
+        );
     }
 }

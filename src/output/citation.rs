@@ -213,9 +213,10 @@ fn check_citation_file_level(
     };
     match total_lines {
         None => Some("引用文件不存在或不可读".to_string()),
-        Some(n) if citation.end > n => {
-            Some(format!("行号越界: {}-{} 超出文件总行数 {}", citation.start, citation.end, n))
-        }
+        Some(n) if citation.end > n => Some(format!(
+            "行号越界: {}-{} 超出文件总行数 {}",
+            citation.start, citation.end, n
+        )),
         _ => None,
     }
 }
@@ -373,24 +374,42 @@ mod tests {
         assert_eq!(cites[0].path, "src\\auth.rs");
         assert_eq!(cites[0].start, 2);
         // Windows 绝对路径（盘符）不得误报：C: 无点前缀
-        assert!(extract_citations("在 C:\\repo\\x.rs:5 中").is_empty(), "盘符绝对路径应忽略");
+        assert!(
+            extract_citations("在 C:\\repo\\x.rs:5 中").is_empty(),
+            "盘符绝对路径应忽略"
+        );
     }
 
     #[test]
     fn test_forward_slash_drive_prefix() {
         // 正斜杠盘符（C:/...）与反斜杠盘符（C:\...）都不得提取；
         // 连字符前缀剔除后路径以盘符开头（-C:/repo/x.rs）的情形也要拦截
-        assert!(extract_citations("见 C:/repo/x.rs:5 的实现").is_empty(), "正斜杠盘符应忽略");
-        assert!(extract_citations("-C:/repo/x.rs:5").is_empty(), "连字符+盘符应忽略");
-        assert!(extract_citations("在 C:\\repo\\x.rs:5 中").is_empty(), "反斜杠盘符应忽略");
+        assert!(
+            extract_citations("见 C:/repo/x.rs:5 的实现").is_empty(),
+            "正斜杠盘符应忽略"
+        );
+        assert!(
+            extract_citations("-C:/repo/x.rs:5").is_empty(),
+            "连字符+盘符应忽略"
+        );
+        assert!(
+            extract_citations("在 C:\\repo\\x.rs:5 中").is_empty(),
+            "反斜杠盘符应忽略"
+        );
     }
 
     #[test]
     fn test_version_numbers_not_extracted() {
         // 版本号/时刻格式（v2.0、1.2）的最后一段扩展名是纯数字，不得误报；
         // src/v1.5.rs 的扩展名是 .rs，应正常提取
-        assert!(extract_citations("版本 v2.0:10 发布").is_empty(), "v2.0 是版本号");
-        assert!(extract_citations("时刻 1.2:30 记录").is_empty(), "1.2 是时刻");
+        assert!(
+            extract_citations("版本 v2.0:10 发布").is_empty(),
+            "v2.0 是版本号"
+        );
+        assert!(
+            extract_citations("时刻 1.2:30 记录").is_empty(),
+            "1.2 是时刻"
+        );
         let cites = extract_citations("见 src/v1.5.rs:3 的实现");
         assert_eq!(cites.len(), 1);
         assert_eq!(cites[0].path, "src/v1.5.rs");
@@ -413,7 +432,8 @@ mod tests {
     fn test_dotdot_paths_rejected_in_validate() {
         // .. 段可逃逸项目根（../src/x.rs）或跳过目录层级（src/../lib.rs）：
         // 提取层保持完整路径不剔除，校验层一律拒绝，即使目标文件真实存在
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_dotdot_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("code_repo_wiki_dotdot_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(dir.join("lib.rs"), "line1\n").unwrap();
@@ -427,7 +447,11 @@ mod tests {
         let invalid = validate_citations(&dir, "见 ../src/x.rs:5 与 src/../lib.rs:3");
         assert_eq!(invalid.len(), 2, "校验层应拒绝 .. 路径: {:?}", invalid);
         for item in &invalid {
-            assert!(item.reason.contains("越界段 .."), "原因应说明越界: {:?}", item);
+            assert!(
+                item.reason.contains("越界段 .."),
+                "原因应说明越界: {:?}",
+                item
+            );
         }
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -463,7 +487,11 @@ mod tests {
 
         // 盘符相对 `C:foo`：提取层在冒号处截断为普通相对路径，不会逃逸 root
         let cites = extract_citations("见 C:foo.rs:3 的实现");
-        assert_eq!(cites[0].path, "foo.rs", "冒号截断为普通相对路径: {:?}", cites);
+        assert_eq!(
+            cites[0].path, "foo.rs",
+            "冒号截断为普通相对路径: {:?}",
+            cites
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -476,7 +504,11 @@ mod tests {
         std::fs::write(dir.join("src").join("a.rs"), "line1\nline2\nline3\n").unwrap();
 
         let invalid = validate_citations(&dir, "见 src/a.rs:3");
-        assert!(invalid.is_empty(), "存在的文件与合法行号应通过: {:?}", invalid);
+        assert!(
+            invalid.is_empty(),
+            "存在的文件与合法行号应通过: {:?}",
+            invalid
+        );
 
         let invalid = validate_citations(&dir, "见 src/a.rs:9");
         assert_eq!(invalid.len(), 1);
@@ -493,7 +525,11 @@ mod tests {
     #[test]
     fn test_retry_feedback_lists_all() {
         let invalid = vec![InvalidCitation {
-            citation: Citation { path: "src/a.rs".into(), start: 99, end: 99 },
+            citation: Citation {
+                path: "src/a.rs".into(),
+                start: 99,
+                end: 99,
+            },
             reason: "行号越界".into(),
         }];
         let feedback = retry_feedback(&invalid);
@@ -503,112 +539,154 @@ mod tests {
     }
 }
 
-    /// U04/D7：代码围栏内的 path:line 不应提取（示例代码是代码不是引用）
-    #[test]
-    fn test_extract_skips_fenced_code_blocks() {
-        let text = "见 src/a.rs:1 的实现。\n\n```rust\nlet cfg = load(\"src/config.rs:99\");\n```\n";
-        let cites = extract_citations(text);
-        assert_eq!(cites.len(), 1, "围栏外应提取 1 条, 实际: {cites:?}");
-        assert_eq!(cites[0].path, "src/a.rs");
-    }
+/// U04/D7：代码围栏内的 path:line 不应提取（示例代码是代码不是引用）
+#[test]
+fn test_extract_skips_fenced_code_blocks() {
+    let text = "见 src/a.rs:1 的实现。\n\n```rust\nlet cfg = load(\"src/config.rs:99\");\n```\n";
+    let cites = extract_citations(text);
+    assert_eq!(cites.len(), 1, "围栏外应提取 1 条, 实际: {cites:?}");
+    assert_eq!(cites[0].path, "src/a.rs");
+}
 
-    /// U04/D7：mermaid 图内 label 里的 path:line 不应提取
-    #[test]
-    fn test_extract_skips_mermaid_blocks() {
-        let text = "```mermaid\nflowchart LR\nA --> |src/fs.rs:28| B\n```\n正文 src/b.rs:1\n";
-        let cites = extract_citations(text);
-        assert_eq!(cites.len(), 1, "mermaid 块内不应提取, 实际: {cites:?}");
-        assert_eq!(cites[0].path, "src/b.rs");
-    }
+/// U04/D7：mermaid 图内 label 里的 path:line 不应提取
+#[test]
+fn test_extract_skips_mermaid_blocks() {
+    let text = "```mermaid\nflowchart LR\nA --> |src/fs.rs:28| B\n```\n正文 src/b.rs:1\n";
+    let cites = extract_citations(text);
+    assert_eq!(cites.len(), 1, "mermaid 块内不应提取, 实际: {cites:?}");
+    assert_eq!(cites[0].path, "src/b.rs");
+}
 
-    /// U04/D7：未闭合围栏覆盖到文末——其后内容全部跳过（防伪闭合漏检）
-    #[test]
-    fn test_extract_unclosed_fence_skips_to_end() {
-        let text = "```rust\nlet x = load(\"src/a.rs:1\");\n正文 src/b.rs:2\n";
-        let cites = extract_citations(text);
-        assert!(cites.is_empty(), "未闭合围栏后不应提取: {cites:?}");
-    }
+/// U04/D7：未闭合围栏覆盖到文末——其后内容全部跳过（防伪闭合漏检）
+#[test]
+fn test_extract_unclosed_fence_skips_to_end() {
+    let text = "```rust\nlet x = load(\"src/a.rs:1\");\n正文 src/b.rs:2\n";
+    let cites = extract_citations(text);
+    assert!(cites.is_empty(), "未闭合围栏后不应提取: {cites:?}");
+}
 
-    /// U04/D7：正文-代码-正文交替时只提取正文引用
-    #[test]
-    fn test_extract_alternating_fences() {
-        let text = "正文一 src/a.rs:1\n```rust\nsrc/x.rs:2\n```\n正文二 src/b.rs:3\n```text\nsrc/y.rs:4\n```\n正文三 src/c.rs:5\n";
-        let cites = extract_citations(text);
-        let paths: Vec<&str> = cites.iter().map(|c| c.path.as_str()).collect();
-        assert_eq!(paths, vec!["src/a.rs", "src/b.rs", "src/c.rs"], "只应提取正文引用: {paths:?}");
-    }
+/// U04/D7：正文-代码-正文交替时只提取正文引用
+#[test]
+fn test_extract_alternating_fences() {
+    let text = "正文一 src/a.rs:1\n```rust\nsrc/x.rs:2\n```\n正文二 src/b.rs:3\n```text\nsrc/y.rs:4\n```\n正文三 src/c.rs:5\n";
+    let cites = extract_citations(text);
+    let paths: Vec<&str> = cites.iter().map(|c| c.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        vec!["src/a.rs", "src/b.rs", "src/c.rs"],
+        "只应提取正文引用: {paths:?}"
+    );
+}
 
-    /// U04/D7：缩进围栏（前导空白）同样识别
-    #[test]
-    fn test_extract_indented_fence() {
-        let text = "正文 src/a.rs:1\n    ```rust\n    src/b.rs:2\n    ```\n";
-        let cites = extract_citations(text);
-        assert_eq!(cites.len(), 1, "缩进围栏内部不应提取, 实际: {cites:?}");
-        assert_eq!(cites[0].path, "src/a.rs");
-    }
+/// U04/D7：缩进围栏（前导空白）同样识别
+#[test]
+fn test_extract_indented_fence() {
+    let text = "正文 src/a.rs:1\n    ```rust\n    src/b.rs:2\n    ```\n";
+    let cites = extract_citations(text);
+    assert_eq!(cites.len(), 1, "缩进围栏内部不应提取, 实际: {cites:?}");
+    assert_eq!(cites[0].path, "src/a.rs");
+}
 
-    /// v14 B 组：引用区间与实体行区间的重叠判定（闭区间相交，
-    /// 边界触碰不算覆盖——引用行号必须真正落在实体定义范围内）
-    #[test]
-    fn test_citation_overlaps_entity() {
-        let ranges = vec![(10usize, 20usize), (30, 40)];
-        let c = |start: usize, end: usize| Citation { path: "x.rs".into(), start, end };
-        // 完全覆盖 / 部分重叠 / 单行落在区间内
-        assert!(citation_overlaps_entity(&c(12, 18), &ranges));
-        assert!(citation_overlaps_entity(&c(8, 15), &ranges), "跨入区间应算覆盖");
-        assert!(citation_overlaps_entity(&c(15, 25), &ranges), "跨出区间应算覆盖");
-        assert!(citation_overlaps_entity(&c(10, 10), &ranges), "起点即实体起点应覆盖");
-        assert!(citation_overlaps_entity(&c(20, 20), &ranges), "终点即实体终点应覆盖");
-        assert!(citation_overlaps_entity(&c(35, 35), &ranges), "第二个实体单行");
-        // 不覆盖：区间之间空隙、区间前/后、边界外一行
-        assert!(!citation_overlaps_entity(&c(21, 29), &ranges), "实体间隙不应覆盖");
-        assert!(!citation_overlaps_entity(&c(1, 5), &ranges), "实体之前不应覆盖");
-        assert!(!citation_overlaps_entity(&c(41, 50), &ranges), "实体之后不应覆盖");
-        assert!(!citation_overlaps_entity(&c(21, 21), &ranges), "紧邻实体终点外一行不覆盖");
-        // 空区间表
-        assert!(!citation_overlaps_entity(&c(10, 10), &[]));
-    }
+/// v14 B 组：引用区间与实体行区间的重叠判定（闭区间相交，
+/// 边界触碰不算覆盖——引用行号必须真正落在实体定义范围内）
+#[test]
+fn test_citation_overlaps_entity() {
+    let ranges = vec![(10usize, 20usize), (30, 40)];
+    let c = |start: usize, end: usize| Citation {
+        path: "x.rs".into(),
+        start,
+        end,
+    };
+    // 完全覆盖 / 部分重叠 / 单行落在区间内
+    assert!(citation_overlaps_entity(&c(12, 18), &ranges));
+    assert!(
+        citation_overlaps_entity(&c(8, 15), &ranges),
+        "跨入区间应算覆盖"
+    );
+    assert!(
+        citation_overlaps_entity(&c(15, 25), &ranges),
+        "跨出区间应算覆盖"
+    );
+    assert!(
+        citation_overlaps_entity(&c(10, 10), &ranges),
+        "起点即实体起点应覆盖"
+    );
+    assert!(
+        citation_overlaps_entity(&c(20, 20), &ranges),
+        "终点即实体终点应覆盖"
+    );
+    assert!(
+        citation_overlaps_entity(&c(35, 35), &ranges),
+        "第二个实体单行"
+    );
+    // 不覆盖：区间之间空隙、区间前/后、边界外一行
+    assert!(
+        !citation_overlaps_entity(&c(21, 29), &ranges),
+        "实体间隙不应覆盖"
+    );
+    assert!(
+        !citation_overlaps_entity(&c(1, 5), &ranges),
+        "实体之前不应覆盖"
+    );
+    assert!(
+        !citation_overlaps_entity(&c(41, 50), &ranges),
+        "实体之后不应覆盖"
+    );
+    assert!(
+        !citation_overlaps_entity(&c(21, 21), &ranges),
+        "紧邻实体终点外一行不覆盖"
+    );
+    // 空区间表
+    assert!(!citation_overlaps_entity(&c(10, 10), &[]));
+}
 
-    /// v14 B 组：两级校验（文件级 + 区间重叠）——文件存在且行号有效但
-    /// 引用区间不覆盖任何实体 = 新捕获的缺陷类（行号对但内容错）
-    #[test]
-    fn test_validate_against_entities_overlap() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_cite_ovl_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        // 10 行文件：实体区间 (2,4) 与 (7,9)（如 fn a 在 2-4 行、fn b 在 7-9 行）
-        let src = dir.join("src").join("a.rs");
-        let content: String = (1..=10).map(|i| format!("line{i}\n")).collect();
-        std::fs::write(&src, content).unwrap();
-        // README.md 无实体（非代码文件）
-        std::fs::write(dir.join("README.md"), "docs\n").unwrap();
+/// v14 B 组：两级校验（文件级 + 区间重叠）——文件存在且行号有效但
+/// 引用区间不覆盖任何实体 = 新捕获的缺陷类（行号对但内容错）
+#[test]
+fn test_validate_against_entities_overlap() {
+    let dir = std::env::temp_dir().join(format!("code_repo_wiki_cite_ovl_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    // 10 行文件：实体区间 (2,4) 与 (7,9)（如 fn a 在 2-4 行、fn b 在 7-9 行）
+    let src = dir.join("src").join("a.rs");
+    let content: String = (1..=10).map(|i| format!("line{i}\n")).collect();
+    std::fs::write(&src, content).unwrap();
+    // README.md 无实体（非代码文件）
+    std::fs::write(dir.join("README.md"), "docs\n").unwrap();
 
-        let mut ranges: EntityRanges = EntityRanges::new();
-        ranges.insert("src/a.rs".to_string(), vec![(2, 4), (7, 9)]);
+    let mut ranges: EntityRanges = EntityRanges::new();
+    ranges.insert("src/a.rs".to_string(), vec![(2, 4), (7, 9)]);
 
-        // 覆盖实体 → 通过
-        let invalid = validate_citations_against_entities(&dir, "见 src/a.rs:3", &ranges);
-        assert!(invalid.is_empty(), "覆盖实体应通过: {invalid:?}");
-        let invalid = validate_citations_against_entities(&dir, "见 src/a.rs:7-9", &ranges);
-        assert!(invalid.is_empty(), "区间覆盖第二个实体应通过: {invalid:?}");
-        // 文件存在 + 行号有效但区间不覆盖实体 → 无效（新缺陷类）
-        let invalid = validate_citations_against_entities(&dir, "见 src/a.rs:5-6", &ranges);
-        assert_eq!(invalid.len(), 1, "实体间隙引用应无效: {invalid:?}");
-        assert!(invalid[0].reason.contains("未覆盖任何实体"), "原因应说明: {:?}", invalid[0]);
-        let invalid = validate_citations_against_entities(&dir, "见 src/a.rs:1", &ranges);
-        assert_eq!(invalid.len(), 1, "实体之前引用应无效: {invalid:?}");
-        // 无实体文件（README）→ 放行（区间校验只对有实体的文件生效）
-        let invalid = validate_citations_against_entities(&dir, "见 README.md:1", &ranges);
-        assert!(invalid.is_empty(), "无实体文件引用应放行: {invalid:?}");
-        // 文件级错误仍被捕获（越界）
-        let invalid = validate_citations_against_entities(&dir, "见 src/a.rs:99", &ranges);
-        assert_eq!(invalid.len(), 1);
-        assert!(invalid[0].reason.contains("越界"));
-        // Windows 反斜杠键形态：表键为 src\a.rs（norm_sep 后应命中）
-        let mut win_ranges: EntityRanges = EntityRanges::new();
-        win_ranges.insert("src\\a.rs".to_string(), vec![(2, 4)]);
-        let invalid = validate_citations_against_entities(&dir, "见 src/a.rs:3", &win_ranges);
-        assert!(invalid.is_empty(), "反斜杠表键经 norm_sep 应命中: {invalid:?}");
+    // 覆盖实体 → 通过
+    let invalid = validate_citations_against_entities(&dir, "见 src/a.rs:3", &ranges);
+    assert!(invalid.is_empty(), "覆盖实体应通过: {invalid:?}");
+    let invalid = validate_citations_against_entities(&dir, "见 src/a.rs:7-9", &ranges);
+    assert!(invalid.is_empty(), "区间覆盖第二个实体应通过: {invalid:?}");
+    // 文件存在 + 行号有效但区间不覆盖实体 → 无效（新缺陷类）
+    let invalid = validate_citations_against_entities(&dir, "见 src/a.rs:5-6", &ranges);
+    assert_eq!(invalid.len(), 1, "实体间隙引用应无效: {invalid:?}");
+    assert!(
+        invalid[0].reason.contains("未覆盖任何实体"),
+        "原因应说明: {:?}",
+        invalid[0]
+    );
+    let invalid = validate_citations_against_entities(&dir, "见 src/a.rs:1", &ranges);
+    assert_eq!(invalid.len(), 1, "实体之前引用应无效: {invalid:?}");
+    // 无实体文件（README）→ 放行（区间校验只对有实体的文件生效）
+    let invalid = validate_citations_against_entities(&dir, "见 README.md:1", &ranges);
+    assert!(invalid.is_empty(), "无实体文件引用应放行: {invalid:?}");
+    // 文件级错误仍被捕获（越界）
+    let invalid = validate_citations_against_entities(&dir, "见 src/a.rs:99", &ranges);
+    assert_eq!(invalid.len(), 1);
+    assert!(invalid[0].reason.contains("越界"));
+    // Windows 反斜杠键形态：表键为 src\a.rs（norm_sep 后应命中）
+    let mut win_ranges: EntityRanges = EntityRanges::new();
+    win_ranges.insert("src\\a.rs".to_string(), vec![(2, 4)]);
+    let invalid = validate_citations_against_entities(&dir, "见 src/a.rs:3", &win_ranges);
+    assert!(
+        invalid.is_empty(),
+        "反斜杠表键经 norm_sep 应命中: {invalid:?}"
+    );
 
-        let _ = std::fs::remove_dir_all(&dir);
-    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

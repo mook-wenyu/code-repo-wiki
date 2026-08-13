@@ -29,7 +29,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use code_repo_wiki::bench::run_rubrics_only;
-use code_repo_wiki::config::schema::{LlmProviderType, LlmSection, WikiSection, WikiConfig};
+use code_repo_wiki::config::schema::{LlmProviderType, LlmSection, WikiConfig, WikiSection};
 use code_repo_wiki::project::ProjectRoot;
 
 // ================= 本地 mock OpenAI server（Chat 协议 SSE 流式） =================
@@ -57,7 +57,10 @@ fn read_request(stream: &mut std::net::TcpStream) -> String {
             Ok(n) => buf.extend_from_slice(&tmp[..n]),
         }
     }
-    let head_end = buf.windows(4).position(|w| w == b"\r\n\r\n").unwrap_or(buf.len());
+    let head_end = buf
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .unwrap_or(buf.len());
     let head = String::from_utf8_lossy(&buf[..head_end]).to_string();
     let headers: Vec<(String, String)> = head
         .split("\r\n")
@@ -80,9 +83,7 @@ fn read_request(stream: &mut std::net::TcpStream) -> String {
         .to_string()
 }
 
-fn spawn_mock_server(
-    handler: impl Fn(String) -> MockResponse + Send + Sync + 'static,
-) -> String {
+fn spawn_mock_server(handler: impl Fn(String) -> MockResponse + Send + Sync + 'static) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base_url = format!("http://{}", listener.local_addr().unwrap());
     let handler = Arc::new(handler);
@@ -96,7 +97,10 @@ fn spawn_mock_server(
                 let reason = if resp.status == 200 { "OK" } else { "Error" };
                 let raw = format!(
                     "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    resp.status, reason, resp.body.len(), resp.body
+                    resp.status,
+                    reason,
+                    resp.body.len(),
+                    resp.body
                 );
                 let _ = stream.write_all(raw.as_bytes());
             });
@@ -125,7 +129,13 @@ fn verdict(v: &str) -> String {
 
 /// TQS 五维分数响应（A/B 各 5 维 0-10）
 fn tqs_score(a: [f64; 5], b: [f64; 5]) -> String {
-    let dims = ["clarity", "readability", "conciseness", "richness", "structure"];
+    let dims = [
+        "clarity",
+        "readability",
+        "conciseness",
+        "richness",
+        "structure",
+    ];
     let doc = |s: [f64; 5]| {
         let mut m = serde_json::Map::new();
         for (d, v) in dims.iter().zip(s.iter()) {
@@ -158,8 +168,14 @@ fn spawn_scripted(responses: Vec<String>) -> (Arc<AtomicUsize>, Arc<Mutex<Vec<St
         }
         let next = queue.lock().unwrap().pop_front();
         match next {
-            Some(content) => MockResponse { status: 200, body: sse_response(&content) },
-            None => MockResponse { status: 500, body: "preset exhausted".into() },
+            Some(content) => MockResponse {
+                status: 200,
+                body: sse_response(&content),
+            },
+            None => MockResponse {
+                status: 500,
+                body: "preset exhausted".into(),
+            },
         }
     });
     (judge_calls, prompts, base_url)
@@ -168,7 +184,8 @@ fn spawn_scripted(responses: Vec<String>) -> (Arc<AtomicUsize>, Arc<Mutex<Vec<St
 // ================= 临时仓库 =================
 
 fn temp_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("code_repo_wiki_judge_{tag}_{}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("code_repo_wiki_judge_{tag}_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -180,10 +197,19 @@ fn temp_dir(tag: &str) -> PathBuf {
 /// - `with_tqs`：导出快照 + 产物页存在 → measure_tqs 执行；缺失 →
 ///   TQS 跳过（snapshot 早退），server 只服务 rubric 请求。
 /// - 产物与快照均手工构造（确定性内容，不依赖生成流水线）。
-fn bench_setup(tag: &str, base_url: &str, with_readme: bool, with_tqs: bool) -> (ProjectRoot, WikiConfig) {
+fn bench_setup(
+    tag: &str,
+    base_url: &str,
+    with_readme: bool,
+    with_tqs: bool,
+) -> (ProjectRoot, WikiConfig) {
     let dir = temp_dir(tag);
     std::fs::create_dir_all(dir.join("src")).unwrap();
-    std::fs::write(dir.join("src").join("a.rs"), "pub fn alpha(x: u32) -> u32 { x + 1 }\n").unwrap();
+    std::fs::write(
+        dir.join("src").join("a.rs"),
+        "pub fn alpha(x: u32) -> u32 { x + 1 }\n",
+    )
+    .unwrap();
     if with_readme {
         std::fs::write(dir.join("README.md"), "# 示例仓库\n\n需要认证与授权。\n").unwrap();
     }
@@ -214,8 +240,16 @@ fn bench_setup(tag: &str, base_url: &str, with_readme: bool, with_tqs: bool) -> 
         std::fs::create_dir_all(dir.join(".code-repo-wiki").join("wiki").join("zh")).unwrap();
     }
     let config = WikiConfig {
-        output_dir: Some(dir.join(".code-repo-wiki").to_string_lossy().into_owned().into()),
-        wiki: WikiSection { language: "zh".into(), guide: Default::default() },
+        output_dir: Some(
+            dir.join(".code-repo-wiki")
+                .to_string_lossy()
+                .into_owned()
+                .into(),
+        ),
+        wiki: WikiSection {
+            language: "zh".into(),
+            guide: Default::default(),
+        },
         llm: LlmSection {
             provider: LlmProviderType::OpenAiCompatible,
             model: "mock-model".into(),
@@ -228,7 +262,11 @@ fn bench_setup(tag: &str, base_url: &str, with_readme: bool, with_tqs: bool) -> 
         },
         ..Default::default()
     };
-    std::fs::write(dir.join("config.toml"), toml::to_string_pretty(&config).unwrap()).unwrap();
+    std::fs::write(
+        dir.join("config.toml"),
+        toml::to_string_pretty(&config).unwrap(),
+    )
+    .unwrap();
     let root = ProjectRoot::new(dir);
     (root, config)
 }
@@ -323,7 +361,11 @@ fn test_rubric_uncertain_retry_swaps_variant() {
     let report = run_rubrics_only(&root, &config, "demo", &[]).unwrap();
     report.rubric.expect("rubric 应执行（README + LLM 可用）");
     let ps = prompts.lock().unwrap();
-    assert!(ps.len() >= 2, "至少应有两次判定调用（首轮 + 重试轮）: {}", ps.len());
+    assert!(
+        ps.len() >= 2,
+        "至少应有两次判定调用（首轮 + 重试轮）: {}",
+        ps.len()
+    );
     assert_ne!(
         ps[0], ps[1],
         "uncertain 重试应更换选项顺序（satisfied/unsatisfied 对调）；当前实现重试轮 prompt 与首轮相同"
@@ -346,10 +388,16 @@ fn test_tqs_no_escalation_below_thresholds_e2e() {
     let (_, _, base_url) = spawn_scripted(responses);
     let (root, config) = bench_setup("tqs_base", &base_url, false, true);
     let report = run_rubrics_only(&root, &config, "demo", &[]).unwrap();
-    let tqs = report.tqs.expect("TQS 应执行（snapshot + 产物页 + LLM 可用）");
+    let tqs = report
+        .tqs
+        .expect("TQS 应执行（snapshot + 产物页 + LLM 可用）");
     assert_eq!(tqs.judged_modules, 1);
     assert_eq!(tqs.repeats, 5, "tie 0.2/flip 0.2 均不超阈值，不应升级");
-    assert!((tqs.tie_rate - 0.2).abs() < 1e-9, "tie_rate 应为 0.2: {}", tqs.tie_rate);
+    assert!(
+        (tqs.tie_rate - 0.2).abs() < 1e-9,
+        "tie_rate 应为 0.2: {}",
+        tqs.tie_rate
+    );
     let _ = std::fs::remove_dir_all(root.path());
 }
 
@@ -372,7 +420,9 @@ fn test_tqs_escalates_on_high_tie_rate_e2e() {
     let (_, _, base_url) = spawn_scripted(responses);
     let (root, config) = bench_setup("tqs_esc", &base_url, false, true);
     let report = run_rubrics_only(&root, &config, "demo", &[]).unwrap();
-    let tqs = report.tqs.expect("TQS 应执行（snapshot + 产物页 + LLM 可用）");
+    let tqs = report
+        .tqs
+        .expect("TQS 应执行（snapshot + 产物页 + LLM 可用）");
     assert_eq!(tqs.judged_modules, 1);
     assert_eq!(
         tqs.repeats, 11,

@@ -76,15 +76,31 @@ default_top_k = 10
     );
     std::fs::write(work_dir.join("mock-server.toml"), config).unwrap();
 
-    let result = code_repo_wiki::run_pipeline(Some(&work_dir.join("mock-server.toml")), Some(&out_dir), false, &root, &code_repo_wiki::GenerationMode::Full);
-    assert!(result.is_ok(), "流水线应成功（LLM 失败被容错跳过）: {:?}", result.err());
+    let result = code_repo_wiki::run_pipeline(
+        Some(&work_dir.join("mock-server.toml")),
+        Some(&out_dir),
+        false,
+        &root,
+        &code_repo_wiki::GenerationMode::Full,
+    );
+    assert!(
+        result.is_ok(),
+        "流水线应成功（LLM 失败被容错跳过）: {:?}",
+        result.err()
+    );
 
     // 输出落在覆盖目录下：wiki 页面目录（主语言 zh）+ 全局文档
-    assert!(out_dir.join("wiki").join("zh").is_dir(), "wiki 输出应落在覆盖目录下");
+    assert!(
+        out_dir.join("wiki").join("zh").is_dir(),
+        "wiki 输出应落在覆盖目录下"
+    );
     assert!(out_dir.join("wiki").join("zh").join("api.md").exists());
     assert!(out_dir.join("_toc.md").exists());
     // 覆盖后默认输出目录 .code-repo-wiki 不应被创建
-    assert!(!work_dir.join(".code-repo-wiki").exists(), "覆盖后不应写默认 .code-repo-wiki");
+    assert!(
+        !work_dir.join(".code-repo-wiki").exists(),
+        "覆盖后不应写默认 .code-repo-wiki"
+    );
 
     let _ = std::fs::remove_dir_all(&work_dir);
     let _ = std::fs::remove_dir_all(&out_dir);

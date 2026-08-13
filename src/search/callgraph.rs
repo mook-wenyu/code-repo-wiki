@@ -1,6 +1,6 @@
-use std::collections::HashMap;
-use petgraph::visit::{EdgeRef, IntoEdgeReferences};
 use crate::model::{EdgeKind, KnowledgeGraph, NodeId};
+use petgraph::visit::{EdgeRef, IntoEdgeReferences};
+use std::collections::HashMap;
 
 /// 调用图查询 — 在 KnowledgeGraph 上提供调用者/被调用者等查询
 pub struct CallGraph<'a> {
@@ -25,7 +25,9 @@ impl<'a> CallGraph<'a> {
     pub fn callee_of(&self, name: &str) -> Vec<NodeId> {
         let mut callees = Vec::new();
         for n in self.graph.graph.node_indices() {
-            if let Some(w) = self.graph.graph.node_weight(n) && w.name == name {
+            if let Some(w) = self.graph.graph.node_weight(n)
+                && w.name == name
+            {
                 for e in self.graph.graph.edges(n) {
                     if e.weight().kind == EdgeKind::Calls {
                         callees.push(e.target());
@@ -43,8 +45,14 @@ impl<'a> CallGraph<'a> {
     pub fn caller_of(&self, name: &str) -> Vec<NodeId> {
         let mut callers = Vec::new();
         for n in self.graph.graph.node_indices() {
-            if let Some(w) = self.graph.graph.node_weight(n) && w.name == name {
-                for e in self.graph.graph.edges_directed(n, petgraph::Direction::Incoming) {
+            if let Some(w) = self.graph.graph.node_weight(n)
+                && w.name == name
+            {
+                for e in self
+                    .graph
+                    .graph
+                    .edges_directed(n, petgraph::Direction::Incoming)
+                {
                     if e.weight().kind == EdgeKind::Calls {
                         callers.push(e.source());
                     }
@@ -70,9 +78,20 @@ impl<'a> CallGraph<'a> {
     pub fn build_call_index(&self) -> CallIndex {
         let mut index: HashMap<String, (Vec<String>, Vec<String>)> = HashMap::new();
         for (src, dst) in self.all_call_edges() {
-            if let (Some(s), Some(d)) = (self.graph.graph.node_weight(src), self.graph.graph.node_weight(dst)) {
-                index.entry(d.name.clone()).or_default().0.push(s.name.clone());
-                index.entry(s.name.clone()).or_default().1.push(d.name.clone());
+            if let (Some(s), Some(d)) = (
+                self.graph.graph.node_weight(src),
+                self.graph.graph.node_weight(dst),
+            ) {
+                index
+                    .entry(d.name.clone())
+                    .or_default()
+                    .0
+                    .push(s.name.clone());
+                index
+                    .entry(s.name.clone())
+                    .or_default()
+                    .1
+                    .push(d.name.clone());
             }
         }
         index
@@ -82,29 +101,50 @@ impl<'a> CallGraph<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{CodeNode, CodeEdge, NodeKind};
+    use crate::model::{CodeEdge, CodeNode, NodeKind};
     use petgraph::stable_graph::StableDiGraph;
 
     fn make_test_graph() -> KnowledgeGraph {
         let mut g = StableDiGraph::<CodeNode, CodeEdge>::new();
         let caller = g.add_node(CodeNode {
-            id: NodeId::new(0), kind: NodeKind::Function,
-            name: "caller".into(), file_path: None,
-            line_range: None, doc_comment: None, signature: None, visibility: None,
+            id: NodeId::new(0),
+            kind: NodeKind::Function,
+            name: "caller".into(),
+            file_path: None,
+            line_range: None,
+            doc_comment: None,
+            signature: None,
+            visibility: None,
             module_path: vec!["test".into()],
         });
         let callee = g.add_node(CodeNode {
-            id: NodeId::new(1), kind: NodeKind::Function,
-            name: "callee".into(), file_path: None,
-            line_range: None, doc_comment: None, signature: None, visibility: None,
+            id: NodeId::new(1),
+            kind: NodeKind::Function,
+            name: "callee".into(),
+            file_path: None,
+            line_range: None,
+            doc_comment: None,
+            signature: None,
+            visibility: None,
             module_path: vec!["test".into()],
         });
-        g.add_edge(caller, callee, CodeEdge {
-            id: petgraph::stable_graph::EdgeIndex::new(0),
-            kind: EdgeKind::Calls, source: caller, target: callee,
-            weight: 1.0, location: None,
-        });
-        KnowledgeGraph { graph: g, modules: vec![], features: Vec::new() }
+        g.add_edge(
+            caller,
+            callee,
+            CodeEdge {
+                id: petgraph::stable_graph::EdgeIndex::new(0),
+                kind: EdgeKind::Calls,
+                source: caller,
+                target: callee,
+                weight: 1.0,
+                location: None,
+            },
+        );
+        KnowledgeGraph {
+            graph: g,
+            modules: vec![],
+            features: Vec::new(),
+        }
     }
 
     #[test]

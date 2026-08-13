@@ -31,10 +31,14 @@ pub fn build(insights: &[FileInsight]) -> Result<KnowledgeGraph> {
         file_path: None,
         line_range: None,
         doc_comment: None,
-        signature: None, visibility: None,
+        signature: None,
+        visibility: None,
         module_path: Vec::new(),
     });
-    name_map.entry("project".to_string()).or_default().push(project_id);
+    name_map
+        .entry("project".to_string())
+        .or_default()
+        .push(project_id);
     path_map.insert(Vec::new(), project_id);
 
     let mut module_cache: HashMap<Vec<String>, NodeId> = HashMap::new();
@@ -48,9 +52,7 @@ pub fn build(insights: &[FileInsight]) -> Result<KnowledgeGraph> {
             .map(|p| {
                 p.components()
                     .filter_map(|c| match c {
-                        std::path::Component::Normal(s) => {
-                            Some(s.to_string_lossy().into_owned())
-                        }
+                        std::path::Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
                         _ => None,
                     })
                     .collect()
@@ -58,7 +60,12 @@ pub fn build(insights: &[FileInsight]) -> Result<KnowledgeGraph> {
             .unwrap_or_default();
 
         let file_module_id = ensure_module_chain(
-            g, &mut module_cache, project_id, &dir_segments, &mut name_map, &mut path_map,
+            g,
+            &mut module_cache,
+            project_id,
+            &dir_segments,
+            &mut name_map,
+            &mut path_map,
         );
 
         let file_id = g.add_node(CodeNode {
@@ -71,7 +78,8 @@ pub fn build(insights: &[FileInsight]) -> Result<KnowledgeGraph> {
             file_path: Some(insight.path.to_string_lossy().into_owned()),
             line_range: None,
             doc_comment: None,
-            signature: None, visibility: None,
+            signature: None,
+            visibility: None,
             module_path: dir_segments.clone(),
         });
 
@@ -89,7 +97,11 @@ pub fn build(insights: &[FileInsight]) -> Result<KnowledgeGraph> {
         );
         // 增量索引（v32 8.2）：File 节点入 path_map（module_path=目录段）
         name_map
-            .entry(path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default())
+            .entry(
+                path.file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            )
             .or_default()
             .push(file_id);
         // v52 T11：File 节点优先于 module 中间节点；同目录多文件保留首个 File（确定性）。
@@ -97,7 +109,9 @@ pub fn build(insights: &[FileInsight]) -> Result<KnowledgeGraph> {
         // 此处后插 File——必须主动覆盖 module 节点，否则 File 永远进不了 path_map，
         // 目录级 import 回退匹配失效。若已有条目已是 File 节点则保留（首个 File 胜出）。
         match path_map.get(&dir_segments) {
-            Some(&existing) if g.node_weight(existing).is_some_and(|n| n.kind == NodeKind::File) => {}
+            Some(&existing)
+                if g.node_weight(existing)
+                    .is_some_and(|n| n.kind == NodeKind::File) => {}
             _ => {
                 path_map.insert(dir_segments.clone(), file_id);
             }
@@ -153,7 +167,11 @@ pub fn build(insights: &[FileInsight]) -> Result<KnowledgeGraph> {
             if e.kind != "fn" && e.kind != "function" {
                 return None;
             }
-            Some((e.clone(), *eid, extract_body(&insight.source, e.line_start, e.line_end)))
+            Some((
+                e.clone(),
+                *eid,
+                extract_body(&insight.source, e.line_start, e.line_end),
+            ))
         }));
     }
 
@@ -179,7 +197,8 @@ pub fn build(insights: &[FileInsight]) -> Result<KnowledgeGraph> {
     // graph.modules 为模块分组的唯一来源;此前仅 lib.rs 显式调用
     // detect_modules 且结果只进 stats,modules 恒空导致按模块生成
     // 从未生效。检测失败向上传播(无兜底)。
-    kg.modules = crate::analysis::detect_modules(&kg).with_context(|| "模块检测失败（图构建阶段）")?;
+    kg.modules =
+        crate::analysis::detect_modules(&kg).with_context(|| "模块检测失败（图构建阶段）")?;
 
     Ok(kg)
 }
@@ -206,7 +225,8 @@ fn ensure_module_chain(
             file_path: None,
             line_range: None,
             doc_comment: None,
-            signature: None, visibility: None,
+            signature: None,
+            visibility: None,
             module_path: prefix.clone(),
         });
         g.add_edge(
@@ -363,7 +383,9 @@ fn parse_impl_target(kind: &str, name: &str) -> Option<String> {
         } else {
             name
         };
-        let trait_name = after_impl[..for_idx.saturating_sub(name.len() - after_impl.len())].trim().to_string();
+        let trait_name = after_impl[..for_idx.saturating_sub(name.len() - after_impl.len())]
+            .trim()
+            .to_string();
         // NOTE: for_idx is relative to the original name; subtract the "impl " prefix length
         // to index into after_impl. Fixes a pre-existing off-by-prefix bug (v32 8.2).
         if !trait_name.is_empty() {
@@ -489,7 +511,11 @@ pub(crate) fn format_cycles(cycles: &[Vec<String>]) -> String {
         return String::new();
     }
     let total_nodes: usize = cycles.iter().map(|c| c.len()).sum();
-    let mut out = format!("检测到 {} 个循环依赖（共 {} 个节点）: [", cycles.len(), total_nodes);
+    let mut out = format!(
+        "检测到 {} 个循环依赖（共 {} 个节点）: [",
+        cycles.len(),
+        total_nodes
+    );
     for (i, chain) in cycles.iter().enumerate() {
         if i > 0 {
             out.push_str(", ");
@@ -618,10 +644,12 @@ mod tests {
             },
         ];
         let kg = build(&insights).unwrap();
-        let has_import = kg
-            .graph
-            .edge_indices()
-            .any(|e| kg.graph.edge_weight(e).map(|w| w.kind == EdgeKind::Imports).unwrap_or(false));
+        let has_import = kg.graph.edge_indices().any(|e| {
+            kg.graph
+                .edge_weight(e)
+                .map(|w| w.kind == EdgeKind::Imports)
+                .unwrap_or(false)
+        });
         assert!(has_import);
     }
 
@@ -692,13 +720,23 @@ mod tests {
         let kg = build(&insights).unwrap();
         let mut import_targets: Vec<String> = Vec::new();
         for e in kg.graph.edge_indices() {
-            if kg.graph.edge_weight(e).map(|w| w.kind == EdgeKind::Imports).unwrap_or(false) {
+            if kg
+                .graph
+                .edge_weight(e)
+                .map(|w| w.kind == EdgeKind::Imports)
+                .unwrap_or(false)
+            {
                 let t = kg.graph.edge_weight(e).unwrap().target;
                 let n = kg.graph.node_weight(t).unwrap();
                 import_targets.push(n.name.clone());
             }
         }
-        assert_eq!(import_targets, vec!["foo_fn"], "后缀匹配应取最小键 x 目录的实体 foo_fn，实际: {:?}", import_targets);
+        assert_eq!(
+            import_targets,
+            vec!["foo_fn"],
+            "后缀匹配应取最小键 x 目录的实体 foo_fn，实际: {:?}",
+            import_targets
+        );
     }
 
     /// v52 T11（test_engineer 缺口 (e) 修正版）：目录级 import 的确定性契约。
@@ -751,19 +789,37 @@ mod tests {
         let mut targets1: Vec<String> = Vec::new();
         let mut targets2: Vec<String> = Vec::new();
         for e in kg1.graph.edge_indices() {
-            if kg1.graph.edge_weight(e).map(|w| w.kind == EdgeKind::Imports).unwrap_or(false) {
+            if kg1
+                .graph
+                .edge_weight(e)
+                .map(|w| w.kind == EdgeKind::Imports)
+                .unwrap_or(false)
+            {
                 let t = kg1.graph.edge_weight(e).unwrap().target;
                 targets1.push(kg1.graph.node_weight(t).unwrap().name.clone());
             }
         }
         for e in kg2.graph.edge_indices() {
-            if kg2.graph.edge_weight(e).map(|w| w.kind == EdgeKind::Imports).unwrap_or(false) {
+            if kg2
+                .graph
+                .edge_weight(e)
+                .map(|w| w.kind == EdgeKind::Imports)
+                .unwrap_or(false)
+            {
                 let t = kg2.graph.edge_weight(e).unwrap().target;
                 targets2.push(kg2.graph.node_weight(t).unwrap().name.clone());
             }
         }
-        assert_eq!(targets1, targets2, "两次 build 目录级 import 目标应一致: {:?} vs {:?}", targets1, targets2);
-        assert!(!targets1.is_empty(), "目录级 import 应命中 module 节点: {:?}", targets1);
+        assert_eq!(
+            targets1, targets2,
+            "两次 build 目录级 import 目标应一致: {:?} vs {:?}",
+            targets1, targets2
+        );
+        assert!(
+            !targets1.is_empty(),
+            "目录级 import 应命中 module 节点: {:?}",
+            targets1
+        );
     }
 
     #[test]
@@ -782,7 +838,8 @@ mod tests {
             file_path: None,
             line_range: None,
             doc_comment: None,
-            signature: None, visibility: None,
+            signature: None,
+            visibility: None,
             module_path: vec![],
         });
         let b = kg.graph.add_node(CodeNode {
@@ -792,25 +849,34 @@ mod tests {
             file_path: None,
             line_range: None,
             doc_comment: None,
-            signature: None, visibility: None,
+            signature: None,
+            visibility: None,
             module_path: vec![],
         });
-        kg.graph.add_edge(a, b, CodeEdge {
-            id: EdgeIndex::new(0),
-            kind: EdgeKind::Calls,
-            source: a,
-            target: b,
-            weight: 1.0,
-            location: None,
-        });
-        kg.graph.add_edge(b, a, CodeEdge {
-            id: EdgeIndex::new(1),
-            kind: EdgeKind::Calls,
-            source: b,
-            target: a,
-            weight: 1.0,
-            location: None,
-        });
+        kg.graph.add_edge(
+            a,
+            b,
+            CodeEdge {
+                id: EdgeIndex::new(0),
+                kind: EdgeKind::Calls,
+                source: a,
+                target: b,
+                weight: 1.0,
+                location: None,
+            },
+        );
+        kg.graph.add_edge(
+            b,
+            a,
+            CodeEdge {
+                id: EdgeIndex::new(1),
+                kind: EdgeKind::Calls,
+                source: b,
+                target: a,
+                weight: 1.0,
+                location: None,
+            },
+        );
         let cycles = kg.detect_cycles();
         assert_eq!(cycles.len(), 1);
         assert!(cycles[0].contains(&"func_a".to_string()));
@@ -835,40 +901,141 @@ mod tests {
         let chain: Vec<String> = (0..20).map(|i| format!("n{i}")).collect();
         let s = format_cycles(&[chain]);
         assert!(s.contains("1 个循环依赖（共 20 个节点）"));
-        assert!(s.contains("[20 项: [\"n0\", \"n1\", \"n2\", \"n3\", \"n4\", \"n5\", \"n6\", \"n7\"]…]"));
+        assert!(s.contains(
+            "[20 项: [\"n0\", \"n1\", \"n2\", \"n3\", \"n4\", \"n5\", \"n6\", \"n7\"]…]"
+        ));
         assert!(!s.contains("n8"));
     }
 }
 
-    /// t04：build_call_edges 跨文件调用边——a.rs 定义 callee，b.rs 的 caller
-    /// 正文含 "callee(" 应产生 Calls 边（此前该核心功能零单测）
-    #[test]
-    fn test_build_call_edges_cross_file() {
-        let mut g = petgraph::stable_graph::StableDiGraph::<CodeNode, CodeEdge>::new();
-        let callee = g.add_node(CodeNode {
-            id: NodeId::new(0),
-            kind: NodeKind::Function,
-            name: "callee".into(),
-            file_path: Some("src/a.rs".into()),
-            line_range: Some((1, 3)),
-            doc_comment: None,
-            signature: None, visibility: None,
-            module_path: vec![],
-        });
-        let caller = g.add_node(CodeNode {
-            id: NodeId::new(1),
-            kind: NodeKind::Function,
+/// t04：build_call_edges 跨文件调用边——a.rs 定义 callee，b.rs 的 caller
+/// 正文含 "callee(" 应产生 Calls 边（此前该核心功能零单测）
+#[test]
+fn test_build_call_edges_cross_file() {
+    let mut g = petgraph::stable_graph::StableDiGraph::<CodeNode, CodeEdge>::new();
+    let callee = g.add_node(CodeNode {
+        id: NodeId::new(0),
+        kind: NodeKind::Function,
+        name: "callee".into(),
+        file_path: Some("src/a.rs".into()),
+        line_range: Some((1, 3)),
+        doc_comment: None,
+        signature: None,
+        visibility: None,
+        module_path: vec![],
+    });
+    let caller = g.add_node(CodeNode {
+        id: NodeId::new(1),
+        kind: NodeKind::Function,
+        name: "caller".into(),
+        file_path: Some("src/b.rs".into()),
+        line_range: Some((1, 3)),
+        doc_comment: None,
+        signature: None,
+        visibility: None,
+        module_path: vec![],
+    });
+    // call_candidates：(实体, 节点, 函数体源码)
+    let candidates = vec![(
+        Entity {
             name: "caller".into(),
-            file_path: Some("src/b.rs".into()),
-            line_range: Some((1, 3)),
+            kind: "fn".into(),
+            line_start: 1,
+            line_end: 3,
             doc_comment: None,
-            signature: None, visibility: None,
-            module_path: vec![],
-        });
-        // call_candidates：(实体, 节点, 函数体源码)
-        let candidates = vec![(
+            signature: None,
+            visibility: None,
+        },
+        caller,
+        "pub fn caller() { callee(42) }".to_string(),
+    )];
+    let mut tname_map: HashMap<String, Vec<NodeId>> = HashMap::new();
+    tname_map
+        .entry("callee".to_string())
+        .or_default()
+        .push(callee);
+    build_call_edges(&mut g, &candidates, &tname_map);
+    assert_eq!(
+        g.edges_connecting(caller, callee).count(),
+        1,
+        "跨文件调用应产生一条 Calls 边"
+    );
+    let edge = g.edges_connecting(caller, callee).next().unwrap();
+    assert_eq!(edge.weight().kind, EdgeKind::Calls);
+}
+
+/// t04：单词边界——mycallee( 不应误匹配 callee(
+#[test]
+fn test_build_call_edges_word_boundary() {
+    let mut g = petgraph::stable_graph::StableDiGraph::<CodeNode, CodeEdge>::new();
+    let callee = g.add_node(CodeNode {
+        id: NodeId::new(0),
+        kind: NodeKind::Function,
+        name: "callee".into(),
+        file_path: Some("src/a.rs".into()),
+        line_range: Some((1, 3)),
+        doc_comment: None,
+        signature: None,
+        visibility: None,
+        module_path: vec![],
+    });
+    let caller = g.add_node(CodeNode {
+        id: NodeId::new(1),
+        kind: NodeKind::Function,
+        name: "caller".into(),
+        file_path: Some("src/b.rs".into()),
+        line_range: Some((1, 3)),
+        doc_comment: None,
+        signature: None,
+        visibility: None,
+        module_path: vec![],
+    });
+    let candidates = vec![(
+        Entity {
+            name: "caller".into(),
+            kind: "fn".into(),
+            line_start: 1,
+            line_end: 3,
+            doc_comment: None,
+            signature: None,
+            visibility: None,
+        },
+        caller,
+        "pub fn caller() { mycallee(1) }".to_string(),
+    )];
+    let mut tname_map: HashMap<String, Vec<NodeId>> = HashMap::new();
+    tname_map
+        .entry("callee".to_string())
+        .or_default()
+        .push(callee);
+    build_call_edges(&mut g, &candidates, &tname_map);
+    assert_eq!(
+        g.edges_connecting(caller, callee).count(),
+        0,
+        "mycallee( 不是对 callee 的调用（前缀字母不构成调用）"
+    );
+}
+
+/// t04：同名自调用排除——callee 调用同名函数不建边；多次出现只建一条边
+#[test]
+fn test_build_call_edges_self_name_skipped_and_dedup() {
+    let mut g = petgraph::stable_graph::StableDiGraph::<CodeNode, CodeEdge>::new();
+    let callee = g.add_node(CodeNode {
+        id: NodeId::new(0),
+        kind: NodeKind::Function,
+        name: "callee".into(),
+        file_path: Some("src/a.rs".into()),
+        line_range: Some((1, 3)),
+        doc_comment: None,
+        signature: None,
+        visibility: None,
+        module_path: vec![],
+    });
+    // 两个候选都调用 callee（同名实体跳过自身；同一模式重复出现去重）
+    let candidates = vec![
+        (
             Entity {
-                name: "caller".into(),
+                name: "callee".into(),
                 kind: "fn".into(),
                 line_start: 1,
                 line_end: 3,
@@ -876,48 +1043,12 @@ mod tests {
                 signature: None,
                 visibility: None,
             },
-            caller,
-            "pub fn caller() { callee(42) }".to_string(),
-        )];
-        let mut tname_map: HashMap<String, Vec<NodeId>> = HashMap::new();
-        tname_map.entry("callee".to_string()).or_default().push(callee);
-        build_call_edges(&mut g, &candidates, &tname_map);
-        assert_eq!(
-            g.edges_connecting(caller, callee).count(),
-            1,
-            "跨文件调用应产生一条 Calls 边"
-        );
-        let edge = g.edges_connecting(caller, callee).next().unwrap();
-        assert_eq!(edge.weight().kind, EdgeKind::Calls);
-    }
-
-    /// t04：单词边界——mycallee( 不应误匹配 callee(
-    #[test]
-    fn test_build_call_edges_word_boundary() {
-        let mut g = petgraph::stable_graph::StableDiGraph::<CodeNode, CodeEdge>::new();
-        let callee = g.add_node(CodeNode {
-            id: NodeId::new(0),
-            kind: NodeKind::Function,
-            name: "callee".into(),
-            file_path: Some("src/a.rs".into()),
-            line_range: Some((1, 3)),
-            doc_comment: None,
-            signature: None, visibility: None,
-            module_path: vec![],
-        });
-        let caller = g.add_node(CodeNode {
-            id: NodeId::new(1),
-            kind: NodeKind::Function,
-            name: "caller".into(),
-            file_path: Some("src/b.rs".into()),
-            line_range: Some((1, 3)),
-            doc_comment: None,
-            signature: None, visibility: None,
-            module_path: vec![],
-        });
-        let candidates = vec![(
+            callee,
+            "pub fn callee() { callee(1); callee(2) }".to_string(),
+        ),
+        (
             Entity {
-                name: "caller".into(),
+                name: "other".into(),
                 kind: "fn".into(),
                 line_start: 1,
                 line_end: 3,
@@ -925,128 +1056,85 @@ mod tests {
                 signature: None,
                 visibility: None,
             },
-            caller,
-            "pub fn caller() { mycallee(1) }".to_string(),
-        )];
-        let mut tname_map: HashMap<String, Vec<NodeId>> = HashMap::new();
-        tname_map.entry("callee".to_string()).or_default().push(callee);
-        build_call_edges(&mut g, &candidates, &tname_map);
-        assert_eq!(
-            g.edges_connecting(caller, callee).count(),
-            0,
-            "mycallee( 不是对 callee 的调用（前缀字母不构成调用）"
-        );
-    }
-
-    /// t04：同名自调用排除——callee 调用同名函数不建边；多次出现只建一条边
-    #[test]
-    fn test_build_call_edges_self_name_skipped_and_dedup() {
-        let mut g = petgraph::stable_graph::StableDiGraph::<CodeNode, CodeEdge>::new();
-        let callee = g.add_node(CodeNode {
-            id: NodeId::new(0),
-            kind: NodeKind::Function,
-            name: "callee".into(),
-            file_path: Some("src/a.rs".into()),
-            line_range: Some((1, 3)),
-            doc_comment: None,
-            signature: None, visibility: None,
-            module_path: vec![],
-        });
-        // 两个候选都调用 callee（同名实体跳过自身；同一模式重复出现去重）
-        let candidates = vec![
-            (
-                Entity {
-                    name: "callee".into(),
-                    kind: "fn".into(),
-                    line_start: 1,
-                    line_end: 3,
-                    doc_comment: None,
-                    signature: None,
-                    visibility: None,
-                },
-                callee,
-                "pub fn callee() { callee(1); callee(2) }".to_string(),
-            ),
-            (
-                Entity {
-                    name: "other".into(),
-                    kind: "fn".into(),
-                    line_start: 1,
-                    line_end: 3,
-                    doc_comment: None,
-                    signature: None,
-                    visibility: None,
-                },
-                g.add_node(CodeNode {
-                    id: NodeId::new(1),
-                    kind: NodeKind::Function,
-                    name: "other".into(),
-                    file_path: Some("src/c.rs".into()),
-                    line_range: Some((1, 3)),
-                    doc_comment: None,
-                    signature: None, visibility: None,
-                    module_path: vec![],
-                }),
-                "pub fn other() { callee(3) }".to_string(),
-            ),
-        ];
-        let mut tname_map: HashMap<String, Vec<NodeId>> = HashMap::new();
-        tname_map.entry("callee".to_string()).or_default().push(callee);
-        build_call_edges(&mut g, &candidates, &tname_map);
-        // 自调用（callee→callee）不建边
-        assert_eq!(
-            g.edges_connecting(callee, callee).count(),
-            0,
-            "同名实体（自调用）应跳过"
-        );
-        // other→callee 只建一条（去重）
-        let other = g.node_indices().find(|&n| g[n].name == "other").unwrap();
-        assert_eq!(
-            g.edges_connecting(other, callee).count(),
-            1,
-            "同一调用模式多次出现只建一条边"
-        );
-    }
-
-    /// t04：无调用时零边
-    #[test]
-    fn test_build_call_edges_no_call() {
-        let mut g = petgraph::stable_graph::StableDiGraph::<CodeNode, CodeEdge>::new();
-        let _callee = g.add_node(CodeNode {
-            id: NodeId::new(0),
-            kind: NodeKind::Function,
-            name: "callee".into(),
-            file_path: Some("src/a.rs".into()),
-            line_range: Some((1, 3)),
-            doc_comment: None,
-            signature: None, visibility: None,
-            module_path: vec![],
-        });
-        let caller = g.add_node(CodeNode {
-            id: NodeId::new(1),
-            kind: NodeKind::Function,
-            name: "caller".into(),
-            file_path: Some("src/b.rs".into()),
-            line_range: Some((1, 3)),
-            doc_comment: None,
-            signature: None, visibility: None,
-            module_path: vec![],
-        });
-        let candidates = vec![(
-            Entity {
-                name: "caller".into(),
-                kind: "fn".into(),
-                line_start: 1,
-                line_end: 3,
+            g.add_node(CodeNode {
+                id: NodeId::new(1),
+                kind: NodeKind::Function,
+                name: "other".into(),
+                file_path: Some("src/c.rs".into()),
+                line_range: Some((1, 3)),
                 doc_comment: None,
                 signature: None,
                 visibility: None,
-            },
-            caller,
-            "pub fn caller() { let x = 1; }".to_string(),
-        )];
-        let mut tname_map: HashMap<String, Vec<NodeId>> = HashMap::new();
-        tname_map.entry("caller".to_string()).or_default().push(caller);
-        build_call_edges(&mut g, &candidates, &tname_map);
-        assert_eq!(g.edge_count(), 0, "无调用应零边");
-    }
+                module_path: vec![],
+            }),
+            "pub fn other() { callee(3) }".to_string(),
+        ),
+    ];
+    let mut tname_map: HashMap<String, Vec<NodeId>> = HashMap::new();
+    tname_map
+        .entry("callee".to_string())
+        .or_default()
+        .push(callee);
+    build_call_edges(&mut g, &candidates, &tname_map);
+    // 自调用（callee→callee）不建边
+    assert_eq!(
+        g.edges_connecting(callee, callee).count(),
+        0,
+        "同名实体（自调用）应跳过"
+    );
+    // other→callee 只建一条（去重）
+    let other = g.node_indices().find(|&n| g[n].name == "other").unwrap();
+    assert_eq!(
+        g.edges_connecting(other, callee).count(),
+        1,
+        "同一调用模式多次出现只建一条边"
+    );
+}
+
+/// t04：无调用时零边
+#[test]
+fn test_build_call_edges_no_call() {
+    let mut g = petgraph::stable_graph::StableDiGraph::<CodeNode, CodeEdge>::new();
+    let _callee = g.add_node(CodeNode {
+        id: NodeId::new(0),
+        kind: NodeKind::Function,
+        name: "callee".into(),
+        file_path: Some("src/a.rs".into()),
+        line_range: Some((1, 3)),
+        doc_comment: None,
+        signature: None,
+        visibility: None,
+        module_path: vec![],
+    });
+    let caller = g.add_node(CodeNode {
+        id: NodeId::new(1),
+        kind: NodeKind::Function,
+        name: "caller".into(),
+        file_path: Some("src/b.rs".into()),
+        line_range: Some((1, 3)),
+        doc_comment: None,
+        signature: None,
+        visibility: None,
+        module_path: vec![],
+    });
+    let candidates = vec![(
+        Entity {
+            name: "caller".into(),
+            kind: "fn".into(),
+            line_start: 1,
+            line_end: 3,
+            doc_comment: None,
+            signature: None,
+            visibility: None,
+        },
+        caller,
+        "pub fn caller() { let x = 1; }".to_string(),
+    )];
+    let mut tname_map: HashMap<String, Vec<NodeId>> = HashMap::new();
+    tname_map
+        .entry("caller".to_string())
+        .or_default()
+        .push(caller);
+    build_call_edges(&mut g, &candidates, &tname_map);
+    assert_eq!(g.edge_count(), 0, "无调用应零边");
+}

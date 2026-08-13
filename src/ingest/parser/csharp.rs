@@ -1,5 +1,5 @@
-use std::path::Path;
 use anyhow::Result;
+use std::path::Path;
 use tree_sitter::{Language, Node};
 
 use super::{Entity, FileInsight, ImportStmt, KindRule, LanguageProcessor, SharedProcessor};
@@ -18,7 +18,8 @@ impl CSharpProcessor {
 
     /// 获取声明节点的名称（所有 C# 声明都有 name 字段）。
     fn node_name<'a>(node: &tree_sitter::Node, bytes: &'a [u8]) -> Option<&'a str> {
-        node.child_by_field_name("name").and_then(|n| n.utf8_text(bytes).ok())
+        node.child_by_field_name("name")
+            .and_then(|n| n.utf8_text(bytes).ok())
     }
 }
 
@@ -46,14 +47,23 @@ const KINDS: &[KindRule] = &[
 /// 无法表化的特殊分支（field_declaration 子遍历 / using_directive 文本解析）、
 /// 启发式正则 fallback。公共 walk/fallback 触发/FileInsight 组装走 SharedProcessor 默认实现。
 impl SharedProcessor for CSharpProcessor {
-    fn language() -> &'static str { "C#" }
-    fn grammar() -> Language { tree_sitter_c_sharp::LANGUAGE.into() }
+    fn language() -> &'static str {
+        "C#"
+    }
+    fn grammar() -> Language {
+        tree_sitter_c_sharp::LANGUAGE.into()
+    }
 
     fn kinds() -> &'static [KindRule] {
         KINDS
     }
 
-    fn handle_special(node: Node, bytes: &[u8], entities: &mut Vec<Entity>, imports: &mut Vec<ImportStmt>) {
+    fn handle_special(
+        node: Node,
+        bytes: &[u8],
+        entities: &mut Vec<Entity>,
+        imports: &mut Vec<ImportStmt>,
+    ) {
         match node.kind() {
             "event_field_declaration" => {
                 // P3-3/F3：简单事件字段（`public event EventHandler Changed;`）的
@@ -74,10 +84,13 @@ impl SharedProcessor for CSharpProcessor {
                         }
                         if let Some(name) = Self::node_name(&child, bytes) {
                             entities.push(Entity {
-                                name: name.to_string(), kind: "event".to_string(),
+                                name: name.to_string(),
+                                kind: "event".to_string(),
                                 line_start: child.start_position().row + 1,
                                 line_end: child.end_position().row + 1,
-                                doc_comment: None, signature: None, visibility: None,
+                                doc_comment: None,
+                                signature: None,
+                                visibility: None,
                             });
                         }
                     }
@@ -113,10 +126,13 @@ impl SharedProcessor for CSharpProcessor {
                             .or_else(|| child.utf8_text(bytes).ok().map(|s| s.trim().to_string()));
                         if let Some(name) = name {
                             entities.push(Entity {
-                                name: name.to_string(), kind: "variable".to_string(),
+                                name: name.to_string(),
+                                kind: "variable".to_string(),
                                 line_start: child.start_position().row + 1,
                                 line_end: child.end_position().row + 1,
-                                doc_comment: None, signature: None, visibility: None,
+                                doc_comment: None,
+                                signature: None,
+                                visibility: None,
                             });
                         }
                     }
@@ -160,7 +176,9 @@ impl SharedProcessor for CSharpProcessor {
                 // 排除 using static / using alias = 等高级语法，只匹配基本 using
                 if !ns.contains('=') && !ns.starts_with("static ") {
                     imports.push(ImportStmt {
-                        source: ns.to_string(), alias: None, line: line_no,
+                        source: ns.to_string(),
+                        alias: None,
+                        line: line_no,
                     });
                 }
                 continue;
@@ -171,9 +189,13 @@ impl SharedProcessor for CSharpProcessor {
                 let name = rest.split(&['{', ' ', ';'][..]).next().unwrap_or("").trim();
                 if !name.is_empty() {
                     entities.push(Entity {
-                        name: name.to_string(), kind: "mod".into(),
-                        line_start: line_no, line_end: line_no,
-                        doc_comment: None, signature: None, visibility: None,
+                        name: name.to_string(),
+                        kind: "mod".into(),
+                        line_start: line_no,
+                        line_end: line_no,
+                        doc_comment: None,
+                        signature: None,
+                        visibility: None,
                     });
                 }
                 continue;
@@ -182,11 +204,17 @@ impl SharedProcessor for CSharpProcessor {
             // 类型声明：class / struct / interface / enum / record
             for prefix in &["class ", "struct ", "interface ", "enum ", "record "] {
                 if let Some(rest) = t.find(prefix).map(|pos| &t[pos..]) {
-                    let name = rest.strip_prefix(prefix)
+                    let name = rest
+                        .strip_prefix(prefix)
                         .and_then(|s| s.split(&['{', ' ', ':', '<', ';', '(', '}'][..]).next())
                         .map(|s| s.trim());
                     if let Some(name) = name
-                        && !name.is_empty() && name.chars().next().map(|c| c.is_alphabetic() || c == '_').unwrap_or(false)
+                        && !name.is_empty()
+                        && name
+                            .chars()
+                            .next()
+                            .map(|c| c.is_alphabetic() || c == '_')
+                            .unwrap_or(false)
                     {
                         let kind = match *prefix {
                             "class " | "record " => "class",
@@ -196,9 +224,13 @@ impl SharedProcessor for CSharpProcessor {
                             _ => "class",
                         };
                         entities.push(Entity {
-                            name: name.to_string(), kind: kind.to_string(),
-                            line_start: line_no, line_end: line_no,
-                            doc_comment: None, signature: Some(t.to_string()), visibility: None,
+                            name: name.to_string(),
+                            kind: kind.to_string(),
+                            line_start: line_no,
+                            line_end: line_no,
+                            doc_comment: None,
+                            signature: Some(t.to_string()),
+                            visibility: None,
                         });
                         break;
                     }
@@ -216,33 +248,68 @@ impl SharedProcessor for CSharpProcessor {
                     if method_candidate.contains('(') {
                         let name_token = tokens.last().unwrap_or(&"");
                         let name = name_token.trim_end_matches('(');
-                        if name.chars().next().map(|c| c.is_alphabetic() || c == '_').unwrap_or(false)
-                            && !["class", "struct", "interface", "enum", "namespace", "using", "if", "while", "for", "foreach", "switch", "return"].contains(&name)
+                        if name
+                            .chars()
+                            .next()
+                            .map(|c| c.is_alphabetic() || c == '_')
+                            .unwrap_or(false)
+                            && ![
+                                "class",
+                                "struct",
+                                "interface",
+                                "enum",
+                                "namespace",
+                                "using",
+                                "if",
+                                "while",
+                                "for",
+                                "foreach",
+                                "switch",
+                                "return",
+                            ]
+                            .contains(&name)
                         {
-                        entities.push(Entity {
-                            name: name.to_string(), kind: "function".into(),
-                            line_start: line_no, line_end: line_no,
-                            doc_comment: None, signature: Some(t.to_string()), visibility: None,
-                        });
+                            entities.push(Entity {
+                                name: name.to_string(),
+                                kind: "function".into(),
+                                line_start: line_no,
+                                line_end: line_no,
+                                doc_comment: None,
+                                signature: Some(t.to_string()),
+                                visibility: None,
+                            });
                         }
                     }
                 }
             }
 
             // 属性声明：type Name { get; set; }
-            if !entities.iter().any(|e| e.line_start == line_no) && t.contains("{") && !t.contains("(") {
+            if !entities.iter().any(|e| e.line_start == line_no)
+                && t.contains("{")
+                && !t.contains("(")
+            {
                 let tokens: Vec<&str> = t.split_whitespace().collect();
                 if tokens.len() >= 2 {
-                    let name = tokens.iter()
+                    let name = tokens
+                        .iter()
                         .position(|s| s.contains('{'))
                         .and_then(|pos| tokens.get(pos - 1))
                         .map(|s| s.trim())
-                        .filter(|s| s.chars().next().map(|c| c.is_alphabetic() || c == '_').unwrap_or(false));
+                        .filter(|s| {
+                            s.chars()
+                                .next()
+                                .map(|c| c.is_alphabetic() || c == '_')
+                                .unwrap_or(false)
+                        });
                     if let Some(name) = name {
                         entities.push(Entity {
-                            name: name.to_string(), kind: "property".into(),
-                            line_start: line_no, line_end: line_no,
-                            doc_comment: None, signature: Some(t.to_string()), visibility: None,
+                            name: name.to_string(),
+                            kind: "property".into(),
+                            line_start: line_no,
+                            line_end: line_no,
+                            doc_comment: None,
+                            signature: Some(t.to_string()),
+                            visibility: None,
                         });
                     }
                 }
@@ -253,8 +320,12 @@ impl SharedProcessor for CSharpProcessor {
 }
 
 impl LanguageProcessor for CSharpProcessor {
-    fn name(&self) -> &'static str { Self::language() }
-    fn extensions(&self) -> &[&str] { &[".cs"] }
+    fn name(&self) -> &'static str {
+        Self::language()
+    }
+    fn extensions(&self) -> &[&str] {
+        &[".cs"]
+    }
 
     fn parse(&self, source: &str, path: &Path) -> Result<FileInsight> {
         Self::parse_file(source, path)
@@ -281,13 +352,38 @@ namespace MyApp {
         let result = proc.parse(source, Path::new("test.cs")).unwrap();
         // using 指令
         assert!(result.imports.iter().any(|i| i.source == "System"));
-        assert!(result.imports.iter().any(|i| i.source == "System.Collections.Generic"));
+        assert!(
+            result
+                .imports
+                .iter()
+                .any(|i| i.source == "System.Collections.Generic")
+        );
         // 实体
         assert!(result.entities.iter().any(|e| e.name == "MyApp"));
-        assert!(result.entities.iter().any(|e| e.name == "Player" && e.kind == "class"));
-        assert!(result.entities.iter().any(|e| e.name == "Point" && e.kind == "struct"));
-        assert!(result.entities.iter().any(|e| e.name == "ILogger" && e.kind == "interface"));
-        assert!(result.entities.iter().any(|e| e.name == "Color" && e.kind == "enum"));
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.name == "Player" && e.kind == "class")
+        );
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.name == "Point" && e.kind == "struct")
+        );
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.name == "ILogger" && e.kind == "interface")
+        );
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.name == "Color" && e.kind == "enum")
+        );
     }
 
     #[test]
@@ -301,18 +397,28 @@ namespace MyApp {
         let proc = CSharpProcessor::new().unwrap();
         let result = proc.parse(source, Path::new("test.cs")).unwrap();
         assert!(result.entities.iter().any(|e| e.name == "Calculator"));
-        assert!(result.entities.iter().any(|e| e.name == "Add" && e.kind == "function"));
-        assert!(result.entities.iter().any(|e| e.name == "Name" && e.kind == "property"));
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.name == "Add" && e.kind == "function")
+        );
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.name == "Name" && e.kind == "property")
+        );
         // tree-sitter-c-sharp 0.23 的 variable_declarator AST 结构与当前遍历方式不兼容，
         // 字段析取器名称提取依赖 tree-sitter 版本。当前已验证主要类型（类/方法/属性）均可正确识别。
     }
 }
 
-    /// t07：Unity 形态覆盖——MonoBehaviour 类/SerializeField 字段/生命周期方法
-    /// 全部应解析（此前字段提取是已知弱项，见 test_parse_csharp_basics 注释）
-    #[test]
-    fn test_parse_csharp_unity_morphology() {
-        let source = r#"using UnityEngine;
+/// t07：Unity 形态覆盖——MonoBehaviour 类/SerializeField 字段/生命周期方法
+/// 全部应解析（此前字段提取是已知弱项，见 test_parse_csharp_basics 注释）
+#[test]
+fn test_parse_csharp_unity_morphology() {
+    let source = r#"using UnityEngine;
 
 namespace Test.Unity
 {
@@ -336,47 +442,103 @@ namespace Test.Unity
     }
 }
 "#;
-        let proc = CSharpProcessor::new().unwrap();
-        let result = proc.parse(source, Path::new("PlayerController.cs")).unwrap();
-        // 类（MonoBehaviour 子类作普通 class）
-        assert!(result.entities.iter().any(|e| e.name == "PlayerController" && e.kind == "class"));
-        // SerializeField 字段（私有但序列化——文档应含）
-        assert!(result.entities.iter().any(|e| e.name == "moveSpeed" && e.kind == "variable"), "SerializeField 字段应解析: {:?}", result.entities);
-        assert!(result.entities.iter().any(|e| e.name == "playerName" && e.kind == "variable"));
-        // 属性
-        assert!(result.entities.iter().any(|e| e.name == "Score" && e.kind == "property"));
-        // 生命周期方法
-        for lifecycle in ["Awake", "Start", "Update", "Move"] {
-            assert!(result.entities.iter().any(|e| e.name == lifecycle && e.kind == "function"), "方法 {lifecycle} 应解析");
-        }
+    let proc = CSharpProcessor::new().unwrap();
+    let result = proc
+        .parse(source, Path::new("PlayerController.cs"))
+        .unwrap();
+    // 类（MonoBehaviour 子类作普通 class）
+    assert!(
+        result
+            .entities
+            .iter()
+            .any(|e| e.name == "PlayerController" && e.kind == "class")
+    );
+    // SerializeField 字段（私有但序列化——文档应含）
+    assert!(
+        result
+            .entities
+            .iter()
+            .any(|e| e.name == "moveSpeed" && e.kind == "variable"),
+        "SerializeField 字段应解析: {:?}",
+        result.entities
+    );
+    assert!(
+        result
+            .entities
+            .iter()
+            .any(|e| e.name == "playerName" && e.kind == "variable")
+    );
+    // 属性
+    assert!(
+        result
+            .entities
+            .iter()
+            .any(|e| e.name == "Score" && e.kind == "property")
+    );
+    // 生命周期方法
+    for lifecycle in ["Awake", "Start", "Update", "Move"] {
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.name == lifecycle && e.kind == "function"),
+            "方法 {lifecycle} 应解析"
+        );
     }
+}
 
-    /// P3-3：C# delegate/event 此前未映射，补齐映射后应解析为 delegate/event
-    #[test]
-    fn test_csharp_delegate_and_event_parsed() {
-        let source = r#"public delegate void Handler(int x);
+/// P3-3：C# delegate/event 此前未映射，补齐映射后应解析为 delegate/event
+#[test]
+fn test_csharp_delegate_and_event_parsed() {
+    let source = r#"public delegate void Handler(int x);
 public class C {
     public event EventHandler Changed;
 }
 "#;
-        let proc = CSharpProcessor::new().unwrap();
-        let result = proc.parse(source, Path::new("test.cs")).unwrap();
-        assert!(result.entities.iter().any(|e| e.name == "Handler" && e.kind == "delegate"),
-            "委托类型应解析: {:?}", result.entities);
-        assert!(result.entities.iter().any(|e| e.name == "Changed" && e.kind == "event"),
-            "事件应解析: {:?}", result.entities);
-    }
+    let proc = CSharpProcessor::new().unwrap();
+    let result = proc.parse(source, Path::new("test.cs")).unwrap();
+    assert!(
+        result
+            .entities
+            .iter()
+            .any(|e| e.name == "Handler" && e.kind == "delegate"),
+        "委托类型应解析: {:?}",
+        result.entities
+    );
+    assert!(
+        result
+            .entities
+            .iter()
+            .any(|e| e.name == "Changed" && e.kind == "event"),
+        "事件应解析: {:?}",
+        result.entities
+    );
+}
 
-    /// F3 回归锚：多声明事件 `public event EventHandler A, B;` 的每个
-    /// 声明名都必须提取（旧文本末词提取只取 B、A 静默丢失）
-    #[test]
-    fn test_csharp_multi_declarator_event() {
-        let source = r#"public class C {
+/// F3 回归锚：多声明事件 `public event EventHandler A, B;` 的每个
+/// 声明名都必须提取（旧文本末词提取只取 B、A 静默丢失）
+#[test]
+fn test_csharp_multi_declarator_event() {
+    let source = r#"public class C {
     public event EventHandler A, B;
 }
 "#;
-        let proc = CSharpProcessor::new().unwrap();
-        let result = proc.parse(source, Path::new("test.cs")).unwrap();
-        assert!(result.entities.iter().any(|e| e.name == "A" && e.kind == "event"), "A 应解析为 event: {:?}", result.entities);
-        assert!(result.entities.iter().any(|e| e.name == "B" && e.kind == "event"), "B 应解析为 event: {:?}", result.entities);
-    }
+    let proc = CSharpProcessor::new().unwrap();
+    let result = proc.parse(source, Path::new("test.cs")).unwrap();
+    assert!(
+        result
+            .entities
+            .iter()
+            .any(|e| e.name == "A" && e.kind == "event"),
+        "A 应解析为 event: {:?}",
+        result.entities
+    );
+    assert!(
+        result
+            .entities
+            .iter()
+            .any(|e| e.name == "B" && e.kind == "event"),
+        "B 应解析为 event: {:?}",
+        result.entities
+    );
+}

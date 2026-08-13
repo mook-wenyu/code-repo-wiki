@@ -372,7 +372,11 @@ fn test_install_upgrades_kill0_lock_block_to_skip_if_locked() {
     let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
     let out = run_bin_with_envs(&work_dir, &["install"], &envs_ref);
-    assert!(out.status.success(), "install 应成功，stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "install 应成功，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let content = std::fs::read_to_string(hooks_dir.join("post-commit")).unwrap();
     assert!(
         content.contains("echo '人工 hook'"),

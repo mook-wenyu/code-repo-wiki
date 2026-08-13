@@ -1,5 +1,5 @@
-use std::path::Path;
 use anyhow::Result;
+use std::path::Path;
 use tree_sitter::{Language, Node};
 
 use super::{Entity, FileInsight, ImportStmt, KindRule, LanguageProcessor, SharedProcessor};
@@ -22,31 +22,56 @@ const KINDS: &[KindRule] = &[
 /// 无法表化的特殊分支（type_spec 动态 kind / import_spec）、正则 fallback。
 /// 公共 walk/fallback 触发/FileInsight 组装走 SharedProcessor 默认实现。
 impl SharedProcessor for GoProcessor {
-    fn language() -> &'static str { "Go" }
-    fn grammar() -> Language { tree_sitter_go::LANGUAGE.into() }
+    fn language() -> &'static str {
+        "Go"
+    }
+    fn grammar() -> Language {
+        tree_sitter_go::LANGUAGE.into()
+    }
 
     fn kinds() -> &'static [KindRule] {
         KINDS
     }
 
-    fn handle_special(node: Node, bytes: &[u8], entities: &mut Vec<Entity>, imports: &mut Vec<ImportStmt>) {
+    fn handle_special(
+        node: Node,
+        bytes: &[u8],
+        entities: &mut Vec<Entity>,
+        imports: &mut Vec<ImportStmt>,
+    ) {
         match node.kind() {
             "type_spec" => {
-                let name = node.child_by_field_name("name").and_then(|n| n.utf8_text(bytes).ok());
+                let name = node
+                    .child_by_field_name("name")
+                    .and_then(|n| n.utf8_text(bytes).ok());
                 if let Some(name) = name {
-                    let kind = if node.child_by_field_name("type").map(|t| t.kind()) == Some("struct_type") { "struct" }
-                        else if node.child_by_field_name("type").map(|t| t.kind()) == Some("interface_type") { "interface" }
-                        else { "type" };
+                    let kind = if node.child_by_field_name("type").map(|t| t.kind())
+                        == Some("struct_type")
+                    {
+                        "struct"
+                    } else if node.child_by_field_name("type").map(|t| t.kind())
+                        == Some("interface_type")
+                    {
+                        "interface"
+                    } else {
+                        "type"
+                    };
                     entities.push(Entity {
-                        name: name.to_string(), kind: kind.to_string(),
+                        name: name.to_string(),
+                        kind: kind.to_string(),
                         line_start: node.start_position().row + 1,
                         line_end: node.end_position().row + 1,
-                        doc_comment: None, signature: None, visibility: None,
+                        doc_comment: None,
+                        signature: None,
+                        visibility: None,
                     });
                 }
             }
             "import_spec" => {
-                if let Some(path) = node.child_by_field_name("path").and_then(|n| n.utf8_text(bytes).ok()) {
+                if let Some(path) = node
+                    .child_by_field_name("path")
+                    .and_then(|n| n.utf8_text(bytes).ok())
+                {
                     imports.push(ImportStmt {
                         source: path.trim_matches('"').to_string(),
                         alias: None,
@@ -58,22 +83,33 @@ impl SharedProcessor for GoProcessor {
             // 下辖 const_spec/var_spec，每个 spec 一个 name 字段；kind 按声明
             // 类型区分 const/var，行区间取整个声明块）
             "const_declaration" | "var_declaration" => {
-                let kind = if node.kind() == "const_declaration" { "const" } else { "var" };
+                let kind = if node.kind() == "const_declaration" {
+                    "const"
+                } else {
+                    "var"
+                };
                 let mut cur = node.walk();
                 if cur.goto_first_child() {
                     loop {
                         if matches!(cur.node().kind(), "const_spec" | "var_spec")
-                            && let Some(name) = cur.node().child_by_field_name("name")
+                            && let Some(name) = cur
+                                .node()
+                                .child_by_field_name("name")
                                 .and_then(|n| n.utf8_text(bytes).ok())
                         {
                             entities.push(Entity {
-                                name: name.to_string(), kind: kind.to_string(),
+                                name: name.to_string(),
+                                kind: kind.to_string(),
                                 line_start: node.start_position().row + 1,
                                 line_end: node.end_position().row + 1,
-                        doc_comment: None, signature: None, visibility: None,
+                                doc_comment: None,
+                                signature: None,
+                                visibility: None,
                             });
                         }
-                        if !cur.goto_next_sibling() { break; }
+                        if !cur.goto_next_sibling() {
+                            break;
+                        }
                     }
                 }
             }
@@ -85,23 +121,55 @@ impl SharedProcessor for GoProcessor {
         let mut entities = Vec::new();
         let mut imports = Vec::new();
         for (i, line) in source.lines().enumerate() {
-            let line_no = i + 1; let t = line.trim();
+            let line_no = i + 1;
+            let t = line.trim();
             if let Some(rest) = t.strip_prefix("import ") {
                 let path = rest.trim().trim_matches(&['"', '(', ')'][..]);
-                imports.push(ImportStmt { source: path.to_string(), alias: None, line: line_no });
+                imports.push(ImportStmt {
+                    source: path.to_string(),
+                    alias: None,
+                    line: line_no,
+                });
             }
             if let Some(rest) = t.strip_prefix("type ") {
                 let name = rest.split_whitespace().next().unwrap_or("").to_string();
-                if name.is_empty() { continue; }
-                let kind = if rest.contains("struct") { "struct" } else if rest.contains("interface") { "interface" } else { "type" };
-                entities.push(Entity { name, kind: kind.to_string(), line_start: line_no, line_end: line_no, doc_comment: None, signature: None, visibility: None });
+                if name.is_empty() {
+                    continue;
+                }
+                let kind = if rest.contains("struct") {
+                    "struct"
+                } else if rest.contains("interface") {
+                    "interface"
+                } else {
+                    "type"
+                };
+                entities.push(Entity {
+                    name,
+                    kind: kind.to_string(),
+                    line_start: line_no,
+                    line_end: line_no,
+                    doc_comment: None,
+                    signature: None,
+                    visibility: None,
+                });
             } else if let Some(n) = t.strip_prefix("func ").and_then(|s| {
                 s.split('(').next().and_then(|first| {
-                    if first.contains(' ') { first.split_whitespace().last().map(|s| s.to_string()) }
-                    else { Some(first.split_whitespace().next().unwrap_or("").to_string()) }
+                    if first.contains(' ') {
+                        first.split_whitespace().last().map(|s| s.to_string())
+                    } else {
+                        Some(first.split_whitespace().next().unwrap_or("").to_string())
+                    }
                 })
             }) {
-                entities.push(Entity { name: n, kind: "function".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: Some(t.to_string()), visibility: None });
+                entities.push(Entity {
+                    name: n,
+                    kind: "function".into(),
+                    line_start: line_no,
+                    line_end: line_no,
+                    doc_comment: None,
+                    signature: Some(t.to_string()),
+                    visibility: None,
+                });
             }
         }
         (entities, imports)
@@ -109,8 +177,12 @@ impl SharedProcessor for GoProcessor {
 }
 
 impl LanguageProcessor for GoProcessor {
-    fn name(&self) -> &'static str { Self::language() }
-    fn extensions(&self) -> &[&str] { &[".go"] }
+    fn name(&self) -> &'static str {
+        Self::language()
+    }
+    fn extensions(&self) -> &[&str] {
+        &[".go"]
+    }
 
     fn parse(&self, source: &str, path: &Path) -> Result<FileInsight> {
         Self::parse_file(source, path)
@@ -137,10 +209,10 @@ func add(a int, b int) int { return a + b }
     }
 }
 
-    /// U09：Go 的 const/var 声明补齐（此前只解析 func/type）
-    #[test]
-    fn test_parse_go_const_var() {
-        let source = r#"package main
+/// U09：Go 的 const/var 声明补齐（此前只解析 func/type）
+#[test]
+fn test_parse_go_const_var() {
+    let source = r#"package main
 
 const MaxRetries = 3
 const (
@@ -149,10 +221,36 @@ const (
 )
 var GlobalCount = 0
 "#;
-        let proc = GoProcessor::new().unwrap();
-        let result = proc.parse(source, Path::new("test.go")).unwrap();
-        assert!(result.entities.iter().any(|e| e.name == "MaxRetries" && e.kind == "const"), "const 单值应解析: {:?}", result.entities);
-        assert!(result.entities.iter().any(|e| e.name == "TimeoutSec" && e.kind == "const"), "const 块成员应解析");
-        assert!(result.entities.iter().any(|e| e.name == "BufferSize" && e.kind == "const"), "const 块第二成员应解析");
-        assert!(result.entities.iter().any(|e| e.name == "GlobalCount" && e.kind == "var"), "var 应解析: {:?}", result.entities);
-    }
+    let proc = GoProcessor::new().unwrap();
+    let result = proc.parse(source, Path::new("test.go")).unwrap();
+    assert!(
+        result
+            .entities
+            .iter()
+            .any(|e| e.name == "MaxRetries" && e.kind == "const"),
+        "const 单值应解析: {:?}",
+        result.entities
+    );
+    assert!(
+        result
+            .entities
+            .iter()
+            .any(|e| e.name == "TimeoutSec" && e.kind == "const"),
+        "const 块成员应解析"
+    );
+    assert!(
+        result
+            .entities
+            .iter()
+            .any(|e| e.name == "BufferSize" && e.kind == "const"),
+        "const 块第二成员应解析"
+    );
+    assert!(
+        result
+            .entities
+            .iter()
+            .any(|e| e.name == "GlobalCount" && e.kind == "var"),
+        "var 应解析: {:?}",
+        result.entities
+    );
+}

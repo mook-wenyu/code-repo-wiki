@@ -63,7 +63,11 @@ fn test_pipeline_progress_events_monotonic_and_done() {
         code_repo_wiki::LockOptions::default(),
         &|evt| events.lock().unwrap().push(evt),
     );
-    assert!(result.is_ok(), "流水线应成功（LLM 失败被容错跳过）: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "流水线应成功（LLM 失败被容错跳过）: {:?}",
+        result.err()
+    );
 
     let events = events.into_inner().unwrap();
     // 事件序列非空且以 scanning 开始
@@ -74,7 +78,10 @@ fn test_pipeline_progress_events_monotonic_and_done() {
         assert!(
             w[1].percent >= w[0].percent,
             "事件百分比应单调递增: {} ({}%) -> {} ({}%)",
-            w[0].stage, w[0].percent, w[1].stage, w[1].percent
+            w[0].stage,
+            w[0].percent,
+            w[1].stage,
+            w[1].percent
         );
     }
     // 以 done=100 结束
@@ -83,7 +90,9 @@ fn test_pipeline_progress_events_monotonic_and_done() {
 
     // v48：analyzing 阶段 25→27→30 单调补点（大仓图构建长黑屏期可见推进）
     assert!(
-        events.iter().any(|e| e.stage == "analyzing" && e.percent == 27),
+        events
+            .iter()
+            .any(|e| e.stage == "analyzing" && e.percent == 27),
         "应包含 analyzing 27% 进度事件（25→27→30 单调补点）"
     );
 
@@ -104,7 +113,8 @@ fn test_pipeline_progress_events_monotonic_and_done() {
         assert!(
             w[1].current.unwrap() >= w[0].current.unwrap(),
             "current 应单调递增: {:?} -> {:?}",
-            w[0], w[1]
+            w[0],
+            w[1]
         );
     }
     // wiki 阶段同构（页面失败跳过仍计数）

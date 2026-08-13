@@ -55,11 +55,7 @@ pub fn render_module_dependency_graph(graph: &KnowledgeGraph) -> String {
     sorted_names.sort();
 
     for name in &sorted_names {
-        output.push_str(&format!(
-            "    {}[\"{}\"]\n",
-            sanitize_id(name),
-            name
-        ));
+        output.push_str(&format!("    {}[\"{}\"]\n", sanitize_id(name), name));
     }
 
     for edge in edges {
@@ -85,7 +81,10 @@ fn collect_cycle_modules(graph: &KnowledgeGraph) -> HashSet<String> {
     let sccs = tarjan_scc(&graph.graph);
     sccs.iter()
         .filter(|scc| scc.len() > 1)
-        .flat_map(|scc| scc.iter().map(|&n| module_name(graph.graph[n].module_path.as_slice())))
+        .flat_map(|scc| {
+            scc.iter()
+                .map(|&n| module_name(graph.graph[n].module_path.as_slice()))
+        })
         .filter(|m| !m.is_empty())
         .collect()
 }
@@ -97,24 +96,31 @@ fn collect_cycle_modules(graph: &KnowledgeGraph) -> HashSet<String> {
 /// 未落入任何模块的实体与同模块调用不出现。
 pub fn render_module_call_graph(graph: &KnowledgeGraph) -> String {
     // 实体节点 → 所属模块名
-    let mut node_module: std::collections::HashMap<NodeId, String> = std::collections::HashMap::new();
+    let mut node_module: std::collections::HashMap<NodeId, String> =
+        std::collections::HashMap::new();
     for module in &graph.modules {
         for nid in &module.node_ids {
             // 先到先得：graph.modules 按深度 3→1 排列（检测时深度从大到小推进），
             // 子模块先写入 → 实体归属最深的模块；父模块（src 兜底）后处理时
             // entry 已存在则跳过，避免父模块把子模块实体全部覆盖、
             // 导致跨模块调用全部被判定为"同模块调用"而被跳过（模块图恒空的根因）
-            node_module.entry(*nid).or_insert_with(|| module.name.clone());
+            node_module
+                .entry(*nid)
+                .or_insert_with(|| module.name.clone());
         }
     }
 
     // 跨模块 Calls 边按 (源模块, 目标模块) 聚合计数
-    let mut edge_counts: std::collections::HashMap<(String, String), usize> = std::collections::HashMap::new();
+    let mut edge_counts: std::collections::HashMap<(String, String), usize> =
+        std::collections::HashMap::new();
     for edge in graph.graph.edge_references() {
         if graph.graph[edge.id()].kind != EdgeKind::Calls {
             continue;
         }
-        let (Some(src), Some(tgt)) = (node_module.get(&edge.source()), node_module.get(&edge.target())) else {
+        let (Some(src), Some(tgt)) = (
+            node_module.get(&edge.source()),
+            node_module.get(&edge.target()),
+        ) else {
             continue;
         };
         if src == tgt {
@@ -140,7 +146,12 @@ pub fn render_module_call_graph(graph: &KnowledgeGraph) -> String {
         output.push_str(&format!("    {}[\"{}\"]\n", sanitize_id(name), name));
     }
     for ((src, tgt), count) in &sorted_edges {
-        output.push_str(&format!("    {} -->|{}| {}\n", sanitize_id(src), count, sanitize_id(tgt)));
+        output.push_str(&format!(
+            "    {} -->|{}| {}\n",
+            sanitize_id(src),
+            count,
+            sanitize_id(tgt)
+        ));
     }
     output
 }
@@ -148,7 +159,9 @@ pub fn render_module_call_graph(graph: &KnowledgeGraph) -> String {
 fn module_name(module_path: &[String]) -> String {
     // 返回完整模块路径，用 :: 连接
     // 修复：之前只返回第一段，导致深层模块被错误合并
-    if module_path.is_empty() { return String::new(); }
+    if module_path.is_empty() {
+        return String::new();
+    }
     module_path.join("::")
 }
 
@@ -169,8 +182,8 @@ fn sanitize_id(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use petgraph::stable_graph::StableDiGraph;
     use crate::model::{CodeEdge, CodeNode, NodeKind};
+    use petgraph::stable_graph::StableDiGraph;
 
     fn make_test_graph() -> KnowledgeGraph {
         let mut g = StableDiGraph::<CodeNode, CodeEdge>::new();
@@ -182,7 +195,8 @@ mod tests {
             file_path: None,
             line_range: None,
             doc_comment: None,
-            signature: None, visibility: None,
+            signature: None,
+            visibility: None,
             module_path: vec!["core".into()],
         });
 
@@ -193,7 +207,8 @@ mod tests {
             file_path: None,
             line_range: None,
             doc_comment: None,
-            signature: None, visibility: None,
+            signature: None,
+            visibility: None,
             module_path: vec!["net".into()],
         });
 
@@ -246,7 +261,8 @@ mod tests {
                 file_path: None,
                 line_range: None,
                 doc_comment: None,
-                signature: None, visibility: None,
+                signature: None,
+                visibility: None,
                 module_path: vec![module.into()],
             })
         };

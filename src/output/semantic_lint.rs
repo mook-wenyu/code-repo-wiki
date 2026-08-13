@@ -16,7 +16,6 @@
 
 use anyhow::Result;
 
-
 use crate::config::schema::WikiConfig;
 use crate::generate::llm::{LlmProvider, Message};
 use crate::model::WikiDocument;
@@ -54,17 +53,26 @@ pub fn check_semantic_consistency(
         evidence.push_str(&format!(
             "### 页面 {}\n{}\n",
             doc.title,
-            doc.content.chars().take(PAGE_EVIDENCE_LIMIT).collect::<String>()
+            doc.content
+                .chars()
+                .take(PAGE_EVIDENCE_LIMIT)
+                .collect::<String>()
         ));
     }
     let api_path = crate::output::api_doc_path(config.output_dir(), &config.wiki.language);
     if let Ok(api_content) = std::fs::read_to_string(&api_path) {
         evidence.push_str(&format!(
             "### api.md 权威清单\n{}\n",
-            api_content.chars().take(API_EVIDENCE_LIMIT).collect::<String>()
+            api_content
+                .chars()
+                .take(API_EVIDENCE_LIMIT)
+                .collect::<String>()
         ));
     }
-    let evidence = evidence.chars().take(TOTAL_EVIDENCE_LIMIT).collect::<String>();
+    let evidence = evidence
+        .chars()
+        .take(TOTAL_EVIDENCE_LIMIT)
+        .collect::<String>();
 
     // 3. 单次 LLM 调用（合并多页，成本≈一次生成调用）
     let messages = semantic_conflict_prompt(&config.wiki.language, &evidence);
@@ -89,10 +97,7 @@ fn semantic_conflict_prompt(lang: &str, evidence: &str) -> Vec<Message> {
 示例：
 {{"conflicts": [{{"page": "src::net", "claim": "模块已废弃", "conflict": "api.md 仍列为核心模块"}}]}}"#
     );
-    vec![
-        Message::system(system),
-        Message::user(evidence.to_string()),
-    ]
+    vec![Message::system(system), Message::user(evidence.to_string())]
 }
 
 /// 解析矛盾清单（围栏剥离 + conflicts 键；非 JSON/缺键 → 空清单，
@@ -115,7 +120,11 @@ fn parse_conflicts(content: &str) -> Vec<LintIssue> {
         .filter_map(|item| {
             let page = item.get("page")?.as_str()?.to_string();
             let claim = item.get("claim")?.as_str()?.to_string();
-            let conflict = item.get("conflict").and_then(|c| c.as_str()).unwrap_or("").to_string();
+            let conflict = item
+                .get("conflict")
+                .and_then(|c| c.as_str())
+                .unwrap_or("")
+                .to_string();
             Some(LintIssue {
                 kind: "semantic-conflict",
                 path: format!("wiki/{}", page),
@@ -141,9 +150,15 @@ mod tests {
         assert!(issues[0].path.contains("src::net"));
         assert!(issues[0].message.contains("模块已废弃"));
 
-        assert!(parse_conflicts(r#"{"conflicts": []}"#).is_empty(), "无矛盾应返回空");
+        assert!(
+            parse_conflicts(r#"{"conflicts": []}"#).is_empty(),
+            "无矛盾应返回空"
+        );
         assert!(parse_conflicts("not json").is_empty(), "非 JSON 应降级为空");
-        assert!(parse_conflicts(r#"{"other": 1}"#).is_empty(), "缺 conflicts 键应返回空");
+        assert!(
+            parse_conflicts(r#"{"other": 1}"#).is_empty(),
+            "缺 conflicts 键应返回空"
+        );
     }
 
     /// 空输入短路：无受影响页时零 LLM 调用

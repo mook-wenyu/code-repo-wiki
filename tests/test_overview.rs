@@ -48,16 +48,21 @@ fn generate_overview_doc(config: &WikiConfig) -> WikiDocument {
         timings: Default::default(),
     };
     // 临时根目录（产物输出目录由 config 控制，root 仅用于描述缓存指纹）
-    let root = code_repo_wiki::project::ProjectRoot::new(
-        std::env::temp_dir().join(format!("code_repo_wiki_test_overview_root_{}", std::process::id())),
-    );
-    futures::executor::block_on(generator.generate_overview(&output, &graph, config, &root)).unwrap()
+    let root = code_repo_wiki::project::ProjectRoot::new(std::env::temp_dir().join(format!(
+        "code_repo_wiki_test_overview_root_{}",
+        std::process::id()
+    )));
+    futures::executor::block_on(generator.generate_overview(&output, &graph, config, &root))
+        .unwrap()
 }
 
 /// overview 内容来自 overview prompt（mock LLM 输出）而非第一个模块页
 #[test]
 fn test_overview_independent() {
-    let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_overview_indep_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "code_repo_wiki_test_overview_indep_{}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     let config = make_config(&dir);
 
@@ -93,7 +98,10 @@ fn test_overview_independent() {
 /// overview 受 doc_fingerprints 保护：人工修改后 update（带保护集重渲染）不覆盖
 #[test]
 fn test_overview_protected() {
-    let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_overview_prot_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "code_repo_wiki_test_overview_prot_{}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     let config = make_config(&dir);
 
@@ -114,7 +122,13 @@ fn test_overview_protected() {
 
     // 记录生成指纹（与 update 流程一致：render_all 后 record_doc_fingerprints）
     let languages = vec!["zh".to_string()];
-    let (fps, _modules) = GenerationState::record_doc_fingerprints(&[module_doc.clone(), overview], &[], &dir, &languages).unwrap();
+    let (fps, _modules) = GenerationState::record_doc_fingerprints(
+        &[module_doc.clone(), overview],
+        &[],
+        &dir,
+        &languages,
+    )
+    .unwrap();
     assert!(fps.contains_key(&path_str), "overview 指纹应被记录");
     let mut doc_fingerprints = HashMap::new();
     doc_fingerprints.extend(fps);
@@ -158,7 +172,10 @@ fn test_overview_protected() {
 fn test_overview_module_refs_match_write_path() {
     use code_repo_wiki::model::KnowledgeCard;
 
-    let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_overview_refs_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "code_repo_wiki_test_overview_refs_{}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     let config = make_config(&dir);
 
@@ -176,7 +193,9 @@ fn test_overview_module_refs_match_write_path() {
         coding_spec: None,
         tech_stack: vec![],
         architecture: None,
-        pending_manual_edits: vec![],        features: Vec::new(),    };
+        pending_manual_edits: vec![],
+        features: Vec::new(),
+    };
 
     let card2 = KnowledgeCard {
         module_name: "src::http".into(),
@@ -191,8 +210,9 @@ fn test_overview_module_refs_match_write_path() {
         coding_spec: None,
         tech_stack: vec![],
         architecture: None,
-        pending_manual_edits: vec![],        features: Vec::new(),    };
-
+        pending_manual_edits: vec![],
+        features: Vec::new(),
+    };
 
     let provider = MockProvider::new();
     let generator = WikiGenerator::new(&provider, 0);
@@ -207,15 +227,20 @@ fn test_overview_module_refs_match_write_path() {
         &output,
         &graph,
         &config,
-        &code_repo_wiki::project::ProjectRoot::new(
-            std::env::temp_dir().join(format!("code_repo_wiki_test_overview_root2_{}", std::process::id())),
-        ),
+        &code_repo_wiki::project::ProjectRoot::new(std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_overview_root2_{}",
+            std::process::id()
+        ))),
     ))
     .unwrap();
 
     // 每个引用 target_path = wiki/zh/<module.replace("::","_")>.md(与写盘一致)
     assert_eq!(overview.references.len(), 2, "应生成 2 个模块引用");
-    let paths: Vec<&str> = overview.references.iter().map(|r| r.target_path.as_str()).collect();
+    let paths: Vec<&str> = overview
+        .references
+        .iter()
+        .map(|r| r.target_path.as_str())
+        .collect();
     assert!(
         paths.contains(&"wiki/zh/src_net.md"),
         "src::net 引用应为 wiki/zh/src_net.md, 实际: {paths:?}"

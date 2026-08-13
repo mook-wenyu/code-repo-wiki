@@ -1,10 +1,10 @@
+pub mod parser;
 /// 扫描与解析层（单进程契约：insights_cache.json 无文件锁，
 /// 同一输出目录并发运行不被支持，见 README 限制项）
 pub mod scanner;
-pub mod parser;
 
-use anyhow::Result;
 use crate::project::ProjectRoot;
+use anyhow::Result;
 use parser::{FileInsight, ParserRegistry};
 
 /// 扫描结果：成功解析的文件 + 解析失败文件数（B5：失败可观测，
@@ -78,7 +78,11 @@ pub fn scan_and_parse_cached_at(
         };
         // 读取用绝对路径（相对路径依赖 cwd，--root 与 cwd 分离时会读错文件）；
         // insight.path 保持相对路径（下游模块名派生/指纹记录的既定基准）
-        let abs = if file.is_absolute() { file.clone() } else { root.path().join(file) };
+        let abs = if file.is_absolute() {
+            file.clone()
+        } else {
+            root.path().join(file)
+        };
         let source = match std::fs::read_to_string(&abs) {
             Ok(s) => s,
             Err(e) => {
@@ -92,12 +96,10 @@ pub fn scan_and_parse_cached_at(
         let fingerprint = fingerprint_of(&source);
         let key = file.to_string_lossy().to_string();
         let cached = cache.get(&key);
-        let use_cache = !changed_files.contains(file)
-            && cached.is_some_and(|c| c.fingerprint == fingerprint);
+        let use_cache =
+            !changed_files.contains(file) && cached.is_some_and(|c| c.fingerprint == fingerprint);
         // 缓存命中直接复用（指纹一致且不在变更集内）
-        if use_cache
-            && let Some(c) = cached
-        {
+        if use_cache && let Some(c) = cached {
             insights.push(c.insight.clone());
             reused += 1;
             continue;
@@ -142,7 +144,10 @@ pub fn scan_and_parse_cached_at(
         reused,
         files_failed
     );
-    Ok(ScanOutput { insights, files_failed })
+    Ok(ScanOutput {
+        insights,
+        files_failed,
+    })
 }
 
 /// 解析缓存条目：路径（相对项目根，与 insight.path 同形态）+ 内容指纹 + 解析结果
@@ -154,7 +159,9 @@ pub struct CachedInsight {
 }
 
 /// 读取解析缓存（路径为 None 返回空缓存；文件缺失/损坏返回空缓存并告警）
-fn load_insights_cache(cache_path: &Option<std::path::PathBuf>) -> std::collections::HashMap<String, CachedInsight> {
+fn load_insights_cache(
+    cache_path: &Option<std::path::PathBuf>,
+) -> std::collections::HashMap<String, CachedInsight> {
     let Some(path) = cache_path else {
         return std::collections::HashMap::new();
     };
@@ -177,7 +184,10 @@ fn load_insights_cache(cache_path: &Option<std::path::PathBuf>) -> std::collecti
 }
 
 /// 写回解析缓存（按路径排序保证确定性；版本演进时旧格式自然读失败 → 全量重建）
-fn save_insights_cache(cache_path: &std::path::Path, cache: &std::collections::HashMap<String, CachedInsight>) -> Result<()> {
+fn save_insights_cache(
+    cache_path: &std::path::Path,
+    cache: &std::collections::HashMap<String, CachedInsight>,
+) -> Result<()> {
     if let Some(parent) = cache_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -203,7 +213,11 @@ mod tests {
 
     /// 构造临时项目根：src/a.rs + src/b.rs
     fn temp_project(tag: &str) -> ProjectRoot {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_cache_{}_{}", tag, std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_cache_{}_{}",
+            tag,
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(dir.join("src").join("a.rs"), "pub fn alpha() {}\n").unwrap();
@@ -220,7 +234,9 @@ mod tests {
     fn test_cached_scan_writes_cache_file() {
         let root = temp_project("write");
         let cp = Some(cache_path(&root));
-        let insights = scan_and_parse_cached_at(&root, &cp, &std::collections::HashSet::new()).unwrap().insights;
+        let insights = scan_and_parse_cached_at(&root, &cp, &std::collections::HashSet::new())
+            .unwrap()
+            .insights;
         assert_eq!(insights.len(), 2, "两个 .rs 文件都应解析");
 
         let content = std::fs::read_to_string(cache_path(&root)).unwrap();
@@ -235,20 +251,43 @@ mod tests {
     fn test_cached_scan_reparses_on_fingerprint_change() {
         let root = temp_project("invalidate");
         let cp = Some(cache_path(&root));
-        let first = scan_and_parse_cached_at(&root, &cp, &std::collections::HashSet::new()).unwrap().insights;
-        let alpha_source = first.iter().find(|i| i.path.ends_with("a.rs")).unwrap().source.clone();
+        let first = scan_and_parse_cached_at(&root, &cp, &std::collections::HashSet::new())
+            .unwrap()
+            .insights;
+        let alpha_source = first
+            .iter()
+            .find(|i| i.path.ends_with("a.rs"))
+            .unwrap()
+            .source
+            .clone();
         assert!(alpha_source.contains("alpha"), "初始内容含 alpha");
 
         // 修改 a.rs 内容（新函数 alpha_v2）
-        std::fs::write(root.path().join("src").join("a.rs"), "pub fn alpha_v2() {}\n").unwrap();
-        let second = scan_and_parse_cached_at(&root, &cp, &std::collections::HashSet::new()).unwrap().insights;
-        let alpha2_source = second.iter().find(|i| i.path.ends_with("a.rs")).unwrap().source.clone();
+        std::fs::write(
+            root.path().join("src").join("a.rs"),
+            "pub fn alpha_v2() {}\n",
+        )
+        .unwrap();
+        let second = scan_and_parse_cached_at(&root, &cp, &std::collections::HashSet::new())
+            .unwrap()
+            .insights;
+        let alpha2_source = second
+            .iter()
+            .find(|i| i.path.ends_with("a.rs"))
+            .unwrap()
+            .source
+            .clone();
         assert!(
             alpha2_source.contains("alpha_v2") && !alpha2_source.contains("alpha()"),
             "指纹变化后应重解析出新内容, 实际: {alpha2_source}"
         );
         // b.rs 未变化：缓存命中（复用路径——source 仍为初始内容）
-        let beta_source = second.iter().find(|i| i.path.ends_with("b.rs")).unwrap().source.clone();
+        let beta_source = second
+            .iter()
+            .find(|i| i.path.ends_with("b.rs"))
+            .unwrap()
+            .source
+            .clone();
         assert!(beta_source.contains("beta"), "未变更文件应正常复用");
 
         let _ = std::fs::remove_dir_all(root.path());
@@ -263,7 +302,9 @@ mod tests {
         scan_and_parse_cached_at(&root, &cp, &std::collections::HashSet::new()).unwrap();
         std::fs::write(cache_path(&root), "{ 垃圾内容").unwrap();
 
-        let insights = scan_and_parse_cached_at(&root, &cp, &std::collections::HashSet::new()).unwrap().insights;
+        let insights = scan_and_parse_cached_at(&root, &cp, &std::collections::HashSet::new())
+            .unwrap()
+            .insights;
         assert_eq!(insights.len(), 2, "损坏缓存应触发全量重建而非失败");
         assert!(insights.iter().any(|i| i.source.contains("alpha")));
 
@@ -274,9 +315,14 @@ mod tests {
     #[test]
     fn test_cached_scan_without_cache_path() {
         let root = temp_project("nocache");
-        let insights = scan_and_parse_cached_at(&root, &None, &std::collections::HashSet::new()).unwrap().insights;
+        let insights = scan_and_parse_cached_at(&root, &None, &std::collections::HashSet::new())
+            .unwrap()
+            .insights;
         assert_eq!(insights.len(), 2);
-        assert!(!root.path().join(".state").exists(), "无缓存路径时不应创建 .state 目录");
+        assert!(
+            !root.path().join(".state").exists(),
+            "无缓存路径时不应创建 .state 目录"
+        );
         let _ = std::fs::remove_dir_all(root.path());
     }
 
@@ -290,7 +336,9 @@ mod tests {
 
         let mut changed = std::collections::HashSet::new();
         changed.insert(PathBuf::from("src/a.rs"));
-        let insights = scan_and_parse_cached_at(&root, &cp, &changed).unwrap().insights;
+        let insights = scan_and_parse_cached_at(&root, &cp, &changed)
+            .unwrap()
+            .insights;
         assert_eq!(insights.len(), 2, "强制重解析不改变结果集合");
         let _ = std::fs::remove_dir_all(root.path());
     }
@@ -299,7 +347,8 @@ mod tests {
     /// files_failed 应准确计数（此前失败仅日志可见，统计无法反映）
     #[test]
     fn test_scan_counts_failed_files() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_failed_cnt_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("code_repo_wiki_failed_cnt_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).unwrap();
         // 正常文件

@@ -43,7 +43,8 @@ fn shared_engine() -> &'static merman_core::Engine {
 pub fn validate_mermaid_blocks(content: &str) -> Vec<MermaidIssue> {
     let mut issues = Vec::new();
     for (idx, block) in extract_mermaid_blocks(content).iter().enumerate() {
-        if let Err(e) = shared_engine().parse_diagram_sync(block, merman_core::ParseOptions::strict())
+        if let Err(e) =
+            shared_engine().parse_diagram_sync(block, merman_core::ParseOptions::strict())
         {
             issues.push(MermaidIssue {
                 block_index: idx,
@@ -267,7 +268,11 @@ mod tests {
         let content = "```mermaid\nflowchart LR\nA[hello world\nB --> C\n```\n";
         let issues = validate_mermaid_blocks(content);
         assert_eq!(issues.len(), 1, "应识别出 1 个坏块");
-        assert!(issues[0].message.contains("Unterminated"), "错误消息应可读: {}", issues[0].message);
+        assert!(
+            issues[0].message.contains("Unterminated"),
+            "错误消息应可读: {}",
+            issues[0].message
+        );
     }
 
     #[test]
@@ -291,20 +296,31 @@ mod tests {
         let content = "```mermaid\nflowchart LR\nA[hello world\n";
         let issues = validate_mermaid_blocks(content);
         assert_eq!(issues.len(), 1, "未闭合围栏应作为坏块报出");
-        assert!(issues[0].message.contains("Unterminated"), "错误消息应可读: {}", issues[0].message);
+        assert!(
+            issues[0].message.contains("Unterminated"),
+            "错误消息应可读: {}",
+            issues[0].message
+        );
     }
 
     #[test]
     fn test_degrade_replaces_only_bad_block() {
-        let content = "```mermaid\nflowchart LR\nA[bad\n```\n\n```mermaid\nflowchart LR\nA[OK] --> B\n```\n";
+        let content =
+            "```mermaid\nflowchart LR\nA[bad\n```\n\n```mermaid\nflowchart LR\nA[OK] --> B\n```\n";
         let issues = validate_mermaid_blocks(content);
         let degraded = degrade_mermaid_blocks(content, &issues);
         // 坏块被降级为 text + 注释
         assert!(degraded.contains("```text"), "坏块应降级为 text fence");
-        assert!(degraded.contains("code-repo-wiki: mermaid parse failed"), "应含降级注释");
+        assert!(
+            degraded.contains("code-repo-wiki: mermaid parse failed"),
+            "应含降级注释"
+        );
         assert!(degraded.contains("Unterminated"), "注释应含错误消息");
         // 好块保留原样
-        assert!(degraded.contains("```mermaid\nflowchart LR\nA[OK] --> B\n```"), "好块应保留");
+        assert!(
+            degraded.contains("```mermaid\nflowchart LR\nA[OK] --> B\n```"),
+            "好块应保留"
+        );
         // 坏图原始内容仍在（信息不丢失）
         assert!(degraded.contains("A[bad"), "坏块内容应保留");
     }
@@ -321,11 +337,27 @@ mod tests {
     fn test_degrade_skips_empty_block_in_indexing() {
         let content = "```mermaid\nthis is broken!!!\n```\n\n```mermaid\n```\n\n```mermaid\nalso broken!!!\n```\n";
         let issues = validate_mermaid_blocks(content);
-        assert_eq!(issues.len(), 2, "空块跳过，两个坏块报出: {:?}", issues.iter().map(|i| i.block_index).collect::<Vec<_>>());
+        assert_eq!(
+            issues.len(),
+            2,
+            "空块跳过，两个坏块报出: {:?}",
+            issues.iter().map(|i| i.block_index).collect::<Vec<_>>()
+        );
         let degraded = degrade_mermaid_blocks(content, &issues);
-        assert_eq!(degraded.matches("mermaid parse failed").count(), 2, "两个坏块都应降级: {}", degraded);
-        assert!(degraded.contains("also broken!!!"), "坏块内容保留（信息不丢失）");
-        assert!(!degraded.contains("```mermaid\nalso broken"), "第二个坏块不得残留 mermaid 围栏");
+        assert_eq!(
+            degraded.matches("mermaid parse failed").count(),
+            2,
+            "两个坏块都应降级: {}",
+            degraded
+        );
+        assert!(
+            degraded.contains("also broken!!!"),
+            "坏块内容保留（信息不丢失）"
+        );
+        assert!(
+            !degraded.contains("```mermaid\nalso broken"),
+            "第二个坏块不得残留 mermaid 围栏"
+        );
     }
 
     #[test]
@@ -345,49 +377,61 @@ mod tests {
     }
 }
 
-    /// U04/D6 防回归：未闭合围栏的坏块降级后必须产出闭合的 ```text 围栏
-    ///（此前只补注释与 ```text 开头，文末缺闭合 → 整页结构损坏）
-    #[test]
-    fn test_degrade_unclosed_fence_closes_fence() {
-        let content = "```mermaid\nflowchart LR\nA[hello world\n";
-        let issues = validate_mermaid_blocks(content);
-        assert_eq!(issues.len(), 1, "未闭合围栏应作为坏块报出");
-        let degraded = degrade_mermaid_blocks(content, &issues);
-        assert!(degraded.contains("```text"), "应降级为 text fence");
-        assert!(degraded.contains("code-repo-wiki: mermaid parse failed"), "应含降级注释");
-        // 围栏闭合性：恰好 1 对围栏（开+闭），且以闭合围栏结尾
-        let fence_count = degraded.matches("```").count();
-        assert_eq!(fence_count, 2, "应恰好 1 对围栏（开+闭），实际: {degraded}");
-        assert!(degraded.ends_with("```\n"), "降级产物应以闭合围栏结尾, 实际: {degraded}");
-    }
+/// U04/D6 防回归：未闭合围栏的坏块降级后必须产出闭合的 ```text 围栏
+///（此前只补注释与 ```text 开头，文末缺闭合 → 整页结构损坏）
+#[test]
+fn test_degrade_unclosed_fence_closes_fence() {
+    let content = "```mermaid\nflowchart LR\nA[hello world\n";
+    let issues = validate_mermaid_blocks(content);
+    assert_eq!(issues.len(), 1, "未闭合围栏应作为坏块报出");
+    let degraded = degrade_mermaid_blocks(content, &issues);
+    assert!(degraded.contains("```text"), "应降级为 text fence");
+    assert!(
+        degraded.contains("code-repo-wiki: mermaid parse failed"),
+        "应含降级注释"
+    );
+    // 围栏闭合性：恰好 1 对围栏（开+闭），且以闭合围栏结尾
+    let fence_count = degraded.matches("```").count();
+    assert_eq!(fence_count, 2, "应恰好 1 对围栏（开+闭），实际: {degraded}");
+    assert!(
+        degraded.ends_with("```\n"),
+        "降级产物应以闭合围栏结尾, 实际: {degraded}"
+    );
+}
 
-    /// U04/P3：```mermaidx 前缀不应被当作 mermaid 块（围栏语言精确匹配）
-    #[test]
-    fn test_validate_ignores_mermaidx_prefix() {
-        let content = "```mermaidx\nflowchart LR\nA --> B\n```\n";
-        assert!(validate_mermaid_blocks(content).is_empty(), "mermaidx 不是 mermaid 块");
-    }
+/// U04/P3：```mermaidx 前缀不应被当作 mermaid 块（围栏语言精确匹配）
+#[test]
+fn test_validate_ignores_mermaidx_prefix() {
+    let content = "```mermaidx\nflowchart LR\nA --> B\n```\n";
+    assert!(
+        validate_mermaid_blocks(content).is_empty(),
+        "mermaidx 不是 mermaid 块"
+    );
+}
 
-    /// U04/P3：```MERMAID 大写形式应被识别为 mermaid 块（大小写不敏感）
-    #[test]
-    fn test_validate_case_insensitive_fence() {
-        let content = "```MERMAID\nflowchart LR\nA[unterminated\n```\n";
-        let issues = validate_mermaid_blocks(content);
-        assert_eq!(issues.len(), 1, "大写 MERMAID 围栏应被识别");
-    }
+/// U04/P3：```MERMAID 大写形式应被识别为 mermaid 块（大小写不敏感）
+#[test]
+fn test_validate_case_insensitive_fence() {
+    let content = "```MERMAID\nflowchart LR\nA[unterminated\n```\n";
+    let issues = validate_mermaid_blocks(content);
+    assert_eq!(issues.len(), 1, "大写 MERMAID 围栏应被识别");
+}
 
-    /// U04/P3：嵌套示例（```text 内含 ```mermaid）不应误报为 mermaid 块
-    #[test]
-    fn test_validate_skips_nested_example_fence() {
-        let content = "```text\n示例:\n```mermaid\nflowchart LR\nA --> B\n```\n```\n";
-        assert!(validate_mermaid_blocks(content).is_empty(), "text 块内的 mermaid 示例不应被当作真实 mermaid 块");
-    }
+/// U04/P3：嵌套示例（```text 内含 ```mermaid）不应误报为 mermaid 块
+#[test]
+fn test_validate_skips_nested_example_fence() {
+    let content = "```text\n示例:\n```mermaid\nflowchart LR\nA --> B\n```\n```\n";
+    assert!(
+        validate_mermaid_blocks(content).is_empty(),
+        "text 块内的 mermaid 示例不应被当作真实 mermaid 块"
+    );
+}
 
-    /// U04/P3：降级注释中的 `-->` 不得提前终止 HTML 注释（替换为 -→）
-    #[test]
-    fn test_sanitize_message_escapes_comment_terminator() {
-        let msg = "unexpected token '-->' at line 1";
-        let cleaned = sanitize_message(msg);
-        assert!(!cleaned.contains("-->"), "--> 应被替换, 实际: {cleaned}");
-        assert!(cleaned.contains("-→"), "应含替换后的 -→, 实际: {cleaned}");
-    }
+/// U04/P3：降级注释中的 `-->` 不得提前终止 HTML 注释（替换为 -→）
+#[test]
+fn test_sanitize_message_escapes_comment_terminator() {
+    let msg = "unexpected token '-->' at line 1";
+    let cleaned = sanitize_message(msg);
+    assert!(!cleaned.contains("-->"), "--> 应被替换, 实际: {cleaned}");
+    assert!(cleaned.contains("-→"), "应含替换后的 -→, 实际: {cleaned}");
+}

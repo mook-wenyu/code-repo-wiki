@@ -12,9 +12,9 @@
 //! 区域，错误信息会退化为「PID 未知」——断言只依赖「正在运行」。
 
 mod common;
-use common::{mock_llm_server, openai_compatible_config, run_bin_with_envs, unique_dir};
 use code_repo_wiki::config::schema::WikiConfig;
 use code_repo_wiki::fs::acquire_run_lock;
+use common::{mock_llm_server, openai_compatible_config, run_bin_with_envs, unique_dir};
 use std::path::Path;
 
 /// 复制 fixture 并写入指向 mock LLM 的 mock-server.toml，返回工作目录
@@ -51,7 +51,13 @@ fn test_card_rejected_while_locked() {
 
     let out = run_bin_with_envs(
         &work_dir,
-        &["card", "generate", "src::config", "--config", "mock-server.toml"],
+        &[
+            "card",
+            "generate",
+            "src::config",
+            "--config",
+            "mock-server.toml",
+        ],
         &[],
     );
     let combined = format!(
@@ -87,8 +93,11 @@ fn test_card_skip_if_locked_exits_zero() {
     let out = run_bin_with_envs(
         &work_dir,
         &[
-            "card", "generate", "src::config",
-            "--config", "mock-server.toml",
+            "card",
+            "generate",
+            "src::config",
+            "--config",
+            "mock-server.toml",
             "--skip-if-locked",
         ],
         &[],

@@ -57,7 +57,10 @@ pub struct OpencodeMcp {
 impl OpencodeMcp {
     /// 用户级 opencode 配置路径（`~/.config/opencode/opencode.json`）
     pub fn global_path() -> Result<PathBuf> {
-        Ok(user_home()?.join(".config").join("opencode").join("opencode.json"))
+        Ok(user_home()?
+            .join(".config")
+            .join("opencode")
+            .join("opencode.json"))
     }
 
     /// 注册/更新 MCP server；返回是否实际变更
@@ -115,7 +118,12 @@ impl OpencodeMcp {
             .or_insert_with(|| serde_json::Value::Object(Default::default()));
         mcp_block
             .as_object_mut()
-            .with_context(|| format!("opencode.json 的 mcp 键应为对象: {}", self.config_path.display()))?
+            .with_context(|| {
+                format!(
+                    "opencode.json 的 mcp 键应为对象: {}",
+                    self.config_path.display()
+                )
+            })?
             .insert(server.to_string(), entry);
 
         let output = serde_json::to_string_pretty(&value).context("序列化 opencode 配置失败")?;
@@ -205,12 +213,7 @@ impl ClaudeMcp {
     /// - 本 server 存在且 command+args 一致 → `false`
     /// - 本 server 存在但命令不同 → 更新（升级）
     /// - OAuth 会话与其他 server 条目原样保留
-    pub fn install(
-        &self,
-        server: &str,
-        command: &str,
-        args: &[String],
-    ) -> Result<bool> {
+    pub fn install(&self, server: &str, command: &str, args: &[String]) -> Result<bool> {
         // v52 T08a：.claude.json 承载 OAuth 会话——非 NotFound 读失败（权限/占用/损坏）
         // 不得静默当空对象后原子覆盖（与 opencode.json 同语义，见 OpencodeMcp::install）
         let content = match std::fs::read_to_string(&self.path) {
@@ -244,7 +247,9 @@ impl ClaudeMcp {
                         .and_then(|v| v.get("args"))
                         .and_then(|v| v.as_array())
                         .is_some_and(|a| {
-                            a.iter().filter_map(|v| v.as_str()).eq(args.iter().map(String::as_str))
+                            a.iter()
+                                .filter_map(|v| v.as_str())
+                                .eq(args.iter().map(String::as_str))
                         })
             });
         if unchanged {
@@ -262,7 +267,12 @@ impl ClaudeMcp {
             .or_insert_with(|| serde_json::Value::Object(Default::default()));
         servers
             .as_object_mut()
-            .with_context(|| format!("Claude 用户配置的 mcpServers 键应为对象: {}", self.path.display()))?
+            .with_context(|| {
+                format!(
+                    "Claude 用户配置的 mcpServers 键应为对象: {}",
+                    self.path.display()
+                )
+            })?
             .insert(server.to_string(), entry);
 
         let output = serde_json::to_string_pretty(&value).context("序列化 Claude 用户配置失败")?;
@@ -284,8 +294,12 @@ impl ClaudeMcp {
         }
         let content = std::fs::read_to_string(&self.path)
             .with_context(|| format!("读取 Claude 用户配置失败: {}", self.path.display()))?;
-        let mut value: serde_json::Value = serde_json::from_str(&content)
-            .with_context(|| format!("解析 Claude 用户配置失败（拒绝静默跳过）: {}", self.path.display()))?;
+        let mut value: serde_json::Value = serde_json::from_str(&content).with_context(|| {
+            format!(
+                "解析 Claude 用户配置失败（拒绝静默跳过）: {}",
+                self.path.display()
+            )
+        })?;
 
         let removed = {
             let servers = value.get_mut("mcpServers").and_then(|v| v.as_object_mut());
@@ -299,7 +313,8 @@ impl ClaudeMcp {
         }
         write_file_atomic(&self.path, &serde_json::to_string_pretty(&value)?)?;
         Ok(true)
-    }}
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Codex CLI（用户级 `~/.codex/config.toml` 的 `[mcp_servers.<name>]` 表）
@@ -502,7 +517,10 @@ mod tests {
     /// 独立临时目录（防并行测试冲突），返回目录路径
     fn temp_dir(tag: &str) -> PathBuf {
         let id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("code-repo-wiki-mcp-test-{tag}-{}-{id}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code-repo-wiki-mcp-test-{tag}-{}-{id}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("创建临时目录失败");
         dir
@@ -518,10 +536,13 @@ mod tests {
     fn opencode_install_creates_mcp_block() {
         let dir = temp_dir("oc-create");
         let path = dir.join("opencode.json");
-        let mcp = OpencodeMcp { config_path: path.clone() };
+        let mcp = OpencodeMcp {
+            config_path: path.clone(),
+        };
         let cmd = vec!["/usr/bin/code-repo-wiki".to_string(), "mcp".to_string()];
         assert!(mcp.install("code-repo-wiki", &cmd).unwrap());
-        let parsed: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let entry = &parsed["mcp"]["code-repo-wiki"];
         assert_eq!(entry["type"], "local");
         assert_eq!(entry["command"][0], "/usr/bin/code-repo-wiki");
@@ -533,7 +554,9 @@ mod tests {
     fn opencode_install_idempotent_skips_unchanged() {
         let dir = temp_dir("oc-idem");
         let path = dir.join("opencode.json");
-        let mcp = OpencodeMcp { config_path: path.clone() };
+        let mcp = OpencodeMcp {
+            config_path: path.clone(),
+        };
         let cmd = vec!["code-repo-wiki".to_string(), "mcp".to_string()];
         assert!(mcp.install("code-repo-wiki", &cmd).unwrap());
         assert!(!mcp.install("code-repo-wiki", &cmd).unwrap());
@@ -543,23 +566,36 @@ mod tests {
     fn opencode_install_upgrades_changed_command() {
         let dir = temp_dir("oc-upgrade");
         let path = dir.join("opencode.json");
-        let mcp = OpencodeMcp { config_path: path.clone() };
+        let mcp = OpencodeMcp {
+            config_path: path.clone(),
+        };
         let old = vec!["/old/code-repo-wiki".to_string(), "mcp".to_string()];
         let new = vec!["/new/code-repo-wiki".to_string(), "mcp".to_string()];
         assert!(mcp.install("code-repo-wiki", &old).unwrap());
         assert!(mcp.install("code-repo-wiki", &new).unwrap());
-        let parsed: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(parsed["mcp"]["code-repo-wiki"]["command"][0], "/new/code-repo-wiki");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            parsed["mcp"]["code-repo-wiki"]["command"][0],
+            "/new/code-repo-wiki"
+        );
     }
 
     #[test]
     fn opencode_install_preserves_other_servers() {
         let dir = temp_dir("oc-preserve");
         let path = dir.join("opencode.json");
-        write(&path, r#"{"mcp": {"other": {"type": "local", "command": ["npx", "x"]}}}"#);
-        let mcp = OpencodeMcp { config_path: path.clone() };
-        mcp.install("code-repo-wiki", &["rw".to_string(), "mcp".to_string()]).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        write(
+            &path,
+            r#"{"mcp": {"other": {"type": "local", "command": ["npx", "x"]}}}"#,
+        );
+        let mcp = OpencodeMcp {
+            config_path: path.clone(),
+        };
+        mcp.install("code-repo-wiki", &["rw".to_string(), "mcp".to_string()])
+            .unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(parsed["mcp"]["other"].is_object());
         assert!(parsed["mcp"]["code-repo-wiki"].is_object());
     }
@@ -569,7 +605,9 @@ mod tests {
         let dir = temp_dir("oc-malformed");
         let path = dir.join("opencode.json");
         write(&path, "[1, 2, 3]");
-        let mcp = OpencodeMcp { config_path: path.clone() };
+        let mcp = OpencodeMcp {
+            config_path: path.clone(),
+        };
         assert!(mcp.install("code-repo-wiki", &["x".to_string()]).is_err());
     }
 
@@ -580,9 +618,16 @@ mod tests {
         // config_path 指向目录：read_to_string 对目录必然 Err（Windows 权限模拟不可靠）
         let dir = std::env::temp_dir().join(format!("rw_mcp_unreadable_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let cfg = OpencodeMcp { config_path: dir.clone() };
-        let err = cfg.install("test-server", &["echo".to_string(), "hi".to_string()]).unwrap_err();
-        assert!(err.to_string().contains("已中止写回"), "应显式中止并说明原因: {err}");
+        let cfg = OpencodeMcp {
+            config_path: dir.clone(),
+        };
+        let err = cfg
+            .install("test-server", &["echo".to_string(), "hi".to_string()])
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("已中止写回"),
+            "应显式中止并说明原因: {err}"
+        );
         assert!(dir.is_dir(), "目录本身不应被写坏");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -599,7 +644,10 @@ mod tests {
         let err = mcp
             .install("test-server", "echo", &["hi".to_string()])
             .unwrap_err();
-        assert!(err.to_string().contains("已中止写回"), "应显式中止并说明原因: {err}");
+        assert!(
+            err.to_string().contains("已中止写回"),
+            "应显式中止并说明原因: {err}"
+        );
         assert!(dir.is_dir(), "目录本身不应被写坏");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -608,13 +656,16 @@ mod tests {
     fn opencode_remove_idempotent_and_cleanup() {
         let dir = temp_dir("oc-remove");
         let path = dir.join("opencode.json");
-        let mcp = OpencodeMcp { config_path: path.clone() };
+        let mcp = OpencodeMcp {
+            config_path: path.clone(),
+        };
         assert!(!mcp.remove("code-repo-wiki").unwrap()); // 文件缺失 → false
         mcp.install("code-repo-wiki", &["rw".to_string()]).unwrap();
         assert!(mcp.remove("code-repo-wiki").unwrap());
         assert!(!mcp.remove("code-repo-wiki").unwrap()); // 已删 → false
         // mcp 块已空 → 整个 mcp 键删除
-        let parsed: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(parsed.get("mcp").is_none());
     }
 
@@ -622,10 +673,16 @@ mod tests {
     fn opencode_remove_preserves_other_servers() {
         let dir = temp_dir("oc-remove-preserve");
         let path = dir.join("opencode.json");
-        write(&path, r#"{"mcp": {"code-repo-wiki": {"type": "local", "command": ["rw"]}, "other": {"type": "local", "command": ["npx", "y"]}}, "provider": {"x": 1}}"#);
-        let mcp = OpencodeMcp { config_path: path.clone() };
+        write(
+            &path,
+            r#"{"mcp": {"code-repo-wiki": {"type": "local", "command": ["rw"]}, "other": {"type": "local", "command": ["npx", "y"]}}, "provider": {"x": 1}}"#,
+        );
+        let mcp = OpencodeMcp {
+            config_path: path.clone(),
+        };
         assert!(mcp.remove("code-repo-wiki").unwrap());
-        let parsed: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(parsed["mcp"]["other"].is_object());
         assert!(parsed.get("mcp").unwrap().get("code-repo-wiki").is_none());
         assert_eq!(parsed["provider"]["x"], 1);
@@ -638,8 +695,12 @@ mod tests {
         let dir = temp_dir("cl-create");
         let path = dir.join("claude.json");
         let mcp = ClaudeMcp { path: path.clone() };
-        assert!(mcp.install("code-repo-wiki", "rw", &["mcp".to_string()]).unwrap());
-        let parsed: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(
+            mcp.install("code-repo-wiki", "rw", &["mcp".to_string()])
+                .unwrap()
+        );
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let entry = &parsed["mcpServers"]["code-repo-wiki"];
         assert_eq!(entry["type"], "stdio");
         assert_eq!(entry["command"], "rw");
@@ -650,13 +711,20 @@ mod tests {
     fn claude_install_preserves_other_servers_and_idempotent() {
         let dir = temp_dir("cl-preserve");
         let path = dir.join("claude.json");
-        write(&path, r#"{"oauthAccount": {}, "mcpServers": {"other": {"command": "npx", "args": ["x"]}}}"#);
+        write(
+            &path,
+            r#"{"oauthAccount": {}, "mcpServers": {"other": {"command": "npx", "args": ["x"]}}}"#,
+        );
         let mcp = ClaudeMcp { path: path.clone() };
         let cmd = ("rw", vec!["mcp".to_string()]);
         assert!(mcp.install("code-repo-wiki", cmd.0, &cmd.1).unwrap());
         assert!(!mcp.install("code-repo-wiki", cmd.0, &cmd.1).unwrap());
-        let parsed: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert!(parsed["oauthAccount"].is_object(), "OAuth 会话等用户键必须保留");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(
+            parsed["oauthAccount"].is_object(),
+            "OAuth 会话等用户键必须保留"
+        );
         assert!(parsed["mcpServers"]["other"].is_object());
         assert!(parsed["mcpServers"]["code-repo-wiki"].is_object());
     }
@@ -669,7 +737,8 @@ mod tests {
         mcp.install("code-repo-wiki", "rw", &[]).unwrap();
         assert!(mcp.remove("code-repo-wiki").unwrap());
         // ~/.claude.json 承载 OAuth 会话等用户配置：空 mcpServers 保留文件
-        let parsed: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(parsed["mcpServers"].as_object().unwrap().is_empty());
         assert!(!mcp.remove("code-repo-wiki").unwrap()); // 条目缺失 → 幂等
     }
@@ -678,10 +747,14 @@ mod tests {
     fn claude_remove_preserves_other_servers() {
         let dir = temp_dir("cl-remove-preserve");
         let path = dir.join("claude.json");
-        write(&path, r#"{"mcpServers": {"code-repo-wiki": {"command": "rw"}, "other": {"command": "npx"}}}"#);
+        write(
+            &path,
+            r#"{"mcpServers": {"code-repo-wiki": {"command": "rw"}, "other": {"command": "npx"}}}"#,
+        );
         let mcp = ClaudeMcp { path: path.clone() };
         assert!(mcp.remove("code-repo-wiki").unwrap());
-        let parsed: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(parsed["mcpServers"]["other"].is_object());
         assert!(parsed["mcpServers"].get("code-repo-wiki").is_none());
     }
@@ -701,25 +774,42 @@ mod tests {
     fn codex_install_creates_table_and_roundtrips() {
         let dir = temp_dir("cx-create");
         let path = dir.join("config.toml");
-        let mcp = CodexMcp { config_path: path.clone() };
+        let mcp = CodexMcp {
+            config_path: path.clone(),
+        };
         let exe = r"C:\RustProjects\code-repo-wiki\target\release\code-repo-wiki.exe";
-        assert!(mcp.install("code-repo-wiki", exe, &["mcp".to_string()]).unwrap());
+        assert!(
+            mcp.install("code-repo-wiki", exe, &["mcp".to_string()])
+                .unwrap()
+        );
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("[mcp_servers.code-repo-wiki]"));
         assert!(content.contains("command = \"C:\\\\RustProjects\\\\code-repo-wiki"));
         // toml 解析回读验证
         let parsed: toml::Value = toml::from_str(&content).unwrap();
-        assert_eq!(parsed["mcp_servers"]["code-repo-wiki"]["command"].as_str(), Some(exe));
-        assert_eq!(parsed["mcp_servers"]["code-repo-wiki"]["args"][0].as_str(), Some("mcp"));
+        assert_eq!(
+            parsed["mcp_servers"]["code-repo-wiki"]["command"].as_str(),
+            Some(exe)
+        );
+        assert_eq!(
+            parsed["mcp_servers"]["code-repo-wiki"]["args"][0].as_str(),
+            Some("mcp")
+        );
     }
 
     #[test]
     fn codex_install_preserves_other_tables_and_comments() {
         let dir = temp_dir("cx-preserve");
         let path = dir.join("config.toml");
-        write(&path, "# 我的注释\n[model]\nname = \"gpt-5\"\n\n[provider.openai]\nkey = \"x\"\n");
-        let mcp = CodexMcp { config_path: path.clone() };
-        mcp.install("code-repo-wiki", "rw", &["mcp".to_string()]).unwrap();
+        write(
+            &path,
+            "# 我的注释\n[model]\nname = \"gpt-5\"\n\n[provider.openai]\nkey = \"x\"\n",
+        );
+        let mcp = CodexMcp {
+            config_path: path.clone(),
+        };
+        mcp.install("code-repo-wiki", "rw", &["mcp".to_string()])
+            .unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("# 我的注释"));
         assert!(content.contains("[model]"));
@@ -733,28 +823,52 @@ mod tests {
     fn codex_install_upgrades_existing_table() {
         let dir = temp_dir("cx-upgrade");
         let path = dir.join("config.toml");
-        write(&path, "[mcp_servers.code-repo-wiki]\ncommand = \"/old/rw\"\nargs = [\"mcp\"]\n");
-        let mcp = CodexMcp { config_path: path.clone() };
-        assert!(mcp.install("code-repo-wiki", "/new/rw", &["mcp".to_string()]).unwrap());
+        write(
+            &path,
+            "[mcp_servers.code-repo-wiki]\ncommand = \"/old/rw\"\nargs = [\"mcp\"]\n",
+        );
+        let mcp = CodexMcp {
+            config_path: path.clone(),
+        };
+        assert!(
+            mcp.install("code-repo-wiki", "/new/rw", &["mcp".to_string()])
+                .unwrap()
+        );
         let parsed: toml::Value = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(parsed["mcp_servers"]["code-repo-wiki"]["command"].as_str(), Some("/new/rw"));
+        assert_eq!(
+            parsed["mcp_servers"]["code-repo-wiki"]["command"].as_str(),
+            Some("/new/rw")
+        );
     }
 
     #[test]
     fn codex_install_idempotent() {
         let dir = temp_dir("cx-idem");
         let path = dir.join("config.toml");
-        let mcp = CodexMcp { config_path: path.clone() };
-        assert!(mcp.install("code-repo-wiki", "/rw", &["mcp".to_string()]).unwrap());
-        assert!(!mcp.install("code-repo-wiki", "/rw", &["mcp".to_string()]).unwrap());
+        let mcp = CodexMcp {
+            config_path: path.clone(),
+        };
+        assert!(
+            mcp.install("code-repo-wiki", "/rw", &["mcp".to_string()])
+                .unwrap()
+        );
+        assert!(
+            !mcp.install("code-repo-wiki", "/rw", &["mcp".to_string()])
+                .unwrap()
+        );
     }
 
     #[test]
     fn codex_remove_table_preserves_rest() {
         let dir = temp_dir("cx-remove");
         let path = dir.join("config.toml");
-        write(&path, "[model]\nname = \"gpt-5\"\n\n[mcp_servers.code-repo-wiki]\ncommand = \"/rw\"\n\n[provider.openai]\nkey = \"x\"\n");
-        let mcp = CodexMcp { config_path: path.clone() };
+        write(
+            &path,
+            "[model]\nname = \"gpt-5\"\n\n[mcp_servers.code-repo-wiki]\ncommand = \"/rw\"\n\n[provider.openai]\nkey = \"x\"\n",
+        );
+        let mcp = CodexMcp {
+            config_path: path.clone(),
+        };
         assert!(mcp.remove("code-repo-wiki").unwrap());
         assert!(!mcp.remove("code-repo-wiki").unwrap());
         let content = std::fs::read_to_string(&path).unwrap();
@@ -770,7 +884,9 @@ mod tests {
         let dir = temp_dir("cx-remove-miss");
         let path = dir.join("config.toml");
         write(&path, "[model]\nname = \"x\"\n");
-        let mcp = CodexMcp { config_path: path.clone() };
+        let mcp = CodexMcp {
+            config_path: path.clone(),
+        };
         assert!(!mcp.remove("code-repo-wiki").unwrap());
     }
 }

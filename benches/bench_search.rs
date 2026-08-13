@@ -23,9 +23,7 @@ impl code_repo_wiki::analysis::feature::Embedder for ClusterEmbedder {
     fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
         // 输入形如 "f0_0 Function ..." / "g3_1 Function ..."：取前缀 f/g 后的簇号
         let mut cluster = 0usize;
-        if let Some(rest) = text
-            .strip_prefix('f')
-            .or_else(|| text.strip_prefix('g'))
+        if let Some(rest) = text.strip_prefix('f').or_else(|| text.strip_prefix('g'))
             && let Some(digits) = rest.split('_').next()
         {
             cluster = digits.parse::<usize>().unwrap_or(0);
@@ -40,10 +38,18 @@ impl code_repo_wiki::analysis::feature::Embedder for ClusterEmbedder {
         texts.iter().map(|t| self.embed(t)).collect()
     }
     fn cosine_similarity(&self, a: &[f32], b: &[f32]) -> f64 {
-        let dot: f64 = a.iter().zip(b).map(|(x, y)| (*x as f64) * (*y as f64)).sum();
+        let dot: f64 = a
+            .iter()
+            .zip(b)
+            .map(|(x, y)| (*x as f64) * (*y as f64))
+            .sum();
         let na: f64 = a.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
         let nb: f64 = b.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
-        if na == 0.0 || nb == 0.0 { 0.0 } else { dot / (na * nb) }
+        if na == 0.0 || nb == 0.0 {
+            0.0
+        } else {
+            dot / (na * nb)
+        }
     }
 }
 
@@ -71,12 +77,19 @@ fn build_bench_repo(dir: &Path) -> Vec<FileInsight> {
             ),
             _ => (
                 format!("f{i}.go"),
-                format!("package mod{}\n\nfunc F{i}(x int) int {{ return x + {i} }}\n", i % 10),
+                format!(
+                    "package mod{}\n\nfunc F{i}(x int) int {{ return x + {i} }}\n",
+                    i % 10
+                ),
             ),
         };
         std::fs::write(sub.join(name), content).unwrap();
     }
-    code_repo_wiki::ingest::scan_and_parse_at(&code_repo_wiki::project::ProjectRoot::new(dir.to_path_buf())).unwrap().insights
+    code_repo_wiki::ingest::scan_and_parse_at(&code_repo_wiki::project::ProjectRoot::new(
+        dir.to_path_buf(),
+    ))
+    .unwrap()
+    .insights
 }
 
 /// 500 条索引下 BM25 搜索平均耗时
@@ -91,7 +104,9 @@ fn bench_text_search() {
     let _ = std::fs::remove_file(&text_path);
 
     // 构建 500 条索引
-    let mut engine = code_repo_wiki::search::text::TextEngine::open(&text_path).unwrap().0;
+    let mut engine = code_repo_wiki::search::text::TextEngine::open(&text_path)
+        .unwrap()
+        .0;
     for i in 0..500 {
         let node = code_repo_wiki::model::CodeNode {
             id: code_repo_wiki::model::NodeId::new(i),
@@ -100,10 +115,16 @@ fn bench_text_search() {
             file_path: Some("src/lib.rs".into()),
             line_range: Some((i * 5, i * 5 + 10)),
             doc_comment: None,
-            signature: Some(format!("fn test_fn_{}(arg: u32) -> bool", i)), visibility: None,
+            signature: Some(format!("fn test_fn_{}(arg: u32) -> bool", i)),
+            visibility: None,
             module_path: vec!["crate".into(), "module".into()],
         };
-        engine.index(&node, &format!("fn test_fn_{}(arg: u32) -> bool {{ arg > 0 }}", i)).unwrap();
+        engine
+            .index(
+                &node,
+                &format!("fn test_fn_{}(arg: u32) -> bool {{ arg > 0 }}", i),
+            )
+            .unwrap();
     }
 
     // 预热
@@ -127,12 +148,14 @@ fn bench_chunking() {
 
     let graph = code_repo_wiki::model::KnowledgeGraph::default();
     let insights = vec![];
-    let _chunks: Vec<Chunk> = code_repo_wiki::generate::chunk::chunk_by_module(&insights, &graph.modules, &graph);
+    let _chunks: Vec<Chunk> =
+        code_repo_wiki::generate::chunk::chunk_by_module(&insights, &graph.modules, &graph);
 
     let start = Instant::now();
     let iterations = 1000;
     for _ in 0..iterations {
-        let _chunks: Vec<Chunk> = code_repo_wiki::generate::chunk::chunk_by_module(&insights, &graph.modules, &graph);
+        let _chunks: Vec<Chunk> =
+            code_repo_wiki::generate::chunk::chunk_by_module(&insights, &graph.modules, &graph);
     }
     let avg = start.elapsed() / iterations;
     eprintln!("bench_chunking: {iterations} runs, avg {avg:?} per run (empty graph)");
@@ -145,7 +168,6 @@ fn bench_scan_and_parse() {
         eprintln!("skip bench: CI");
         return;
     }
-
 
     let dir = std::env::temp_dir().join(format!("bench_repo_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -181,7 +203,11 @@ fn bench_graph_build() {
 
     // 200 个同构文件可能聚出任意数量模块，只断言图构建成功
     assert!(graph.graph.node_count() > 0);
-    eprintln!("bench graph_build: 200 files, {} modules, {}ms", modules.len(), elapsed.as_millis());
+    eprintln!(
+        "bench graph_build: 200 files, {} modules, {}ms",
+        modules.len(),
+        elapsed.as_millis()
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -195,7 +221,9 @@ fn bench_index_batch() {
 
     let text_path = std::env::temp_dir().join(format!("bench_index_{}.db", std::process::id()));
     let _ = std::fs::remove_file(&text_path);
-    let mut engine = code_repo_wiki::search::text::TextEngine::open(&text_path).unwrap().0;
+    let mut engine = code_repo_wiki::search::text::TextEngine::open(&text_path)
+        .unwrap()
+        .0;
 
     let items: Vec<(code_repo_wiki::model::CodeNode, String)> = (0..1000)
         .map(|i| {
@@ -206,10 +234,14 @@ fn bench_index_batch() {
                 file_path: Some("src/lib.rs".into()),
                 line_range: Some((i * 5, i * 5 + 10)),
                 doc_comment: None,
-                signature: Some(format!("fn bench_fn_{}(arg: u32) -> bool", i)), visibility: None,
+                signature: Some(format!("fn bench_fn_{}(arg: u32) -> bool", i)),
+                visibility: None,
                 module_path: vec!["crate".into(), "module".into()],
             };
-            (node, format!("fn bench_fn_{}(arg: u32) -> bool {{ arg > 0 }}", i))
+            (
+                node,
+                format!("fn bench_fn_{}(arg: u32) -> bool {{ arg > 0 }}", i),
+            )
         })
         .collect();
 
@@ -217,7 +249,10 @@ fn bench_index_batch() {
     engine.index_batch(&items).unwrap();
     let elapsed = start.elapsed();
 
-    eprintln!("bench index_batch: 1000 entities, {}ms", elapsed.as_millis());
+    eprintln!(
+        "bench index_batch: 1000 entities, {}ms",
+        elapsed.as_millis()
+    );
     let _ = std::fs::remove_file(&text_path);
 }
 
@@ -269,14 +304,22 @@ fn bench_clustering_detection() {
         }
     }
 
-    let insights = code_repo_wiki::ingest::scan_and_parse_at(&code_repo_wiki::project::ProjectRoot::new(dir.clone())).unwrap().insights;
+    let insights = code_repo_wiki::ingest::scan_and_parse_at(
+        &code_repo_wiki::project::ProjectRoot::new(dir.clone()),
+    )
+    .unwrap()
+    .insights;
     eprintln!(
         "debug: insights={} first_entities={:?} first_source={:?}",
         insights.len(),
+        insights.first().map(|i| i
+            .entities
+            .iter()
+            .map(|e| (e.name.clone(), e.kind.clone(), e.line_start, e.line_end))
+            .collect::<Vec<_>>()),
         insights
             .first()
-            .map(|i| i.entities.iter().map(|e| (e.name.clone(), e.kind.clone(), e.line_start, e.line_end)).collect::<Vec<_>>()),
-        insights.first().map(|i| i.source.chars().take(120).collect::<String>())
+            .map(|i| i.source.chars().take(120).collect::<String>())
     );
 
     // 图构建 + 模块检测
@@ -316,7 +359,10 @@ fn bench_clustering_detection() {
     );
     // 命名确定性：公共目录前缀应含 m0/m1 等簇目录
     let names: Vec<&str> = modules.iter().map(|m| m.name.as_str()).collect();
-    assert!(names.iter().any(|n| n.contains("m0")), "簇目录应进入模块名: {names:?}");
+    assert!(
+        names.iter().any(|n| n.contains("m0")),
+        "簇目录应进入模块名: {names:?}"
+    );
 
     // 特征聚类（语义聚类，ClusterEmbedder 注入）
     let start = Instant::now();

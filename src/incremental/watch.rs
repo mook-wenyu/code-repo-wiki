@@ -9,10 +9,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use notify::RecursiveMode;
-use notify_debouncer_full::{new_debouncer, DebouncedEvent, DebounceEventResult};
+use notify_debouncer_full::{DebounceEventResult, DebouncedEvent, new_debouncer};
 
-use crate::ingest::scanner::{NOISE_DIRS, ROOT_ONLY_NOISE_DIRS};
 use crate::ingest::parser::SUPPORTED_EXTENSIONS;
+use crate::ingest::scanner::{NOISE_DIRS, ROOT_ONLY_NOISE_DIRS};
 
 /// 冷却窗口常量（v31 C-07）：连续编辑期间合并事件，安静 `COOLDOWN_QUIET_MS`
 /// 或首个事件后 `COOLDOWN_DEADLINE_MS` 触发一次合并增量。
@@ -266,7 +266,10 @@ fn fold_events(events: Vec<WatchEvent>) -> Vec<WatchEvent> {
             .cloned()
             .collect();
         if !paths.is_empty() {
-            out.push(WatchEvent { paths, kind: event.kind });
+            out.push(WatchEvent {
+                paths,
+                kind: event.kind,
+            });
         }
     }
     out
@@ -299,7 +302,10 @@ fn aggregate_events(
                 // 已记录过该路径（去重）
                 Some(_) => {}
                 // 首个该 kind 的事件
-                None => out.push(WatchEvent { paths: vec![p.clone()], kind }),
+                None => out.push(WatchEvent {
+                    paths: vec![p.clone()],
+                    kind,
+                }),
             }
         }
     }
@@ -357,7 +363,9 @@ fn should_ignore(path: &Path, ignore_root: Option<&Path>) -> bool {
     let mut normal_index = 0;
     for c in path.components() {
         // 只统计 Normal（目录/文件）段：Prefix(盘符)/RootDir(根) 不参与
-        let std::path::Component::Normal(seg) = c else { continue };
+        let std::path::Component::Normal(seg) = c else {
+            continue;
+        };
         let Some(s) = seg.to_str() else { continue };
         if NOISE_DIRS.contains(&s) {
             return true;
@@ -420,7 +428,11 @@ mod tests {
     #[test]
     fn test_should_not_ignore_src_bin() {
         let p = Path::new("/repo/src/bin/tool.rs");
-        assert!(!should_ignore(p, None), "src/bin 是合法源码目录，不得忽略: {:?}", p);
+        assert!(
+            !should_ignore(p, None),
+            "src/bin 是合法源码目录，不得忽略: {:?}",
+            p
+        );
     }
 
     /// F2 回归锚：Windows 盘符路径的根级判定不受 Prefix 段影响。
@@ -429,9 +441,18 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn test_should_ignore_windows_drive_paths() {
-        assert!(should_ignore(Path::new("D:\\repo\\dist\\bundle.js"), None), "Windows 根级 dist 应忽略");
-        assert!(!should_ignore(Path::new("D:\\repo\\src\\bin\\tool.rs"), None), "Windows src/bin 是合法源码目录，不得忽略");
-        assert!(should_ignore(Path::new("D:\\repo\\target\\debug\\main.rs"), None), "Windows target 任意深度仍忽略");
+        assert!(
+            should_ignore(Path::new("D:\\repo\\dist\\bundle.js"), None),
+            "Windows 根级 dist 应忽略"
+        );
+        assert!(
+            !should_ignore(Path::new("D:\\repo\\src\\bin\\tool.rs"), None),
+            "Windows src/bin 是合法源码目录，不得忽略"
+        );
+        assert!(
+            should_ignore(Path::new("D:\\repo\\target\\debug\\main.rs"), None),
+            "Windows target 任意深度仍忽略"
+        );
     }
 
     #[test]
@@ -452,7 +473,9 @@ mod tests {
     #[test]
     fn test_supported_exts_cover_all_parsers() {
         let exts = supported_exts();
-        for expected in ["rs", "ts", "tsx", "py", "go", "js", "jsx", "mjs", "cjs", "cs", "java"] {
+        for expected in [
+            "rs", "ts", "tsx", "py", "go", "js", "jsx", "mjs", "cjs", "cs", "java",
+        ] {
             assert!(exts.contains(&expected.to_string()), "缺少 {expected}");
         }
     }
@@ -462,7 +485,11 @@ mod tests {
     fn test_should_report_filters_ignored_and_mismatched() {
         let exts = vec!["rs".to_string()];
         assert!(should_report(Path::new("/repo/src/main.rs"), &exts, None));
-        assert!(!should_report(Path::new("/repo/target/main.rs"), &exts, None));
+        assert!(!should_report(
+            Path::new("/repo/target/main.rs"),
+            &exts,
+            None
+        ));
         assert!(!should_report(Path::new("/repo/src/main.js"), &exts, None));
         assert!(!should_report(Path::new("/repo/src/no_ext"), &exts, None));
     }
@@ -474,15 +501,24 @@ mod tests {
     fn test_should_ignore_output_dir_prefix() {
         let ignore_root = Path::new("/repo/.code-repo-wiki");
         assert!(
-            should_ignore(Path::new("/repo/.code-repo-wiki/wiki/zh/api.md"), Some(ignore_root)),
+            should_ignore(
+                Path::new("/repo/.code-repo-wiki/wiki/zh/api.md"),
+                Some(ignore_root)
+            ),
             "产物页应忽略"
         );
         assert!(
-            should_ignore(Path::new("/repo/.code-repo-wiki/.state/generation_state.json"), Some(ignore_root)),
+            should_ignore(
+                Path::new("/repo/.code-repo-wiki/.state/generation_state.json"),
+                Some(ignore_root)
+            ),
             "生成状态应忽略"
         );
         assert!(
-            should_ignore(Path::new("/repo/.code-repo-wiki/.state/run.lock"), Some(ignore_root)),
+            should_ignore(
+                Path::new("/repo/.code-repo-wiki/.state/run.lock"),
+                Some(ignore_root)
+            ),
             "运行锁应忽略"
         );
         assert!(
@@ -499,12 +535,18 @@ mod tests {
         let exts = vec!["rs".to_string(), "md".to_string()];
         let ignore_root = Path::new("/repo/.code-repo-wiki");
         assert!(
-            !should_report(Path::new("/repo/.code-repo-wiki/wiki/zh/api.md"), &exts, Some(ignore_root)),
+            !should_report(
+                Path::new("/repo/.code-repo-wiki/wiki/zh/api.md"),
+                &exts,
+                Some(ignore_root)
+            ),
             "产物目录内 .md 不上报（前缀命中先于扩展名过滤）"
         );
-        assert!(
-            !should_report(Path::new("/repo/.code-repo-wiki/.state/run.lock"), &exts, Some(ignore_root))
-        );
+        assert!(!should_report(
+            Path::new("/repo/.code-repo-wiki/.state/run.lock"),
+            &exts,
+            Some(ignore_root)
+        ));
         assert!(
             should_report(Path::new("/repo/src/main.rs"), &exts, Some(ignore_root)),
             "src 源码正常上报"
@@ -579,7 +621,10 @@ mod tests {
         use notify::event::{DataChange, ModifyKind, RemoveKind};
         let exts = vec!["rs".to_string()];
         let events = vec![
-            make_debounced(notify::EventKind::Modify(ModifyKind::Data(DataChange::Content)), "src/a.rs"),
+            make_debounced(
+                notify::EventKind::Modify(ModifyKind::Data(DataChange::Content)),
+                "src/a.rs",
+            ),
             make_debounced(notify::EventKind::Remove(RemoveKind::File), "src/a.rs"),
         ];
         let folded = process_batch(&events, &exts, None);
@@ -609,7 +654,10 @@ mod tests {
         let exts = vec!["rs".to_string()];
         let events = vec![
             make_debounced(notify::EventKind::Create(CreateKind::File), "src/a.rs"),
-            make_debounced(notify::EventKind::Modify(ModifyKind::Data(DataChange::Content)), "src/a.rs"),
+            make_debounced(
+                notify::EventKind::Modify(ModifyKind::Data(DataChange::Content)),
+                "src/a.rs",
+            ),
         ];
         let folded = process_batch(&events, &exts, None);
         assert_eq!(folded.len(), 1);
@@ -624,7 +672,10 @@ mod tests {
         use notify::event::{DataChange, ModifyKind, RemoveKind};
         let exts = vec!["rs".to_string()];
         let events = vec![
-            make_debounced(notify::EventKind::Modify(ModifyKind::Data(DataChange::Content)), "src/a.rs"),
+            make_debounced(
+                notify::EventKind::Modify(ModifyKind::Data(DataChange::Content)),
+                "src/a.rs",
+            ),
             make_debounced(notify::EventKind::Remove(RemoveKind::File), "src/a.rs"),
         ];
         let folded = process_batch(&events, &exts, None);
@@ -639,12 +690,22 @@ mod tests {
         use notify::event::{DataChange, ModifyKind, RemoveKind};
         let exts = vec!["rs".to_string()];
         let events = vec![
-            make_debounced(notify::EventKind::Modify(ModifyKind::Data(DataChange::Content)), "src/a.rs"),
+            make_debounced(
+                notify::EventKind::Modify(ModifyKind::Data(DataChange::Content)),
+                "src/a.rs",
+            ),
             make_debounced(notify::EventKind::Remove(RemoveKind::File), "src/a.rs"),
-            make_debounced(notify::EventKind::Modify(ModifyKind::Data(DataChange::Content)), "src/b.rs"),
+            make_debounced(
+                notify::EventKind::Modify(ModifyKind::Data(DataChange::Content)),
+                "src/b.rs",
+            ),
         ];
         let folded = process_batch(&events, &exts, None);
-        assert_eq!(folded.len(), 2, "a 折叠为 Deleted、b 独立 Modified，共 2 事件");
+        assert_eq!(
+            folded.len(),
+            2,
+            "a 折叠为 Deleted、b 独立 Modified，共 2 事件"
+        );
         let deleted = folded
             .iter()
             .find(|e| e.kind == ChangeKind::Deleted)
@@ -662,7 +723,8 @@ mod tests {
     /// 增量生成；本测试验证预置标记的退出语义与不崩溃）
     #[test]
     fn test_watch_loop_exits_on_pre_set_stop_flag() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_watch_stop_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("code_repo_wiki_watch_stop_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         // 标记预置：循环第一次检查即退出（监听根存在，监听器建立后立即退出）
@@ -690,10 +752,7 @@ mod tests {
             "安静 2s 应触发（尾沿）"
         );
         assert!(
-            should_flush(
-                Duration::from_millis(3000),
-                Duration::from_millis(3000)
-            ),
+            should_flush(Duration::from_millis(3000), Duration::from_millis(3000)),
             "安静 3s 应触发"
         );
     }
@@ -714,10 +773,7 @@ mod tests {
     #[test]
     fn test_should_flush_within_cooldown_does_not_trigger() {
         assert!(
-            !should_flush(
-                Duration::from_millis(1500),
-                Duration::from_millis(1500)
-            ),
+            !should_flush(Duration::from_millis(1500), Duration::from_millis(1500)),
             "编辑未停且未到 5s 上限不应触发"
         );
         assert!(

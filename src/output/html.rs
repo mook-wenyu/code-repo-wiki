@@ -47,7 +47,8 @@ pub fn export_html(
 
     // 生成 index.html（目录页）：按模块分组（与 _toc.md 的 index 优先导航一致）。
     // 链接指向 wiki/{doc.language}/{stem}.html（与页面落盘路径同一规则）。
-    let mut module_groups: std::collections::BTreeMap<String, Vec<&WikiDocument>> = Default::default();
+    let mut module_groups: std::collections::BTreeMap<String, Vec<&WikiDocument>> =
+        Default::default();
     let mut global_docs: Vec<&WikiDocument> = Vec::new();
     for doc in documents {
         if doc.module_path.is_empty() {
@@ -136,7 +137,11 @@ blockquote { border-left: 4px solid #ddd; margin: 0; padding: 0 16px; color: #66
         // 依赖边：模块 → 依赖模块（BTreeSet 字典序，输出确定性）
         for module in modules {
             for dep in &module.dependencies {
-                mermaid_lines.push(format!("    {} --> {}", node_id(&module.name), node_id(dep)));
+                mermaid_lines.push(format!(
+                    "    {} --> {}",
+                    node_id(&module.name),
+                    node_id(dep)
+                ));
             }
         }
         let mermaid_code = mermaid_lines.join("\n");
@@ -169,8 +174,13 @@ blockquote { border-left: 4px solid #ddd; margin: 0; padding: 0 16px; color: #66
             if card.module_name != doc_module {
                 continue;
             }
-            let html = wrap_html(&card.module_name, &render_card_body(card), "../../style.css");
-            let path = card_page_path(output_dir, &doc.language, &card.module_name).with_extension("html");
+            let html = wrap_html(
+                &card.module_name,
+                &render_card_body(card),
+                "../../style.css",
+            );
+            let path =
+                card_page_path(output_dir, &doc.language, &card.module_name).with_extension("html");
             write_html_file(&path, &html)?;
         }
     }
@@ -374,8 +384,7 @@ fn write_html_file(path: &Path, content: &str) -> Result<()> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("创建目录失败: {}", parent.display()))?;
     }
-    std::fs::write(path, content)
-        .with_context(|| format!("写入文件失败: {}", path.display()))
+    std::fs::write(path, content).with_context(|| format!("写入文件失败: {}", path.display()))
 }
 
 /// HTML 转义
@@ -390,8 +399,8 @@ fn escape_html(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::schema::WikiConfig;
     use crate::model::{EntitySummary, KnowledgeCard, WikiDocument};
-    use crate::config::schema::{WikiConfig};
 
     fn test_config() -> WikiConfig {
         WikiConfig {
@@ -435,8 +444,14 @@ mod tests {
             html.contains("<title>&lt;script&gt;alert(&#39;xss&#39;)&lt;/script&gt;</title>"),
             "title 中的 HTML 应被转义, 实际: {html}"
         );
-        assert!(html.contains("mermaid.min.js"), "页面应引入 mermaid.js（U05/D9）");
-        assert!(html.contains("__repoWikiMermaidFallback"), "应含离线降级脚本（U05/D9）");
+        assert!(
+            html.contains("mermaid.min.js"),
+            "页面应引入 mermaid.js（U05/D9）"
+        );
+        assert!(
+            html.contains("__repoWikiMermaidFallback"),
+            "应含离线降级脚本（U05/D9）"
+        );
     }
 
     /// U05/D9：mermaid 围栏渲染为 div.mermaid 容器（内容转义），
@@ -444,17 +459,29 @@ mod tests {
     #[test]
     fn test_md_to_html_renders_mermaid_container() {
         let result = md_to_html("```mermaid\nflowchart LR\nA[Start] --> B[End]\n```\n");
-        assert!(result.contains("<div class=\"mermaid\">"), "mermaid 应渲染为 div 容器: {result}");
+        assert!(
+            result.contains("<div class=\"mermaid\">"),
+            "mermaid 应渲染为 div 容器: {result}"
+        );
         assert!(result.contains("flowchart LR"), "内容应保留");
-        assert!(!result.contains("<pre>"), "mermaid 不应输出为 pre 代码块: {result}");
-        assert!(result.contains("A[Start] --&gt; B[End]"), "内容应 HTML 转义: {result}");
+        assert!(
+            !result.contains("<pre>"),
+            "mermaid 不应输出为 pre 代码块: {result}"
+        );
+        assert!(
+            result.contains("A[Start] --&gt; B[End]"),
+            "内容应 HTML 转义: {result}"
+        );
     }
 
     #[test]
     fn test_md_to_html_plain_code_block_unchanged() {
         let result = md_to_html("```rust\nfn main() {}\n```\n");
         assert!(result.contains("<pre>"), "普通代码块应保持 pre: {result}");
-        assert!(!result.contains("mermaid"), "普通代码块不应触发 mermaid 渲染: {result}");
+        assert!(
+            !result.contains("mermaid"),
+            "普通代码块不应触发 mermaid 渲染: {result}"
+        );
     }
 
     #[test]
@@ -498,12 +525,27 @@ mod tests {
     fn test_rewrite_md_links_to_html() {
         let md = "见 [B](wiki/zh/b.md) 与 [C](a.md#锚点)，外部 [D](https://x.com/a.md)，源码 [E](src/lib.rs:12)";
         let rewritten = rewrite_md_links_to_html(md);
-        assert!(rewritten.contains("](wiki/zh/b.html)"), "wiki/zh/b.md 应重写为 .html, 实际: {rewritten}");
-        assert!(rewritten.contains("](a.html#锚点)"), "带锚点的 .md 链接应保留锚点, 实际: {rewritten}");
-        assert!(rewritten.contains("](https://x.com/a.md)"), "外部链接不应重写, 实际: {rewritten}");
-        assert!(rewritten.contains("](src/lib.rs:12)"), "源码定位链接不应重写, 实际: {rewritten}");
+        assert!(
+            rewritten.contains("](wiki/zh/b.html)"),
+            "wiki/zh/b.md 应重写为 .html, 实际: {rewritten}"
+        );
+        assert!(
+            rewritten.contains("](a.html#锚点)"),
+            "带锚点的 .md 链接应保留锚点, 实际: {rewritten}"
+        );
+        assert!(
+            rewritten.contains("](https://x.com/a.md)"),
+            "外部链接不应重写, 实际: {rewritten}"
+        );
+        assert!(
+            rewritten.contains("](src/lib.rs:12)"),
+            "源码定位链接不应重写, 实际: {rewritten}"
+        );
         // 内部 .md 链接必须全部重写（外部/源码定位天然含 .md，不在此断言内）
-        assert!(!rewritten.contains("](wiki/zh/b.md)") && !rewritten.contains("](a.md"), "内部 .md 链接应全部重写, 实际: {rewritten}");
+        assert!(
+            !rewritten.contains("](wiki/zh/b.md)") && !rewritten.contains("](a.md"),
+            "内部 .md 链接应全部重写, 实际: {rewritten}"
+        );
     }
 
     #[test]
@@ -547,7 +589,9 @@ mod tests {
             coding_spec: None,
             tech_stack: vec![],
             architecture: None,
-            pending_manual_edits: vec!["人工修改待同步: wiki/zh/核心_模块.md 内容摘要: 手动改".into()],
+            pending_manual_edits: vec![
+                "人工修改待同步: wiki/zh/核心_模块.md 内容摘要: 手动改".into(),
+            ],
             features: Vec::new(),
         };
 
@@ -573,7 +617,10 @@ mod tests {
             dir.join("cards").join("zh").join("核心_模块.html").exists(),
             "card 页面应随文档语言写到 cards/zh/"
         );
-        assert!(dir.join("assets").join("module-deps.html").exists(), "Mermaid 页面应该存在");
+        assert!(
+            dir.join("assets").join("module-deps.html").exists(),
+            "Mermaid 页面应该存在"
+        );
 
         let index = std::fs::read_to_string(dir.join("index.html"))?;
         assert!(index.contains("核心模块"), "目录页应该包含文档标题");
@@ -582,8 +629,12 @@ mod tests {
             "目录页链接应指向语言目录下的 .html, 实际: {index}"
         );
 
-        let card_html = std::fs::read_to_string(dir.join("cards").join("zh").join("核心_模块.html"))?;
-        assert!(card_html.contains("人工修改待同步"), "卡片 HTML 应包含人工修改待同步节");
+        let card_html =
+            std::fs::read_to_string(dir.join("cards").join("zh").join("核心_模块.html"))?;
+        assert!(
+            card_html.contains("人工修改待同步"),
+            "卡片 HTML 应包含人工修改待同步节"
+        );
         assert!(card_html.contains("手动改"), "卡片 HTML 应包含记录内容");
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -613,7 +664,13 @@ mod tests {
         assert!(href.contains('"'), "wiki_file_name 应保留引号: {href}");
         let escaped = escape_html(&href);
         assert!(escaped.contains("&quot;"), "href 应转义引号: {escaped}");
-        assert!(!escaped.contains('"'), "href 不应残留裸引号（属性注入向量）: {escaped}");
-        assert!(!escaped.contains(r#"onmouseover=""#), "onmouseover 不得以裸引号赋值: {escaped}");
+        assert!(
+            !escaped.contains('"'),
+            "href 不应残留裸引号（属性注入向量）: {escaped}"
+        );
+        assert!(
+            !escaped.contains(r#"onmouseover=""#),
+            "onmouseover 不得以裸引号赋值: {escaped}"
+        );
     }
 }

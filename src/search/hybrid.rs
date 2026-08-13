@@ -48,10 +48,14 @@ pub fn rrf_merge(results: &[Vec<SearchHit>], top_k: usize, k: f64) -> Vec<Search
             entry.0 += k / (k + rank as f64);
         }
     }
-    let mut merged: Vec<SearchHit> = scores.into_iter()
+    let mut merged: Vec<SearchHit> = scores
+        .into_iter()
         .map(|(_key, (score, node))| SearchHit {
-            node, score, source: "hybrid".into(),
-            callers: vec![], callees: vec![],
+            node,
+            score,
+            source: "hybrid".into(),
+            callers: vec![],
+            callees: vec![],
         })
         .collect();
     // P2-1：同分条目按 NodeId 稳定排序（tie-break 唯一且跨运行确定）——
@@ -68,39 +72,69 @@ pub fn rrf_merge(results: &[Vec<SearchHit>], top_k: usize, k: f64) -> Vec<Search
 
 /// 将 BM25 结果转为 SearchHit
 pub fn text_results_to_hits(results: Vec<(CodeNode, f64)>) -> Vec<SearchHit> {
-    results.into_iter().map(|(node, score)| SearchHit {
-        node, score, source: "text".into(),
-        callers: vec![], callees: vec![],
-    }).collect()
+    results
+        .into_iter()
+        .map(|(node, score)| SearchHit {
+            node,
+            score,
+            source: "text".into(),
+            callers: vec![],
+            callees: vec![],
+        })
+        .collect()
 }
 
 /// 将语义结果转为 SearchHit
 pub fn semantic_results_to_hits(results: Vec<(CodeNode, f32)>) -> Vec<SearchHit> {
-    results.into_iter().map(|(node, score)| SearchHit {
-        node, score: score as f64, source: "semantic".into(),
-        callers: vec![], callees: vec![],
-    }).collect()
+    results
+        .into_iter()
+        .map(|(node, score)| SearchHit {
+            node,
+            score: score as f64,
+            source: "semantic".into(),
+            callers: vec![],
+            callees: vec![],
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{NodeKind, NodeId};
+    use crate::model::{NodeId, NodeKind};
     use petgraph::stable_graph::NodeIndex;
 
     fn make_node(name: &str) -> CodeNode {
         CodeNode {
-            id: NodeId::new(0), kind: NodeKind::Function, name: name.into(),
-            file_path: None, line_range: None, doc_comment: None,
-            signature: None, module_path: vec![], visibility: None,
+            id: NodeId::new(0),
+            kind: NodeKind::Function,
+            name: name.into(),
+            file_path: None,
+            line_range: None,
+            doc_comment: None,
+            signature: None,
+            module_path: vec![],
+            visibility: None,
         }
     }
 
     #[test]
     fn test_rrf_merge_single_source() {
         let hits = vec![
-            SearchHit { node: make_node("foo"), score: 1.0, source: "text".into(), callers: vec![], callees: vec![] },
-            SearchHit { node: make_node("bar"), score: 0.5, source: "text".into(), callers: vec![], callees: vec![] },
+            SearchHit {
+                node: make_node("foo"),
+                score: 1.0,
+                source: "text".into(),
+                callers: vec![],
+                callees: vec![],
+            },
+            SearchHit {
+                node: make_node("bar"),
+                score: 0.5,
+                source: "text".into(),
+                callers: vec![],
+                callees: vec![],
+            },
         ];
         let result = rrf_merge(&[hits], 5, 60.0);
         assert_eq!(result.len(), 2);
@@ -109,12 +143,20 @@ mod tests {
 
     #[test]
     fn test_rrf_merge_dedup() {
-        let t = vec![
-            SearchHit { node: make_node("foo"), score: 1.0, source: "text".into(), callers: vec![], callees: vec![] },
-        ];
-        let s = vec![
-            SearchHit { node: make_node("foo"), score: 0.9, source: "semantic".into(), callers: vec![], callees: vec![] },
-        ];
+        let t = vec![SearchHit {
+            node: make_node("foo"),
+            score: 1.0,
+            source: "text".into(),
+            callers: vec![],
+            callees: vec![],
+        }];
+        let s = vec![SearchHit {
+            node: make_node("foo"),
+            score: 0.9,
+            source: "semantic".into(),
+            callers: vec![],
+            callees: vec![],
+        }];
         let result = rrf_merge(&[t, s], 5, 60.0);
         assert_eq!(result.len(), 1);
     }
@@ -127,12 +169,20 @@ mod tests {
         a.file_path = Some("src/a.rs".into());
         let mut b = make_node("foo");
         b.file_path = Some("src/b.rs".into());
-        let text = vec![
-            SearchHit { node: a.clone(), score: 1.0, source: "text".into(), callers: vec![], callees: vec![] },
-        ];
-        let semantic = vec![
-            SearchHit { node: b, score: 0.9, source: "semantic".into(), callers: vec![], callees: vec![] },
-        ];
+        let text = vec![SearchHit {
+            node: a.clone(),
+            score: 1.0,
+            source: "text".into(),
+            callers: vec![],
+            callees: vec![],
+        }];
+        let semantic = vec![SearchHit {
+            node: b,
+            score: 0.9,
+            source: "semantic".into(),
+            callers: vec![],
+            callees: vec![],
+        }];
         let result = rrf_merge(&[text, semantic], 5, 60.0);
         assert_eq!(result.len(), 2, "同名不同文件的实体不应被折叠");
     }
@@ -147,14 +197,27 @@ mod tests {
         let mut b = make_node("foo");
         b.file_path = Some("src/a.rs".into());
         b.line_range = Some((40, 60));
-        let text = vec![
-            SearchHit { node: a.clone(), score: 1.0, source: "text".into(), callers: vec![], callees: vec![] },
-        ];
-        let semantic = vec![
-            SearchHit { node: b, score: 0.9, source: "semantic".into(), callers: vec![], callees: vec![] },
-        ];
+        let text = vec![SearchHit {
+            node: a.clone(),
+            score: 1.0,
+            source: "text".into(),
+            callers: vec![],
+            callees: vec![],
+        }];
+        let semantic = vec![SearchHit {
+            node: b,
+            score: 0.9,
+            source: "semantic".into(),
+            callers: vec![],
+            callees: vec![],
+        }];
         let result = rrf_merge(&[text, semantic], 5, 40.0);
-        assert_eq!(result.len(), 2, "同文件同名的重载定义不应被折叠: {:?}", result);
+        assert_eq!(
+            result.len(),
+            2,
+            "同文件同名的重载定义不应被折叠: {:?}",
+            result
+        );
     }
 
     /// P2-1：同分条目按 NodeId 稳定排序——两次调用顺序一致
@@ -169,9 +232,27 @@ mod tests {
         // 三文档各占独立引擎列表（各自 rank 0）→ RRF 分数相同（40/(40+0)=1.0），
         // 构成真正的同分场景——排序由 tie-break（NodeId 升序）决定
         let hits: Vec<Vec<SearchHit>> = vec![
-            vec![SearchHit { node: a, score: 1.0, source: "text".into(), callers: vec![], callees: vec![] }],
-            vec![SearchHit { node: b, score: 1.0, source: "text".into(), callers: vec![], callees: vec![] }],
-            vec![SearchHit { node: c, score: 1.0, source: "text".into(), callers: vec![], callees: vec![] }],
+            vec![SearchHit {
+                node: a,
+                score: 1.0,
+                source: "text".into(),
+                callers: vec![],
+                callees: vec![],
+            }],
+            vec![SearchHit {
+                node: b,
+                score: 1.0,
+                source: "text".into(),
+                callers: vec![],
+                callees: vec![],
+            }],
+            vec![SearchHit {
+                node: c,
+                score: 1.0,
+                source: "text".into(),
+                callers: vec![],
+                callees: vec![],
+            }],
         ];
         let r1 = rrf_merge(&hits, 5, 40.0);
         let r2 = rrf_merge(&hits.clone(), 5, 40.0);
@@ -188,13 +269,43 @@ mod tests {
     fn test_rrf_merge_cross_engine_ranking() {
         // 文档 a：text 第 1、semantic 第 3；文档 b：text 第 2、semantic 第 1
         let text = vec![
-            SearchHit { node: make_node("a"), score: 1.0, source: "text".into(), callers: vec![], callees: vec![] },
-            SearchHit { node: make_node("b"), score: 0.9, source: "text".into(), callers: vec![], callees: vec![] },
+            SearchHit {
+                node: make_node("a"),
+                score: 1.0,
+                source: "text".into(),
+                callers: vec![],
+                callees: vec![],
+            },
+            SearchHit {
+                node: make_node("b"),
+                score: 0.9,
+                source: "text".into(),
+                callers: vec![],
+                callees: vec![],
+            },
         ];
         let semantic = vec![
-            SearchHit { node: make_node("b"), score: 1.0, source: "semantic".into(), callers: vec![], callees: vec![] },
-            SearchHit { node: make_node("x"), score: 0.8, source: "semantic".into(), callers: vec![], callees: vec![] },
-            SearchHit { node: make_node("a"), score: 0.6, source: "semantic".into(), callers: vec![], callees: vec![] },
+            SearchHit {
+                node: make_node("b"),
+                score: 1.0,
+                source: "semantic".into(),
+                callers: vec![],
+                callees: vec![],
+            },
+            SearchHit {
+                node: make_node("x"),
+                score: 0.8,
+                source: "semantic".into(),
+                callers: vec![],
+                callees: vec![],
+            },
+            SearchHit {
+                node: make_node("a"),
+                score: 0.6,
+                source: "semantic".into(),
+                callers: vec![],
+                callees: vec![],
+            },
         ];
         // 调换引擎顺序，融合分数必须完全一致
         let f1 = rrf_merge(&[text.clone(), semantic.clone()], 5, 60.0);

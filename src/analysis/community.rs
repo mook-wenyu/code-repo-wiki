@@ -57,7 +57,10 @@ pub fn detect_communities(graph: &KnowledgeGraph) -> Vec<Vec<NodeId>> {
 
 /// 带分辨率参数的社区检测（v13 D3 拆分：评测工具 gamma_scan 需要扫描
 /// 多个 γ 取值找最优粒度，生产默认走 detect_communities 的常量分辨率）
-pub fn detect_communities_with_resolution(graph: &KnowledgeGraph, resolution: f64) -> Vec<Vec<NodeId>> {
+pub fn detect_communities_with_resolution(
+    graph: &KnowledgeGraph,
+    resolution: f64,
+) -> Vec<Vec<NodeId>> {
     let file_nodes: Vec<NodeId> = graph
         .graph
         .node_references()
@@ -88,7 +91,8 @@ pub fn detect_communities_with_resolution(graph: &KnowledgeGraph, resolution: f6
     // （v26 D 实测：密集调用仓库在目录超节点图上全部并入一个社区），
     // <24 时实体级粒度更细（目录数少，页数可负担）。
     const MIN_DIRS_FOR_SUPERNODE: usize = 24;
-    let mut dirs: std::collections::BTreeMap<String, Vec<NodeId>> = std::collections::BTreeMap::new();
+    let mut dirs: std::collections::BTreeMap<String, Vec<NodeId>> =
+        std::collections::BTreeMap::new();
     for &nid in &file_nodes {
         let d = file_dir_key(graph, nid);
         dirs.entry(d).or_default().push(nid);
@@ -136,10 +140,7 @@ pub fn detect_communities_with_resolution(graph: &KnowledgeGraph, resolution: f6
         // 结构安全证据（R1 审计）：边权重由 build_graph 创建边时同步写入
         //（StableDiGraph 的边权重不是 Option），此处仅做类型层面的取值；
         // 若 graph 构造代码未来绕过权重初始化，本 expect 会立即失败暴露。
-        let e = graph
-            .graph
-            .edge_weight(edge.id())
-            .expect("边权重必然存在");
+        let e = graph.graph.edge_weight(edge.id()).expect("边权重必然存在");
         let w = match e.kind {
             EdgeKind::Imports => WEIGHT_IMPORTS,
             EdgeKind::Calls => WEIGHT_CALLS,
@@ -168,9 +169,7 @@ pub fn detect_communities_with_resolution(graph: &KnowledgeGraph, resolution: f6
     // 不存在 NaN/Inf/负值注入路径，add_edge 的 Err 分支不可达。
     let mut builder = GraphDataBuilder::new(file_nodes.len()).directed();
     for ((s, t), w) in &edge_weights {
-        builder
-            .add_edge(*s, *t, *w)
-            .expect("边权重均为有限非负数");
+        builder.add_edge(*s, *t, *w).expect("边权重均为有限非负数");
     }
     let data = builder.build().expect("图数据构造失败");
 
@@ -184,9 +183,7 @@ pub fn detect_communities_with_resolution(graph: &KnowledgeGraph, resolution: f6
     // 空图/单节点/无边图均提前安全返回（本函数在 edge_weights 为空时
     // 已提前返回单文件社区，此处输入恒为有效图）；run() 仅返回
     // internal-error 类 Result（图内部不变量破坏，不可由调用方触发）。
-    let result = Leiden::new(config)
-        .run(&data)
-        .expect("Leiden 社区检测失败");
+    let result = Leiden::new(config).run(&data).expect("Leiden 社区检测失败");
     let membership = result.partition.as_slice(); // membership[i] = 节点 i 的社区 ID
 
     // 按社区 ID 分组回 File 节点
@@ -211,7 +208,12 @@ pub fn detect_communities_with_resolution(graph: &KnowledgeGraph, resolution: f6
 fn min_file_path(graph: &KnowledgeGraph, files: &[NodeId]) -> String {
     files
         .iter()
-        .filter_map(|nid| graph.graph.node_weight(*nid).and_then(|n| n.file_path.clone()))
+        .filter_map(|nid| {
+            graph
+                .graph
+                .node_weight(*nid)
+                .and_then(|n| n.file_path.clone())
+        })
         .min()
         .unwrap_or_default()
 }
@@ -294,46 +296,47 @@ mod tests {
     fn make_graph() -> KnowledgeGraph {
         let mut kg = KnowledgeGraph::default();
         let g = &mut kg.graph;
-        let add_file =
-            |g: &mut petgraph::stable_graph::StableDiGraph<CodeNode, CodeEdge>,
-             path: &str|
-             -> (NodeId, NodeId) {
-                let module_path: Vec<String> = dir_segments(path);
-                let nid = g.add_node(CodeNode {
-                    id: NodeId::new(g.node_count()),
-                    kind: NodeKind::File,
-                    name: path.into(),
-                    file_path: Some(path.into()),
-                    line_range: None,
-                    doc_comment: None,
-                    signature: None, visibility: None,
-                    module_path,
-                });
-                // File → Entity 的 Contains 边
-                let eid = g.add_node(CodeNode {
-                    id: NodeId::new(g.node_count()),
-                    kind: NodeKind::Function,
-                    name: format!("f{}", nid.index()),
-                    file_path: Some(path.into()),
-                    line_range: None,
-                    doc_comment: None,
-                    signature: None, visibility: None,
-                    module_path: Vec::new(),
-                });
-                g.add_edge(
-                    nid,
-                    eid,
-                    CodeEdge {
-                        id: EdgeId::new(g.edge_count()),
-                        kind: EdgeKind::Contains,
-                        source: nid,
-                        target: eid,
-                        weight: 1.0,
-                        location: None,
-                    },
-                );
-                (nid, eid)
-            };
+        let add_file = |g: &mut petgraph::stable_graph::StableDiGraph<CodeNode, CodeEdge>,
+                        path: &str|
+         -> (NodeId, NodeId) {
+            let module_path: Vec<String> = dir_segments(path);
+            let nid = g.add_node(CodeNode {
+                id: NodeId::new(g.node_count()),
+                kind: NodeKind::File,
+                name: path.into(),
+                file_path: Some(path.into()),
+                line_range: None,
+                doc_comment: None,
+                signature: None,
+                visibility: None,
+                module_path,
+            });
+            // File → Entity 的 Contains 边
+            let eid = g.add_node(CodeNode {
+                id: NodeId::new(g.node_count()),
+                kind: NodeKind::Function,
+                name: format!("f{}", nid.index()),
+                file_path: Some(path.into()),
+                line_range: None,
+                doc_comment: None,
+                signature: None,
+                visibility: None,
+                module_path: Vec::new(),
+            });
+            g.add_edge(
+                nid,
+                eid,
+                CodeEdge {
+                    id: EdgeId::new(g.edge_count()),
+                    kind: EdgeKind::Contains,
+                    source: nid,
+                    target: eid,
+                    weight: 1.0,
+                    location: None,
+                },
+            );
+            (nid, eid)
+        };
         let (_a, ea) = add_file(g, "src/a.rs");
         let (_b, eb) = add_file(g, "src/b.rs");
         let _tcp = add_file(g, "src/net/tcp.rs");
@@ -365,7 +368,14 @@ mod tests {
             .expect("应存在含 2 文件的社区");
         let paths: Vec<String> = ab
             .iter()
-            .map(|nid| kg.graph.node_weight(*nid).unwrap().file_path.clone().unwrap())
+            .map(|nid| {
+                kg.graph
+                    .node_weight(*nid)
+                    .unwrap()
+                    .file_path
+                    .clone()
+                    .unwrap()
+            })
             .collect();
         assert!(paths.contains(&"src/a.rs".to_string()));
         assert!(paths.contains(&"src/b.rs".to_string()));
@@ -388,7 +398,8 @@ mod tests {
             file_path: Some("src/main.rs".into()),
             line_range: None,
             doc_comment: None,
-            signature: None, visibility: None,
+            signature: None,
+            visibility: None,
             module_path: vec!["src".into()],
         });
         let communities = detect_communities(&kg);
@@ -434,7 +445,7 @@ mod tests {
         let g = &mut kg.graph;
         // 大社区：src/net/ 下 2 文件 + 2 实体（4 节点）
         let add_comm = |g: &mut petgraph::stable_graph::StableDiGraph<CodeNode, CodeEdge>,
-                            path: &str| {
+                        path: &str| {
             let nid = g.add_node(CodeNode {
                 id: NodeId::new(g.node_count()),
                 kind: NodeKind::File,
@@ -442,7 +453,8 @@ mod tests {
                 file_path: Some(path.into()),
                 line_range: None,
                 doc_comment: None,
-                signature: None, visibility: None,
+                signature: None,
+                visibility: None,
                 module_path: dir_segments(path),
             });
             let eid = g.add_node(CodeNode {
@@ -452,7 +464,8 @@ mod tests {
                 file_path: Some(path.into()),
                 line_range: None,
                 doc_comment: None,
-                signature: None, visibility: None,
+                signature: None,
+                visibility: None,
                 module_path: Vec::new(),
             });
             g.add_edge(
@@ -483,7 +496,11 @@ mod tests {
         // tcp 的实体 → udp 的实体（Calls 边促成同社区）
         let fns: Vec<_> = g
             .node_indices()
-            .filter(|n| g.node_weight(*n).map(|n| n.kind == NodeKind::Function).unwrap_or(false))
+            .filter(|n| {
+                g.node_weight(*n)
+                    .map(|n| n.kind == NodeKind::Function)
+                    .unwrap_or(false)
+            })
             .collect();
         g.add_edge(
             fns[0],
@@ -599,7 +616,11 @@ mod tests {
         let mixed = first.iter().any(|c| {
             let dirs_in: std::collections::HashSet<&str> = c
                 .iter()
-                .filter_map(|nid| kg.graph.node_weight(*nid).and_then(|n| n.file_path.as_deref()))
+                .filter_map(|nid| {
+                    kg.graph
+                        .node_weight(*nid)
+                        .and_then(|n| n.file_path.as_deref())
+                })
                 .filter_map(|p| p.rsplit_once('/').map(|(d, _)| d))
                 .collect();
             dirs_in.len() > 1
@@ -635,7 +656,11 @@ mod tests {
                     .filter_map(|nid| kg.graph.node_weight(*nid).and_then(|n| n.file_path.clone()))
                     .collect();
                 paths.sort();
-                assert_eq!(paths.len(), files_per_dir, "每社区应为单目录全部文件: {paths:?}");
+                assert_eq!(
+                    paths.len(),
+                    files_per_dir,
+                    "每社区应为单目录全部文件: {paths:?}"
+                );
                 let dirs_in: std::collections::HashSet<&str> = paths
                     .iter()
                     .filter_map(|p| p.rsplit_once('/').map(|(d, _)| d))

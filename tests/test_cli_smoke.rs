@@ -105,7 +105,11 @@ fn test_note_appends_karpathy_log() {
         "note 应成功，stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let log_path = work_dir.join(".code-repo-wiki").join("wiki").join("zh").join("_log.md");
+    let log_path = work_dir
+        .join(".code-repo-wiki")
+        .join("wiki")
+        .join("zh")
+        .join("_log.md");
     let log = std::fs::read_to_string(&log_path)
         .unwrap_or_else(|e| panic!("_log.md 应存在 {}: {}", log_path.display(), e));
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
@@ -136,7 +140,9 @@ fn test_note_appends_karpathy_log() {
         "同一日期节不应重复，实际: {log}"
     );
     assert_eq!(
-        log.lines().filter(|l| l.trim_start().starts_with("- ")).count(),
+        log.lines()
+            .filter(|l| l.trim_start().starts_with("- "))
+            .count(),
         2,
         "应恰好 2 条记录，实际: {log}"
     );
@@ -178,12 +184,27 @@ fn test_install_ensures_user_default_config() {
     let content = std::fs::read_to_string(&cfg_path)
         .unwrap_or_else(|e| panic!("用户级配置应存在 {}: {}", cfg_path.display(), e));
     for section in ["[wiki]", "[llm]", "[embed]"] {
-        assert!(content.contains(section), "默认配置应含 {section} 段，实际:\n{content}");
+        assert!(
+            content.contains(section),
+            "默认配置应含 {section} 段，实际:\n{content}"
+        );
     }
-    assert!(!content.contains("[output]"), "默认配置不应含 [output]（已硬编码），实际:\n{content}");
-    assert!(!content.contains("[incremental]"), "默认配置不应含 [incremental]（已硬编码），实际:\n{content}");
-    assert!(!content.contains("[search]"), "默认配置不应含 [search]（已硬编码），实际:\n{content}");
-    assert!(!content.contains("[plan]"), "默认配置不应含 [plan]（已删除），实际:\n{content}");
+    assert!(
+        !content.contains("[output]"),
+        "默认配置不应含 [output]（已硬编码），实际:\n{content}"
+    );
+    assert!(
+        !content.contains("[incremental]"),
+        "默认配置不应含 [incremental]（已硬编码），实际:\n{content}"
+    );
+    assert!(
+        !content.contains("[search]"),
+        "默认配置不应含 [search]（已硬编码），实际:\n{content}"
+    );
+    assert!(
+        !content.contains("[plan]"),
+        "默认配置不应含 [plan]（已删除），实际:\n{content}"
+    );
 
     // 项目级配置不被自动创建（v24 用户要求的边界；v25 项目级文件名=config.toml，
     // 旧名 .code-repo-wiki.toml 已停用）
@@ -191,7 +212,10 @@ fn test_install_ensures_user_default_config() {
         !work_dir.join("config.toml").exists(),
         "install 不得在项目级自动创建 config.toml"
     );
-    assert!(!work_dir.join(".code-repo-wiki.toml").exists(), "旧文件名已停用");
+    assert!(
+        !work_dir.join(".code-repo-wiki.toml").exists(),
+        "旧文件名已停用"
+    );
 
     let _ = std::fs::remove_dir_all(&work_dir);
     let _ = std::fs::remove_dir_all(&home);
@@ -217,13 +241,17 @@ fn test_sync_merges_manual_edit_into_state() {
         .filter(|p| p.extension().is_some_and(|x| x == "md"))
         .min()
         .expect("generate 后 wiki/zh 下应有页面文件");
-    let state_path = work_dir.join(".code-repo-wiki").join(".state").join("generation_state.json");
+    let state_path = work_dir
+        .join(".code-repo-wiki")
+        .join(".state")
+        .join("generation_state.json");
     let state_before = std::fs::read_to_string(&state_path)
         .unwrap_or_else(|e| panic!("generate 应写状态文件 {}: {}", state_path.display(), e));
     let before: serde_json::Value = serde_json::from_str(&state_before).unwrap();
     // root 统一后产物路径绝对化（v17 F 组）：状态键为绝对路径，直接匹配
     let key = page.to_string_lossy().to_string();
-    let fp_before = before["doc_fingerprints"][&key].as_str()
+    let fp_before = before["doc_fingerprints"][&key]
+        .as_str()
         .unwrap_or_else(|| panic!("状态应含文档指纹 {key}: {state_before}"));
 
     // 3. 手工修改页面（与生成内容显著不同）
@@ -246,10 +274,16 @@ fn test_sync_merges_manual_edit_into_state() {
     // 指纹库更新：该页指纹从生成值变为修改后内容的 SHA256（工作区为准）
     let state_after = std::fs::read_to_string(&state_path).unwrap();
     let after: serde_json::Value = serde_json::from_str(&state_after).unwrap();
-    let fp_after = after["doc_fingerprints"][&key].as_str()
+    let fp_after = after["doc_fingerprints"][&key]
+        .as_str()
         .unwrap_or_else(|| panic!("sync 后状态应含文档指纹 {key}: {state_after}"));
-    assert_ne!(fp_before, fp_after, "sync 应更新 {key} 的指纹（工作区内容为准）");
-    let expected = code_repo_wiki::incremental::state::GenerationState::compute_file_fingerprint(&page).unwrap();
+    assert_ne!(
+        fp_before, fp_after,
+        "sync 应更新 {key} 的指纹（工作区内容为准）"
+    );
+    let expected =
+        code_repo_wiki::incremental::state::GenerationState::compute_file_fingerprint(&page)
+            .unwrap();
     assert_eq!(fp_after, expected, "指纹应等于修改后文件内容 SHA256");
 
     let _ = std::fs::remove_dir_all(&work_dir);
@@ -309,13 +343,28 @@ fn test_search_text_engine_json() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        work_dir.join(".code-repo-wiki").join(".search").join("text_index.db").exists(),
+        work_dir
+            .join(".code-repo-wiki")
+            .join(".search")
+            .join("text_index.db")
+            .exists(),
         "文本索引应生成"
     );
 
     let out = run_bin(
         &work_dir,
-        &["search", "-q", "authenticate", "-k", "3", "-e", "text", "--json", "-c", "config.toml"],
+        &[
+            "search",
+            "-q",
+            "authenticate",
+            "-k",
+            "3",
+            "-e",
+            "text",
+            "--json",
+            "-c",
+            "config.toml",
+        ],
     );
     assert!(
         out.status.success(),
@@ -333,7 +382,11 @@ fn test_search_text_engine_json() {
     });
     assert!(auth_hit.is_some(), "应命中 authenticate，实际: {stdout}");
     assert!(
-        auth_hit.unwrap().get("file").and_then(|f| f.as_str()).is_some_and(|f| f.contains("auth.rs")),
+        auth_hit
+            .unwrap()
+            .get("file")
+            .and_then(|f| f.as_str())
+            .is_some_and(|f| f.contains("auth.rs")),
         "命中应定位到 auth.rs，实际: {stdout}"
     );
 
@@ -356,7 +409,16 @@ fn test_search_top_k_falls_back_to_config() {
     // 不传 -k：结果数受硬编码默认 10 约束
     let out = run_bin(
         &work_dir,
-        &["search", "-q", "pub", "-e", "text", "--json", "-c", "config.toml"],
+        &[
+            "search",
+            "-q",
+            "pub",
+            "-e",
+            "text",
+            "--json",
+            "-c",
+            "config.toml",
+        ],
     );
     assert!(
         out.status.success(),
@@ -364,17 +426,42 @@ fn test_search_top_k_falls_back_to_config() {
         String::from_utf8_lossy(&out.stderr)
     );
     let hits: Vec<serde_json::Value> = serde_json::from_str(&String::from_utf8_lossy(&out.stdout))
-        .unwrap_or_else(|e| panic!("应输出合法 JSON: {e}\n实际: {}", String::from_utf8_lossy(&out.stdout)));
+        .unwrap_or_else(|e| {
+            panic!(
+                "应输出合法 JSON: {e}\n实际: {}",
+                String::from_utf8_lossy(&out.stdout)
+            )
+        });
     assert!(!hits.is_empty(), "应至少一个命中，实际: {:?}", hits);
-    assert!(hits.len() <= 10, "未传 -k 应回退硬编码默认 10，实际 {} 条", hits.len());
+    assert!(
+        hits.len() <= 10,
+        "未传 -k 应回退硬编码默认 10，实际 {} 条",
+        hits.len()
+    );
 
     // 对照：显式 -k 5 应超过配置值（证明候选多于 3，回退确实生效）
     let out = run_bin(
         &work_dir,
-        &["search", "-q", "pub", "-k", "5", "-e", "text", "--json", "-c", "config.toml"],
+        &[
+            "search",
+            "-q",
+            "pub",
+            "-k",
+            "5",
+            "-e",
+            "text",
+            "--json",
+            "-c",
+            "config.toml",
+        ],
     );
-    let hits5: Vec<serde_json::Value> = serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
-    assert!(hits5.len() > 3, "显式 -k 5 应返回 5 条（候选多于 3），实际 {} 条", hits5.len());
+    let hits5: Vec<serde_json::Value> =
+        serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
+    assert!(
+        hits5.len() > 3,
+        "显式 -k 5 应返回 5 条（候选多于 3），实际 {} 条",
+        hits5.len()
+    );
 
     let _ = std::fs::remove_dir_all(&work_dir);
 }
@@ -395,12 +482,24 @@ fn test_search_semantic_without_embed_errors() {
     );
 
     // 删除语义索引，模拟 embedding 端点不可用/索引未构建
-    let semantic_index = work_dir.join(".code-repo-wiki").join(".search").join("semantic_index.db");
+    let semantic_index = work_dir
+        .join(".code-repo-wiki")
+        .join(".search")
+        .join("semantic_index.db");
     let _ = std::fs::remove_file(&semantic_index);
 
     let out = run_bin(
         &work_dir,
-        &["search", "-q", "authenticate", "-e", "semantic", "--json", "-c", "config.toml"],
+        &[
+            "search",
+            "-q",
+            "authenticate",
+            "-e",
+            "semantic",
+            "--json",
+            "-c",
+            "config.toml",
+        ],
     );
     let combined = format!(
         "{}{}",
@@ -434,7 +533,10 @@ fn test_search_and_status_show_semantic_degraded_hint() {
     );
 
     // 降级标记应在 generate 后存在（mock embed 批量索引失败路径）
-    let marker = work_dir.join(".code-repo-wiki").join(".search").join("semantic_degraded");
+    let marker = work_dir
+        .join(".code-repo-wiki")
+        .join(".search")
+        .join("semantic_degraded");
     assert!(
         marker.exists(),
         "mock embed 批量失败应写入降级标记: {}",
@@ -442,7 +544,18 @@ fn test_search_and_status_show_semantic_degraded_hint() {
     );
 
     // search 表格模式（非 json）：结果后追加降级提示行
-    let out = run_bin(&work_dir, &["search", "-q", "authenticate", "-e", "text", "-c", "config.toml"]);
+    let out = run_bin(
+        &work_dir,
+        &[
+            "search",
+            "-q",
+            "authenticate",
+            "-e",
+            "text",
+            "-c",
+            "config.toml",
+        ],
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("语义索引已降级（原因: "),
@@ -508,10 +621,19 @@ fn test_lint_three_state_exit_codes() {
     let out = run_bin(&work_dir, &["generate", "-c", "config.toml"]);
     assert!(out.status.success(), "generate 应成功");
     let out = run_bin(&work_dir, &["lint", "-c", "config.toml"]);
-    assert_eq!(out.status.code(), Some(0), "干净产物应为 0: {}", String::from_utf8_lossy(&out.stdout));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "干净产物应为 0: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 
     // 态 2：写入孤儿页 → 发现问题 → 1
-    let orphan = work_dir.join(".code-repo-wiki").join("wiki").join("zh").join("orphan.md");
+    let orphan = work_dir
+        .join(".code-repo-wiki")
+        .join("wiki")
+        .join("zh")
+        .join("orphan.md");
     std::fs::create_dir_all(orphan.parent().unwrap()).unwrap();
     std::fs::write(&orphan, "# 孤儿页\n").unwrap();
     let out = run_bin(&work_dir, &["lint", "-c", "config.toml"]);
@@ -563,7 +685,11 @@ fn test_update_dry_run_lists_changes_without_generating() {
     std::fs::write(&src_file, "// 变更\npub fn touched() {}\n").unwrap();
 
     let out = run_bin(&work_dir, &["update", "-c", "config.toml", "--dry-run"]);
-    assert!(out.status.success(), "--dry-run 应成功: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "--dry-run 应成功: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("--dry-run:"), "应输出预览头: {stdout}");
     assert!(stdout.contains("未执行生成"), "应声明未执行生成: {stdout}");
@@ -593,7 +719,10 @@ fn test_update_dry_run_lists_changes_without_generating() {
 fn test_update_dry_run_rejects_conflicting_flags() {
     let work_dir = prepare_repo("dry_run_conflict");
 
-    let out = run_bin(&work_dir, &["update", "-c", "config.toml", "--dry-run", "--force"]);
+    let out = run_bin(
+        &work_dir,
+        &["update", "-c", "config.toml", "--dry-run", "--force"],
+    );
     assert!(
         !out.status.success(),
         "--dry-run --force 应被拒绝，实际 status: {:?}\nstderr: {}",
@@ -610,7 +739,16 @@ fn test_update_dry_run_rejects_conflicting_flags() {
         "冲突提示应说明不能同时使用，实际: {combined}"
     );
 
-    let out = run_bin(&work_dir, &["update", "-c", "config.toml", "--dry-run", "--progress-json"]);
+    let out = run_bin(
+        &work_dir,
+        &[
+            "update",
+            "-c",
+            "config.toml",
+            "--dry-run",
+            "--progress-json",
+        ],
+    );
     assert!(
         !out.status.success(),
         "--dry-run --progress-json 应被拒绝，实际 status: {:?}",
@@ -627,7 +765,11 @@ fn test_update_dry_run_rejects_conflicting_flags() {
 fn test_update_command_smoke() {
     let work_dir = prepare_repo("update_smoke");
     std::fs::create_dir_all(work_dir.join("src")).unwrap();
-    std::fs::write(work_dir.join("src").join("extra.rs"), "pub fn extra() -> u32 { 7 }\n").unwrap();
+    std::fs::write(
+        work_dir.join("src").join("extra.rs"),
+        "pub fn extra() -> u32 { 7 }\n",
+    )
+    .unwrap();
 
     let out = run_bin(&work_dir, &["generate", "-c", "config.toml"]);
     assert!(
@@ -637,17 +779,18 @@ fn test_update_command_smoke() {
     );
 
     // 修改一个源文件后增量更新
-    std::fs::write(work_dir.join("src").join("extra.rs"), "pub fn extra() -> u32 { 8 }\n").unwrap();
+    std::fs::write(
+        work_dir.join("src").join("extra.rs"),
+        "pub fn extra() -> u32 { 8 }\n",
+    )
+    .unwrap();
     let out = run_bin(&work_dir, &["update", "-c", "config.toml"]);
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(
-        out.status.success(),
-        "update 应成功退出，输出: {combined}"
-    );
+    assert!(out.status.success(), "update 应成功退出，输出: {combined}");
     // v44：真实执行路径须打印完成摘要（stdout 状态告知；no-op 场景断言在
     // test_update_noop_stdout_contract 反向保证）
     assert!(
@@ -681,7 +824,12 @@ fn test_watch_command_detects_change() {
     let out = run_bin(&work_dir, &["generate", "-c", "config.toml"]);
     assert!(out.status.success(), "generate 应成功");
     assert!(
-        work_dir.join(".code-repo-wiki").join("wiki").join("zh").join("api.md").exists(),
+        work_dir
+            .join(".code-repo-wiki")
+            .join("wiki")
+            .join("zh")
+            .join("api.md")
+            .exists(),
         "基线产物应存在"
     );
 
@@ -705,8 +853,13 @@ fn test_watch_command_detects_change() {
     let drain_thread = std::thread::spawn(move || {
         let mut line = String::new();
         while let Ok(n) = stderr_reader.read_line(&mut line) {
-            if n == 0 { break; }
-            lines_for_reader.lock().unwrap().push(line.trim().to_string());
+            if n == 0 {
+                break;
+            }
+            lines_for_reader
+                .lock()
+                .unwrap()
+                .push(line.trim().to_string());
             line.clear();
         }
     });
@@ -714,8 +867,13 @@ fn test_watch_command_detects_change() {
     // 等待 watch 完成启动（首次全量 + 监听注册）后写入变更。
     // 就绪信号不能用 stderr 日志（本测试 RUST_LOG=off 会过滤掉"开始监听"）：
     // 以状态文件 mtime 变化（全量完成时写盘）为信号，再留 300ms 给监听注册。
-    let state_file = work_dir.join(".code-repo-wiki").join(".state").join("generation_state.json");
-    let baseline_state_mtime = std::fs::metadata(&state_file).and_then(|m| m.modified()).ok();
+    let state_file = work_dir
+        .join(".code-repo-wiki")
+        .join(".state")
+        .join("generation_state.json");
+    let baseline_state_mtime = std::fs::metadata(&state_file)
+        .and_then(|m| m.modified())
+        .ok();
     let ready_deadline = Instant::now() + Duration::from_secs(30);
     let mut state_updated = false;
     while Instant::now() < ready_deadline {
@@ -727,28 +885,50 @@ fn test_watch_command_detects_change() {
             break;
         }
     }
-    assert!(state_updated, "watch 首次全量应更新状态文件（监听就绪信号），stderr: {:?}", *stderr_lines.lock().unwrap());
+    assert!(
+        state_updated,
+        "watch 首次全量应更新状态文件（监听就绪信号），stderr: {:?}",
+        *stderr_lines.lock().unwrap()
+    );
     std::thread::sleep(Duration::from_millis(300));
     std::fs::write(&extra, "pub fn extra() -> u32 { 9 }\n").unwrap();
 
     // 轮询：变更应触发增量更新（产物 mtime 更新；以 api.md 的修改时间变化为信号）
-    let before = std::fs::metadata(work_dir.join(".code-repo-wiki").join("wiki").join("zh").join("api.md"))
-        .and_then(|m| m.modified())
-        .ok();
+    let before = std::fs::metadata(
+        work_dir
+            .join(".code-repo-wiki")
+            .join("wiki")
+            .join("zh")
+            .join("api.md"),
+    )
+    .and_then(|m| m.modified())
+    .ok();
     let deadline = Instant::now() + Duration::from_secs(8);
     let mut detected = false;
     while Instant::now() < deadline {
         // 每轮排空 stderr 管道（防止缓冲填满阻塞子进程）
         std::thread::sleep(Duration::from_millis(100));
-        if let Ok(m) = std::fs::metadata(work_dir.join(".code-repo-wiki").join("wiki").join("zh").join("api.md"))
-            .and_then(|m| m.modified())
-            && before.map(|b| m > b + Duration::from_millis(500)).unwrap_or(false)
+        if let Ok(m) = std::fs::metadata(
+            work_dir
+                .join(".code-repo-wiki")
+                .join("wiki")
+                .join("zh")
+                .join("api.md"),
+        )
+        .and_then(|m| m.modified())
+            && before
+                .map(|b| m > b + Duration::from_millis(500))
+                .unwrap_or(false)
         {
             detected = true;
             break;
         }
     }
-    assert!(detected, "watch 应检测到文件变更并触发增量更新，watch stderr: {:?}", *stderr_lines.lock().unwrap());
+    assert!(
+        detected,
+        "watch 应检测到文件变更并触发增量更新，watch stderr: {:?}",
+        *stderr_lines.lock().unwrap()
+    );
 
     // 收尾：kill 子进程（watch 是阻塞监听，必须显式终止）
     let _ = child.kill();
@@ -763,7 +943,16 @@ fn test_root_missing_dir_errors() {
     let work_dir = prepare_repo("root_missing");
     let missing = work_dir.join("no-such-dir");
 
-    let out = run_bin(&work_dir, &["generate", "-c", "config.toml", "--root", missing.to_str().unwrap()]);
+    let out = run_bin(
+        &work_dir,
+        &[
+            "generate",
+            "-c",
+            "config.toml",
+            "--root",
+            missing.to_str().unwrap(),
+        ],
+    );
     assert!(
         !out.status.success(),
         "--root 不存在应非 0 退出码, stdout: {}",
@@ -774,7 +963,10 @@ fn test_root_missing_dir_errors() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(combined.contains("目录不存在"), "应报目录不存在, 实际: {combined}");
+    assert!(
+        combined.contains("目录不存在"),
+        "应报目录不存在, 实际: {combined}"
+    );
 
     let _ = std::fs::remove_dir_all(&work_dir);
 }
@@ -863,13 +1055,7 @@ fn collect_page_stems(work_dir: &Path) -> std::collections::HashSet<String> {
         .unwrap()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().unwrap().is_file())
-        .map(|e| {
-            e.path()
-                .file_stem()
-                .unwrap()
-                .to_string_lossy()
-                .into_owned()
-        })
+        .map(|e| e.path().file_stem().unwrap().to_string_lossy().into_owned())
         .collect()
 }
 
@@ -925,7 +1111,11 @@ fn test_generate_warns_when_agents_md_exists() {
     let agents = work_dir.join("AGENTS.md");
     std::fs::write(&agents, "# 人工维护的 AGENTS.md\n\n自定义内容\n").unwrap();
     // RUST_LOG=warn 捕获 tracing 警告（run_bin 默认 RUST_LOG=off 关日志）
-    let out = run_bin_with_envs(&work_dir, &["generate", "-c", "config.toml"], &[("RUST_LOG", "warn")]);
+    let out = run_bin_with_envs(
+        &work_dir,
+        &["generate", "-c", "config.toml"],
+        &[("RUST_LOG", "warn")],
+    );
     assert!(
         out.status.success(),
         "generate 应成功: {}",
@@ -942,7 +1132,10 @@ fn test_generate_warns_when_agents_md_exists() {
     );
     // 人工内容不得被覆盖
     let content = std::fs::read_to_string(&agents).unwrap();
-    assert!(content.contains("自定义内容"), "人工 AGENTS.md 被覆盖: {content}");
+    assert!(
+        content.contains("自定义内容"),
+        "人工 AGENTS.md 被覆盖: {content}"
+    );
     let _ = std::fs::remove_dir_all(&work_dir);
 }
 
@@ -963,7 +1156,10 @@ fn test_doctor_reports_and_exits() {
     for name in ["配置", "产物目录可写", "输出目录", "LLM Key", "网络"] {
         assert!(stdout.contains(name), "应输出检查项 {name}: {stdout}");
     }
-    assert!(stdout.contains("mock provider：跳过网络检查"), "应标注网络跳过: {stdout}");
+    assert!(
+        stdout.contains("mock provider：跳过网络检查"),
+        "应标注网络跳过: {stdout}"
+    );
 
     // 配置缺失 → 失败退出码 1
     let out = run_bin(&work_dir, &["doctor", "-c", "nope.toml"]);
@@ -1024,7 +1220,10 @@ fn test_bench_manifest_smoke() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("清单跑分报告"), "应输出报告标题: {stdout}");
-    assert!(stdout.contains("| repo-a |"), "矩阵应含 repo-a 行: {stdout}");
+    assert!(
+        stdout.contains("| repo-a |"),
+        "矩阵应含 repo-a 行: {stdout}"
+    );
     assert!(stdout.contains("**失败**"), "缺失路径应标注失败: {stdout}");
 
     let _ = std::fs::remove_dir_all(&base);
@@ -1085,16 +1284,33 @@ fn test_help_shows_grouped_commands() {
         );
     }
     for name in [
-        "search", "ast-search", "status", "note", "card",
-        "generate", "update", "sync", "export", "watch",
-        "install", "uninstall", "key", "doctor", "lint", "mcp",
-        "bench", "bench-manifest",
+        "search",
+        "ast-search",
+        "status",
+        "note",
+        "card",
+        "generate",
+        "update",
+        "sync",
+        "export",
+        "watch",
+        "install",
+        "uninstall",
+        "key",
+        "doctor",
+        "lint",
+        "mcp",
+        "bench",
+        "bench-manifest",
     ] {
-        let count = stdout.lines().filter(|l| {
-            let t = l.trim_start();
-            t.strip_prefix(name)
-                .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
-        }).count();
+        let count = stdout
+            .lines()
+            .filter(|l| {
+                let t = l.trim_start();
+                t.strip_prefix(name)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
+            })
+            .count();
         assert_eq!(
             count, 1,
             "命令 {name} 应在 help 中恰好出现一次，实际输出: {stdout}"
@@ -1157,7 +1373,10 @@ fn test_card_config_short_flag() {
         .to_string_lossy()
         .replace('_', "::");
 
-    let out = run_bin(&work_dir, &["card", "generate", &module, "-c", "config.toml"]);
+    let out = run_bin(
+        &work_dir,
+        &["card", "generate", &module, "-c", "config.toml"],
+    );
     assert!(
         out.status.success(),
         "card generate -c 短旗标应成功，stderr: {}",

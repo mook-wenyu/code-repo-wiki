@@ -41,5 +41,4 @@ impl EdgeKind {
             EdgeKind::Implements => "implements",
         }
     }
-
 }

@@ -143,7 +143,9 @@ static LOCK_POOL: OnceLock<Mutex<HashMap<std::path::PathBuf, Vec<RwLockPtr>>>> =
 /// 首次使用某路径时：打开常驻锁文件（不 truncate、不删除），`Box::leak`
 /// 一个 RwLock 换 `'static`（每路径每进程仅一次）；此后该路径的 RwLock
 /// 都在池中流转，不再新建——`--wait` 长轮询与 watch 每轮复用同一句柄。
-fn pool_checkout(config: &crate::config::schema::WikiConfig) -> Result<(std::path::PathBuf, *mut fd_lock::RwLock<std::fs::File>)> {
+fn pool_checkout(
+    config: &crate::config::schema::WikiConfig,
+) -> Result<(std::path::PathBuf, *mut fd_lock::RwLock<std::fs::File>)> {
     let path = lock_file_path(config)?;
     let pool = LOCK_POOL.get_or_init(Default::default);
     let mut pool = pool.lock().unwrap();
@@ -167,7 +169,9 @@ fn pool_checkout(config: &crate::config::schema::WikiConfig) -> Result<(std::pat
 fn pool_return(path: &std::path::Path, rwlock: *mut fd_lock::RwLock<std::fs::File>) {
     let pool = LOCK_POOL.get_or_init(Default::default);
     let mut pool = pool.lock().unwrap();
-    pool.entry(path.to_path_buf()).or_default().push(RwLockPtr(rwlock));
+    pool.entry(path.to_path_buf())
+        .or_default()
+        .push(RwLockPtr(rwlock));
 }
 
 /// 池归还令牌：作为 RunLock 字段存在，且必须声明在 `_lock` 之后。
@@ -393,7 +397,8 @@ mod tests {
     use super::*;
 
     fn temp_path(tag: &str, name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_fs_{}_{}", tag, std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("code_repo_wiki_fs_{}_{}", tag, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.join(name)
@@ -452,7 +457,10 @@ mod tests {
             file.read_to_string(&mut content).unwrap();
         }
         assert!(content.contains("pid="), "锁文件应含 pid=: {content}");
-        assert!(content.contains("process="), "锁文件应含 process=: {content}");
+        assert!(
+            content.contains("process="),
+            "锁文件应含 process=: {content}"
+        );
         drop(lock);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -468,7 +476,10 @@ mod tests {
         let dir = temp_path("lock_skip", "");
         let config = lock_config(&dir);
         let _first = acquire_run_lock(&config).unwrap();
-        let options = crate::LockOptions { wait: None, skip_if_locked: true };
+        let options = crate::LockOptions {
+            wait: None,
+            skip_if_locked: true,
+        };
         let outcome = acquire_run_lock_with_options(&config, &options).unwrap();
         assert!(
             matches!(outcome, LockAcquire::Skipped),
@@ -483,7 +494,8 @@ mod tests {
         let dir = temp_path("lock_default", "");
         let config = lock_config(&dir);
         let _first = acquire_run_lock(&config).unwrap();
-        let err = acquire_run_lock_with_options(&config, &crate::LockOptions::default()).unwrap_err();
+        let err =
+            acquire_run_lock_with_options(&config, &crate::LockOptions::default()).unwrap_err();
         assert!(err.to_string().contains("正在运行"), "应报冲突错误: {err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -499,7 +511,10 @@ mod tests {
             skip_if_locked: false,
         };
         let err = acquire_run_lock_with_options(&config, &options).unwrap_err();
-        assert!(err.to_string().contains("正在运行"), "超时仍应报冲突错误: {err}");
+        assert!(
+            err.to_string().contains("正在运行"),
+            "超时仍应报冲突错误: {err}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -563,7 +578,10 @@ mod tests {
             skip_if_locked: false,
         };
         let err = acquire_run_lock_with_options(&config, &options).unwrap_err();
-        assert!(err.to_string().contains("正在运行"), "超时仍应报冲突: {err}");
+        assert!(
+            err.to_string().contains("正在运行"),
+            "超时仍应报冲突: {err}"
+        );
         drop(first);
         // 释放后再次获取：应复用池中 RwLock 成功（若池归还纪律失效，此处
         // 也会成功但会新建句柄——该测试的回归价值在于保覆盖、防删除归还
@@ -579,7 +597,10 @@ mod tests {
         write_file_atomic(&path, "{\"v\":1}").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"v\":1}");
         // 临时文件不应残留
-        assert!(!path.with_extension("tmp").exists(), "rename 后不应残留临时文件");
+        assert!(
+            !path.with_extension("tmp").exists(),
+            "rename 后不应残留临时文件"
+        );
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -596,7 +617,8 @@ mod tests {
     /// 父目录不存在时自动创建
     #[test]
     fn test_creates_parent_dir() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_fs_nested_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("code_repo_wiki_fs_nested_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("deep").join("nested").join("c.json");
         write_file_atomic(&path, "x").unwrap();

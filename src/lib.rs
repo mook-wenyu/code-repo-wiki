@@ -1,18 +1,18 @@
-pub mod config;
-pub mod model;
-pub mod ingest;
 pub mod analysis;
-pub mod generate;
-pub mod output;
-pub mod incremental;
-pub mod search;
-pub mod commands;
-pub mod fs;
-pub mod mcp;
-pub mod project;
 pub mod bench;
+pub mod commands;
+pub mod config;
 pub mod doctor;
+pub mod fs;
+pub mod generate;
+pub mod incremental;
+pub mod ingest;
 pub mod key;
+pub mod mcp;
+pub mod model;
+pub mod output;
+pub mod project;
+pub mod search;
 pub mod test_git;
 
 use std::collections::HashMap;
@@ -21,7 +21,7 @@ use std::path::Path;
 use std::sync::{Arc, OnceLock};
 use tokio::runtime::Runtime;
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 
 /// 仓库分析结果，完整流水线的输出
 pub struct AnalysisResult {
@@ -107,7 +107,10 @@ pub fn load_config_rooted(
 fn load_protection(
     config: &config::schema::WikiConfig,
     force: bool,
-) -> anyhow::Result<(std::collections::HashSet<String>, Option<incremental::state::GenerationState>)> {
+) -> anyhow::Result<(
+    std::collections::HashSet<String>,
+    Option<incremental::state::GenerationState>,
+)> {
     if force {
         return Ok((std::collections::HashSet::new(), None));
     }
@@ -123,11 +126,8 @@ fn load_protection(
             state_path.display()
         )
     })?;
-    let mut protected: std::collections::HashSet<String> = state
-        .protected_docs
-        .iter()
-        .cloned()
-        .collect();
+    let mut protected: std::collections::HashSet<String> =
+        state.protected_docs.iter().cloned().collect();
     for p in state.detect_manually_modified() {
         protected.insert(p);
     }
@@ -176,9 +176,9 @@ fn save_generation_state(
                     state.doc_fingerprints = fps;
                     state.doc_modules = modules;
                 }
-                Err(e) => tracing::warn!(
-                    "产物指纹记录失败（下次 update 人工修改检测可能失效）: {e}"
-                ),
+                Err(e) => {
+                    tracing::warn!("产物指纹记录失败（下次 update 人工修改检测可能失效）: {e}")
+                }
             }
             if let Err(e) = state.save(&state_dir) {
                 tracing::warn!("生成状态保存失败（下次 update 无指纹基线，人工修改保护失效）: {e}");
@@ -244,7 +244,15 @@ pub fn run_pipeline(
     root: &project::ProjectRoot,
     mode: &GenerationMode,
 ) -> anyhow::Result<AnalysisResult> {
-    run_pipeline_with_progress(config_path, output, force, root, mode, LockOptions::default(), &|_| {})
+    run_pipeline_with_progress(
+        config_path,
+        output,
+        force,
+        root,
+        mode,
+        LockOptions::default(),
+        &|_| {},
+    )
 }
 
 /// 生成流水线分段计时（v32 8.1 FR-301 数据驱动剖析）
@@ -413,7 +421,10 @@ pub fn run_pipeline_with_config(
     let watch_set: std::collections::HashSet<std::path::PathBuf> =
         watch_paths.iter().cloned().collect();
     let scan = if is_incremental {
-        let cache_path = config.output_dir().join(".state").join("insights_cache.json");
+        let cache_path = config
+            .output_dir()
+            .join(".state")
+            .join("insights_cache.json");
         ingest::scan_and_parse_cached_at(root, &Some(cache_path), &watch_set)?
     } else {
         ingest::scan_and_parse_at(root)?
@@ -421,13 +432,21 @@ pub fn run_pipeline_with_config(
     let file_insights = scan.insights;
     let files_failed = scan.files_failed;
     timings.scan_parse_ms = start.elapsed().as_millis() as u64;
-    on_progress(ProgressEvent { stage: "scanning", percent: 10, current: None, total: None });
+    on_progress(ProgressEvent {
+        stage: "scanning",
+        percent: 10,
+        current: None,
+        total: None,
+    });
     if file_insights.is_empty() {
         bail!("未找到任何源文件");
     }
     let mut stats = AnalysisStats {
         files_scanned: file_insights.len(),
-        files_parsed: file_insights.iter().filter(|f| !f.entities.is_empty()).count(),
+        files_parsed: file_insights
+            .iter()
+            .filter(|f| !f.entities.is_empty())
+            .count(),
         files_failed,
         ..Default::default()
     };
@@ -437,16 +456,31 @@ pub fn run_pipeline_with_config(
     // v47：analyzing 25% 在 build_graph 之前发射——build_graph+attach_features
     // 实测 54s（274 特征），若在之后发射则 10%→25% 之间长时间无进度，
     // 用户误判卡死（实测反馈）。
-    on_progress(ProgressEvent { stage: "analyzing", percent: 25, current: None, total: None });
+    on_progress(ProgressEvent {
+        stage: "analyzing",
+        percent: 25,
+        current: None,
+        total: None,
+    });
     let mut graph = analysis::build_graph(&file_insights)?;
     // v13.5：27% 在 build_graph 完成后发射——大仓图构建可达分钟级，
     // 25% 前置事件之后、27% 之前即为构建耗时窗口，
     // 完成即推进进度，避免长黑屏误判卡死（v47 原则的延续）。
-    on_progress(ProgressEvent { stage: "analyzing", percent: 27, current: None, total: None });
+    on_progress(ProgressEvent {
+        stage: "analyzing",
+        percent: 27,
+        current: None,
+        total: None,
+    });
     attach_features(&mut graph, &config);
     // 特征附着（embedding/特征聚类）同样可能耗时（大仓数百实体），
     // 完成后补 28% 推进点。
-    on_progress(ProgressEvent { stage: "analyzing", percent: 28, current: None, total: None });
+    on_progress(ProgressEvent {
+        stage: "analyzing",
+        percent: 28,
+        current: None,
+        total: None,
+    });
     timings.graph_ms = start.elapsed().as_millis() as u64 - timings.scan_parse_ms;
     stats.total_entities = graph.graph.node_count();
     stats.total_edges = graph.graph.edge_count();
@@ -455,18 +489,28 @@ pub fn run_pipeline_with_config(
     // Phase 2b: 增量变更分析（git diff + 实体级变化分类 + 语义传播；
     // 全量模式跳过。diff 超限/非 git 仓库时内部回退全量语义）
     let inc_result = if is_incremental {
-        Some(incremental::run_incremental_update_at(root, &file_insights, &graph, &config, &watch_paths)?)
+        Some(incremental::run_incremental_update_at(
+            root,
+            &file_insights,
+            &graph,
+            &config,
+            &watch_paths,
+        )?)
     } else {
         None
     };
     // 增量变更分析（git diff + 实体级分类）完成后补 29%——仅增量模式有
     // 此阶段；全量模式 28% 后直接进入 30% chunking（单调性保持）。
     if inc_result.is_some() {
-        on_progress(ProgressEvent { stage: "analyzing", percent: 29, current: None, total: None });
+        on_progress(ProgressEvent {
+            stage: "analyzing",
+            percent: 29,
+            current: None,
+            total: None,
+        });
     }
-    timings.incremental_ms = start.elapsed().as_millis() as u64
-        - timings.scan_parse_ms
-        - timings.graph_ms;
+    timings.incremental_ms =
+        start.elapsed().as_millis() as u64 - timings.scan_parse_ms - timings.graph_ms;
 
     // 无代码变更短路：仅增量模式存在；此时若有新检测的人工修改仍需
     // 反向同步到卡片文件（生成路径跳过时此处的直接写盘是唯一落卡途径，
@@ -483,7 +527,12 @@ pub fn run_pipeline_with_config(
         tracing::info!("无变更，跳过生成");
         // v46：no-op 早退也发 done 事件——进度流保持终态完整
         //（--progress-json 消费者无需依赖 EOF 推断完成）
-        on_progress(ProgressEvent { stage: "done", percent: 100, current: None, total: None });
+        on_progress(ProgressEvent {
+            stage: "done",
+            percent: 100,
+            current: None,
+            total: None,
+        });
         let stats = AnalysisStats {
             files_scanned: file_insights.len(),
             generation_time_ms: start.elapsed().as_millis() as u64,
@@ -505,17 +554,45 @@ pub fn run_pipeline_with_config(
     // v46：cards/wiki 两个阶段点（60/90）在 run_generation 前发射——LLM
     // 逐项进度事件在 run_generation 内部按 60..90 / 90..95 区间插值，
     // 阶段点在前保证整条事件流百分比单调（30→60→90→60+…→90…→95→98→100）。
-    on_progress(ProgressEvent { stage: "chunking", percent: 30, current: None, total: None });
-    on_progress(ProgressEvent { stage: "cards", percent: 60, current: None, total: None });
-    on_progress(ProgressEvent { stage: "wiki", percent: 90, current: None, total: None });
+    on_progress(ProgressEvent {
+        stage: "chunking",
+        percent: 30,
+        current: None,
+        total: None,
+    });
+    on_progress(ProgressEvent {
+        stage: "cards",
+        percent: 60,
+        current: None,
+        total: None,
+    });
+    on_progress(ProgressEvent {
+        stage: "wiki",
+        percent: 90,
+        current: None,
+        total: None,
+    });
     let rt = get_global_runtime();
     let extra_edits = collect_manual_edits(old_state.as_ref());
     let mut gen_output = if let Some(inc) = &inc_result {
         rt.block_on(generate::run_generation_filtered(
-            &graph, &file_insights, &config, root, inc, &extra_edits, &on_progress,
+            &graph,
+            &file_insights,
+            &config,
+            root,
+            inc,
+            &extra_edits,
+            &on_progress,
         ))?
     } else {
-        rt.block_on(generate::run_generation(&graph, &file_insights, &config, root, &extra_edits, &on_progress))?
+        rt.block_on(generate::run_generation(
+            &graph,
+            &file_insights,
+            &config,
+            root,
+            &extra_edits,
+            &on_progress,
+        ))?
     };
     // v32 8.1：generate 侧内部段（chunk/card/wiki）合并进总计时
     timings.chunk_ms = gen_output.timings.chunk_ms;
@@ -592,15 +669,18 @@ pub fn run_pipeline_with_config(
     // 旧页面/卡片）一律清理，module_{n} 档不再漏删）
     // v46：wiki 阶段点在 run_generation 前已发射（90）——此处不再重复，
     // 项级 wiki 事件上限 95（与 output 95 相接，保持百分比单调）。
-    output::render_all(&gen_output.documents, &gen_output.cards, &graph, &config, &protected)?;
+    output::render_all(
+        &gen_output.documents,
+        &gen_output.cards,
+        &graph,
+        &config,
+        &protected,
+    )?;
     // 保留集 = 当前扫描的全部模块（graph.modules 基于全部 insights 检测，
     // 含增量未受影响的模块）：增量只重新生成受影响模块，未受影响模块的
     // 旧页面须保留（v17 F 组，t09 实测修复——误删会制造断链）
-    let preserved_modules: std::collections::HashSet<String> = graph
-        .modules
-        .iter()
-        .map(|m| m.name.clone())
-        .collect();
+    let preserved_modules: std::collections::HashSet<String> =
+        graph.modules.iter().map(|m| m.name.clone()).collect();
     cleanup_stale_outputs(
         old_state.as_ref(),
         &output::rendered_paths(&gen_output.documents, &gen_output.cards, &config),
@@ -614,7 +694,12 @@ pub fn run_pipeline_with_config(
         - timings.card_ms
         - timings.wiki_ms
         - timings.index_guide_ms;
-    on_progress(ProgressEvent { stage: "output", percent: 95, current: None, total: None });
+    on_progress(ProgressEvent {
+        stage: "output",
+        percent: 95,
+        current: None,
+        total: None,
+    });
 
     // Phase 5: 构建/增量更新搜索索引
     let index_result = if is_incremental {
@@ -638,7 +723,12 @@ pub fn run_pipeline_with_config(
         - timings.wiki_ms
         - timings.index_guide_ms
         - timings.render_ms;
-    on_progress(ProgressEvent { stage: "index", percent: 98, current: None, total: None });
+    on_progress(ProgressEvent {
+        stage: "index",
+        percent: 98,
+        current: None,
+        total: None,
+    });
 
     // Phase 6: 保存增量状态（含文档指纹用于人工修改保护）
     // A3（v14）：git 基线获取失败显式区分——非 git 仓库（info：预期
@@ -659,7 +749,16 @@ pub fn run_pipeline_with_config(
             String::new()
         }
     };
-    save_generation_state(root, &config, &file_insights, &gen_output.documents, &gen_output.cards, &protected, &head_hash, &gen_output.generation_stats.failed_modules);
+    save_generation_state(
+        root,
+        &config,
+        &file_insights,
+        &gen_output.documents,
+        &gen_output.cards,
+        &protected,
+        &head_hash,
+        &gen_output.generation_stats.failed_modules,
+    );
 
     timings.state_ms = start.elapsed().as_millis() as u64
         - timings.scan_parse_ms
@@ -674,16 +773,26 @@ pub fn run_pipeline_with_config(
     timings.total_ms = start.elapsed().as_millis() as u64;
     write_last_timings(&config, &timings);
 
-    on_progress(ProgressEvent { stage: "done", percent: 100, current: None, total: None });
+    on_progress(ProgressEvent {
+        stage: "done",
+        percent: 100,
+        current: None,
+        total: None,
+    });
     stats.generation_time_ms = start.elapsed().as_millis() as u64;
     // 展示用统计（失败模块真源在 generation_stats；save 调用已直接使用
     // generation_stats.failed_modules——顺序修复：此前在此处才赋值，晚于
     // Phase 6 的 save_generation_state，导致失败模块恒为空数组落盘，
     // v22 补偿机制对全量 generate 的失败静默失效（v23 C 组实测发现））
     stats.failed_modules = gen_output.generation_stats.failed_modules.clone();
-    tracing::info!("流水线完成: {} 个文件, {} 个实体, {} 条边, {} 个模块, 耗时 {}ms",
-        stats.files_scanned, stats.total_entities, stats.total_edges,
-        stats.modules_detected, stats.generation_time_ms);
+    tracing::info!(
+        "流水线完成: {} 个文件, {} 个实体, {} 条边, {} 个模块, 耗时 {}ms",
+        stats.files_scanned,
+        stats.total_entities,
+        stats.total_edges,
+        stats.modules_detected,
+        stats.generation_time_ms
+    );
 
     Ok(AnalysisResult {
         graph,
@@ -722,37 +831,56 @@ pub fn run_card_command(
         | generate::card::CardAction::Supplement { module, .. }
         | generate::card::CardAction::Rewrite { module, .. } => {
             if generate::card::read_card(&config, module)?.is_none() {
-                anyhow::bail!("模块 {module} 的卡片不存在，请先运行 `code-repo-wiki generate` 或 `code-repo-wiki card generate {module}` 生成");
+                anyhow::bail!(
+                    "模块 {module} 的卡片不存在，请先运行 `code-repo-wiki generate` 或 `code-repo-wiki card generate {module}` 生成"
+                );
             }
         }
     }
     let provider = generate::create_provider(&config)?;
     let rt = get_global_runtime();
     match action {
-        generate::card::CardAction::Generate { module } => {
-            rt.block_on(generate::card::generate_module_card(&provider, &config, root, module))
-        }
-        generate::card::CardAction::Modify { module, instruction, references } => {
-            rt.block_on(generate::card::edit_card(
-                &provider, &config, module, instruction, references,
-                generate::card::CardEditMode::Modify,
-            ))
-        }
-        generate::card::CardAction::Supplement { module, instruction, references } => {
-            rt.block_on(generate::card::edit_card(
-                &provider, &config, module, instruction, references,
-                generate::card::CardEditMode::Supplement,
-            ))
-        }
-        generate::card::CardAction::Rewrite { module, instruction, references } => {
-            rt.block_on(generate::card::edit_card(
-                &provider, &config, module, instruction, references,
-                generate::card::CardEditMode::Rewrite,
-            ))
-        }
+        generate::card::CardAction::Generate { module } => rt.block_on(
+            generate::card::generate_module_card(&provider, &config, root, module),
+        ),
+        generate::card::CardAction::Modify {
+            module,
+            instruction,
+            references,
+        } => rt.block_on(generate::card::edit_card(
+            &provider,
+            &config,
+            module,
+            instruction,
+            references,
+            generate::card::CardEditMode::Modify,
+        )),
+        generate::card::CardAction::Supplement {
+            module,
+            instruction,
+            references,
+        } => rt.block_on(generate::card::edit_card(
+            &provider,
+            &config,
+            module,
+            instruction,
+            references,
+            generate::card::CardEditMode::Supplement,
+        )),
+        generate::card::CardAction::Rewrite {
+            module,
+            instruction,
+            references,
+        } => rt.block_on(generate::card::edit_card(
+            &provider,
+            &config,
+            module,
+            instruction,
+            references,
+            generate::card::CardEditMode::Rewrite,
+        )),
     }
 }
-
 
 /// 清理过期产物（票 10：产物集合 diff 语义，全量/增量统一）
 ///
@@ -869,15 +997,18 @@ pub fn sync_manual_edits_to_cards(
     }
     let mut synced = 0usize;
     for (module, notes) in &edits {
-        let card_path =
-            output::card_page_path(config.output_dir(), &config.wiki.language, module);
+        let card_path = output::card_page_path(config.output_dir(), &config.wiki.language, module);
         // 卡片读取失败（含不存在/损坏/权限）显式告警并跳过该卡片——
         // 原实现 unwrap_or_default 会把"读不到"当作"空卡片"，随后追加
         // 人工修改节写盘，凭空重建被删除的卡片，且吞掉损坏错误。
         let mut content = match std::fs::read_to_string(&card_path) {
             Ok(c) => c,
             Err(e) => {
-                tracing::warn!("读取卡片失败，跳过人工修改反向同步 {}: {}", card_path.display(), e);
+                tracing::warn!(
+                    "读取卡片失败，跳过人工修改反向同步 {}: {}",
+                    card_path.display(),
+                    e
+                );
                 continue;
             }
         };
@@ -920,8 +1051,14 @@ fn relativize_watch_path(path: &Path, root: &Path) -> std::path::PathBuf {
         .components()
         .filter(|c| !matches!(c, Component::CurDir))
         .collect();
-    let p = if cleaned.as_os_str().is_empty() { path } else { cleaned.as_path() };
-    p.strip_prefix(root).map(|r| r.to_path_buf()).unwrap_or_else(|_| p.to_path_buf())
+    let p = if cleaned.as_os_str().is_empty() {
+        path
+    } else {
+        cleaned.as_path()
+    };
+    p.strip_prefix(root)
+        .map(|r| r.to_path_buf())
+        .unwrap_or_else(|_| p.to_path_buf())
 }
 
 /// 启动文件监听模式
@@ -975,8 +1112,8 @@ pub fn run_watch(config_path: Option<&Path>, root: &project::ProjectRoot) -> any
                 );
                 // 事件类型显式传递：Deleted 直入删除清理（pipeline 内处理），
                 // 其余 kind 走常规增量更新
-                let change_kind = (event.kind == incremental::watch::ChangeKind::Deleted)
-                    .then_some(event.kind);
+                let change_kind =
+                    (event.kind == incremental::watch::ChangeKind::Deleted).then_some(event.kind);
                 let root = project::ProjectRoot::new(watch_root.clone());
                 let mode = GenerationMode::Incremental {
                     watch_paths: event.paths.clone(),
@@ -1020,9 +1157,16 @@ fn call_index_fingerprint(config: &config::schema::WikiConfig) -> Option<String>
         return Some(format!("git:{}", target));
     }
     // 非 git：生成状态文件 (len, mtime) 作为粗指纹
-    let state_path = config.output_dir().join(".state").join("generation_state.json");
+    let state_path = config
+        .output_dir()
+        .join(".state")
+        .join("generation_state.json");
     let meta = std::fs::metadata(&state_path).ok()?;
-    let mtime = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+    let mtime = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
     // 亚秒精度：文件系统 mtime 精度远高于秒（NTFS 100ns），
     // 同一秒内的状态重写也必须判失效（generate/update 连续落盘场景）
     Some(format!("state:{}:{}", meta.len(), mtime.as_millis()))
@@ -1030,7 +1174,9 @@ fn call_index_fingerprint(config: &config::schema::WikiConfig) -> Option<String>
 
 /// 加载调用索引缓存：指纹匹配且 JSON 可解析才命中，否则返回 None
 ///（未命中/损坏/无法计算指纹均视为无缓存，调用方走重建路径）。
-fn load_call_index_cache(config: &config::schema::WikiConfig) -> Option<search::callgraph::CallIndex> {
+fn load_call_index_cache(
+    config: &config::schema::WikiConfig,
+) -> Option<search::callgraph::CallIndex> {
     let fp = call_index_fingerprint(config)?;
     let state_dir = config.output_dir().join(".state");
     let fp_file = std::fs::read_to_string(state_dir.join("call_index.fingerprint")).ok()?;
@@ -1043,7 +1189,10 @@ fn load_call_index_cache(config: &config::schema::WikiConfig) -> Option<search::
 
 /// 写调用索引缓存（尽力而为：失败仅告警——搜索主功能不受影响，
 /// 下次搜索会走重建路径）。指纹与索引内容同写，保证原子判失效。
-fn save_call_index_cache(config: &config::schema::WikiConfig, index: &search::callgraph::CallIndex) {
+fn save_call_index_cache(
+    config: &config::schema::WikiConfig,
+    index: &search::callgraph::CallIndex,
+) {
     let Some(fp) = call_index_fingerprint(config) else {
         return;
     };
@@ -1057,11 +1206,14 @@ fn save_call_index_cache(config: &config::schema::WikiConfig, index: &search::ca
             // audit-srch-05：改原子写（同目录临时文件 + rename）——旧实现
             // std::fs::write 直写，崩溃/断电可留下截断的 call_index.json
             // 与完整指纹不匹配（下次搜索走重建路径自愈，但期间静默无缓存）
-            if let Err(e) = crate::fs::write_file_atomic(&state_dir.join("call_index.json"), &json) {
+            if let Err(e) = crate::fs::write_file_atomic(&state_dir.join("call_index.json"), &json)
+            {
                 tracing::warn!("调用索引缓存写入失败: {}", e);
                 return;
             }
-            if let Err(e) = crate::fs::write_file_atomic(&state_dir.join("call_index.fingerprint"), &fp) {
+            if let Err(e) =
+                crate::fs::write_file_atomic(&state_dir.join("call_index.fingerprint"), &fp)
+            {
                 tracing::warn!("调用索引指纹写入失败: {}", e);
             }
         }
@@ -1147,7 +1299,10 @@ fn write_embed_model(config: &config::schema::WikiConfig) {
     let path = embed_model_marker(config);
     let content = serde_json::json!({ "model": effective_embed_model(config) }).to_string();
     if let Err(e) = crate::fs::write_file_atomic(&path, &content) {
-        tracing::warn!("embedding 模型标记写入失败（下次增量将回退全量重建）: {}", e);
+        tracing::warn!(
+            "embedding 模型标记写入失败（下次增量将回退全量重建）: {}",
+            e
+        );
     }
 }
 
@@ -1166,13 +1321,14 @@ fn embed_model_mismatch(config: &config::schema::WikiConfig) -> bool {
 /// 特征聚类失败只告警不中断主流程（特征是附加信息，不影响生成主链路）。
 fn attach_features(graph: &mut model::KnowledgeGraph, config: &config::schema::WikiConfig) {
     let embedder: Option<std::sync::Arc<dyn analysis::feature::Embedder>> =
-        match generate::embed::build_embedder(&config.embed, get_global_runtime().handle().clone()) {
-        Ok(e) => Some(e),
-        Err(e) => {
-            tracing::warn!("特征聚类 Embedding 初始化失败，降级为纯结构聚类: {e}");
-            None
-        }
-    };
+        match generate::embed::build_embedder(&config.embed, get_global_runtime().handle().clone())
+        {
+            Ok(e) => Some(e),
+            Err(e) => {
+                tracing::warn!("特征聚类 Embedding 初始化失败，降级为纯结构聚类: {e}");
+                None
+            }
+        };
     match analysis::feature::detect_features(graph, embedder.as_deref()) {
         Ok(features) => {
             graph.features = features;
@@ -1208,7 +1364,11 @@ fn build_search_index(
     // 否则新条目会追加进旧索引造成陈旧残留（audit-srch-01）。
     let text_path = index_dir.join("text_index.db");
     if let Err(e) = std::fs::remove_file(&text_path) {
-        tracing::warn!("删除旧文本索引失败，改用清空重建: {} ({})", text_path.display(), e);
+        tracing::warn!(
+            "删除旧文本索引失败，改用清空重建: {} ({})",
+            text_path.display(),
+            e
+        );
     }
     let (mut text_engine, _) = search::text::TextEngine::open(&text_path)?;
     text_engine.clear()?;
@@ -1226,7 +1386,11 @@ fn build_search_index(
             // 向量与新向量混存）；clear 失败按附加能力降级处理（与下方
             // index_batch 失败同语义，不中断主流程）。
             if let Err(e) = std::fs::remove_file(&semantic_path) {
-                tracing::warn!("删除旧语义索引失败，改用清空重建: {} ({})", semantic_path.display(), e);
+                tracing::warn!(
+                    "删除旧语义索引失败，改用清空重建: {} ({})",
+                    semantic_path.display(),
+                    e
+                );
             }
             // 运行期失败（key 缺失/网络不可达）同样降级保留旧索引，不得
             // `?` 中断主流程——与上方初始化失败的降级语义一致（v30 前
@@ -1250,11 +1414,18 @@ fn build_search_index(
                                 write_embed_model(config);
                             }
                             Err(e) => {
-                                tracing::warn!("语义索引构建失败（保留旧索引，搜索回退纯文本）: {}", e);
+                                tracing::warn!(
+                                    "语义索引构建失败（保留旧索引，搜索回退纯文本）: {}",
+                                    e
+                                );
                                 // audit-srch-01：清理部分写入的索引失败也显式告警
                                 //（残留半成品会让搜索读到部分向量）
                                 if let Err(rm_err) = std::fs::remove_file(&semantic_path) {
-                                    tracing::warn!("删除部分写入的语义索引失败: {} ({})", semantic_path.display(), rm_err);
+                                    tracing::warn!(
+                                        "删除部分写入的语义索引失败: {} ({})",
+                                        semantic_path.display(),
+                                        rm_err
+                                    );
                                 }
                                 mark_semantic_degraded(config, &e);
                             }
@@ -1268,7 +1439,10 @@ fn build_search_index(
             }
         }
         Err(e) => {
-            tracing::warn!("语义索引构建跳过（Embedding 引擎初始化失败，保留旧索引）: {}", e);
+            tracing::warn!(
+                "语义索引构建跳过（Embedding 引擎初始化失败，保留旧索引）: {}",
+                e
+            );
             mark_semantic_degraded(config, &e);
         }
     }
@@ -1339,8 +1513,9 @@ fn update_search_index_incremental(
     // 失败，增量语义更新在用户不知情时整段跳过（与全量路径 :702/:707 的
     // warn 语义对齐：保留旧索引可观测，不静默）。
     if semantic_path.exists() {
-            match generate::embed::build_embedder(&config.embed, get_global_runtime().handle().clone()) {
-                Ok(embedder) => {
+        match generate::embed::build_embedder(&config.embed, get_global_runtime().handle().clone())
+        {
+            Ok(embedder) => {
                 match search::semantic::SemanticEngine::open(&semantic_path, embedder.clone()) {
                     Ok(mut semantic_engine) => {
                         // v33：embedding 模型版本化——同维度模型升级强制全量重建。
@@ -1363,7 +1538,10 @@ fn update_search_index_incremental(
                                 match embedder.embed(&items[0].1) {
                                     Ok(v) => Some(v.len()),
                                     Err(e) => {
-                                        tracing::warn!("embedding 维度探测失败，跳过维度重建检查: {}", e);
+                                        tracing::warn!(
+                                            "embedding 维度探测失败，跳过维度重建检查: {}",
+                                            e
+                                        );
                                         None
                                     }
                                 }
@@ -1419,14 +1597,21 @@ fn update_search_index_incremental(
                 }
             }
             Err(e) => {
-                tracing::warn!("Embedding 引擎初始化失败，增量语义更新跳过（保留旧索引）: {}", e);
+                tracing::warn!(
+                    "Embedding 引擎初始化失败，增量语义更新跳过（保留旧索引）: {}",
+                    e
+                );
                 // v32 10.1：降级标记
                 mark_semantic_degraded(config, &e);
             }
         }
     }
 
-    tracing::info!("搜索索引增量更新: 删除 {} 条, 新增 {} 条", total_removed, indexed_count);
+    tracing::info!(
+        "搜索索引增量更新: 删除 {} 条, 新增 {} 条",
+        total_removed,
+        indexed_count
+    );
     Ok(())
 }
 
@@ -1457,8 +1642,11 @@ fn collect_index_items(
 }
 
 /// 构建文件路径 → 文件源码的查找表（直接使用 FileInsight.source 避免重复 I/O）
-fn build_source_map(insights: &[ingest::parser::FileInsight]) -> std::collections::HashMap<String, String> {
-    insights.iter()
+fn build_source_map(
+    insights: &[ingest::parser::FileInsight],
+) -> std::collections::HashMap<String, String> {
+    insights
+        .iter()
         .map(|i| (i.path.to_string_lossy().to_string(), i.source.clone()))
         .collect()
 }
@@ -1510,7 +1698,8 @@ fn extract_entity_source(
         None => return node.signature.clone().unwrap_or_default(),
     };
     // 截取对应行（1-based 转 0-based）
-    source.lines()
+    source
+        .lines()
         .skip(start.saturating_sub(1))
         .take(end.saturating_sub(start) + 1)
         .collect::<Vec<_>>()
@@ -1546,7 +1735,9 @@ pub fn execute_search(
     match engine_type {
         config::schema::SearchEngineType::Text => {
             if !text_path.exists() {
-                anyhow::bail!("搜索索引不存在，请先运行 `code-repo-wiki generate` 或 `code-repo-wiki update` 构建索引");
+                anyhow::bail!(
+                    "搜索索引不存在，请先运行 `code-repo-wiki generate` 或 `code-repo-wiki update` 构建索引"
+                );
             }
             let (text_engine, _) = search::text::TextEngine::open(&text_path)?;
             let results = text_engine.search(query, top_k)?;
@@ -1556,9 +1747,14 @@ pub fn execute_search(
             // v30：embed 已硬编码恒启用——语义索引缺失即引导（无嵌入
             // key 时 generate 会告警跳过语义索引构建，见 build_search_index）
             if !semantic_path.exists() {
-                anyhow::bail!("语义索引不存在——未配置嵌入 key（embed.api_key_env）或索引未构建，请配置后重新运行 `code-repo-wiki generate`");
+                anyhow::bail!(
+                    "语义索引不存在——未配置嵌入 key（embed.api_key_env）或索引未构建，请配置后重新运行 `code-repo-wiki generate`"
+                );
             }
-            let embedder = generate::embed::build_embedder(&config.embed, get_global_runtime().handle().clone())?;
+            let embedder = generate::embed::build_embedder(
+                &config.embed,
+                get_global_runtime().handle().clone(),
+            )?;
             let semantic_engine = search::semantic::SemanticEngine::open(&semantic_path, embedder)?;
             let results = semantic_engine.search(query, top_k)?;
             Ok(search::hybrid::semantic_results_to_hits(results))
@@ -1567,7 +1763,9 @@ pub fn execute_search(
             // 与 Text/Semantic 分支一致：text 索引是混合检索的必需底座
             //（RRF 至少一路有效），缺失时明确报错而非打开空库。
             if !text_path.exists() {
-                anyhow::bail!("搜索索引不存在，请先运行 `code-repo-wiki generate` 或 `code-repo-wiki update` 构建索引");
+                anyhow::bail!(
+                    "搜索索引不存在，请先运行 `code-repo-wiki generate` 或 `code-repo-wiki update` 构建索引"
+                );
             }
             let (text_engine, _) = search::text::TextEngine::open(&text_path)?;
             // hybrid 语义一路：语义引擎构建失败（embedding 配置缺失/key
@@ -1576,12 +1774,14 @@ pub fn execute_search(
             // 用户配置了 embed 却永远收不到语义结果且无任何提示）
             let semantic_engine: Option<Box<dyn search::semantic::SemanticSearch>> =
                 if semantic_path.exists() {
-                    match generate::embed::build_embedder(&config.embed, get_global_runtime().handle().clone()) {
-                        Ok(e) => match search::semantic::SemanticEngine::open(
-                            &semantic_path,
-                            e,
-                        ) {
-                            Ok(engine) => Some(Box::new(engine) as Box<dyn search::semantic::SemanticSearch>),
+                    match generate::embed::build_embedder(
+                        &config.embed,
+                        get_global_runtime().handle().clone(),
+                    ) {
+                        Ok(e) => match search::semantic::SemanticEngine::open(&semantic_path, e) {
+                            Ok(engine) => {
+                                Some(Box::new(engine) as Box<dyn search::semantic::SemanticSearch>)
+                            }
                             Err(e) => {
                                 tracing::warn!("语义索引打开失败，hybrid 降级为纯 text: {}", e);
                                 None
@@ -1592,8 +1792,14 @@ pub fn execute_search(
                             None
                         }
                     }
-                } else { None };
-            let mut agent = search::agent::SearchAgent::new(text_engine, semantic_engine, config::schema::SEARCH_RRF_K);
+                } else {
+                    None
+                };
+            let mut agent = search::agent::SearchAgent::new(
+                text_engine,
+                semantic_engine,
+                config::schema::SEARCH_RRF_K,
+            );
             // 调用链补全：优先加载磁盘缓存（v36：hybrid 为默认引擎，
             // 缓存按源码指纹失效，命中时跳过整次图谱重建；重建成本仅
             // 在指纹变化后付出一次）。缓存与重建失败均静默降级为无补全
@@ -1692,7 +1898,8 @@ pub fn execute_ast_search(
                 file_path: Some(insight.path.to_string_lossy().to_string()),
                 line_range: Some((m.start_line, m.end_line)),
                 doc_comment: None,
-                signature: Some(signature), visibility: None,
+                signature: Some(signature),
+                visibility: None,
                 module_path,
             },
             score: 100.0,
@@ -1714,7 +1921,10 @@ mod tests {
     /// 全链路（增量触发重建）依赖真实 embed key，留待真实环境验证。
     #[test]
     fn test_embed_model_marker_roundtrip_and_mismatch() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_embed_marker_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_embed_marker_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(".search")).unwrap();
 
@@ -1812,8 +2022,7 @@ mod tests {
         // 损坏文件 → 解析失败（调用方按 None 处理，不 panic）
         assert!(serde_json::from_str::<GenerationTimings>("{broken").is_err());
         // 缺字段 → serde(default) 补零
-        let partial: GenerationTimings =
-            serde_json::from_str(r#"{"scan_parse_ms": 42}"#).unwrap();
+        let partial: GenerationTimings = serde_json::from_str(r#"{"scan_parse_ms": 42}"#).unwrap();
         assert_eq!(partial.scan_parse_ms, 42);
         assert_eq!(partial.total_ms, 0);
     }
@@ -1823,8 +2032,8 @@ mod tests {
     /// 一律保留。
     #[test]
     fn test_cleanup_stale_outputs_removes_unrendered_across_languages() {
-        let dir = std::env::temp_dir()
-            .join(format!("code_repo_wiki_test_stale_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("code_repo_wiki_test_stale_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
         // 旧状态记录两个产物：src.md（双语言）与 lib.md（双语言）
@@ -1880,8 +2089,10 @@ mod tests {
     /// 不会被误删——人工编辑内容由保护语义而非清理语义保障。
     #[test]
     fn test_cleanup_stale_outputs_keeps_rendered_protected() {
-        let dir = std::env::temp_dir()
-            .join(format!("code_repo_wiki_test_stale_protected_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_stale_protected_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
 
         let mut state = incremental::state::GenerationState {
@@ -1909,10 +2120,7 @@ mod tests {
         let rendered = vec![manual.clone()];
         cleanup_stale_outputs(Some(&state), &rendered, &std::collections::HashSet::new());
 
-        assert!(
-            manual.exists(),
-            "渲染集合内的人工编辑文档不应被清理"
-        );
+        assert!(manual.exists(), "渲染集合内的人工编辑文档不应被清理");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1921,8 +2129,10 @@ mod tests {
     /// 清理也须跳过（误删会制造断链）
     #[test]
     fn test_cleanup_stale_outputs_preserves_modules_still_in_scan() {
-        let dir = std::env::temp_dir()
-            .join(format!("code_repo_wiki_test_stale_preserve_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_stale_preserve_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
 
         let mut state = incremental::state::GenerationState {
@@ -1951,9 +2161,10 @@ mod tests {
         state
             .doc_fingerprints
             .insert(gone_page.to_string_lossy().to_string(), "fp".into());
-        state
-            .doc_modules
-            .insert(gone_page.to_string_lossy().to_string(), "src::deleted".into());
+        state.doc_modules.insert(
+            gone_page.to_string_lossy().to_string(),
+            "src::deleted".into(),
+        );
 
         // 本次渲染集不含任何上述页面（增量只生成其他模块）；
         // 保留集含 src::fs（模块仍在扫描）但不含 src::deleted（已删除）
@@ -1970,8 +2181,10 @@ mod tests {
     /// 无旧状态（首次生成）时清理为空操作
     #[test]
     fn test_cleanup_stale_outputs_noop_without_state() {
-        let dir = std::env::temp_dir()
-            .join(format!("code_repo_wiki_test_stale_noop_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_stale_noop_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         cleanup_stale_outputs(None, &[], &std::collections::HashSet::new());
         let _ = std::fs::remove_dir_all(&dir);
@@ -1981,11 +2194,14 @@ mod tests {
     /// force=false 保留保护语义 —— 与 run_pipeline 的 --force 行为一致
     #[test]
     fn test_load_protection_force_clears_protection() {
-        let dir = std::env::temp_dir()
-            .join(format!("code_repo_wiki_test_force_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("code_repo_wiki_test_force_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
-        let config = crate::config::schema::WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
+        let config = crate::config::schema::WikiConfig {
+            output_dir: Some(dir.to_path_buf()),
+            ..Default::default()
+        };
 
         // 构造旧 state：一个"人工修改过"的文档（磁盘内容与指纹不匹配）
         let state_dir = dir.join(".state");
@@ -2007,10 +2223,9 @@ mod tests {
             doc_path.to_string_lossy().to_string(),
             "与磁盘内容不同的指纹".into(),
         );
-        state.doc_modules.insert(
-            doc_path.to_string_lossy().to_string(),
-            "src".into(),
-        );
+        state
+            .doc_modules
+            .insert(doc_path.to_string_lossy().to_string(), "src".into());
         state.save(&state_dir).unwrap();
 
         // force=false：保护集包含检测出的人工修改（下次生成不覆盖）
@@ -2032,11 +2247,16 @@ mod tests {
     /// 与 sync_from_git 对损坏状态的拒绝行为对偶（tests/test_git_sync.rs:109-121）。
     #[test]
     fn test_load_protection_corrupt_state_fails_loud() {
-        let dir = std::env::temp_dir()
-            .join(format!("code_repo_wiki_test_corrupt_state_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_corrupt_state_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
 
-        let config = crate::config::schema::WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
+        let config = crate::config::schema::WikiConfig {
+            output_dir: Some(dir.to_path_buf()),
+            ..Default::default()
+        };
 
         // 写入损坏的状态文件（半截 JSON）
         let state_dir = dir.join(".state");
@@ -2056,11 +2276,16 @@ mod tests {
     /// 票 02：状态文件不存在（首次运行）是合法场景，返回空保护不报错
     #[test]
     fn test_load_protection_missing_state_is_ok() {
-        let dir = std::env::temp_dir()
-            .join(format!("code_repo_wiki_test_missing_state_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_missing_state_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
 
-        let config = crate::config::schema::WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
+        let config = crate::config::schema::WikiConfig {
+            output_dir: Some(dir.to_path_buf()),
+            ..Default::default()
+        };
 
         let (protected, state) = load_protection(&config, false).unwrap();
         assert!(protected.is_empty());
@@ -2074,12 +2299,17 @@ mod tests {
     /// 非 git 且无生成状态文件时指纹为 None（保守：不缓存）
     #[test]
     fn test_call_index_fingerprint_none_without_state() {
-        let dir = std::env::temp_dir()
-            .join(format!("code_repo_wiki_test_fp_none_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_fp_none_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        let config = crate::config::schema::WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
+        let config = crate::config::schema::WikiConfig {
+            output_dir: Some(dir.to_path_buf()),
+            ..Default::default()
+        };
         assert!(call_index_fingerprint(&config).is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -2088,13 +2318,18 @@ mod tests {
     /// 生成状态文件存在时指纹稳定（非 git 场景），内容变化后指纹变化
     #[test]
     fn test_call_index_fingerprint_state_stable() {
-        let dir = std::env::temp_dir()
-            .join(format!("code_repo_wiki_test_fp_state_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_fp_state_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(".state")).unwrap();
         std::fs::write(dir.join(".state/generation_state.json"), "{}").unwrap();
 
-        let config = crate::config::schema::WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
+        let config = crate::config::schema::WikiConfig {
+            output_dir: Some(dir.to_path_buf()),
+            ..Default::default()
+        };
         let fp1 = call_index_fingerprint(&config).expect("有状态文件应有指纹");
         let fp2 = call_index_fingerprint(&config).expect("有状态文件应有指纹");
         assert_eq!(fp1, fp2, "指纹必须稳定（同状态两次调用相同）");
@@ -2111,15 +2346,23 @@ mod tests {
     /// 缓存往返：保存后可加载且内容一致；指纹不匹配时视为未命中
     #[test]
     fn test_call_index_cache_round_trip_and_invalidation() {
-        let dir = std::env::temp_dir()
-            .join(format!("code_repo_wiki_test_call_cache_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_call_cache_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(".state")).unwrap();
         std::fs::write(dir.join(".state/generation_state.json"), "{}").unwrap();
 
-        let config = crate::config::schema::WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
+        let config = crate::config::schema::WikiConfig {
+            output_dir: Some(dir.to_path_buf()),
+            ..Default::default()
+        };
         let mut index = std::collections::HashMap::new();
-        index.insert("fn_a".to_string(), (vec!["fn_b".to_string()], vec!["fn_c".to_string()]));
+        index.insert(
+            "fn_a".to_string(),
+            (vec!["fn_b".to_string()], vec!["fn_c".to_string()]),
+        );
 
         // 保存前加载=未命中
         assert!(load_call_index_cache(&config).is_none());
@@ -2131,7 +2374,10 @@ mod tests {
         // 指纹失效（状态文件重写）→ 未命中
         std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(dir.join(".state/generation_state.json"), "{}").unwrap();
-        assert!(load_call_index_cache(&config).is_none(), "指纹变化后必须失效");
+        assert!(
+            load_call_index_cache(&config).is_none(),
+            "指纹变化后必须失效"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2139,19 +2385,27 @@ mod tests {
     /// 损坏的缓存 JSON 视为未命中（走重建路径，不 panic）
     #[test]
     fn test_call_index_cache_corrupt_is_miss() {
-        let dir = std::env::temp_dir()
-            .join(format!("code_repo_wiki_test_call_cache_corrupt_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_call_cache_corrupt_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(".state")).unwrap();
         std::fs::write(dir.join(".state/generation_state.json"), "{}").unwrap();
 
-        let config = crate::config::schema::WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
+        let config = crate::config::schema::WikiConfig {
+            output_dir: Some(dir.to_path_buf()),
+            ..Default::default()
+        };
         // 指纹匹配但 JSON 损坏
         let fp = call_index_fingerprint(&config).unwrap();
         std::fs::write(dir.join(".state/call_index.fingerprint"), &fp).unwrap();
         std::fs::write(dir.join(".state/call_index.json"), "{ 半截").unwrap();
 
-        assert!(load_call_index_cache(&config).is_none(), "损坏缓存必须视为未命中");
+        assert!(
+            load_call_index_cache(&config).is_none(),
+            "损坏缓存必须视为未命中"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

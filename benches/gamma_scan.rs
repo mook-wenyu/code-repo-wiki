@@ -43,7 +43,8 @@ fn gamma_scan() {
 
     for gamma in GAMMAS {
         let t = std::time::Instant::now();
-        let communities = code_repo_wiki::analysis::community::detect_communities_with_resolution(&graph, gamma);
+        let communities =
+            code_repo_wiki::analysis::community::detect_communities_with_resolution(&graph, gamma);
         let total = communities.len();
         let single_file = communities.iter().filter(|c| c.len() == 1).count();
         let sizes: Vec<usize> = communities.iter().map(|c| c.len()).collect();
@@ -58,7 +59,11 @@ fn gamma_scan() {
             gamma,
             total,
             single_file,
-            if total > 0 { single_file as f64 * 100.0 / total as f64 } else { 0.0 },
+            if total > 0 {
+                single_file as f64 * 100.0 / total as f64
+            } else {
+                0.0
+            },
             max,
             mean,
             t.elapsed().as_secs_f32()

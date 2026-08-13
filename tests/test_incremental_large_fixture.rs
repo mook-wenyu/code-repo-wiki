@@ -25,8 +25,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use code_repo_wiki::config::schema::WikiSection;
 use code_repo_wiki::config::schema::{LlmProviderType, LlmSection, WikiConfig};
-use code_repo_wiki::config::schema::{WikiSection};
 
 /// 模块数 × 每模块文件数 = 150 文件；每组 5 模块
 const MODULES: usize = 15;
@@ -49,7 +49,9 @@ fn build_large_repo(repo: &Path) -> anyhow::Result<()> {
         for f in 0..FILES_PER_MODULE {
             let mut content = String::new();
             for i in 0..3 {
-                content.push_str(&format!("pub fn f{f:02}_{i}(x: u32) -> u32 {{ x + {i} + {f} }}\n"));
+                content.push_str(&format!(
+                    "pub fn f{f:02}_{i}(x: u32) -> u32 {{ x + {i} + {f} }}\n"
+                ));
             }
             // 组内链式跨模块调用（组边界：i+1 与 i 必须同组）
             if f == 0 && m + 1 < MODULES && (m + 1) / GROUP_SIZE == m / GROUP_SIZE {
@@ -98,8 +100,10 @@ fn wiki_pages_snapshot(repo: &Path) -> HashMap<String, String> {
         for e in es.flatten() {
             let p = e.path();
             if p.extension().is_some_and(|x| x == "md")
-                && let (Some(name), Ok(content)) =
-                    (p.file_name().map(|s| s.to_string_lossy().into_owned()), std::fs::read_to_string(&p))
+                && let (Some(name), Ok(content)) = (
+                    p.file_name().map(|s| s.to_string_lossy().into_owned()),
+                    std::fs::read_to_string(&p),
+                )
             {
                 map.insert(name, content);
             }
@@ -110,22 +114,27 @@ fn wiki_pages_snapshot(repo: &Path) -> HashMap<String, String> {
 
 /// 页面文件名集合（排除 _log.md——note 追加式，与生成无关）
 fn page_names(map: &HashMap<String, String>) -> Vec<String> {
-    let mut names: Vec<String> = map.keys().filter(|k| !k.ends_with("_log.md")).cloned().collect();
+    let mut names: Vec<String> = map
+        .keys()
+        .filter(|k| !k.ends_with("_log.md"))
+        .cloned()
+        .collect();
     names.sort();
     names
 }
 
 /// 文档标题是否涉及指定模块组（模块号闭区间 [lo, hi]）
 fn titles_in_group(titles: &[String], lo: usize, hi: usize) -> bool {
-    titles.iter().any(|t| {
-        (lo..=hi).any(|m| t.contains(&format!("m{m:02}")))
-    })
+    titles
+        .iter()
+        .any(|t| (lo..=hi).any(|m| t.contains(&format!("m{m:02}"))))
 }
 
 /// 主场景：全量基线 → 改组 B 内 m07/f00 签名（接口级）→ 增量 → 四断言
 #[test]
 fn test_large_fixture_incremental_impact() {
-    let repo = std::env::temp_dir().join(format!("code_repo_wiki_large_e2e_{}", std::process::id()));
+    let repo =
+        std::env::temp_dir().join(format!("code_repo_wiki_large_e2e_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&repo);
     std::fs::create_dir_all(&repo).expect("构造临时仓库失败");
     build_large_repo(&repo).expect("构造 150 文件 fixture 失败");
@@ -136,8 +145,14 @@ fn test_large_fixture_incremental_impact() {
 
     // ---- 首轮：git init 提交 + 全量生成（基线快照） ----
     git_commit_all(&repo, "init 150 files");
-    code_repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &code_repo_wiki::GenerationMode::Full)
-        .expect("全量生成失败");
+    code_repo_wiki::run_pipeline(
+        Some(&config_path),
+        None,
+        false,
+        &root,
+        &code_repo_wiki::GenerationMode::Full,
+    )
+    .expect("全量生成失败");
     let base_pages = wiki_pages_snapshot(&repo);
     let base_names = page_names(&base_pages);
     assert!(
@@ -158,7 +173,10 @@ fn test_large_fixture_incremental_impact() {
         None,
         false,
         &root,
-        &code_repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None },
+        &code_repo_wiki::GenerationMode::Incremental {
+            watch_paths: vec![],
+            change_kind: None,
+        },
     )
     .expect("增量生成失败");
 
@@ -190,7 +208,8 @@ fn test_large_fixture_incremental_impact() {
         // 由 render_all 每次重写——跳过；组 A/C 模块页必须字节级一致
         let is_group_b = (5..=9).any(|m| name.contains(&format!("m{m:02}")));
         let is_synthetic = ["api.md", "architecture.md", "index.md", "overview.md"]
-            .iter().any(|s| name == s);
+            .iter()
+            .any(|s| name == s);
         if is_group_b || is_synthetic {
             continue;
         }
@@ -203,8 +222,13 @@ fn test_large_fixture_incremental_impact() {
 
     // ---- 断言 4：接口级变化反映到 api.md（新签名出现；f00_0 是 15 模块
     // 通用函数名，不能断言"消失"——只断言 m07 段的旧签名不再存在） ----
-    let new_api = std::fs::read_to_string(repo.join(".code-repo-wiki").join("wiki").join("zh").join("api.md"))
-        .unwrap_or_default();
+    let new_api = std::fs::read_to_string(
+        repo.join(".code-repo-wiki")
+            .join("wiki")
+            .join("zh")
+            .join("api.md"),
+    )
+    .unwrap_or_default();
     assert!(
         new_api.contains("f00_renamed"),
         "api.md 应反映新签名 f00_renamed，实际: {new_api}"
@@ -223,7 +247,8 @@ fn test_large_fixture_incremental_impact() {
 /// 文件页被精确清理（cleanup 正确行为），其余页面全保留，组 A/C 零改写
 #[test]
 fn test_large_fixture_delete_file_keeps_pages() {
-    let repo = std::env::temp_dir().join(format!("code_repo_wiki_large_del_{}", std::process::id()));
+    let repo =
+        std::env::temp_dir().join(format!("code_repo_wiki_large_del_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&repo);
     std::fs::create_dir_all(&repo).expect("构造临时仓库失败");
     build_large_repo(&repo).expect("构造 150 文件 fixture 失败");
@@ -232,11 +257,20 @@ fn test_large_fixture_delete_file_keeps_pages() {
     let config_path = repo.join("config.toml");
 
     git_commit_all(&repo, "init 150 files");
-    code_repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &code_repo_wiki::GenerationMode::Full)
-        .expect("全量生成失败");
+    code_repo_wiki::run_pipeline(
+        Some(&config_path),
+        None,
+        false,
+        &root,
+        &code_repo_wiki::GenerationMode::Full,
+    )
+    .expect("全量生成失败");
     let base_pages = wiki_pages_snapshot(&repo);
     let base_names = page_names(&base_pages);
-    assert!(base_names.contains(&"src_m09_f07.md".to_string()), "基线应含 m09/f07 页");
+    assert!(
+        base_names.contains(&"src_m09_f07.md".to_string()),
+        "基线应含 m09/f07 页"
+    );
 
     // 删除 m09/f07.rs（f07 函数无任何边：传播只含起点模块 m09，其他组零影响）
     std::fs::remove_file(repo.join("src").join("m09").join("f07.rs")).unwrap();
@@ -246,7 +280,10 @@ fn test_large_fixture_delete_file_keeps_pages() {
         None,
         false,
         &root,
-        &code_repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None },
+        &code_repo_wiki::GenerationMode::Incremental {
+            watch_paths: vec![],
+            change_kind: None,
+        },
     )
     .expect("删除增量失败");
 
@@ -273,7 +310,8 @@ fn test_large_fixture_delete_file_keeps_pages() {
     // 跳过；组 A/C 与组 B 均不受影响）
     for name in &after_names {
         let is_synthetic = ["api.md", "architecture.md", "index.md", "overview.md"]
-            .iter().any(|s| name == s);
+            .iter()
+            .any(|s| name == s);
         if is_synthetic {
             continue;
         }
@@ -305,7 +343,10 @@ fn build_pair_module_repo(repo: &Path) -> anyhow::Result<()> {
         repo.join("src").join("m20").join("b.rs"),
         "pub fn b_beta() -> u32 { 2 }\npub fn b_uses_a() -> u32 { a_alpha() }\n",
     )?;
-    std::fs::write(repo.join("src").join("solo.rs"), "pub fn solo_fn() -> u32 { 3 }\n")?;
+    std::fs::write(
+        repo.join("src").join("solo.rs"),
+        "pub fn solo_fn() -> u32 { 3 }\n",
+    )?;
 
     let config = WikiConfig {
         output_dir: Some((repo.join(".code-repo-wiki").to_string_lossy().into_owned()).into()),
@@ -349,8 +390,14 @@ fn test_delete_one_file_in_pair_module_regenerates_module() {
     let config_path = repo.join("config.toml");
 
     git_commit_all(&repo, "init pair module");
-    code_repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &code_repo_wiki::GenerationMode::Full)
-        .expect("全量生成失败");
+    code_repo_wiki::run_pipeline(
+        Some(&config_path),
+        None,
+        false,
+        &root,
+        &code_repo_wiki::GenerationMode::Full,
+    )
+    .expect("全量生成失败");
     // 基线：m20 模块页存在（社区合并后为目录级模块页，或 a/b 各自文件页）
     let base_pages = wiki_pages_snapshot(&repo);
     assert!(
@@ -366,7 +413,10 @@ fn test_delete_one_file_in_pair_module_regenerates_module() {
         None,
         false,
         &root,
-        &code_repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None },
+        &code_repo_wiki::GenerationMode::Incremental {
+            watch_paths: vec![],
+            change_kind: None,
+        },
     )
     .expect("删除增量失败");
 
@@ -408,7 +458,10 @@ fn test_delete_one_file_in_pair_module_regenerates_module() {
         "m20 模块页必须保留，实际: {after_pages:?}"
     );
     let solo_page = "src.md".to_string();
-    assert!(after_pages.contains_key(&solo_page), "solo 页必须保留，实际页面: {after_pages:?}");
+    assert!(
+        after_pages.contains_key(&solo_page),
+        "solo 页必须保留，实际页面: {after_pages:?}"
+    );
     assert_eq!(
         after_pages.get(&solo_page),
         base_pages.get(&solo_page),
@@ -438,7 +491,8 @@ fn test_delete_one_file_in_pair_module_regenerates_module() {
 /// - solo 模块页同样在本次生成集（modified 文件正常生效）。
 #[test]
 fn test_delete_file_mixed_with_modification_regenerates_module() {
-    let repo = std::env::temp_dir().join(format!("code_repo_wiki_pair_mixed_{}", std::process::id()));
+    let repo =
+        std::env::temp_dir().join(format!("code_repo_wiki_pair_mixed_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&repo);
     std::fs::create_dir_all(&repo).expect("构造临时仓库失败");
     build_pair_module_repo(&repo).expect("构造双文件模块 fixture 失败");
@@ -447,17 +501,27 @@ fn test_delete_file_mixed_with_modification_regenerates_module() {
     let config_path = repo.join("config.toml");
 
     git_commit_all(&repo, "init pair module");
-    code_repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &code_repo_wiki::GenerationMode::Full)
-        .expect("全量生成失败");
+    code_repo_wiki::run_pipeline(
+        Some(&config_path),
+        None,
+        false,
+        &root,
+        &code_repo_wiki::GenerationMode::Full,
+    )
+    .expect("全量生成失败");
     let base_pages = wiki_pages_snapshot(&repo);
     assert!(
         base_pages.keys().any(|k| k.starts_with("src_m20")),
         "基线应含 m20 模块页，实际: {base_pages:?}"
     );
     // api.md 由 graph 合成（不经 LLM），含真实实体名——断言载体
-    let base_api =
-        std::fs::read_to_string(repo.join(".code-repo-wiki").join("wiki").join("zh").join("api.md"))
-            .unwrap_or_default();
+    let base_api = std::fs::read_to_string(
+        repo.join(".code-repo-wiki")
+            .join("wiki")
+            .join("zh")
+            .join("api.md"),
+    )
+    .unwrap_or_default();
     assert!(
         base_api.contains("solo_fn"),
         "基线 api.md 应含 solo_fn 实体，实际: {base_api}"
@@ -476,7 +540,10 @@ fn test_delete_file_mixed_with_modification_regenerates_module() {
         None,
         false,
         &root,
-        &code_repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None },
+        &code_repo_wiki::GenerationMode::Incremental {
+            watch_paths: vec![],
+            change_kind: None,
+        },
     )
     .expect("删除+修改增量失败");
 
@@ -507,8 +574,13 @@ fn test_delete_file_mixed_with_modification_regenerates_module() {
     );
 
     // 4. api.md（真实实体名来源）不含被删实体、含 modified 新签名
-    let new_api = std::fs::read_to_string(repo.join(".code-repo-wiki").join("wiki").join("zh").join("api.md"))
-        .unwrap_or_default();
+    let new_api = std::fs::read_to_string(
+        repo.join(".code-repo-wiki")
+            .join("wiki")
+            .join("zh")
+            .join("api.md"),
+    )
+    .unwrap_or_default();
     assert!(
         !new_api.contains("a_alpha"),
         "api.md 不应残留被删实体 a_alpha，实际: {new_api}"

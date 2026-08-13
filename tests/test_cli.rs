@@ -11,9 +11,9 @@
 //! 收敛于 common 模块（v13 B8）。
 
 mod common;
-use common::{copy_dir, mock_llm_server, openai_compatible_config, run_bin_with_envs, unique_dir};
 use code_repo_wiki::config::schema::WikiConfig;
 use code_repo_wiki::fs::acquire_run_lock;
+use common::{copy_dir, mock_llm_server, openai_compatible_config, run_bin_with_envs, unique_dir};
 use std::path::{Path, PathBuf};
 
 /// 最小可用配置：LLM 指向本地 mock server，输出硬编码 .code-repo-wiki
@@ -32,11 +32,7 @@ fn prepare_repo(tag: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&work_dir);
     copy_dir(&fixture, &work_dir);
     let port = mock_llm_server();
-    std::fs::write(
-        work_dir.join("mock-server.toml"),
-        minimal_config(port),
-    )
-    .unwrap();
+    std::fs::write(work_dir.join("mock-server.toml"), minimal_config(port)).unwrap();
     work_dir
 }
 
@@ -85,7 +81,11 @@ fn test_uninstall_requires_force() {
     );
     // 隔离 HOME 下不应产生任何文件（既无 opencode.json 也无插件残留）
     assert!(
-        !home_dir.join(".config").join("opencode").join("opencode.json").exists(),
+        !home_dir
+            .join(".config")
+            .join("opencode")
+            .join("opencode.json")
+            .exists(),
         "隔离 HOME 下卸载不应写入 opencode.json"
     );
 
@@ -99,7 +99,16 @@ fn test_uninstall_requires_force() {
 fn test_progress_json_cli() {
     let work_dir = prepare_repo("progress_json");
 
-    let out = run_bin_with_envs(&work_dir, &["generate", "--config", "mock-server.toml", "--progress-json"], &[]);
+    let out = run_bin_with_envs(
+        &work_dir,
+        &[
+            "generate",
+            "--config",
+            "mock-server.toml",
+            "--progress-json",
+        ],
+        &[],
+    );
     assert!(
         out.status.success(),
         "generate --progress-json 应成功，stderr: {}",
@@ -120,13 +129,20 @@ fn test_progress_json_cli() {
         .collect();
 
     assert!(!events.is_empty(), "应输出进度事件，实际 stdout: {stdout}");
-    assert_eq!(events.first().unwrap().0, "scanning", "首个事件应为 scanning");
+    assert_eq!(
+        events.first().unwrap().0,
+        "scanning",
+        "首个事件应为 scanning"
+    );
     // progress 单调递增
     for w in events.windows(2) {
         assert!(
             w[1].1 >= w[0].1,
             "progress 应单调递增: {} ({}) -> {} ({})",
-            w[0].0, w[0].1, w[1].0, w[1].1
+            w[0].0,
+            w[0].1,
+            w[1].0,
+            w[1].1
         );
     }
     assert_eq!(events.last().unwrap().0, "done", "末个事件应为 done");
@@ -142,9 +158,12 @@ fn test_progress_json_cli() {
         })
         .collect();
     // 完成摘要行（stage:"done" 且无 progress 字段，与事件行区分）
-    let done_v = parsed.iter().find(|v| {
-        v.get("stage").and_then(|s| s.as_str()) == Some("done") && v.get("progress").is_none()
-    }).unwrap_or_else(|| panic!("应存在 stage=done 完成摘要行，实际 stdout: {stdout}"));
+    let done_v = parsed
+        .iter()
+        .find(|v| {
+            v.get("stage").and_then(|s| s.as_str()) == Some("done") && v.get("progress").is_none()
+        })
+        .unwrap_or_else(|| panic!("应存在 stage=done 完成摘要行，实际 stdout: {stdout}"));
     // files/entities/documents/elapsed_secs 均为数字（锚定 main.rs:502-508 摘要格式）
     for field in ["files", "entities", "documents", "elapsed_secs"] {
         assert!(
@@ -153,7 +172,10 @@ fn test_progress_json_cli() {
         );
     }
     // 输出产物存在
-    assert!(work_dir.join(".code-repo-wiki").is_dir(), "应生成 wiki 输出目录");
+    assert!(
+        work_dir.join(".code-repo-wiki").is_dir(),
+        "应生成 wiki 输出目录"
+    );
 
     let _ = std::fs::remove_dir_all(&work_dir);
 }
@@ -168,7 +190,11 @@ fn test_progress_json_cli() {
 fn test_search_with_root_from_subdir() {
     let work_dir = prepare_repo("search_root_subdir");
     // 建索引（产物落在 work_dir/.code-repo-wiki 下）
-    let gen_out = run_bin_with_envs(&work_dir, &["generate", "--config", "mock-server.toml"], &[]);
+    let gen_out = run_bin_with_envs(
+        &work_dir,
+        &["generate", "--config", "mock-server.toml"],
+        &[],
+    );
     assert!(
         gen_out.status.success(),
         "generate 应成功, stderr: {}",
@@ -186,8 +212,18 @@ fn test_search_with_root_from_subdir() {
     let out = run_bin_with_envs(
         &subdir,
         &[
-            "search", "-q", "authenticate", "-k", "3", "--engine", "text",
-            "--json", "--root", root_str, "--config", cfg_str,
+            "search",
+            "-q",
+            "authenticate",
+            "-k",
+            "3",
+            "--engine",
+            "text",
+            "--json",
+            "--root",
+            root_str,
+            "--config",
+            cfg_str,
         ],
         &[],
     );
@@ -326,7 +362,12 @@ fn test_generate_skip_if_locked_exits_zero() {
 
     let out = run_bin_with_envs(
         &work_dir,
-        &["generate", "--config", "mock-server.toml", "--skip-if-locked"],
+        &[
+            "generate",
+            "--config",
+            "mock-server.toml",
+            "--skip-if-locked",
+        ],
         &[],
     );
     let combined = format!(
@@ -433,7 +474,11 @@ fn test_update_progress_json_cli() {
     let work_dir = prepare_repo("update_progress_json");
 
     // 先全量 generate 建立基线（增量路径需要产物与状态）
-    let gen_out = run_bin_with_envs(&work_dir, &["generate", "--config", "mock-server.toml"], &[]);
+    let gen_out = run_bin_with_envs(
+        &work_dir,
+        &["generate", "--config", "mock-server.toml"],
+        &[],
+    );
     assert!(
         gen_out.status.success(),
         "generate 应成功，stderr: {}",
@@ -446,7 +491,11 @@ fn test_update_progress_json_cli() {
     content.push_str("\n// update --progress-json 触发注释\n");
     std::fs::write(&src, content).unwrap();
 
-    let out = run_bin_with_envs(&work_dir, &["update", "--config", "mock-server.toml", "--progress-json"], &[]);
+    let out = run_bin_with_envs(
+        &work_dir,
+        &["update", "--config", "mock-server.toml", "--progress-json"],
+        &[],
+    );
     assert!(
         out.status.success(),
         "update --progress-json 应成功，stderr: {}",
@@ -464,7 +513,10 @@ fn test_update_progress_json_cli() {
             ))
         })
         .collect();
-    assert!(!events.is_empty(), "update 应输出进度事件，实际 stdout: {stdout}");
+    assert!(
+        !events.is_empty(),
+        "update 应输出进度事件，实际 stdout: {stdout}"
+    );
     assert_eq!(events.last().unwrap().0, "done", "末个事件应为 done");
     assert_eq!(events.last().unwrap().1, 100, "末个事件 progress 应为 100");
     // T09a 回归防线：progress_json 模式下 stdout 每行都必须可解析为 JSON
@@ -479,19 +531,27 @@ fn test_update_progress_json_cli() {
         .collect();
     // 终态摘要行（无 progress 字段，与事件行区分）：真实更新为 done、no-op 为 noop
     //（本场景修改了源文件 → 走真实更新路径触达 done；noop 分支防回归）
-    let summary = parsed.iter().find(|v| {
-        v.get("progress").is_none()
-            && matches!(v.get("stage").and_then(|s| s.as_str()), Some("done") | Some("noop"))
-    }).unwrap_or_else(|| panic!("应存在 done/noop 终态摘要行，实际 stdout: {stdout}"));
+    let summary = parsed
+        .iter()
+        .find(|v| {
+            v.get("progress").is_none()
+                && matches!(
+                    v.get("stage").and_then(|s| s.as_str()),
+                    Some("done") | Some("noop")
+                )
+        })
+        .unwrap_or_else(|| panic!("应存在 done/noop 终态摘要行，实际 stdout: {stdout}"));
     match summary.get("stage").and_then(|s| s.as_str()).unwrap() {
         // 真实更新摘要（锚定 main.rs:596-601）：files/documents/elapsed_secs 为数字
         //（update 摘要行无 entities 字段，与 generate 不同）
-        "done" => for field in ["files", "documents", "elapsed_secs"] {
-            assert!(
-                summary.get(field).is_some_and(|v| v.is_number()),
-                "done 摘要行 {field} 应为数字: {summary}"
-            );
-        },
+        "done" => {
+            for field in ["files", "documents", "elapsed_secs"] {
+                assert!(
+                    summary.get(field).is_some_and(|v| v.is_number()),
+                    "done 摘要行 {field} 应为数字: {summary}"
+                );
+            }
+        }
         // no-op 摘要行（锚定 main.rs:588-590）仅含 stage 字段，存在性断言已覆盖
         "noop" => {}
         _ => unreachable!("终态摘要行 stage 仅可能为 done 或 noop"),
@@ -506,7 +566,11 @@ fn test_card_cli_commands() {
     let work_dir = prepare_repo("card");
 
     // 1. 全量 generate（mock LLM 返回卡片 JSON）→ 卡片文件落盘
-    let out = run_bin_with_envs(&work_dir, &["generate", "--config", "mock-server.toml"], &[]);
+    let out = run_bin_with_envs(
+        &work_dir,
+        &["generate", "--config", "mock-server.toml"],
+        &[],
+    );
     assert!(
         out.status.success(),
         "generate 应成功，stderr: {}",
@@ -531,9 +595,13 @@ fn test_card_cli_commands() {
     let out = run_bin_with_envs(
         &work_dir,
         &[
-            "card", "modify", &module,
-            "--instruction", "补充一段总结",
-            "--config", "mock-server.toml",
+            "card",
+            "modify",
+            &module,
+            "--instruction",
+            "补充一段总结",
+            "--config",
+            "mock-server.toml",
         ],
         &[],
     );
@@ -558,7 +626,11 @@ fn test_card_cli_commands() {
 fn test_card_reference_validation() {
     let work_dir = prepare_repo("card_ref");
 
-    let out = run_bin_with_envs(&work_dir, &["generate", "--config", "mock-server.toml"], &[]);
+    let out = run_bin_with_envs(
+        &work_dir,
+        &["generate", "--config", "mock-server.toml"],
+        &[],
+    );
     assert!(
         out.status.success(),
         "generate 应成功，stderr: {}",
@@ -582,10 +654,15 @@ fn test_card_reference_validation() {
     let out = run_bin_with_envs(
         &work_dir,
         &[
-            "card", "modify", &module,
-            "--instruction", "补充总结",
-            "--reference", "missing.md",
-            "--config", "mock-server.toml",
+            "card",
+            "modify",
+            &module,
+            "--instruction",
+            "补充总结",
+            "--reference",
+            "missing.md",
+            "--config",
+            "mock-server.toml",
         ],
         &[],
     );
@@ -613,10 +690,15 @@ fn test_card_reference_validation() {
     let out = run_bin_with_envs(
         &work_dir,
         &[
-            "card", "modify", &module,
-            "--instruction", "补充总结",
-            "--reference", "refs.md",
-            "--config", "mock-server.toml",
+            "card",
+            "modify",
+            &module,
+            "--instruction",
+            "补充总结",
+            "--reference",
+            "refs.md",
+            "--config",
+            "mock-server.toml",
         ],
         &[],
     );
@@ -649,11 +731,7 @@ fn test_export_produces_html_artifacts() {
         String::from_utf8_lossy(&gen_out.stderr)
     );
 
-    let out = run_bin_with_envs(
-        &work_dir,
-        &["export", "--config", "mock-server.toml"],
-        &[],
-    );
+    let out = run_bin_with_envs(&work_dir, &["export", "--config", "mock-server.toml"], &[]);
     assert!(
         out.status.success(),
         "export 应成功, stderr: {}",
@@ -668,12 +746,7 @@ fn test_export_produces_html_artifacts() {
     let html_files: Vec<_> = std::fs::read_dir(&html_dir)
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .map(|x| x == "html")
-                .unwrap_or(false)
-        })
+        .filter(|e| e.path().extension().map(|x| x == "html").unwrap_or(false))
         .collect();
     assert!(
         !html_files.is_empty(),
@@ -712,7 +785,11 @@ fn test_search_hybrid_includes_callchain() {
     let cfg = openai_compatible_config(port);
     std::fs::write(work_dir.join("mock-server.toml"), cfg).unwrap();
 
-    let gen_out = run_bin_with_envs(&work_dir, &["generate", "--config", "mock-server.toml"], &[]);
+    let gen_out = run_bin_with_envs(
+        &work_dir,
+        &["generate", "--config", "mock-server.toml"],
+        &[],
+    );
     assert!(
         gen_out.status.success(),
         "generate 应成功, stderr: {}",
@@ -721,7 +798,18 @@ fn test_search_hybrid_includes_callchain() {
 
     let out = run_bin_with_envs(
         &work_dir,
-        &["search", "-q", "authenticate", "-k", "3", "--engine", "hybrid", "--json", "--config", "mock-server.toml"],
+        &[
+            "search",
+            "-q",
+            "authenticate",
+            "-k",
+            "3",
+            "--engine",
+            "hybrid",
+            "--json",
+            "--config",
+            "mock-server.toml",
+        ],
         &[],
     );
     assert!(
@@ -746,15 +834,16 @@ fn test_search_hybrid_includes_callchain() {
         "应命中 authenticate, 实际 hits: {stdout}"
     );
     let hit = auth_hit.unwrap();
-    let callers = hit.get("callers").and_then(|c| c.as_array()).cloned().unwrap_or_default();
+    let callers = hit
+        .get("callers")
+        .and_then(|c| c.as_array())
+        .cloned()
+        .unwrap_or_default();
     assert!(
         !callers.is_empty(),
         "authenticate 的调用链补全应含调用者 main, 实际 callers: {callers:?} (hit: {hit})"
     );
-    assert!(
-        hit.get("callees").is_some(),
-        "命中结果应含 callees 字段"
-    );
+    assert!(hit.get("callees").is_some(), "命中结果应含 callees 字段");
 
     let _ = std::fs::remove_dir_all(&work_dir);
 }
@@ -859,7 +948,12 @@ fn test_ast_search_finds_definition() {
     // 不存在的符号 → 明确提示
     let miss = run_bin_with_envs(
         &work_dir,
-        &["ast-search", "definitely_missing", "--config", "mock-server.toml"],
+        &[
+            "ast-search",
+            "definitely_missing",
+            "--config",
+            "mock-server.toml",
+        ],
         &[],
     );
     let miss_out = format!(
@@ -886,7 +980,14 @@ fn test_ast_search_invalid_language_errors() {
 
     let out = run_bin_with_envs(
         &work_dir,
-        &["ast-search", "authenticate", "--language", "bogus", "--config", "mock-server.toml"],
+        &[
+            "ast-search",
+            "authenticate",
+            "--language",
+            "bogus",
+            "--config",
+            "mock-server.toml",
+        ],
         &[],
     );
     let combined = format!(
@@ -917,7 +1018,13 @@ fn test_update_output_tail_lint_scans_output_dir() {
     // 1. generate --output 自定义目录（产物落在 work_dir/custom-out）
     let out = run_bin_with_envs(
         &work_dir,
-        &["generate", "--config", "mock-server.toml", "--output", "custom-out"],
+        &[
+            "generate",
+            "--config",
+            "mock-server.toml",
+            "--output",
+            "custom-out",
+        ],
         &[],
     );
     assert!(
@@ -932,7 +1039,11 @@ fn test_update_output_tail_lint_scans_output_dir() {
     );
 
     // 2. 在 --output 目录制造孤儿页（lint 必报问题；若复核扫默认目录则静默漏检）
-    std::fs::write(out_dir.join("wiki").join("zh").join("orphan.md"), "# 孤儿页\n").unwrap();
+    std::fs::write(
+        out_dir.join("wiki").join("zh").join("orphan.md"),
+        "# 孤儿页\n",
+    )
+    .unwrap();
 
     // 3. 修改源文件触发真实增量更新（非 git 仓库回退全量语义，仍会执行）
     let src = work_dir.join("src").join("main.rs");
@@ -943,7 +1054,13 @@ fn test_update_output_tail_lint_scans_output_dir() {
     // 4. update --output：尾部复核应扫 custom-out 并发现孤儿页（RUST_LOG=warn 捕获）
     let out = run_bin_with_envs(
         &work_dir,
-        &["update", "--config", "mock-server.toml", "--output", "custom-out"],
+        &[
+            "update",
+            "--config",
+            "mock-server.toml",
+            "--output",
+            "custom-out",
+        ],
         &[("RUST_LOG", "warn")],
     );
     assert!(
@@ -975,11 +1092,7 @@ fn test_sync_rejected_while_locked() {
     };
     let _lock = acquire_run_lock(&config).expect("主测试进程应能获取运行锁");
 
-    let out = run_bin_with_envs(
-        &work_dir,
-        &["sync", "--config", "mock-server.toml"],
-        &[],
-    );
+    let out = run_bin_with_envs(&work_dir, &["sync", "--config", "mock-server.toml"], &[]);
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
@@ -1005,7 +1118,11 @@ fn test_sync_rejected_while_locked() {
 fn test_card_generate_root_after_action_parses() {
     let work_dir = prepare_repo("card_root_global");
 
-    let out = run_bin_with_envs(&work_dir, &["generate", "--config", "mock-server.toml"], &[]);
+    let out = run_bin_with_envs(
+        &work_dir,
+        &["generate", "--config", "mock-server.toml"],
+        &[],
+    );
     assert!(
         out.status.success(),
         "generate 应成功，stderr: {}",
@@ -1028,7 +1145,15 @@ fn test_card_generate_root_after_action_parses() {
     // --root 放在动作子命令之后：修复前 clap 解析期拒绝（unexpected argument）
     let out = run_bin_with_envs(
         &work_dir,
-        &["card", "generate", &module, "--root", root_str, "--config", "mock-server.toml"],
+        &[
+            "card",
+            "generate",
+            &module,
+            "--root",
+            root_str,
+            "--config",
+            "mock-server.toml",
+        ],
         &[],
     );
     assert!(

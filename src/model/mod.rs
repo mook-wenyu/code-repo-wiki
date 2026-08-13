@@ -1,10 +1,10 @@
-pub mod node;
-pub mod edge;
 pub mod document;
+pub mod edge;
+pub mod node;
 
-pub use node::*;
-pub use edge::*;
 pub use document::*;
+pub use edge::*;
+pub use node::*;
 
 use petgraph::stable_graph::StableDiGraph;
 use serde::{Deserialize, Serialize};

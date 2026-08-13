@@ -195,7 +195,11 @@ fn index_guide_prompt(infos: &[ModuleGuideInfo], language: &str) -> Vec<Message>
     // 其他语言原样（此前直接注入 language，zh 项目收到「请用 zh 语言输出」，
     // 与其他 prompt 的「请用 简体中文 输出」措辞不一致）。链接路径中的
     // {language} 保持原始语言：wiki/{lang}/ 是实际落盘目录名，不受映射影响。
-    let output_lang = if language == "zh" { "简体中文" } else { language };
+    let output_lang = if language == "zh" {
+        "简体中文"
+    } else {
+        language
+    };
     let system = format!(
         r#"你是一个资深软件架构师，负责为代码仓库生成人类可读的阅读指南（index.md）。
 

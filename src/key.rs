@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 
 use crate::config::schema::LlmProviderType;
 use crate::config::{
-    create_default_config, load_config, load_default_config_with, USER_CONFIG_FILE,
+    USER_CONFIG_FILE, create_default_config, load_config, load_default_config_with,
 };
 use crate::project::ProjectRoot;
 
@@ -81,9 +81,7 @@ fn run_with_io(
     if env {
         let suggested = suggested_env_name(&provider_cfg.llm.provider);
         write_field(&target, "api_key_env", suggested)?;
-        println!(
-            "已写入环境变量引用 api_key_env = \"{suggested}\"（用户级配置，不随 Git 共享）"
-        );
+        println!("已写入环境变量引用 api_key_env = \"{suggested}\"（用户级配置，不随 Git 共享）");
         println!(
             "请设置环境变量 {suggested}（如 export {suggested}=sk-... 或 setx {suggested} sk-...），重启终端后生效"
         );
@@ -151,15 +149,18 @@ fn write_field(target: &Path, field: &str, value: &str) -> Result<()> {
     }
     // 写后重新解析验证：字段必须真实生效（TOML 转义错误等在此暴露；
     // 用户级文件原样加载，无注入无净化——v30 已整体删除）
-    let cfg = load_config(target)
-        .with_context(|| format!("写入后配置解析失败: {}", target.display()))?;
+    let cfg =
+        load_config(target).with_context(|| format!("写入后配置解析失败: {}", target.display()))?;
     let effective = if field == "api_key" {
         cfg.llm.api_key.as_deref() == Some(value)
     } else {
         cfg.llm.api_key_env == value
     };
     if !effective {
-        anyhow::bail!("验证失败：{field} 写入后未生效，请检查 {}", target.display());
+        anyhow::bail!(
+            "验证失败：{field} 写入后未生效，请检查 {}",
+            target.display()
+        );
     }
     Ok(())
 }
@@ -211,9 +212,8 @@ fn set_llm_field(text: &str, field: &str, value: &str) -> Result<String> {
             .is_some_and(|rest| rest.trim_start().starts_with('='))
     };
     // 注释占位行匹配：`#api_key = ""`（模板占位，替换时取消注释）
-    let matches_comment_field = |l: &str| -> bool {
-        l.trim_start().strip_prefix('#').is_some_and(matches_field)
-    };
+    let matches_comment_field =
+        |l: &str| -> bool { l.trim_start().strip_prefix('#').is_some_and(matches_field) };
 
     // 分支 A：非注释字段行 → 整行替换（保留原缩进）
     if let Some((off, line)) = seg.iter().enumerate().find(|(_, l)| matches_field(l)) {
@@ -277,11 +277,8 @@ mod tests {
     /// 兜底）——置于全局目录内语义自洽（用户级信任源），测试目录独立
     /// 命名（pid）用完即删，不触碰真实配置文件本体。
     fn temp_global(tag: &str, provider: &str) -> (PathBuf, PathBuf) {
-        let dir = std::env::temp_dir().join(format!(
-            "code_repo_wiki_key_{}_{}",
-            tag,
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("code_repo_wiki_key_{}_{}", tag, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         // 用户级配置目录测试注入：直接用临时目录（不解析进程级环境变量——
@@ -323,7 +320,10 @@ mod tests {
         let target = global_dir.join(USER_CONFIG_FILE);
         let text = std::fs::read_to_string(&target).unwrap();
         // 模板的 #api_key = "" 注释占位被替换为明文
-        assert!(text.contains("api_key = \"sk-test-123\""), "未写入明文: {text}");
+        assert!(
+            text.contains("api_key = \"sk-test-123\""),
+            "未写入明文: {text}"
+        );
         // 写后重新解析验证生效
         let cfg = load_config(&target).unwrap();
         assert_eq!(cfg.llm.api_key.as_deref(), Some("sk-test-123"));
@@ -344,7 +344,10 @@ mod tests {
             suggested_env_name(&LlmProviderType::OpenAiCompatible),
             "OPENCODEGO2_API_KEY"
         );
-        assert_eq!(suggested_env_name(&LlmProviderType::OpenAI), "OPENCODEGO2_API_KEY");
+        assert_eq!(
+            suggested_env_name(&LlmProviderType::OpenAI),
+            "OPENCODEGO2_API_KEY"
+        );
         assert_eq!(
             suggested_env_name(&LlmProviderType::Anthropic),
             "ANTHROPIC_API_KEY"

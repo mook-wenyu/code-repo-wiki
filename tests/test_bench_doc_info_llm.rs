@@ -16,12 +16,12 @@
 
 use std::path::PathBuf;
 
-use code_repo_wiki::bench::manifest::{run_manifest, RepoEntry};
+use code_repo_wiki::bench::manifest::{RepoEntry, run_manifest};
 use code_repo_wiki::bench::{
-    render_markdown, run_rubrics_only, BenchReport, CompletenessReport, CoverageReport,
-    DocInfoReport, LintReport, TimeReport, UpdateRecallReport,
+    BenchReport, CompletenessReport, CoverageReport, DocInfoReport, LintReport, TimeReport,
+    UpdateRecallReport, render_markdown, run_rubrics_only,
 };
-use code_repo_wiki::config::schema::{LlmProviderType, LlmSection, WikiSection, WikiConfig};
+use code_repo_wiki::config::schema::{LlmProviderType, LlmSection, WikiConfig, WikiSection};
 use code_repo_wiki::project::ProjectRoot;
 
 // ============ 本地 mock OpenAI server（Chat 协议 SSE 流式） ============
@@ -32,8 +32,8 @@ use code_repo_wiki::project::ProjectRoot;
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct MockResponse {
     status: u16,
@@ -53,7 +53,10 @@ fn read_request(stream: &mut std::net::TcpStream) -> String {
             Ok(n) => buf.extend_from_slice(&tmp[..n]),
         }
     }
-    let head_end = buf.windows(4).position(|w| w == b"\r\n\r\n").unwrap_or(buf.len());
+    let head_end = buf
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .unwrap_or(buf.len());
     let head = String::from_utf8_lossy(&buf[..head_end]).to_string();
     let headers: Vec<(String, String)> = head
         .split("\r\n")
@@ -76,9 +79,7 @@ fn read_request(stream: &mut std::net::TcpStream) -> String {
         .to_string()
 }
 
-fn spawn_mock_server(
-    handler: impl Fn(String) -> MockResponse + Send + Sync + 'static,
-) -> String {
+fn spawn_mock_server(handler: impl Fn(String) -> MockResponse + Send + Sync + 'static) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base_url = format!("http://{}", listener.local_addr().unwrap());
     let handler = Arc::new(handler);
@@ -92,7 +93,10 @@ fn spawn_mock_server(
                 let reason = if resp.status == 200 { "OK" } else { "Error" };
                 let raw = format!(
                     "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    resp.status, reason, resp.body.len(), resp.body
+                    resp.status,
+                    reason,
+                    resp.body.len(),
+                    resp.body
                 );
                 let _ = stream.write_all(raw.as_bytes());
             });
@@ -108,7 +112,10 @@ fn sse_response(content: &str) -> String {
 
 /// 临时目录（复用既有集成测试的命名与清理模式）
 fn temp_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("code_repo_wiki_docinfo_{tag}_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "code_repo_wiki_docinfo_{tag}_{}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -119,17 +126,33 @@ fn temp_dir(tag: &str) -> PathBuf {
 fn bench_setup(tag: &str, llm: LlmSection) -> (ProjectRoot, WikiConfig) {
     let dir = temp_dir(tag);
     std::fs::create_dir_all(dir.join("src")).unwrap();
-    std::fs::write(dir.join("src").join("a.rs"), "pub fn alpha(x: u32) -> u32 { x + 1 }\n").unwrap();
+    std::fs::write(
+        dir.join("src").join("a.rs"),
+        "pub fn alpha(x: u32) -> u32 { x + 1 }\n",
+    )
+    .unwrap();
     let wiki_zh = dir.join(".code-repo-wiki").join("wiki").join("zh");
     std::fs::create_dir_all(&wiki_zh).unwrap();
     std::fs::write(wiki_zh.join("a.md"), "# 模块 a\n\n文档内容。\n").unwrap();
     let config = WikiConfig {
-        output_dir: Some(dir.join(".code-repo-wiki").to_string_lossy().into_owned().into()),
-        wiki: WikiSection { language: "zh".into(), guide: Default::default() },
+        output_dir: Some(
+            dir.join(".code-repo-wiki")
+                .to_string_lossy()
+                .into_owned()
+                .into(),
+        ),
+        wiki: WikiSection {
+            language: "zh".into(),
+            guide: Default::default(),
+        },
         llm,
         ..Default::default()
     };
-    std::fs::write(dir.join("config.toml"), toml::to_string_pretty(&config).unwrap()).unwrap();
+    std::fs::write(
+        dir.join("config.toml"),
+        toml::to_string_pretty(&config).unwrap(),
+    )
+    .unwrap();
     (ProjectRoot::new(dir), config)
 }
 
@@ -140,7 +163,11 @@ fn test_render_markdown_doc_info_llm_branches() {
     let base = |llm_judged: bool, llm_score: f64, judged: usize, abstain: usize| BenchReport {
         repo_name: "demo".into(),
         generated_at: "2026-08-03T00:00:00Z".into(),
-        coverage: CoverageReport { total_entities: 0, covered_entities: 0, ratio: 1.0 },
+        coverage: CoverageReport {
+            total_entities: 0,
+            covered_entities: 0,
+            ratio: 1.0,
+        },
         doc_info: DocInfoReport {
             pages: 2,
             words: 10,
@@ -152,14 +179,21 @@ fn test_render_markdown_doc_info_llm_branches() {
             llm_judged_modules: judged,
             llm_abstain_modules: abstain,
         },
-        lint: LintReport { total_issues: 0, by_kind: Default::default() },
+        lint: LintReport {
+            total_issues: 0,
+            by_kind: Default::default(),
+        },
         update_recall: UpdateRecallReport {
             commits_scanned: 0,
             commits_with_changes: 0,
             correctly_updated: 0,
             recall: 1.0,
         },
-        time: TimeReport { scan_ms: 0, generate_ms: 0, total_ms: 0 },
+        time: TimeReport {
+            scan_ms: 0,
+            generate_ms: 0,
+            total_ms: 0,
+        },
         timings: None,
         tqs: None,
         rubric: None,
@@ -188,7 +222,10 @@ fn test_render_markdown_doc_info_llm_branches() {
         md_off.contains("- LLM 信息性判定: 未执行（LLM 不可用，降级跳过）"),
         "降级分支应显式标注（FR-101 不静默）: {md_off}"
     );
-    assert!(!md_off.contains("LLM 信息性评分"), "降级分支不得输出评分行: {md_off}");
+    assert!(
+        !md_off.contains("LLM 信息性评分"),
+        "降级分支不得输出评分行: {md_off}"
+    );
 }
 
 /// FR-101/FR-102：调用点合并——run_rubrics_only 的 doc_info 携带 LLM
@@ -197,12 +234,21 @@ fn test_render_markdown_doc_info_llm_branches() {
 /// （judged_n==0 空集约定，无除零），渲染输出评分行而非降级标注。
 #[test]
 fn test_run_rubrics_only_doc_info_llm_abstains_with_mock() {
-    let llm = LlmSection { provider: LlmProviderType::Mock, ..Default::default() };
+    let llm = LlmSection {
+        provider: LlmProviderType::Mock,
+        ..Default::default()
+    };
     let (root, config) = bench_setup("mock_abstain", llm);
     let report = run_rubrics_only(&root, &config, "demo", &[]).unwrap();
     let doc_info = &report.doc_info;
-    assert!(doc_info.llm_judged, "mock provider 可用，判定应执行（judged=true）");
-    assert_eq!(doc_info.llm_judged_modules, 0, "mock 响应不含 score → 无成功判定页");
+    assert!(
+        doc_info.llm_judged,
+        "mock provider 可用，判定应执行（judged=true）"
+    );
+    assert_eq!(
+        doc_info.llm_judged_modules, 0,
+        "mock 响应不含 score → 无成功判定页"
+    );
     assert_eq!(doc_info.llm_abstain_modules, 1, "1 个产物页全部计 abstain");
     assert_eq!(doc_info.llm_score, 0.0, "无判定页时评分为 0（空集约定）");
     // 渲染端到端：评分行以 0.00/0/1 呈现，不出现降级标注
@@ -231,7 +277,10 @@ fn test_run_rubrics_only_doc_info_degraded_without_llm() {
     assert!(!doc_info.llm_judged, "LLM 不可用应降级 judged=false");
     assert_eq!(doc_info.llm_score, 0.0);
     assert_eq!(doc_info.llm_judged_modules, 0);
-    assert_eq!(doc_info.llm_abstain_modules, 0, "降级不调用 LLM，无 abstain");
+    assert_eq!(
+        doc_info.llm_abstain_modules, 0,
+        "降级不调用 LLM，无 abstain"
+    );
     let md = render_markdown(&report);
     assert!(
         md.contains("- LLM 信息性判定: 未执行（LLM 不可用，降级跳过）"),
@@ -249,7 +298,10 @@ fn test_run_manifest_error_row_doc_info_empty() {
     let missing = base.join("missing-repo");
     let work_dir = base.join("work");
     let template = WikiConfig {
-        llm: LlmSection { provider: LlmProviderType::Mock, ..Default::default() },
+        llm: LlmSection {
+            provider: LlmProviderType::Mock,
+            ..Default::default()
+        },
         ..Default::default()
     };
     let entries = vec![RepoEntry {
@@ -262,7 +314,10 @@ fn test_run_manifest_error_row_doc_info_empty() {
     assert_eq!(report.repos.len(), 1);
     let row = &report.repos[0];
     assert!(row.error.is_some(), "缺失路径应标注失败");
-    assert!(!row.doc_info.llm_judged, "错误行 doc_info 应为 empty_doc_info（llm_judged=false）");
+    assert!(
+        !row.doc_info.llm_judged,
+        "错误行 doc_info 应为 empty_doc_info（llm_judged=false）"
+    );
     assert_eq!(row.doc_info.llm_score, 0.0);
     assert_eq!(row.doc_info.llm_judged_modules, 0);
     assert_eq!(row.doc_info.llm_abstain_modules, 0);
@@ -279,11 +334,23 @@ fn bench_setup_scripted(tag: &str, base_url: &str) -> (ProjectRoot, WikiConfig) 
     let wiki_zh = dir.join(".code-repo-wiki").join("wiki").join("zh");
     std::fs::create_dir_all(&wiki_zh).unwrap();
     for name in ["a", "b", "c"] {
-        std::fs::write(wiki_zh.join(format!("{name}.md")), format!("# 模块 {name}\n\n内容。\n")).unwrap();
+        std::fs::write(
+            wiki_zh.join(format!("{name}.md")),
+            format!("# 模块 {name}\n\n内容。\n"),
+        )
+        .unwrap();
     }
     let config = WikiConfig {
-        output_dir: Some(dir.join(".code-repo-wiki").to_string_lossy().into_owned().into()),
-        wiki: WikiSection { language: "zh".into(), guide: Default::default() },
+        output_dir: Some(
+            dir.join(".code-repo-wiki")
+                .to_string_lossy()
+                .into_owned()
+                .into(),
+        ),
+        wiki: WikiSection {
+            language: "zh".into(),
+            guide: Default::default(),
+        },
         llm: LlmSection {
             provider: LlmProviderType::OpenAiCompatible,
             model: "mock-model".into(),
@@ -296,7 +363,11 @@ fn bench_setup_scripted(tag: &str, base_url: &str) -> (ProjectRoot, WikiConfig) 
         },
         ..Default::default()
     };
-    std::fs::write(dir.join("config.toml"), toml::to_string_pretty(&config).unwrap()).unwrap();
+    std::fs::write(
+        dir.join("config.toml"),
+        toml::to_string_pretty(&config).unwrap(),
+    )
+    .unwrap();
     (ProjectRoot::new(dir), config)
 }
 
@@ -324,14 +395,20 @@ fn test_doc_info_llm_retry_abstain_average_e2e() {
         } else {
             r#"{"score": -2}"#
         };
-        MockResponse { status: 200, body: sse_response(content) }
+        MockResponse {
+            status: 200,
+            body: sse_response(content),
+        }
     });
     let (root, config) = bench_setup_scripted("e2e_retry", &base_url);
     let report = run_rubrics_only(&root, &config, "demo", &[]).unwrap();
     let d = &report.doc_info;
     assert!(d.llm_judged, "provider 可用应执行判定");
     assert_eq!(d.llm_judged_modules, 2, "b/c 两页判定成功（a 页 abstain）");
-    assert_eq!(d.llm_abstain_modules, 1, "a 页重试后仍 uncertain 计 abstain");
+    assert_eq!(
+        d.llm_abstain_modules, 1,
+        "a 页重试后仍 uncertain 计 abstain"
+    );
     assert!(
         (d.llm_score - 5.0).abs() < 1e-9,
         "评分 = (clamp(11)→10 + clamp(-2)→0)/2 = 5.0，实际: {}",

@@ -1,5 +1,5 @@
-use std::path::Path;
 use anyhow::Result;
+use std::path::Path;
 use tree_sitter::{Language, Node};
 
 use super::{Entity, FileInsight, ImportStmt, KindRule, LanguageProcessor, SharedProcessor};
@@ -23,19 +23,32 @@ const KINDS: &[KindRule] = &[
 /// 无法表化的特殊分支（import/import_from 文本解析）、docstring 关联钩子、正则 fallback。
 /// 公共 walk/fallback 触发/FileInsight 组装走 SharedProcessor 默认实现。
 impl SharedProcessor for PythonProcessor {
-    fn language() -> &'static str { "Python" }
-    fn grammar() -> Language { tree_sitter_python::LANGUAGE.into() }
+    fn language() -> &'static str {
+        "Python"
+    }
+    fn grammar() -> Language {
+        tree_sitter_python::LANGUAGE.into()
+    }
 
     fn kinds() -> &'static [KindRule] {
         KINDS
     }
 
-    fn handle_special(node: Node, bytes: &[u8], entities: &mut Vec<Entity>, imports: &mut Vec<ImportStmt>) {
+    fn handle_special(
+        node: Node,
+        bytes: &[u8],
+        entities: &mut Vec<Entity>,
+        imports: &mut Vec<ImportStmt>,
+    ) {
         match node.kind() {
             "import_statement" => {
                 if let Ok(text) = node.utf8_text(bytes) {
                     imports.push(ImportStmt {
-                        source: text.trim().strip_prefix("import ").unwrap_or(text.trim()).to_string(),
+                        source: text
+                            .trim()
+                            .strip_prefix("import ")
+                            .unwrap_or(text.trim())
+                            .to_string(),
                         alias: None,
                         line: node.start_position().row + 1,
                     });
@@ -62,10 +75,13 @@ impl SharedProcessor for PythonProcessor {
                     && let Ok(name) = left.utf8_text(bytes)
                 {
                     entities.push(Entity {
-                        name: name.trim().to_string(), kind: "constant".to_string(),
+                        name: name.trim().to_string(),
+                        kind: "constant".to_string(),
                         line_start: node.start_position().row + 1,
                         line_end: node.end_position().row + 1,
-                        doc_comment: None, signature: None, visibility: None,
+                        doc_comment: None,
+                        signature: None,
+                        visibility: None,
                     });
                 }
             }
@@ -81,12 +97,60 @@ impl SharedProcessor for PythonProcessor {
         let mut entities = Vec::new();
         let mut imports = Vec::new();
         for (i, line) in source.lines().enumerate() {
-            let line_no = i + 1; let t = line.trim();
-            if let Some(rest) = t.strip_prefix("import ") { imports.push(ImportStmt { source: rest.to_string(), alias: None, line: line_no }); }
-            else if let Some(rest) = t.strip_prefix("from ") { imports.push(ImportStmt { source: rest.to_string(), alias: None, line: line_no }); }
-            else if let Some(name) = t.strip_prefix("class ").and_then(|s| s.split(&['(', ':', ' '][..]).next()) { entities.push(Entity { name: name.to_string(), kind: "class".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: None, visibility: None }); }
-            else if let Some(name) = t.strip_prefix("def ").and_then(|s| s.split(&['(', ':', ' '][..]).next()) { entities.push(Entity { name: name.to_string(), kind: "function".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: Some(t.to_string()), visibility: None }); }
-            else if let Some(name) = t.strip_prefix("async def ").and_then(|s| s.split(&['(', ':', ' '][..]).next()) { entities.push(Entity { name: name.to_string(), kind: "function".into(), line_start: line_no, line_end: line_no, doc_comment: None, signature: Some(t.to_string()), visibility: None }); }
+            let line_no = i + 1;
+            let t = line.trim();
+            if let Some(rest) = t.strip_prefix("import ") {
+                imports.push(ImportStmt {
+                    source: rest.to_string(),
+                    alias: None,
+                    line: line_no,
+                });
+            } else if let Some(rest) = t.strip_prefix("from ") {
+                imports.push(ImportStmt {
+                    source: rest.to_string(),
+                    alias: None,
+                    line: line_no,
+                });
+            } else if let Some(name) = t
+                .strip_prefix("class ")
+                .and_then(|s| s.split(&['(', ':', ' '][..]).next())
+            {
+                entities.push(Entity {
+                    name: name.to_string(),
+                    kind: "class".into(),
+                    line_start: line_no,
+                    line_end: line_no,
+                    doc_comment: None,
+                    signature: None,
+                    visibility: None,
+                });
+            } else if let Some(name) = t
+                .strip_prefix("def ")
+                .and_then(|s| s.split(&['(', ':', ' '][..]).next())
+            {
+                entities.push(Entity {
+                    name: name.to_string(),
+                    kind: "function".into(),
+                    line_start: line_no,
+                    line_end: line_no,
+                    doc_comment: None,
+                    signature: Some(t.to_string()),
+                    visibility: None,
+                });
+            } else if let Some(name) = t
+                .strip_prefix("async def ")
+                .and_then(|s| s.split(&['(', ':', ' '][..]).next())
+            {
+                entities.push(Entity {
+                    name: name.to_string(),
+                    kind: "function".into(),
+                    line_start: line_no,
+                    line_end: line_no,
+                    doc_comment: None,
+                    signature: Some(t.to_string()),
+                    visibility: None,
+                });
+            }
         }
         (entities, imports)
     }
@@ -102,14 +166,24 @@ impl PythonProcessor {
             for i in (e.line_start + 1)..lines.len().min(e.line_start + 6) {
                 let t = lines[i - 1].trim();
                 let found = if t.starts_with("\"\"\"") {
-                    let doc = t.trim_start_matches("\"\"\"").trim_end_matches("\"\"\"").to_string();
+                    let doc = t
+                        .trim_start_matches("\"\"\"")
+                        .trim_end_matches("\"\"\"")
+                        .to_string();
                     Some(doc)
                 } else if t.starts_with("'''") {
-                    let doc = t.trim_start_matches("'''").trim_end_matches("'''").to_string();
+                    let doc = t
+                        .trim_start_matches("'''")
+                        .trim_end_matches("'''")
+                        .to_string();
                     Some(doc)
-                } else { None };
+                } else {
+                    None
+                };
                 if let Some(doc) = found {
-                    if !doc.is_empty() { e.doc_comment = Some(doc); }
+                    if !doc.is_empty() {
+                        e.doc_comment = Some(doc);
+                    }
                     break;
                 } else if !t.is_empty() && !t.starts_with('#') {
                     break;
@@ -120,8 +194,12 @@ impl PythonProcessor {
 }
 
 impl LanguageProcessor for PythonProcessor {
-    fn name(&self) -> &'static str { Self::language() }
-    fn extensions(&self) -> &[&str] { &[".py"] }
+    fn name(&self) -> &'static str {
+        Self::language()
+    }
+    fn extensions(&self) -> &[&str] {
+        &[".py"]
+    }
 
     fn parse(&self, source: &str, path: &Path) -> Result<FileInsight> {
         Self::parse_file(source, path)
@@ -164,9 +242,26 @@ def helper():
 "#;
         let proc = PythonProcessor::new().unwrap();
         let result = proc.parse(source, Path::new("test.py")).unwrap();
-        assert!(result.entities.iter().any(|e| e.name == "MAX_SIZE" && e.kind == "constant"), "MAX_SIZE 应解析: {:?}", result.entities);
-        assert!(result.entities.iter().any(|e| e.name == "API_BASE" && e.kind == "constant"), "API_BASE 应解析");
-        assert!(!result.entities.iter().any(|e| e.name == "local_cache"), "函数内赋值不应误报为常量: {:?}", result.entities);
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.name == "MAX_SIZE" && e.kind == "constant"),
+            "MAX_SIZE 应解析: {:?}",
+            result.entities
+        );
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.name == "API_BASE" && e.kind == "constant"),
+            "API_BASE 应解析"
+        );
+        assert!(
+            !result.entities.iter().any(|e| e.name == "local_cache"),
+            "函数内赋值不应误报为常量: {:?}",
+            result.entities
+        );
     }
 
     /// P0-7：docstring 关联回归——从声明行下一行起扫，docstring 正确挂到实体
@@ -182,9 +277,17 @@ def greet(name: str) -> str:
 "#;
         let proc = PythonProcessor::new().unwrap();
         let result = proc.parse(source, Path::new("test.py")).unwrap();
-        let person = result.entities.iter().find(|e| e.name == "Person").expect("Person 应解析");
+        let person = result
+            .entities
+            .iter()
+            .find(|e| e.name == "Person")
+            .expect("Person 应解析");
         assert_eq!(person.doc_comment.as_deref(), Some("A person with a name."));
-        let greet = result.entities.iter().find(|e| e.name == "greet").expect("greet 应解析");
+        let greet = result
+            .entities
+            .iter()
+            .find(|e| e.name == "greet")
+            .expect("greet 应解析");
         assert_eq!(greet.doc_comment.as_deref(), Some("Greets a person."));
     }
 }

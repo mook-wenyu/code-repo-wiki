@@ -30,7 +30,9 @@ pub struct GitDiffResult {
 pub fn get_head_commit_hash_at(root: &crate::project::ProjectRoot) -> Result<String> {
     let repo = git2::Repository::open(root.path())?;
     let head = repo.head()?;
-    let oid = head.target().ok_or_else(|| anyhow::anyhow!("HEAD 没有目标"))?;
+    let oid = head
+        .target()
+        .ok_or_else(|| anyhow::anyhow!("HEAD 没有目标"))?;
     Ok(oid.to_string())
 }
 

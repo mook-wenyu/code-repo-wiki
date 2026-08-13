@@ -7,7 +7,8 @@ use code_repo_wiki::incremental::state::GenerationState;
 
 /// 构造带已落盘产物（wiki/zh/foo.md）的临时输出目录，返回 (目录, 产物路径字符串)
 fn fixture(tag: &str, content: &str) -> (std::path::PathBuf, String) {
-    let dir = std::env::temp_dir().join(format!("code_repo_wiki_sync_{tag}_{}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("code_repo_wiki_sync_{tag}_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let path = dir.join("wiki").join("zh").join("foo.md");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -115,7 +116,11 @@ fn test_sync_corrupted_state_errors_explicitly() {
     let (dir, _) = fixture("corrupt", "内容");
     let state_dir = dir.join(".state");
     std::fs::create_dir_all(&state_dir).unwrap();
-    std::fs::write(state_dir.join("generation_state.json"), "{ not valid json !").unwrap();
+    std::fs::write(
+        state_dir.join("generation_state.json"),
+        "{ not valid json !",
+    )
+    .unwrap();
 
     let err = code_repo_wiki::commands::sync_from_git(&dir).unwrap_err();
     assert!(

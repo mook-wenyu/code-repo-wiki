@@ -2,7 +2,6 @@ use std::collections::{HashMap, HashSet};
 
 use petgraph::visit::{EdgeRef, IntoEdgeReferences};
 
-
 use crate::model::*;
 
 use super::community::{community_name, detect_communities};
@@ -61,30 +60,42 @@ impl<'a> ModuleDetector<'a> {
         let mut entity_file: HashMap<NodeId, NodeId> = HashMap::new();
         let mut file_entities: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
         for edge in self.graph.graph.edge_references() {
-            let kind = self.graph.graph.edge_weight(edge.id()).map(|e| e.kind.clone());
+            let kind = self
+                .graph
+                .graph
+                .edge_weight(edge.id())
+                .map(|e| e.kind.clone());
             if kind != Some(EdgeKind::Contains) {
                 continue;
             }
             if file_comm.contains_key(&edge.source()) {
                 entity_file.insert(edge.target(), edge.source());
-                file_entities.entry(edge.source()).or_default().push(edge.target());
+                file_entities
+                    .entry(edge.source())
+                    .or_default()
+                    .push(edge.target());
             }
         }
 
         // 3) 端点归位：File → 社区；实体 → 所属 File → 社区。
         //    Module/Project 等容器节点无社区归属（旧实现同样不计数）。
         let node_comm = |nid: NodeId| -> Option<usize> {
-            file_comm
-                .get(&nid)
-                .copied()
-                .or_else(|| entity_file.get(&nid).and_then(|f| file_comm.get(f).copied()))
+            file_comm.get(&nid).copied().or_else(|| {
+                entity_file
+                    .get(&nid)
+                    .and_then(|f| file_comm.get(f).copied())
+            })
         };
 
         // 4) 单遍非 Contains 边：internal/external 按社区聚合
         let mut internal = vec![0.0f64; n_comm];
         let mut external = vec![0.0f64; n_comm];
         for edge in self.graph.graph.edge_references() {
-            let kind = self.graph.graph.edge_weight(edge.id()).map(|e| e.kind.clone());
+            let kind = self
+                .graph
+                .graph
+                .edge_weight(edge.id())
+                .map(|e| e.kind.clone());
             if kind == Some(EdgeKind::Contains) {
                 continue;
             }
@@ -177,7 +188,6 @@ fn file_stem(files: &[String]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     /// v49 大图/分流测试合成图构造器：n_dirs 个目录 dirNN/，每目录
     /// files_per_dir 个文件（各带 1 个实体），connected_pairs 指定跨目录
@@ -254,47 +264,99 @@ mod tests {
         let mut kg = KnowledgeGraph::default();
         let g = &mut kg.graph;
         let p = g.add_node(CodeNode {
-            id: NodeId::new(0), kind: NodeKind::Project, name: "p".into(),
-            file_path: None, line_range: None, doc_comment: None,
-            signature: None, module_path: vec![], visibility: None,
+            id: NodeId::new(0),
+            kind: NodeKind::Project,
+            name: "p".into(),
+            file_path: None,
+            line_range: None,
+            doc_comment: None,
+            signature: None,
+            module_path: vec![],
+            visibility: None,
         });
         let m = g.add_node(CodeNode {
-            id: NodeId::new(1), kind: NodeKind::Module, name: "m".into(),
-            file_path: None, line_range: None, doc_comment: None,
-            signature: None, module_path: vec!["src".into()], visibility: None,
+            id: NodeId::new(1),
+            kind: NodeKind::Module,
+            name: "m".into(),
+            file_path: None,
+            line_range: None,
+            doc_comment: None,
+            signature: None,
+            module_path: vec!["src".into()],
+            visibility: None,
         });
         let f1 = g.add_node(CodeNode {
-            id: NodeId::new(2), kind: NodeKind::File, name: "a.rs".into(),
-            file_path: Some("src/a.rs".into()), line_range: None, doc_comment: None,
-            signature: None, module_path: vec!["src".into()], visibility: None,
+            id: NodeId::new(2),
+            kind: NodeKind::File,
+            name: "a.rs".into(),
+            file_path: Some("src/a.rs".into()),
+            line_range: None,
+            doc_comment: None,
+            signature: None,
+            module_path: vec!["src".into()],
+            visibility: None,
         });
         let f2 = g.add_node(CodeNode {
-            id: NodeId::new(3), kind: NodeKind::File, name: "b.rs".into(),
-            file_path: Some("src/b.rs".into()), line_range: None, doc_comment: None,
-            signature: None, module_path: vec!["src".into()], visibility: None,
+            id: NodeId::new(3),
+            kind: NodeKind::File,
+            name: "b.rs".into(),
+            file_path: Some("src/b.rs".into()),
+            line_range: None,
+            doc_comment: None,
+            signature: None,
+            module_path: vec!["src".into()],
+            visibility: None,
         });
         let e1 = g.add_node(CodeNode {
-            id: NodeId::new(4), kind: NodeKind::Function, name: "foo".into(),
-            file_path: Some("src/a.rs".into()), line_range: None, doc_comment: None,
-            signature: None, module_path: vec!["src".into(), "a".into()], visibility: None,
+            id: NodeId::new(4),
+            kind: NodeKind::Function,
+            name: "foo".into(),
+            file_path: Some("src/a.rs".into()),
+            line_range: None,
+            doc_comment: None,
+            signature: None,
+            module_path: vec!["src".into(), "a".into()],
+            visibility: None,
         });
         let e2 = g.add_node(CodeNode {
-            id: NodeId::new(5), kind: NodeKind::Function, name: "bar".into(),
-            file_path: Some("src/b.rs".into()), line_range: None, doc_comment: None,
-            signature: None, module_path: vec!["src".into(), "b".into()], visibility: None,
+            id: NodeId::new(5),
+            kind: NodeKind::Function,
+            name: "bar".into(),
+            file_path: Some("src/b.rs".into()),
+            line_range: None,
+            doc_comment: None,
+            signature: None,
+            module_path: vec!["src".into(), "b".into()],
+            visibility: None,
         });
         // 添加内部 Contains 边
         for (src, tgt) in &[(p, m), (m, f1), (m, f2), (f1, e1), (f2, e2)] {
-            g.add_edge(*src, *tgt, CodeEdge {
-                id: EdgeId::new(g.edge_count()), kind: EdgeKind::Contains,
-                source: *src, target: *tgt, weight: 1.0, location: None,
-            });
+            g.add_edge(
+                *src,
+                *tgt,
+                CodeEdge {
+                    id: EdgeId::new(g.edge_count()),
+                    kind: EdgeKind::Contains,
+                    source: *src,
+                    target: *tgt,
+                    weight: 1.0,
+                    location: None,
+                },
+            );
         }
         // 内部 Calls 边（e1 → e2）
-        g.add_edge(e1, e2, CodeEdge {
-            id: EdgeId::new(g.edge_count()), kind: EdgeKind::Calls,
-            source: e1, target: e2, weight: 0.7, location: None,
-        });
+        g.add_edge(
+            e1,
+            e2,
+            CodeEdge {
+                id: EdgeId::new(g.edge_count()),
+                kind: EdgeKind::Calls,
+                source: e1,
+                target: e2,
+                weight: 0.7,
+                location: None,
+            },
+        );
         kg
     }
 
@@ -306,10 +368,23 @@ mod tests {
         let detector = ModuleDetector::new(&kg);
         let clusters = detector.detect();
         // 单目录仓库（src/a.rs + src/b.rs）→ 目录分流 → 1 个社区，命名 src
-        assert_eq!(clusters.len(), 1, "应产出 1 个模块, 实际: {:?}", clusters.iter().map(|c| &c.name).collect::<Vec<_>>());
+        assert_eq!(
+            clusters.len(),
+            1,
+            "应产出 1 个模块, 实际: {:?}",
+            clusters.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
         // 互调边两端都在扩展集合内（internal=1、external=0）→ cohesion 1.0
-        assert!((clusters[0].cohesion - 1.0).abs() < 1e-6, "cohesion 应为 1.0, 实际 {}", clusters[0].cohesion);
-        assert!((clusters[0].coupling).abs() < 1e-6, "coupling 应为 0.0, 实际 {}", clusters[0].coupling);
+        assert!(
+            (clusters[0].cohesion - 1.0).abs() < 1e-6,
+            "cohesion 应为 1.0, 实际 {}",
+            clusters[0].cohesion
+        );
+        assert!(
+            (clusters[0].coupling).abs() < 1e-6,
+            "coupling 应为 0.0, 实际 {}",
+            clusters[0].coupling
+        );
     }
 
     /// v49：耦合统计（单遍聚合路径）——24 目录合成图走目录分流（确定性），
@@ -320,15 +395,28 @@ mod tests {
         let detector = ModuleDetector::new(&kg);
         let clusters = detector.detect();
         // ≥24 目录 → 目录分流 → 恰 24 个社区，每目录一个
-        assert_eq!(clusters.len(), 24, "24 目录应产出 24 个模块, 实际 {}", clusters.len());
+        assert_eq!(
+            clusters.len(),
+            24,
+            "24 目录应产出 24 个模块, 实际 {}",
+            clusters.len()
+        );
         let dir00 = clusters
             .iter()
             .find(|c| c.name == "dir00")
             .expect("应存在 dir00 模块");
         // dir00 扩展集合 = {dir00/f0.rs, dir00/f1.rs, 2 实体}；跨边 f0→f0(dir01)
         // 恰一端在集合内 → external=1、internal=0 → coupling 1.0
-        assert!((dir00.coupling - 1.0).abs() < 1e-6, "dir00 coupling 应为 1.0, 实际 {}", dir00.coupling);
-        assert!((dir00.cohesion).abs() < 1e-6, "dir00 cohesion 应为 0.0, 实际 {}", dir00.cohesion);
+        assert!(
+            (dir00.coupling - 1.0).abs() < 1e-6,
+            "dir00 coupling 应为 1.0, 实际 {}",
+            dir00.coupling
+        );
+        assert!(
+            (dir00.cohesion).abs() < 1e-6,
+            "dir00 cohesion 应为 0.0, 实际 {}",
+            dir00.cohesion
+        );
     }
 
     /// v49：单遍聚合与暴力参照（测试内独立实现的 O(社区 × 边) 统计）
@@ -374,14 +462,22 @@ mod tests {
             };
             let cluster = &clusters[idx];
             assert!(
-                (cluster.cohesion - b_cohesion).abs() < 1e-9 && (cluster.coupling - b_coupling).abs() < 1e-9,
+                (cluster.cohesion - b_cohesion).abs() < 1e-9
+                    && (cluster.coupling - b_coupling).abs() < 1e-9,
                 "社区 {idx} ({}) 聚合统计与暴力参照不一致: 聚合 ({}, {}) vs 暴力 ({}, {})",
-                cluster.name, cluster.cohesion, cluster.coupling, b_cohesion, b_coupling
+                cluster.name,
+                cluster.cohesion,
+                cluster.coupling,
+                b_cohesion,
+                b_coupling
             );
             // 扩展集合（node_ids）也与暴力参照一致（File + 直接实体，排序去重）
             let mut b_nodes: Vec<NodeId> = set.into_iter().collect();
             b_nodes.sort_unstable();
-            assert_eq!(cluster.node_ids, b_nodes, "社区 {idx} 的 node_ids 与暴力参照不一致");
+            assert_eq!(
+                cluster.node_ids, b_nodes,
+                "社区 {idx} 的 node_ids 与暴力参照不一致"
+            );
         }
     }
 
@@ -393,10 +489,20 @@ mod tests {
         let kg = make_dirs_graph(300, 10, &pairs);
         let detector = ModuleDetector::new(&kg);
         let clusters = detector.detect();
-        assert_eq!(clusters.len(), 300, "300 目录应产出 300 个模块, 实际 {}", clusters.len());
+        assert_eq!(
+            clusters.len(),
+            300,
+            "300 目录应产出 300 个模块, 实际 {}",
+            clusters.len()
+        );
         // 每模块含 10 文件 + 10 实体（扩展集合完整）
         for c in &clusters {
-            assert_eq!(c.node_ids.len(), 20, "模块 {} 应含 10 文件 + 10 实体", c.name);
+            assert_eq!(
+                c.node_ids.len(),
+                20,
+                "模块 {} 应含 10 文件 + 10 实体",
+                c.name
+            );
         }
     }
 
@@ -407,11 +513,20 @@ mod tests {
         let clusters = detector.detect();
         // a.rs 与 b.rs 同前缀 "src"，内部互调（e1→e2）且无外部依赖：
         // cohesion=1.0>0.3, coupling=0<0.7 → 应检出 1 个模块
-        assert_eq!(clusters.len(), 1, "应检出 src 模块，实际: {:?}", clusters.iter().map(|c| &c.name).collect::<Vec<_>>());
+        assert_eq!(
+            clusters.len(),
+            1,
+            "应检出 src 模块，实际: {:?}",
+            clusters.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
         assert_eq!(clusters[0].name, "src");
         // node_ids = 2 文件 + 2 实体（File→Entity Contains 扩展），
         // api.md/mermaid 依赖实体节点在集合内
-        assert_eq!(clusters[0].node_ids.len(), 4, "模块应包含 2 文件 + 2 实体节点");
+        assert_eq!(
+            clusters[0].node_ids.len(),
+            4,
+            "模块应包含 2 文件 + 2 实体节点"
+        );
         // 且 4 个节点确实是 2 File + 2 Function
         let kinds: Vec<_> = clusters[0]
             .node_ids
@@ -438,22 +553,46 @@ mod tests {
     fn test_detect_multiple_directories() {
         let mut kg = KnowledgeGraph::default();
         let g = &mut kg.graph;
-        let add_file = |g: &mut petgraph::stable_graph::StableDiGraph<CodeNode, CodeEdge>, id: usize, path: &str, segs: Vec<&str>| -> (NodeId, NodeId) {
+        let add_file = |g: &mut petgraph::stable_graph::StableDiGraph<CodeNode, CodeEdge>,
+                        id: usize,
+                        path: &str,
+                        segs: Vec<&str>|
+         -> (NodeId, NodeId) {
             let nid = g.add_node(CodeNode {
-                id: NodeId::new(id), kind: NodeKind::File, name: path.into(),
-                file_path: Some(path.into()), line_range: None, doc_comment: None,
-                signature: None, module_path: segs.iter().map(|s| s.to_string()).collect(), visibility: None,
+                id: NodeId::new(id),
+                kind: NodeKind::File,
+                name: path.into(),
+                file_path: Some(path.into()),
+                line_range: None,
+                doc_comment: None,
+                signature: None,
+                module_path: segs.iter().map(|s| s.to_string()).collect(),
+                visibility: None,
             });
             // File → Entity 的 Contains 边（实体计入模块集合的前提）
             let eid = g.add_node(CodeNode {
-                id: NodeId::new(id + 100), kind: NodeKind::Function, name: format!("f{id}"),
-                file_path: Some(path.into()), line_range: None, doc_comment: None,
-                signature: None, module_path: segs.iter().map(|s| s.to_string()).collect(), visibility: None,
+                id: NodeId::new(id + 100),
+                kind: NodeKind::Function,
+                name: format!("f{id}"),
+                file_path: Some(path.into()),
+                line_range: None,
+                doc_comment: None,
+                signature: None,
+                module_path: segs.iter().map(|s| s.to_string()).collect(),
+                visibility: None,
             });
-            g.add_edge(nid, eid, CodeEdge {
-                id: EdgeId::new(g.edge_count()), kind: EdgeKind::Contains,
-                source: nid, target: eid, weight: 1.0, location: None,
-            });
+            g.add_edge(
+                nid,
+                eid,
+                CodeEdge {
+                    id: EdgeId::new(g.edge_count()),
+                    kind: EdgeKind::Contains,
+                    source: nid,
+                    target: eid,
+                    weight: 1.0,
+                    location: None,
+                },
+            );
             (nid, eid)
         };
         let (_tcp, etcp) = add_file(g, 0, "src/net/tcp.rs", vec!["src", "net"]);
@@ -461,10 +600,18 @@ mod tests {
         let _server = add_file(g, 2, "src/http/server.rs", vec!["src", "http"]);
         let _client = add_file(g, 3, "src/http/client.rs", vec!["src", "http"]);
         // tcp 实体 → udp 实体 跨文件调用：net 目录两文件聚为一社区
-        g.add_edge(etcp, eudp, CodeEdge {
-            id: EdgeId::new(g.edge_count()), kind: EdgeKind::Calls,
-            source: etcp, target: eudp, weight: 0.7, location: None,
-        });
+        g.add_edge(
+            etcp,
+            eudp,
+            CodeEdge {
+                id: EdgeId::new(g.edge_count()),
+                kind: EdgeKind::Calls,
+                source: etcp,
+                target: eudp,
+                weight: 0.7,
+                location: None,
+            },
+        );
 
         let detector = ModuleDetector::new(&kg);
         let clusters = detector.detect();

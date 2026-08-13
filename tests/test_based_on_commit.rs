@@ -12,7 +12,11 @@ use common::{mock_config, run_bin, unique_dir};
 /// 构造临时仓库：src/a.rs + config.toml（mock LLM），可选 git init+提交
 fn setup_repo(dir: &Path, with_git: bool) {
     fs::create_dir_all(dir.join("src")).unwrap();
-    fs::write(dir.join("src").join("a.rs"), "pub fn alpha_fn() -> u32 { 1 }\n").unwrap();
+    fs::write(
+        dir.join("src").join("a.rs"),
+        "pub fn alpha_fn() -> u32 { 1 }\n",
+    )
+    .unwrap();
     fs::write(dir.join("config.toml"), mock_config()).unwrap();
     if with_git {
         let repo = git2::Repository::init(dir).unwrap();
@@ -27,7 +31,8 @@ fn setup_repo(dir: &Path, with_git: bool) {
         // 直接 commit(Some("HEAD")) 写 ref 会 Os NotFound——
         // 先取得提交 oid 再显式创建 ref 并 set_head
         let oid = repo.commit(None, &sig, &sig, "init", &tree, &[]).unwrap();
-        repo.reference("refs/heads/master", oid, true, "init").unwrap();
+        repo.reference("refs/heads/master", oid, true, "init")
+            .unwrap();
         repo.set_head("refs/heads/master").unwrap();
     }
 }
@@ -50,12 +55,11 @@ fn test_wiki_page_includes_based_on_commit_in_git_repo() {
     assert_eq!(hash.len(), 8, "短哈希应为 8 位: {}", line);
     // 基线行位于「最后更新」行附近（头部）
     let page_lines: Vec<&str> = page.lines().collect();
-    let idx = page_lines.iter().position(|l| l.contains("基于提交")).unwrap();
-    assert!(
-        idx < 8,
-        "基线行应在页面头部（实际第 {} 行）",
-        idx + 1
-    );
+    let idx = page_lines
+        .iter()
+        .position(|l| l.contains("基于提交"))
+        .unwrap();
+    assert!(idx < 8, "基线行应在页面头部（实际第 {} 行）", idx + 1);
 }
 
 #[test]

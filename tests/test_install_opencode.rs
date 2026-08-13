@@ -49,7 +49,10 @@ fn user_plugin_file(home: &Path) -> PathBuf {
 
 /// v39 之前的旧版项目级插件产物路径（迁移清理目标）
 fn legacy_project_plugin_file(work_dir: &Path) -> PathBuf {
-    work_dir.join(".opencode").join("plugins").join("code-repo-wiki.ts")
+    work_dir
+        .join(".opencode")
+        .join("plugins")
+        .join("code-repo-wiki.ts")
 }
 
 /// 用户级 opencode.json 路径（隔离 HOME 下）
@@ -96,10 +99,15 @@ fn test_install_writes_plugin_file_and_registers_mcp() {
     let oc_path = opencode_config(&home);
     let oc_content = std::fs::read_to_string(&oc_path)
         .unwrap_or_else(|e| panic!("用户级 opencode.json 应写入 {}: {}", oc_path.display(), e));
-    let oc: serde_json::Value = serde_json::from_str(&oc_content).expect("opencode.json 应为合法 JSON");
+    let oc: serde_json::Value =
+        serde_json::from_str(&oc_content).expect("opencode.json 应为合法 JSON");
     let entry = &oc["mcp"]["code-repo-wiki"];
     assert_eq!(entry["type"], "local", "MCP 条目应为 local 类型");
-    assert_eq!(entry["command"][0], env!("CARGO_BIN_EXE_code-repo-wiki"), "command 应为当前可执行文件绝对路径");
+    assert_eq!(
+        entry["command"][0],
+        env!("CARGO_BIN_EXE_code-repo-wiki"),
+        "command 应为当前可执行文件绝对路径"
+    );
     assert_eq!(entry["command"][1], "mcp");
     assert_eq!(entry["enabled"], true);
 
@@ -162,7 +170,10 @@ fn test_uninstall_removes_plugin_file_and_mcp() {
 
     let out = run_bin_with_envs(&work_dir, &["install"], &envs_ref);
     assert!(out.status.success(), "install 应成功");
-    assert!(user_plugin_file(&home).exists(), "install 后用户级插件文件应存在");
+    assert!(
+        user_plugin_file(&home).exists(),
+        "install 后用户级插件文件应存在"
+    );
     // 预置用户级配置中的其他键（模拟用户自有配置）——install 升级不得触碰，
     // uninstall 只移除 code-repo-wiki 条目（文件保持存在）
     let oc_path = opencode_config(&home);
@@ -171,7 +182,14 @@ fn test_uninstall_removes_plugin_file_and_mcp() {
 
     // 预置产物数据目录（模拟用户已有 wiki 产物——uninstall 不得触碰）
     std::fs::create_dir_all(work_dir.join(".code-repo-wiki").join("wiki")).unwrap();
-    std::fs::write(work_dir.join(".code-repo-wiki").join("wiki").join("sentinel.md"), "data").unwrap();
+    std::fs::write(
+        work_dir
+            .join(".code-repo-wiki")
+            .join("wiki")
+            .join("sentinel.md"),
+        "data",
+    )
+    .unwrap();
 
     let out = run_bin_with_envs(&work_dir, &["uninstall", "--force"], &envs_ref);
     assert!(
@@ -189,18 +207,28 @@ fn test_uninstall_removes_plugin_file_and_mcp() {
     );
     // v33：用户级全局 MCP 条目被移除（其他键保留；文件非空则不删除）
     let oc_content = std::fs::read_to_string(opencode_config(&home)).unwrap();
-    let oc: serde_json::Value = serde_json::from_str(&oc_content).expect("opencode.json 应为合法 JSON");
+    let oc: serde_json::Value =
+        serde_json::from_str(&oc_content).expect("opencode.json 应为合法 JSON");
     assert!(
-        oc.get("mcp").and_then(|m| m.get("code-repo-wiki")).is_none(),
+        oc.get("mcp")
+            .and_then(|m| m.get("code-repo-wiki"))
+            .is_none(),
         "uninstall 后 MCP 条目应移除"
     );
     assert_eq!(
-        oc.get("plugin").and_then(|p| p.as_array()).map(|a| a.len()).unwrap_or(0),
+        oc.get("plugin")
+            .and_then(|p| p.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0),
         1,
         "用户预置的其他键（plugin）应保留"
     );
     assert!(
-        work_dir.join(".code-repo-wiki").join("wiki").join("sentinel.md").exists(),
+        work_dir
+            .join(".code-repo-wiki")
+            .join("wiki")
+            .join("sentinel.md")
+            .exists(),
         "uninstall 应保留 .code-repo-wiki/ 数据目录"
     );
 

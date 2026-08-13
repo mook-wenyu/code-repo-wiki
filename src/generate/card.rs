@@ -23,11 +23,23 @@ pub enum CardAction {
     /// 为单个模块生成卡片（重新生成）
     Generate { module: String },
     /// 按指令修改已有卡片
-    Modify { module: String, instruction: String, references: Vec<PathBuf> },
+    Modify {
+        module: String,
+        instruction: String,
+        references: Vec<PathBuf>,
+    },
     /// 在已有卡片上追加内容
-    Supplement { module: String, instruction: String, references: Vec<PathBuf> },
+    Supplement {
+        module: String,
+        instruction: String,
+        references: Vec<PathBuf>,
+    },
     /// 忽略现有内容全量重写
-    Rewrite { module: String, instruction: String, references: Vec<PathBuf> },
+    Rewrite {
+        module: String,
+        instruction: String,
+        references: Vec<PathBuf>,
+    },
 }
 
 /// 卡片编辑模式（决定 prompt 是否携带现有内容）
@@ -80,7 +92,11 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
     ) -> Self {
         // tokio Semaphore 许可数有 MAX_PERMITS 上限（约 2^61），usize::MAX 会 panic；
         // "0=不限制" 用足够大的许可数表达（对真实并发规模永不构成瓶颈）
-        let max = if max_concurrent == 0 { 1_000_000_000 } else { max_concurrent };
+        let max = if max_concurrent == 0 {
+            1_000_000_000
+        } else {
+            max_concurrent
+        };
         Self {
             provider,
             call_count: AtomicUsize::new(0),
@@ -117,19 +133,18 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
         }
 
         // 获取并发许可（无限并发时 Semaphore::new(usize::MAX) 永不会阻塞）
-        let _permit = self.semaphore.acquire().await.map_err(|_| {
-            anyhow::anyhow!("信号量已关闭")
-        })?;
+        let _permit = self
+            .semaphore
+            .acquire()
+            .await
+            .map_err(|_| anyhow::anyhow!("信号量已关闭"))?;
 
         self.call_count.fetch_add(1, Ordering::Relaxed);
 
         // P2-10：卡片 JSON 解析失败时重试一次——LLM 输出可能带 Markdown 围栏
         // 或尾随散文（extract_json 只取首{尾}，切片内残留即解析失败）。失败后追加约束消息重调，最多 2 次。
-        let mut messages = prompt::knowledge_card_prompt(
-            chunk,
-            &self.language,
-            pending_manual_edits,
-        );
+        let mut messages =
+            prompt::knowledge_card_prompt(chunk, &self.language, pending_manual_edits);
         let mut response = self
             .provider
             .complete_with_budget(&messages, Some(CARD_MAX_OUTPUT_TOKENS))
@@ -146,7 +161,11 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
                     .complete_with_budget(&messages, Some(CARD_MAX_OUTPUT_TOKENS))
                     .await?;
                 parse_card_response(&response, chunk).map_err(|second_err| {
-                    anyhow::anyhow!("卡片 JSON 重试仍解析失败（首次: {}；重试: {}）", first_err, second_err)
+                    anyhow::anyhow!(
+                        "卡片 JSON 重试仍解析失败（首次: {}；重试: {}）",
+                        first_err,
+                        second_err
+                    )
                 })?
             }
         };
@@ -246,7 +265,11 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
                 Some(Ok(card)) => cards.push(Some(card)),
                 Some(Err(e)) => {
                     // 失败隔离：记录失败的模块名（T3.2），不中断其他模块生成
-                    tracing::warn!("Knowledge Card 生成失败，跳过 {}: {}", chunk.module_path.join("::"), e);
+                    tracing::warn!(
+                        "Knowledge Card 生成失败，跳过 {}: {}",
+                        chunk.module_path.join("::"),
+                        e
+                    );
                     if let Ok(mut failed) = self.failed.lock() {
                         failed.push(chunk.module_path.join("::"));
                     }
@@ -372,7 +395,11 @@ pub async fn generate_module_card(
     let content = crate::output::markdown::render_knowledge_card(&card);
 
     write_card_atomic(config, module, &content)?;
-    tracing::info!("卡片已生成: {} → {}", module, card_path(config, module).display());
+    tracing::info!(
+        "卡片已生成: {} → {}",
+        module,
+        card_path(config, module).display()
+    );
     Ok(())
 }
 
@@ -403,7 +430,11 @@ pub async fn edit_card(
     let content = extract_markdown(&response);
 
     write_card_atomic(config, module, content)?;
-    tracing::info!("卡片已更新: {} → {}", module, card_path(config, module).display());
+    tracing::info!(
+        "卡片已更新: {} → {}",
+        module,
+        card_path(config, module).display()
+    );
     Ok(())
 }
 
@@ -540,7 +571,7 @@ mod tests {
     use super::*;
     use crate::generate::chunk::chunk_by_file;
     use crate::generate::llm::MockProvider;
-    
+
     use crate::ingest::parser::{Entity, FileInsight, ImportStmt};
     use std::path::PathBuf;
 
@@ -551,7 +582,8 @@ mod tests {
             line_start: 1,
             line_end: 30,
             doc_comment: Some("配置管理".into()),
-            signature: None, visibility: None,
+            signature: None,
+            visibility: None,
         };
         let insight = FileInsight {
             path: PathBuf::from("src/config.rs"),
@@ -596,7 +628,8 @@ mod tests {
 
     #[test]
     fn test_parse_card_empty_response() {
-        let response = r#"{"summary": "", "key_entities": [], "design_patterns": [], "todo_notes": []}"#;
+        let response =
+            r#"{"summary": "", "key_entities": [], "design_patterns": [], "todo_notes": []}"#;
         let chunk = make_test_chunk();
         let card = parse_card_response(response, &chunk).unwrap();
 
@@ -619,9 +652,16 @@ mod tests {
 
     /// 预置卡片并返回临时输出目录的配置（tag 用于区分同进程内的多个测试目录）
     fn card_fixture(tag: &str, module: &str, content: &str) -> (WikiConfig, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_card_{tag}_{}_{}", module.replace("::", "_"), std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_card_{tag}_{}_{}",
+            module.replace("::", "_"),
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
-        let config = WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
+        let config = WikiConfig {
+            output_dir: Some(dir.to_path_buf()),
+            ..Default::default()
+        };
         std::fs::create_dir_all(config.output_dir().join("cards").join("zh")).unwrap();
         std::fs::write(card_path(&config, module), content).unwrap();
         (config, dir)
@@ -629,7 +669,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_edit_card_supplement_roundtrip() {
-        let (config, dir) = card_fixture("supplement", "crate::test", "# crate::test\n\n## 摘要\n旧内容");
+        let (config, dir) = card_fixture(
+            "supplement",
+            "crate::test",
+            "# crate::test\n\n## 摘要\n旧内容",
+        );
         let provider = Provider::Mock(MockProvider::new());
         edit_card(
             &provider,
@@ -643,8 +687,18 @@ mod tests {
         .unwrap();
 
         // 写回路径与 render_all 一致：cards/zh/crate_test.md
-        let written = std::fs::read_to_string(config.output_dir().join("cards").join("zh").join("crate_test.md")).unwrap();
-        assert!(written.contains("模拟摘要"), "应写入 Mock Provider 的响应内容");
+        let written = std::fs::read_to_string(
+            config
+                .output_dir()
+                .join("cards")
+                .join("zh")
+                .join("crate_test.md"),
+        )
+        .unwrap();
+        assert!(
+            written.contains("模拟摘要"),
+            "应写入 Mock Provider 的响应内容"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -662,7 +716,11 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(err.to_string().contains("卡片不存在"), "应报卡片不存在: {}", err);
+        assert!(
+            err.to_string().contains("卡片不存在"),
+            "应报卡片不存在: {}",
+            err
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -722,18 +780,38 @@ mod tests {
             vec!["人工修改待同步: wiki/zh/src.md 内容摘要: 新修改".to_string()],
         );
 
-        let cards = generator.generate_all_cards(&[chunk], &extra, &|_| {}).await.unwrap();
+        let cards = generator
+            .generate_all_cards(&[chunk], &extra, &|_| {})
+            .await
+            .unwrap();
         assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].as_ref().unwrap().pending_manual_edits.len(), 2, "旧记录 + 新记录应合并为 2 条");
-        assert!(cards[0].as_ref().unwrap().pending_manual_edits.iter().any(|n| n.contains("旧记录")));
-        assert!(cards[0].as_ref().unwrap().pending_manual_edits.iter().any(|n| n.contains("新修改")));
+        assert_eq!(
+            cards[0].as_ref().unwrap().pending_manual_edits.len(),
+            2,
+            "旧记录 + 新记录应合并为 2 条"
+        );
+        assert!(
+            cards[0]
+                .as_ref()
+                .unwrap()
+                .pending_manual_edits
+                .iter()
+                .any(|n| n.contains("旧记录"))
+        );
+        assert!(
+            cards[0]
+                .as_ref()
+                .unwrap()
+                .pending_manual_edits
+                .iter()
+                .any(|n| n.contains("新修改"))
+        );
 
         // 去重：同一条记录同时存在于磁盘与 extra 时只保留一份
-        let cards2 = generator.generate_all_cards(
-            &[make_test_chunk()],
-            &extra,
-            &|_| {},
-        ).await.unwrap();
+        let cards2 = generator
+            .generate_all_cards(&[make_test_chunk()], &extra, &|_| {})
+            .await
+            .unwrap();
         assert!(
             cards2[0].as_ref().unwrap().pending_manual_edits.len() <= 2,
             "重复记录应被去重: {:?}",
@@ -764,7 +842,10 @@ mod tests {
             vec!["人工修改待同步: wiki/zh/src.md 内容摘要: 新修改".to_string()],
         );
 
-        let cards = generator.generate_all_cards(&[chunk], &extra, &|_| {}).await.unwrap();
+        let cards = generator
+            .generate_all_cards(&[chunk], &extra, &|_| {})
+            .await
+            .unwrap();
         assert_eq!(cards.len(), 1, "旧卡片读失败不应中断整批生成");
         assert_eq!(
             cards[0].as_ref().unwrap().pending_manual_edits,
@@ -796,11 +877,18 @@ mod tests {
         let (config, dir) = card_fixture("interleave-fail", "src", "# src\n\n## 摘要\n旧内容");
         let fail_gen = CardGenerator::new(&failing, config, 1, "zh".into());
         let cards = fail_gen
-            .generate_all_cards(&[empty.clone(), make_test_chunk()], &std::collections::HashMap::new(), &|_| {})
+            .generate_all_cards(
+                &[empty.clone(), make_test_chunk()],
+                &std::collections::HashMap::new(),
+                &|_| {},
+            )
             .await
             .unwrap();
         assert_eq!(cards.len(), 2, "对齐语义：空 chunk 也占位（None）");
-        assert!(cards.iter().all(|c| c.is_none()), "空 chunk 与失败模块均不产出卡片");
+        assert!(
+            cards.iter().all(|c| c.is_none()),
+            "空 chunk 与失败模块均不产出卡片"
+        );
         assert_eq!(
             fail_gen.failed_modules(),
             vec!["src"],
@@ -813,13 +901,24 @@ mod tests {
         let (config2, dir2) = card_fixture("interleave-ok", "src", "# src\n\n## 摘要\n旧内容");
         let gen2 = CardGenerator::new(&provider, config2, 1, "zh".into());
         let cards2 = gen2
-            .generate_all_cards(&[empty, make_test_chunk()], &std::collections::HashMap::new(), &|_| {})
+            .generate_all_cards(
+                &[empty, make_test_chunk()],
+                &std::collections::HashMap::new(),
+                &|_| {},
+            )
             .await
             .unwrap();
         assert_eq!(cards2.len(), 2, "对齐语义：长度恒 = chunks 长度");
         assert!(cards2[0].is_none(), "空 chunk 占位 None");
-        assert_eq!(cards2[1].as_ref().unwrap().module_name, "src", "成功卡片在正确索引位，不得错位");
-        assert!(gen2.failed_modules().is_empty(), "无真实失败时不记 failed_modules");
+        assert_eq!(
+            cards2[1].as_ref().unwrap().module_name,
+            "src",
+            "成功卡片在正确索引位，不得错位"
+        );
+        assert!(
+            gen2.failed_modules().is_empty(),
+            "无真实失败时不记 failed_modules"
+        );
         let _ = std::fs::remove_dir_all(&dir2);
     }
 
@@ -852,7 +951,9 @@ mod tests {
     }
     impl crate::generate::llm::LlmProvider for FlakyJsonProvider {
         async fn complete(&self, _messages: &[Message]) -> Result<String> {
-            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let n = self
+                .calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if n == 0 {
                 Ok("```json\n{\"summary\": \"首次\"}\n```\n额外解释文本 { \"x\": 1 }".to_string())
             } else {

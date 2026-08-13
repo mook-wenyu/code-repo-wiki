@@ -110,10 +110,7 @@ pub fn chunk_by_module(
         }
 
         // 实体与文件归属按同一键（name）排序去重，保证两者仍平行
-        let mut paired: Vec<(Entity, PathBuf)> = entities
-            .into_iter()
-            .zip(entity_sources)
-            .collect();
+        let mut paired: Vec<(Entity, PathBuf)> = entities.into_iter().zip(entity_sources).collect();
         paired.sort_by(|a, b| a.0.name.cmp(&b.0.name));
         // N4：同名实体去重——不同文件定义同名实体时按排序后首个保留，
         // 此前静默丢弃无任何提示；告警暴露去重事实（名称冲突常见于
@@ -185,7 +182,11 @@ pub fn chunk_by_file(insight: &FileInsight) -> Chunk {
         imports: insight.imports.clone(),
         dependencies: Vec::new(),
         file_paths: vec![insight.path.clone()],
-        entity_sources: insight.entities.iter().map(|_| insight.path.clone()).collect(),
+        entity_sources: insight
+            .entities
+            .iter()
+            .map(|_| insight.path.clone())
+            .collect(),
     }
 }
 
@@ -202,7 +203,8 @@ mod tests {
             line_start: 1,
             line_end: 10,
             doc_comment: None,
-            signature: None, visibility: None,
+            signature: None,
+            visibility: None,
         }
     }
 
@@ -267,7 +269,8 @@ mod tests {
             file_path: Some("src/lib.rs".into()),
             line_range: None,
             doc_comment: None,
-            signature: None, visibility: None,
+            signature: None,
+            visibility: None,
             module_path: vec!["src".into()],
         });
         let fn_id = g.add_node(crate::model::CodeNode {
@@ -277,13 +280,14 @@ mod tests {
             file_path: Some("src/lib.rs".into()),
             line_range: None,
             doc_comment: None,
-            signature: None, visibility: None,
+            signature: None,
+            visibility: None,
             module_path: vec!["src".into(), "lib".into()],
         });
         let kg = KnowledgeGraph {
             graph: g,
             modules: vec![],
-        features: Vec::new(),
+            features: Vec::new(),
         };
         let map = build_node_to_file_map(&kg);
         assert_eq!(map.len(), 1); // 只含 File 节点
@@ -305,7 +309,8 @@ mod tests {
             file_path: Some("src/a/file_a.rs".into()),
             line_range: None,
             doc_comment: None,
-            signature: None, visibility: None,
+            signature: None,
+            visibility: None,
             module_path: vec!["src".into(), "a".into()],
         });
         let e1 = graph.graph.add_node(crate::model::CodeNode {
@@ -315,7 +320,8 @@ mod tests {
             file_path: Some("src/a/file_a.rs".into()),
             line_range: Some((1, 5)),
             doc_comment: None,
-            signature: Some("fn e1()".into()), visibility: None,
+            signature: Some("fn e1()".into()),
+            visibility: None,
             module_path: vec!["src".into(), "a".into()],
         });
         let file_b = graph.graph.add_node(crate::model::CodeNode {
@@ -325,7 +331,8 @@ mod tests {
             file_path: Some("src/b/file_b.rs".into()),
             line_range: None,
             doc_comment: None,
-            signature: None, visibility: None,
+            signature: None,
+            visibility: None,
             module_path: vec!["src".into(), "b".into()],
         });
         let e2 = graph.graph.add_node(crate::model::CodeNode {
@@ -335,40 +342,65 @@ mod tests {
             file_path: Some("src/b/file_b.rs".into()),
             line_range: Some((1, 5)),
             doc_comment: None,
-            signature: Some("fn e2()".into()), visibility: None,
+            signature: Some("fn e2()".into()),
+            visibility: None,
             module_path: vec!["src".into(), "b".into()],
         });
 
         // 文件包含实体；a 依赖 b（Imports 边 file_a → file_b）
-        graph.graph.add_edge(file_a, e1, crate::model::CodeEdge {
-            id: petgraph::stable_graph::EdgeIndex::new(0),
-            kind: EdgeKind::Contains,
-            source: file_a,
-            target: e1,
-            weight: 1.0,
-            location: None,
-        });
-        graph.graph.add_edge(file_b, e2, crate::model::CodeEdge {
-            id: petgraph::stable_graph::EdgeIndex::new(1),
-            kind: EdgeKind::Contains,
-            source: file_b,
-            target: e2,
-            weight: 1.0,
-            location: None,
-        });
-        graph.graph.add_edge(file_a, file_b, crate::model::CodeEdge {
-            id: petgraph::stable_graph::EdgeIndex::new(2),
-            kind: EdgeKind::Imports,
-            source: file_a,
-            target: file_b,
-            weight: 1.0,
-            location: None,
-        });
+        graph.graph.add_edge(
+            file_a,
+            e1,
+            crate::model::CodeEdge {
+                id: petgraph::stable_graph::EdgeIndex::new(0),
+                kind: EdgeKind::Contains,
+                source: file_a,
+                target: e1,
+                weight: 1.0,
+                location: None,
+            },
+        );
+        graph.graph.add_edge(
+            file_b,
+            e2,
+            crate::model::CodeEdge {
+                id: petgraph::stable_graph::EdgeIndex::new(1),
+                kind: EdgeKind::Contains,
+                source: file_b,
+                target: e2,
+                weight: 1.0,
+                location: None,
+            },
+        );
+        graph.graph.add_edge(
+            file_a,
+            file_b,
+            crate::model::CodeEdge {
+                id: petgraph::stable_graph::EdgeIndex::new(2),
+                kind: EdgeKind::Imports,
+                source: file_a,
+                target: file_b,
+                weight: 1.0,
+                location: None,
+            },
+        );
 
         // 模块按名字典序传入：chunk 与 modules 输入一一对应（chunk_by_module 不重排序）
         let modules = vec![
-            ModuleCluster { name: "src::a".into(), node_ids: vec![file_a, e1], cohesion: 0.9, coupling: 0.1, description: None },
-            ModuleCluster { name: "src::b".into(), node_ids: vec![file_b, e2], cohesion: 0.9, coupling: 0.1, description: None },
+            ModuleCluster {
+                name: "src::a".into(),
+                node_ids: vec![file_a, e1],
+                cohesion: 0.9,
+                coupling: 0.1,
+                description: None,
+            },
+            ModuleCluster {
+                name: "src::b".into(),
+                node_ids: vec![file_b, e2],
+                cohesion: 0.9,
+                coupling: 0.1,
+                description: None,
+            },
         ];
         let insights = vec![
             make_insight("src/a/file_a.rs", vec![make_entity("e1", "fn")]),
@@ -379,8 +411,14 @@ mod tests {
 
         // 两个模块各生成一个 chunk，模块路径按名字拆分为 ["src", "a"] / ["src", "b"]
         assert_eq!(chunks.len(), 2);
-        assert_eq!(chunks[0].module_path, vec!["src".to_string(), "a".to_string()]);
-        assert_eq!(chunks[1].module_path, vec!["src".to_string(), "b".to_string()]);
+        assert_eq!(
+            chunks[0].module_path,
+            vec!["src".to_string(), "a".to_string()]
+        );
+        assert_eq!(
+            chunks[1].module_path,
+            vec!["src".to_string(), "b".to_string()]
+        );
         // 每个 chunk 只包含自己模块的实体
         assert_eq!(chunks[0].entities.len(), 1);
         assert_eq!(chunks[0].entities[0].name, "e1");
@@ -389,7 +427,13 @@ mod tests {
         assert_eq!(chunks[0].dependencies, vec!["src::b".to_string()]);
         assert!(chunks[1].dependencies.is_empty());
         // entity_sources 与 entities 平行对应（每个实体记录其源文件）
-        assert_eq!(chunks[0].entity_sources, vec![std::path::PathBuf::from("src/a/file_a.rs")]);
-        assert_eq!(chunks[1].entity_sources, vec![std::path::PathBuf::from("src/b/file_b.rs")]);
+        assert_eq!(
+            chunks[0].entity_sources,
+            vec![std::path::PathBuf::from("src/a/file_a.rs")]
+        );
+        assert_eq!(
+            chunks[1].entity_sources,
+            vec![std::path::PathBuf::from("src/b/file_b.rs")]
+        );
     }
 }

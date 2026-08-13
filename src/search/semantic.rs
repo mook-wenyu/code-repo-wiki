@@ -103,8 +103,10 @@ impl SemanticEngine {
     fn index_text(node: &CodeNode, source_code: &str) -> String {
         format!(
             "{} {:?} {} {}",
-            node.name, node.kind,
-            node.signature.as_deref().unwrap_or(""), source_code
+            node.name,
+            node.kind,
+            node.signature.as_deref().unwrap_or(""),
+            source_code
         )
     }
 }
@@ -112,10 +114,7 @@ impl SemanticEngine {
 impl SemanticSearch for SemanticEngine {
     fn index(&mut self, node: &CodeNode, source_code: &str) -> Result<()> {
         let text = Self::index_text(node, source_code);
-        let vector = self
-            .embedder
-            .embed(&text)
-            .context("生成 embedding 失败")?;
+        let vector = self.embedder.embed(&text).context("生成 embedding 失败")?;
         let node_json = serde_json::to_string(node).context("序列化 CodeNode 失败")?;
         let file = node.file_path.as_deref().unwrap_or("").to_string();
         self.db.insert_batch(&[(file, node_json, vector)])
@@ -162,9 +161,11 @@ impl SemanticSearch for SemanticEngine {
         let q_vec = self.embedder.embed(query)?;
         let query_json = vec_to_json(&q_vec);
         // 阈值换算：相似度 0.3 ↔ 距离 0.7（vecdb 常量，见模块头）
-        let rows = self
-            .db
-            .knn(&query_json, limit, crate::search::vecdb::MAX_COSINE_DISTANCE)?;
+        let rows = self.db.knn(
+            &query_json,
+            limit,
+            crate::search::vecdb::MAX_COSINE_DISTANCE,
+        )?;
         let mut results = Vec::with_capacity(rows.len());
         for row in rows {
             // 反序列化失败 = 索引数据损坏（外部篡改/旧版本写入的异构格式），
@@ -221,14 +222,12 @@ mod tests {
     use std::sync::Mutex;
     use tokio::runtime::Runtime;
 
-
     fn test_runtime() -> Arc<Runtime> {
         Arc::new(Runtime::new().unwrap())
     }
 
     fn mock_embedder() -> Arc<dyn Embedder> {
         let config = EmbedSection {
-
             model: "text-embedding-3-small".into(),
             api_key: Some("test-key".into()),
             api_key_env: "OPENAI_API_KEY".into(),
@@ -244,7 +243,6 @@ mod tests {
     /// 构造指向本地 mock 的 Embedding 引擎（base_url 带 /v1 前缀）
     fn embedder_with_server(base_url: &str, rt: &Arc<Runtime>) -> Arc<dyn Embedder> {
         let config = EmbedSection {
-
             model: "text-embedding-3-small".into(),
             api_key: Some("test-key".into()),
             api_key_env: "OPENAI_API_KEY".into(),
@@ -253,8 +251,7 @@ mod tests {
             provider: EmbedProvider::Remote,
             local_model: "bge-small-zh-v1.5".into(),
         };
-        Arc::new(EmbeddingEngine::new(&config, rt.handle().clone()).unwrap())
-            as Arc<dyn Embedder>
+        Arc::new(EmbeddingEngine::new(&config, rt.handle().clone()).unwrap()) as Arc<dyn Embedder>
     }
 
     fn tmp_path(label: &str) -> std::path::PathBuf {
@@ -275,7 +272,8 @@ mod tests {
             file_path: Some(file.into()),
             line_range: Some((1, 10)),
             doc_comment: None,
-            signature: Some(format!("fn {}()", name)), visibility: None,
+            signature: Some(format!("fn {}()", name)),
+            visibility: None,
             module_path: vec![],
         }
     }
@@ -300,7 +298,10 @@ mod tests {
                 Ok(n) => buf.extend_from_slice(&tmp[..n]),
             }
         }
-        let head_end = buf.windows(4).position(|w| w == b"\r\n\r\n").unwrap_or(buf.len());
+        let head_end = buf
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .unwrap_or(buf.len());
         let head = String::from_utf8_lossy(&buf[..head_end]).to_string();
         let content_length = head
             .split("\r\n")
@@ -315,7 +316,8 @@ mod tests {
                 Ok(n) => buf.extend_from_slice(&tmp[..n]),
             }
         }
-        String::from_utf8_lossy(&buf[head_end + HEADER_SEP..head_end + HEADER_SEP + content_length]).to_string()
+        String::from_utf8_lossy(&buf[head_end + HEADER_SEP..head_end + HEADER_SEP + content_length])
+            .to_string()
     }
 
     /// 关键词 → 确定性伪向量（统一 3 维）：
@@ -327,7 +329,11 @@ mod tests {
     fn pseudo_vector(keyword: &str, seen: &mut HashMap<String, usize>) -> Vec<f32> {
         match keyword {
             "alpha" => vec![1.0, 0.0, 0.0],
-            "beta" => vec![std::f32::consts::FRAC_1_SQRT_2, std::f32::consts::FRAC_1_SQRT_2, 0.0],
+            "beta" => vec![
+                std::f32::consts::FRAC_1_SQRT_2,
+                std::f32::consts::FRAC_1_SQRT_2,
+                0.0,
+            ],
             "gamma" => vec![-1.0, 0.0, 0.0],
             // T03 弱锚点修复：delta 与 alpha 相似度 0.707（过 0.3 阈值）——
             // 供 top_k 截断测试构造「3 条候选全过阈值」场景
@@ -357,13 +363,20 @@ mod tests {
                     let body = read_request_body(&mut stream);
                     let inputs: Vec<String> = serde_json::from_str::<serde_json::Value>(&body)
                         .ok()
-                        .and_then(|v| v["input"].as_array().map(|a| {
-                            a.iter().filter_map(|x| x.as_str().map(String::from)).collect()
-                        }))
+                        .and_then(|v| {
+                            v["input"].as_array().map(|a| {
+                                a.iter()
+                                    .filter_map(|x| x.as_str().map(String::from))
+                                    .collect()
+                            })
+                        })
                         .unwrap_or_default();
                     let mut guard = seen.lock().unwrap();
-                    let vectors: Vec<Vec<f32>> = inputs.iter()
-                        .map(|t| pseudo_vector(t.split_whitespace().next().unwrap_or(""), &mut guard))
+                    let vectors: Vec<Vec<f32>> = inputs
+                        .iter()
+                        .map(|t| {
+                            pseudo_vector(t.split_whitespace().next().unwrap_or(""), &mut guard)
+                        })
                         .collect();
                     drop(guard);
 
@@ -372,7 +385,8 @@ mod tests {
                     }).to_string();
                     let raw = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                        payload.len(), payload
+                        payload.len(),
+                        payload
                     );
                     let _ = stream.write_all(raw.as_bytes());
                 });
@@ -384,13 +398,13 @@ mod tests {
 
     #[test]
     fn test_semantic_new() {
-        let engine =         SemanticEngine::open(tmp_path("new"), mock_embedder()).unwrap();
+        let engine = SemanticEngine::open(tmp_path("new"), mock_embedder()).unwrap();
         assert_eq!(engine.entry_count(), 0);
     }
 
     #[test]
     fn test_search_empty() {
-        let engine =         SemanticEngine::open(tmp_path("empty"), mock_embedder()).unwrap();
+        let engine = SemanticEngine::open(tmp_path("empty"), mock_embedder()).unwrap();
         assert!(engine.search("test", 10).unwrap().is_empty());
     }
 
@@ -485,7 +499,9 @@ mod tests {
         let rt = test_runtime();
         let embedder = embedder_with_server(&base_url, &rt);
         let mut engine = SemanticEngine::open(tmp_path("clr"), embedder).unwrap();
-        engine.index_batch(&[(make_node("a", "src/a.rs"), "fn a()".to_string())]).unwrap();
+        engine
+            .index_batch(&[(make_node("a", "src/a.rs"), "fn a()".to_string())])
+            .unwrap();
         assert_eq!(engine.entry_count(), 1);
 
         engine.clear().unwrap();
@@ -499,11 +515,19 @@ mod tests {
         let rt = test_runtime();
         let embedder = embedder_with_server(&base_url, &rt);
         let mut engine = SemanticEngine::open(tmp_path("dim"), embedder).unwrap();
-        assert_eq!(engine.table_dimension().unwrap(), None, "空库（表未创建）应返回 None");
+        assert_eq!(
+            engine.table_dimension().unwrap(),
+            None,
+            "空库（表未创建）应返回 None"
+        );
 
         engine
             .index_batch(&[(make_node("a1", "src/a.rs"), "fn a1()".to_string())])
             .unwrap();
-        assert_eq!(engine.table_dimension().unwrap(), Some(3), "伪向量统一 3 维");
+        assert_eq!(
+            engine.table_dimension().unwrap(),
+            Some(3),
+            "伪向量统一 3 维"
+        );
     }
 }

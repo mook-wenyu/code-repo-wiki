@@ -8,7 +8,6 @@
 
 use std::path::Path;
 
-
 /// 构造 10 簇 × 8 文件的模块化仓库：簇内完全图（每文件 f 调用同簇其余
 /// 文件的 g）+ 每簇第 0 文件的 g 调下一簇 f（单条跨簇边）
 fn build_cluster_repo(dir: &Path) {
@@ -29,7 +28,10 @@ fn build_cluster_repo(dir: &Path) {
             body.push_str(&format!("pub fn g{m}_{i}(x: u32) -> u32 {{ x + {m} }}\n"));
             // 跨簇单边：本簇 g0 调用下一簇 f0（唯一跨簇调用）
             if i == 0 && m < 9 {
-                body.push_str(&format!("pub fn cross{m}(x: u32) -> u32 {{ f{}_{0}(x) }}\n", m + 1));
+                body.push_str(&format!(
+                    "pub fn cross{m}(x: u32) -> u32 {{ f{}_{0}(x) }}\n",
+                    m + 1
+                ));
             }
             std::fs::write(sub.join(format!("f{i}.rs")), body).unwrap();
         }
@@ -39,13 +41,18 @@ fn build_cluster_repo(dir: &Path) {
 /// 同图两次检测结果逐项一致（模块名、node_ids 集合、特征划分）
 #[test]
 fn test_clustering_stable_across_runs() {
-    let dir = std::env::temp_dir().join(format!("code_repo_wiki_cluster_stab_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "code_repo_wiki_cluster_stab_{}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     build_cluster_repo(&dir);
 
     let root = code_repo_wiki::project::ProjectRoot::new(dir.clone());
-    let insights = code_repo_wiki::ingest::scan_and_parse_at(&root).unwrap().insights;
+    let insights = code_repo_wiki::ingest::scan_and_parse_at(&root)
+        .unwrap()
+        .insights;
     let graph = code_repo_wiki::analysis::build_graph(&insights).unwrap();
 
     // 两次独立检测
@@ -84,7 +91,10 @@ fn test_clustering_stable_across_runs() {
     // 4. 组合稳定性：build_graph 内嵌的 modules 与独立 detect 一致
     let mut g_names: Vec<&str> = graph.modules.iter().map(|m| m.name.as_str()).collect();
     g_names.sort();
-    assert_eq!(g_names, names_1, "build_graph 写回的 modules 必须与 detect 一致");
+    assert_eq!(
+        g_names, names_1,
+        "build_graph 写回的 modules 必须与 detect 一致"
+    );
 
     // 5. 正确性护栏：10 簇弱连接，模块数应接近 10（允许少量合并/拆分）
     assert!(

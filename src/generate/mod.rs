@@ -46,16 +46,16 @@ pub struct GenerationStats {
 pub fn create_provider(config: &WikiConfig) -> Result<Provider> {
     match config.llm.provider {
         // openai = OpenAI Responses API 协议（base_url 可配，DeepSeek 归此）
-        crate::config::schema::LlmProviderType::OpenAI => {
-            Ok(Provider::OpenAi(OpenAiProvider::new(&config.llm, crate::generate::llm::OpenAiProtocol::Responses)?))
-        }
+        crate::config::schema::LlmProviderType::OpenAI => Ok(Provider::OpenAi(
+            OpenAiProvider::new(&config.llm, crate::generate::llm::OpenAiProtocol::Responses)?,
+        )),
         crate::config::schema::LlmProviderType::Anthropic => {
             Ok(Provider::Anthropic(AnthropicProvider::new(&config.llm)?))
         }
         // openai-compatible = chat/completions 协议（custom 并入，v17 t02）
-        crate::config::schema::LlmProviderType::OpenAiCompatible => {
-            Ok(Provider::OpenAi(OpenAiProvider::new(&config.llm, crate::generate::llm::OpenAiProtocol::Chat)?))
-        }
+        crate::config::schema::LlmProviderType::OpenAiCompatible => Ok(Provider::OpenAi(
+            OpenAiProvider::new(&config.llm, crate::generate::llm::OpenAiProtocol::Chat)?,
+        )),
         crate::config::schema::LlmProviderType::Mock => {
             // 本地模拟：测试/CI/无 API Key 场景，返回固定文本
             Ok(Provider::Mock(crate::generate::llm::MockProvider::new()))
@@ -96,7 +96,12 @@ fn filter_chunks_by_guide(
     let original_len = chunks.len();
     let mut filtered: Vec<Chunk> = chunks
         .into_iter()
-        .filter(|c| guide.pages.iter().any(|p| guide_prefix_match(&c.module_path, p)))
+        .filter(|c| {
+            guide
+                .pages
+                .iter()
+                .any(|p| guide_prefix_match(&c.module_path, p))
+        })
         .collect();
     if filtered.is_empty() && original_len > 0 {
         if strict_empty {
@@ -163,10 +168,7 @@ pub async fn run_generation(
     // 「无内容」而非生成失败，若放行会在生成循环里被空块 bail 记入
     // failed_modules（毒化 should_skip_noop 并引发无关模块补偿重试），且
     // 过滤必须发生在管线入口，保证 chunks/cards/wiki/backfill 全链路 1:1 对齐。
-    let chunks: Vec<_> = chunks
-        .into_iter()
-        .filter(|c| !c.is_empty())
-        .collect();
+    let chunks: Vec<_> = chunks.into_iter().filter(|c| !c.is_empty()).collect();
     // v32 9.2：生成引导过滤（全量路径——空匹配显式报错，见 filter 注释）
     let chunks = filter_chunks_by_guide(chunks, &config.wiki.guide, true)?;
     tracing::info!("生成进度: 30% - 分块完成，共 {} 个块", chunks.len());
@@ -188,19 +190,45 @@ pub async fn run_generation(
         .await?;
     // 特征追溯回填（演进计划 T3.3）：模块实体与特征实体的交集 → 特征名
     backfill_features(&mut cards, &chunks, graph);
-    tracing::info!("生成进度: 60% - 知识卡片生成完成，共 {} 个卡片", cards.iter().flatten().count());
+    tracing::info!(
+        "生成进度: 60% - 知识卡片生成完成，共 {} 个卡片",
+        cards.iter().flatten().count()
+    );
     let card_ms = card_start.elapsed().as_millis() as u64;
 
     // 4. 按语言独立生成 Wiki 页面（并行，演进计划 T3.1；卡片仅主语言生成一次，
     // 各语言页面复用主语言卡片摘要；语言列表在 generate_wiki_pages 内部计算）
     let wiki_start = Instant::now();
-    let wiki_gen = WikiGenerator::new(&provider, crate::config::schema::llm_effective_concurrency(&config.llm));
-    let mut documents =
-        generate_wiki_pages(&wiki_gen, &chunks, &cards, config, crate::config::schema::llm_effective_concurrency(&config.llm), root, &build_entity_ranges(insights), on_progress).await;
+    let wiki_gen = WikiGenerator::new(
+        &provider,
+        crate::config::schema::llm_effective_concurrency(&config.llm),
+    );
+    let mut documents = generate_wiki_pages(
+        &wiki_gen,
+        &chunks,
+        &cards,
+        config,
+        crate::config::schema::llm_effective_concurrency(&config.llm),
+        root,
+        &build_entity_ranges(insights),
+        on_progress,
+    )
+    .await;
     let wiki_ms = wiki_start.elapsed().as_millis() as u64;
 
     // 5. 生成全局文档（架构概览 + 数据库 Schema，全量/增量共用同一辅助函数）
-    generate_global_documents(&wiki_gen, &provider, graph, config, root, &cards, &mut documents, &GlobalDocAffected::all(), false).await?;
+    generate_global_documents(
+        &wiki_gen,
+        &provider,
+        graph,
+        config,
+        root,
+        &cards,
+        &mut documents,
+        &GlobalDocAffected::all(),
+        false,
+    )
+    .await?;
 
     let elapsed = start.elapsed();
     let stats = GenerationStats {
@@ -262,11 +290,8 @@ pub async fn run_generation_filtered(
     // 无记录 = 仅非实体文本变化，模块页无需重生成（旧产物内容与行号引用
     // 均仍准确）。排除后落入下方空集分支走快照回填（零 LLM 保留旧产物）。
     // 与 incremental/mod.rs 的传播起点剔除共用同一函数，保证两处同口径。
-    let no_entity_change_files = crate::incremental::change::no_entity_change_files(
-        changed_files,
-        entity_changes,
-        root,
-    );
+    let no_entity_change_files =
+        crate::incremental::change::no_entity_change_files(changed_files, entity_changes, root);
     let mut changed_insights: Vec<FileInsight> = insights
         .iter()
         .filter(|f| {
@@ -302,10 +327,7 @@ pub async fn run_generation_filtered(
 
     // 1. AST 感知分块（仅变更文件）
     let chunks: Vec<_> = if graph.modules.is_empty() {
-        changed_insights
-            .iter()
-            .map(chunk::chunk_by_file)
-            .collect()
+        changed_insights.iter().map(chunk::chunk_by_file).collect()
     } else {
         // 按模块重新组织变更文件，保持模块上下文
         chunk::chunk_by_module(&changed_insights, &graph.modules, graph)
@@ -313,10 +335,7 @@ pub async fn run_generation_filtered(
     // v31 修复（C-03）：同全量路径——管线入口剔除空 chunk（增量模式未变更
     // 模块），保证 chunks/cards/wiki/backfill 全链路 1:1 对齐，且空 chunk
     // 不会经空块 bail 污染 failed_modules。
-    let chunks: Vec<_> = chunks
-        .into_iter()
-        .filter(|c| !c.is_empty())
-        .collect();
+    let chunks: Vec<_> = chunks.into_iter().filter(|c| !c.is_empty()).collect();
     // v32 9.2：生成引导过滤（增量路径——受影响模块不在白名单=正常空集，
     // 不报错；白名单只约束「是否生成」，不改变增量影响传播判定本身）
     let chunks = filter_chunks_by_guide(chunks, &config.wiki.guide, false)?;
@@ -344,10 +363,25 @@ pub async fn run_generation_filtered(
     // 4. 按语言独立生成 Wiki 页面（并行，演进计划 T3.1；仅变更块；卡片仅主语言生成一次，
     // 各语言页面复用主语言卡片摘要）
     let wiki_start = Instant::now();
-    let wiki_gen = WikiGenerator::new(&provider, crate::config::schema::llm_effective_concurrency(&config.llm));
-    let mut documents =
-        generate_wiki_pages(&wiki_gen, &chunks, &cards, config, crate::config::schema::llm_effective_concurrency(&config.llm), root, &build_entity_ranges(insights), on_progress).await;
-    tracing::info!("生成进度: 90% - Wiki 页面生成完成，共 {} 个页面", documents.len());
+    let wiki_gen = WikiGenerator::new(
+        &provider,
+        crate::config::schema::llm_effective_concurrency(&config.llm),
+    );
+    let mut documents = generate_wiki_pages(
+        &wiki_gen,
+        &chunks,
+        &cards,
+        config,
+        crate::config::schema::llm_effective_concurrency(&config.llm),
+        root,
+        &build_entity_ranges(insights),
+        on_progress,
+    )
+    .await;
+    tracing::info!(
+        "生成进度: 90% - Wiki 页面生成完成，共 {} 个页面",
+        documents.len()
+    );
     let wiki_ms = wiki_start.elapsed().as_millis() as u64;
 
     // 5. 生成全局文档（架构概览 + 数据库 Schema）
@@ -362,7 +396,18 @@ pub async fn run_generation_filtered(
             .iter()
             .any(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("sql"))),
     };
-    generate_global_documents(&wiki_gen, &provider, graph, config, root, &cards, &mut documents, &global_affected, inc.has_deleted_files).await?;
+    generate_global_documents(
+        &wiki_gen,
+        &provider,
+        graph,
+        config,
+        root,
+        &cards,
+        &mut documents,
+        &global_affected,
+        inc.has_deleted_files,
+    )
+    .await?;
 
     let elapsed = start.elapsed();
     let stats = GenerationStats {
@@ -385,7 +430,13 @@ pub async fn run_generation_filtered(
     // 语义 =「当前完整文档集」，下游 render_all/cleanup/save_generation_state
     // 自动恢复正确。快照缺失/损坏时跳过合并，本次集合照常返回。
     let mut cards: Vec<KnowledgeCard> = cards.iter().flatten().cloned().collect();
-    backfill_unchanged_modules(config, root, &mut cards, &mut documents, &stats.failed_modules);
+    backfill_unchanged_modules(
+        config,
+        root,
+        &mut cards,
+        &mut documents,
+        &stats.failed_modules,
+    );
 
     Ok(GenerationOutput {
         cards,
@@ -425,7 +476,8 @@ fn compensate_deleted_files(
         .filter(|f| !root.path().join(f).exists())
         .cloned()
         .collect();
-    let surviving_files: std::collections::HashSet<std::path::PathBuf> = if deleted_files.is_empty() {
+    let surviving_files: std::collections::HashSet<std::path::PathBuf> = if deleted_files.is_empty()
+    {
         std::collections::HashSet::new()
     } else if let Ok(content) =
         std::fs::read_to_string(crate::output::export_snapshot_path(config.output_dir()))
@@ -436,7 +488,9 @@ fn compensate_deleted_files(
             .iter()
             .filter(|c| {
                 !c.related_files.is_empty()
-                    && c.related_files.iter().any(|f| deleted_files.contains(Path::new(f)))
+                    && c.related_files
+                        .iter()
+                        .any(|f| deleted_files.contains(Path::new(f)))
                     && c.related_files.iter().any(|f| root.path().join(f).exists())
             })
             .flat_map(|c| c.related_files.iter().map(std::path::PathBuf::from))
@@ -475,7 +529,8 @@ fn snapshot_backfill(
     root: &crate::project::ProjectRoot,
     config: &WikiConfig,
 ) -> Result<Option<GenerationOutput>> {
-    if let Ok(content) = std::fs::read_to_string(crate::output::export_snapshot_path(config.output_dir()))
+    if let Ok(content) =
+        std::fs::read_to_string(crate::output::export_snapshot_path(config.output_dir()))
         && let Ok(snapshot) = serde_json::from_str::<crate::output::ExportSnapshot>(&content)
     {
         // 快照回填：仅剔除整模块全删（related_files 全部不存在）的卡片与
@@ -486,7 +541,9 @@ fn snapshot_backfill(
             .iter()
             .filter(|c| {
                 !c.related_files.is_empty()
-                    && c.related_files.iter().all(|f| !root.path().join(f).exists())
+                    && c.related_files
+                        .iter()
+                        .all(|f| !root.path().join(f).exists())
             })
             .map(|c| c.module_name.clone())
             .collect();
@@ -589,7 +646,9 @@ fn backfill_unchanged_modules(
         .iter()
         .filter(|c| {
             !c.related_files.is_empty()
-                && c.related_files.iter().all(|f| !root.path().join(f).exists())
+                && c.related_files
+                    .iter()
+                    .all(|f| !root.path().join(f).exists())
         })
         .map(|c| c.module_name.clone())
         .collect();
@@ -666,7 +725,11 @@ fn build_entity_ranges(insights: &[FileInsight]) -> crate::output::citation::Ent
 /// 特征名列表写入卡片（render_knowledge_card 渲染"特征追溯"节），
 /// 提供"功能 → 实现它的模块"的可追溯视图（RepoSummary 的 traceability）。
 /// 特征实体名经 graph 反查 NodeId 得到；不经过 LLM，杜绝幻觉。
-fn backfill_features(cards: &mut [Option<KnowledgeCard>], chunks: &[Chunk], graph: &KnowledgeGraph) {
+fn backfill_features(
+    cards: &mut [Option<KnowledgeCard>],
+    chunks: &[Chunk],
+    graph: &KnowledgeGraph,
+) {
     if graph.features.is_empty() || cards.is_empty() {
         return;
     }
@@ -799,7 +862,10 @@ pub struct GlobalDocAffected {
 impl GlobalDocAffected {
     /// 全受影响（全量生成路径）
     pub fn all() -> Self {
-        Self { architecture: true, schema: true }
+        Self {
+            architecture: true,
+            schema: true,
+        }
     }
 }
 
@@ -874,10 +940,14 @@ async fn generate_global_documents(
                 }
             }
         }
-    } else if !backfill_global_docs(config, documents, &[
-        crate::model::DocumentKind::ArchitectureOverview,
-        crate::model::DocumentKind::ProjectOverview,
-    ]) {
+    } else if !backfill_global_docs(
+        config,
+        documents,
+        &[
+            crate::model::DocumentKind::ArchitectureOverview,
+            crate::model::DocumentKind::ProjectOverview,
+        ],
+    ) {
         // 快照不可用（首次增量/快照损坏）→ 回退生成，保证页面存在性
         tracing::info!("全局文档快照回填不可用，回退重新生成");
         let output_snapshot = GenerationOutput {
@@ -917,7 +987,11 @@ async fn generate_global_documents(
             Ok(mut schema_docs) => documents.append(&mut schema_docs),
             Err(e) => tracing::warn!("数据库 Schema 文档生成跳过: {}", e),
         }
-    } else if !backfill_global_docs(config, documents, &[crate::model::DocumentKind::DatabaseSchema]) {
+    } else if !backfill_global_docs(
+        config,
+        documents,
+        &[crate::model::DocumentKind::DatabaseSchema],
+    ) {
         tracing::info!("Schema 快照回填不可用，回退重新生成");
         match schema::generate_schema_documents_at(root, provider, config).await {
             Ok(mut schema_docs) => documents.append(&mut schema_docs),
@@ -950,7 +1024,10 @@ pub(crate) fn backfill_global_docs(
         return false;
     };
     let Ok(snapshot) = serde_json::from_str::<crate::output::ExportSnapshot>(&content) else {
-        tracing::warn!("导出快照解析失败（将回退重新生成全局文档）: {}", snapshot_path.display());
+        tracing::warn!(
+            "导出快照解析失败（将回退重新生成全局文档）: {}",
+            snapshot_path.display()
+        );
         return false;
     };
     let mut filled = false;
@@ -995,7 +1072,10 @@ mod tests {
     /// 本次已生成文档重复（同一类型只保留一个）
     #[test]
     fn test_backfill_global_docs_from_snapshot() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_backfill_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_backfill_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(".state")).unwrap();
 
@@ -1033,14 +1113,20 @@ mod tests {
         )
         .unwrap();
 
-        let config = WikiConfig { output_dir: Some(dir.clone()), ..Default::default() };
+        let config = WikiConfig {
+            output_dir: Some(dir.clone()),
+            ..Default::default()
+        };
 
         // 本次已生成 overview（模拟模块页变化触发概览重生成）→ 只回填架构
         let mut documents = vec![overview.clone()];
         let filled = backfill_global_docs(
             &config,
             &mut documents,
-            &[DocumentKind::ArchitectureOverview, DocumentKind::ProjectOverview],
+            &[
+                DocumentKind::ArchitectureOverview,
+                DocumentKind::ProjectOverview,
+            ],
         );
         assert!(filled, "快照存在时应回填");
         assert_eq!(documents.len(), 2, "回填架构（概览已存在不重复）");
@@ -1052,14 +1138,24 @@ mod tests {
     /// P1-2：快照缺失 → 回填失败（调用方据此回退生成）
     #[test]
     fn test_backfill_global_docs_missing_snapshot() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_backfill_miss_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_backfill_miss_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        let config = WikiConfig { output_dir: Some(dir.clone()), ..Default::default() };
+        let config = WikiConfig {
+            output_dir: Some(dir.clone()),
+            ..Default::default()
+        };
 
         let mut documents = Vec::new();
-        let filled = backfill_global_docs(&config, &mut documents, &[DocumentKind::ArchitectureOverview]);
+        let filled = backfill_global_docs(
+            &config,
+            &mut documents,
+            &[DocumentKind::ArchitectureOverview],
+        );
         assert!(!filled, "快照缺失时回填失败（回退生成）");
         assert!(documents.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
@@ -1069,7 +1165,10 @@ mod tests {
     /// 调用方回退到新语言的 LLM 生成（旧语言内容写盘目录错位会丢页）
     #[test]
     fn test_backfill_global_docs_skips_on_language_mismatch() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_backfill_lang_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_backfill_lang_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -1090,12 +1189,19 @@ mod tests {
 
         let config = WikiConfig {
             output_dir: Some(dir.clone()),
-            wiki: crate::config::schema::WikiSection { language: "en".into(), guide: Default::default() },
+            wiki: crate::config::schema::WikiSection {
+                language: "en".into(),
+                guide: Default::default(),
+            },
             ..Default::default()
         };
 
         let mut documents = Vec::new();
-        let filled = backfill_global_docs(&config, &mut documents, &[DocumentKind::ArchitectureOverview]);
+        let filled = backfill_global_docs(
+            &config,
+            &mut documents,
+            &[DocumentKind::ArchitectureOverview],
+        );
         assert!(!filled, "语言不匹配时不得回填（回退生成新语言内容）");
         assert!(documents.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
@@ -1115,7 +1221,10 @@ mod tests {
             new_range: None,
         });
         let affected = GlobalDocAffected {
-            architecture: crate::incremental::change::EntityChangeSet { changes: changes.clone() }.has_interface_change(),
+            architecture: crate::incremental::change::EntityChangeSet {
+                changes: changes.clone(),
+            }
+            .has_interface_change(),
             schema: false,
         };
         assert!(!affected.architecture, "纯实现级变化不应触发架构重生成");
@@ -1128,7 +1237,8 @@ mod tests {
             new_range: None,
         });
         let affected2 = GlobalDocAffected {
-            architecture: crate::incremental::change::EntityChangeSet { changes }.has_interface_change(),
+            architecture: crate::incremental::change::EntityChangeSet { changes }
+                .has_interface_change(),
             schema: false,
         };
         assert!(affected2.architecture, "接口级变化应触发架构重生成");
@@ -1139,7 +1249,10 @@ mod tests {
     /// cleanup 差集随后误删磁盘上的其余 schema 页。
     #[test]
     fn test_backfill_global_docs_dedup_by_title_not_kind() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_backfill_schema_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_backfill_schema_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -1177,7 +1290,10 @@ mod tests {
         )
         .unwrap();
 
-        let config = WikiConfig { output_dir: Some(dir.clone()), ..Default::default() };
+        let config = WikiConfig {
+            output_dir: Some(dir.clone()),
+            ..Default::default()
+        };
 
         let mut documents = Vec::new();
         let filled = backfill_global_docs(&config, &mut documents, &[DocumentKind::DatabaseSchema]);
@@ -1195,88 +1311,129 @@ mod tests {
     #[test]
     fn test_entity_name_from_signature() {
         use crate::output::lint::entity_name_from_signature;
-        assert_eq!(entity_name_from_signature("pub fn foo(x: i32) -> u32").as_deref(), Some("foo"));
-        assert_eq!(entity_name_from_signature("fn main()").as_deref(), Some("main"));
-        assert_eq!(entity_name_from_signature("def bar()").as_deref(), Some("bar"));
-        assert_eq!(entity_name_from_signature("func Baz()").as_deref(), Some("Baz"));
+        assert_eq!(
+            entity_name_from_signature("pub fn foo(x: i32) -> u32").as_deref(),
+            Some("foo")
+        );
+        assert_eq!(
+            entity_name_from_signature("fn main()").as_deref(),
+            Some("main")
+        );
+        assert_eq!(
+            entity_name_from_signature("def bar()").as_deref(),
+            Some("bar")
+        );
+        assert_eq!(
+            entity_name_from_signature("func Baz()").as_deref(),
+            Some("Baz")
+        );
         assert_eq!(entity_name_from_signature("Foo").as_deref(), Some("Foo"));
-        assert_eq!(entity_name_from_signature("pub struct Alpha").as_deref(), Some("Alpha"));
+        assert_eq!(
+            entity_name_from_signature("pub struct Alpha").as_deref(),
+            Some("Alpha")
+        );
         assert_eq!(entity_name_from_signature(""), None);
         assert_eq!(entity_name_from_signature("   "), None);
     }
 }
 
-    /// U06/D12：确定性骨架——模块名/实体数/依赖清单全部来自图，零 LLM；
-    /// references 指向模块页且按标题字典序（确定性输出）
-    #[test]
-    fn test_fallback_architecture_doc_skeleton() {
-        use crate::model::{CodeNode, EdgeKind, NodeKind};
-        use petgraph::stable_graph::StableDiGraph;
+/// U06/D12：确定性骨架——模块名/实体数/依赖清单全部来自图，零 LLM；
+/// references 指向模块页且按标题字典序（确定性输出）
+#[test]
+fn test_fallback_architecture_doc_skeleton() {
+    use crate::model::{CodeNode, EdgeKind, NodeKind};
+    use petgraph::stable_graph::StableDiGraph;
 
-        let mut g = StableDiGraph::<CodeNode, crate::model::CodeEdge>::new();
-        let a = g.add_node(CodeNode {
-            id: crate::model::NodeId::new(0),
-            kind: NodeKind::Function,
-            name: "a_fn".into(),
-            file_path: Some("src/a.rs".into()),
-            line_range: None,
-            doc_comment: None,
-            signature: None, visibility: None,
-            module_path: vec!["net".into()],
-        });
-        let b = g.add_node(CodeNode {
-            id: crate::model::NodeId::new(1),
-            kind: NodeKind::Function,
-            name: "b_fn".into(),
-            file_path: Some("src/b.rs".into()),
-            line_range: None,
-            doc_comment: None,
-            signature: None, visibility: None,
-            module_path: vec!["http".into()],
-        });
-        g.add_edge(a, b, crate::model::CodeEdge {
+    let mut g = StableDiGraph::<CodeNode, crate::model::CodeEdge>::new();
+    let a = g.add_node(CodeNode {
+        id: crate::model::NodeId::new(0),
+        kind: NodeKind::Function,
+        name: "a_fn".into(),
+        file_path: Some("src/a.rs".into()),
+        line_range: None,
+        doc_comment: None,
+        signature: None,
+        visibility: None,
+        module_path: vec!["net".into()],
+    });
+    let b = g.add_node(CodeNode {
+        id: crate::model::NodeId::new(1),
+        kind: NodeKind::Function,
+        name: "b_fn".into(),
+        file_path: Some("src/b.rs".into()),
+        line_range: None,
+        doc_comment: None,
+        signature: None,
+        visibility: None,
+        module_path: vec!["http".into()],
+    });
+    g.add_edge(
+        a,
+        b,
+        crate::model::CodeEdge {
             id: petgraph::stable_graph::EdgeIndex::new(0),
             kind: EdgeKind::Calls,
             source: a,
             target: b,
             weight: 1.0,
             location: None,
-        });
-        let graph = crate::model::KnowledgeGraph {
-            graph: g,
-            modules: vec![
-                crate::model::ModuleCluster {
-                    name: "net".into(),
-                    node_ids: vec![a],
-                    cohesion: 1.0,
-                    coupling: 0.0,
-                    description: None,
-                },
-                crate::model::ModuleCluster {
-                    name: "http".into(),
-                    node_ids: vec![b],
-                    cohesion: 1.0,
-                    coupling: 0.0,
-                    description: None,
-                },
-            ],
-            features: Vec::new(),
-        };
+        },
+    );
+    let graph = crate::model::KnowledgeGraph {
+        graph: g,
+        modules: vec![
+            crate::model::ModuleCluster {
+                name: "net".into(),
+                node_ids: vec![a],
+                cohesion: 1.0,
+                coupling: 0.0,
+                description: None,
+            },
+            crate::model::ModuleCluster {
+                name: "http".into(),
+                node_ids: vec![b],
+                cohesion: 1.0,
+                coupling: 0.0,
+                description: None,
+            },
+        ],
+        features: Vec::new(),
+    };
 
-        let config = WikiConfig::default();
-        let doc = crate::generate::wiki::fallback_architecture_doc(
-            &graph,
-            &config,
-            crate::model::DocumentKind::ArchitectureOverview,
-            "架构概览",
-        );
-        assert!(doc.content.contains("架构概览"), "应含标题: {}", doc.content);
-        assert!(doc.content.contains("net`（1 个实体）"), "应含模块与实体数");
-        assert!(doc.content.contains("http`（1 个实体）"), "应含模块与实体数");
-        assert!(doc.content.contains("依赖 http"), "net 应列出依赖 http");
-        assert_eq!(doc.kind, crate::model::DocumentKind::ArchitectureOverview);
-        // references 覆盖全部模块且按标题字典序
-        let titles: Vec<&str> = doc.references.iter().map(|r| r.target_title.as_str()).collect();
-        assert_eq!(titles, vec!["http", "net"], "references 应按标题字典序: {titles:?}");
-        assert!(doc.references.iter().all(|r| r.target_path.starts_with("wiki/zh/")), "references 应指向主语言模块页");
-    }
+    let config = WikiConfig::default();
+    let doc = crate::generate::wiki::fallback_architecture_doc(
+        &graph,
+        &config,
+        crate::model::DocumentKind::ArchitectureOverview,
+        "架构概览",
+    );
+    assert!(
+        doc.content.contains("架构概览"),
+        "应含标题: {}",
+        doc.content
+    );
+    assert!(doc.content.contains("net`（1 个实体）"), "应含模块与实体数");
+    assert!(
+        doc.content.contains("http`（1 个实体）"),
+        "应含模块与实体数"
+    );
+    assert!(doc.content.contains("依赖 http"), "net 应列出依赖 http");
+    assert_eq!(doc.kind, crate::model::DocumentKind::ArchitectureOverview);
+    // references 覆盖全部模块且按标题字典序
+    let titles: Vec<&str> = doc
+        .references
+        .iter()
+        .map(|r| r.target_title.as_str())
+        .collect();
+    assert_eq!(
+        titles,
+        vec!["http", "net"],
+        "references 应按标题字典序: {titles:?}"
+    );
+    assert!(
+        doc.references
+            .iter()
+            .all(|r| r.target_path.starts_with("wiki/zh/")),
+        "references 应指向主语言模块页"
+    );
+}

@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use super::text::TextEngine;
-use super::semantic::SemanticSearch;
 use super::hybrid::{self, SearchHit, rrf_merge};
+use super::semantic::SemanticSearch;
+use super::text::TextEngine;
 
 /// 调用链索引：符号名 → (调用者列表, 被调用者列表)
 type CallIndex = HashMap<String, (Vec<String>, Vec<String>)>;
@@ -24,7 +24,12 @@ pub struct SearchAgent {
 
 impl SearchAgent {
     pub fn new(text: TextEngine, semantic: Option<Box<dyn SemanticSearch>>, rrf_k: f64) -> Self {
-        Self { text, semantic, rrf_k, call_index: None }
+        Self {
+            text,
+            semantic,
+            rrf_k,
+            call_index: None,
+        }
     }
 
     /// 注入调用链索引（由 CallGraph::build_call_index 预计算），启用调用链补全
@@ -83,7 +88,9 @@ impl SearchAgent {
     ///   -17%）：调用者是「谁在用我」，对查询相关性是噪声；被调用者
     ///   「我调用谁」携带实现细节，与代码检索意图同向。
     fn enrich_call_chain(&self, hits: &mut [SearchHit]) {
-        let Some(index) = &self.call_index else { return };
+        let Some(index) = &self.call_index else {
+            return;
+        };
         for hit in hits.iter_mut() {
             if let Some((callers, callees)) = index.get(&hit.node.name) {
                 hit.callers = callers.clone();
@@ -96,7 +103,7 @@ impl SearchAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{CodeNode, NodeKind, NodeId};
+    use crate::model::{CodeNode, NodeId, NodeKind};
 
     use std::sync::atomic::{AtomicU64, Ordering};
     static AGENT_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -112,17 +119,34 @@ mod tests {
     fn make_text_engine() -> TextEngine {
         let path = unique_db_path("agent_text");
         let (mut t, _) = TextEngine::open(&path).unwrap();
-        let _ = t.index(&CodeNode {
-            id: NodeId::new(0), kind: NodeKind::Function,
-            name: "add_user".into(), file_path: None, line_range: None,
-            doc_comment: None, signature: Some("fn add_user(name: &str)".into()), visibility: None,
-            module_path: vec![],
-        }, "fn add_user(name: &str)");
-        let _ = t.index(&CodeNode {
-            id: NodeId::new(1), kind: NodeKind::Function,
-            name: "delete_user".into(), file_path: None, line_range: None,
-            doc_comment: None, signature: None, visibility: None, module_path: vec![],
-        }, "");
+        let _ = t.index(
+            &CodeNode {
+                id: NodeId::new(0),
+                kind: NodeKind::Function,
+                name: "add_user".into(),
+                file_path: None,
+                line_range: None,
+                doc_comment: None,
+                signature: Some("fn add_user(name: &str)".into()),
+                visibility: None,
+                module_path: vec![],
+            },
+            "fn add_user(name: &str)",
+        );
+        let _ = t.index(
+            &CodeNode {
+                id: NodeId::new(1),
+                kind: NodeKind::Function,
+                name: "delete_user".into(),
+                file_path: None,
+                line_range: None,
+                doc_comment: None,
+                signature: None,
+                visibility: None,
+                module_path: vec![],
+            },
+            "",
+        );
         t
     }
 
@@ -161,9 +185,15 @@ mod tests {
 
     fn mock_node(name: &str) -> CodeNode {
         CodeNode {
-            id: NodeId::new(0), kind: NodeKind::Function, name: name.into(),
-            file_path: Some(format!("src/{name}.rs")), line_range: None,
-            doc_comment: None, signature: None, visibility: None, module_path: vec![],
+            id: NodeId::new(0),
+            kind: NodeKind::Function,
+            name: name.into(),
+            file_path: Some(format!("src/{name}.rs")),
+            line_range: None,
+            doc_comment: None,
+            signature: None,
+            visibility: None,
+            module_path: vec![],
         }
     }
 
@@ -212,7 +242,10 @@ mod tests {
         assert!(
             results.iter().all(|h| h.node.name != "sem_hit"),
             "FTS 足够时不应触发语义回溯: {:?}",
-            results.iter().map(|h| h.node.name.clone()).collect::<Vec<_>>()
+            results
+                .iter()
+                .map(|h| h.node.name.clone())
+                .collect::<Vec<_>>()
         );
         assert!(results.len() >= 3, "FTS 应有 3 条命中: {:?}", results.len());
     }
@@ -247,14 +280,23 @@ mod tests {
         use petgraph::stable_graph::StableDiGraph;
 
         let make_node = |id: u64, name: &str| CodeNode {
-            id: NodeId::new(id as usize), kind: NodeKind::Function, name: name.into(),
-            file_path: None, line_range: None, doc_comment: None,
-            signature: None, module_path: vec!["test".into()], visibility: None,
+            id: NodeId::new(id as usize),
+            kind: NodeKind::Function,
+            name: name.into(),
+            file_path: None,
+            line_range: None,
+            doc_comment: None,
+            signature: None,
+            module_path: vec!["test".into()],
+            visibility: None,
         };
         let make_edge = |source: _, target: _| CodeEdge {
             id: petgraph::stable_graph::EdgeIndex::new(0),
-            kind: EdgeKind::Calls, source, target,
-            weight: 1.0, location: None,
+            kind: EdgeKind::Calls,
+            source,
+            target,
+            weight: 1.0,
+            location: None,
         };
 
         let mut g = StableDiGraph::<CodeNode, CodeEdge>::new();
@@ -264,7 +306,11 @@ mod tests {
         g.add_edge(a, b, make_edge(a, b));
         g.add_edge(b, c, make_edge(b, c));
 
-        let kg = KnowledgeGraph { graph: g, modules: vec![], features: Vec::new() };
+        let kg = KnowledgeGraph {
+            graph: g,
+            modules: vec![],
+            features: Vec::new(),
+        };
         let index = CallGraph::new(&kg).build_call_index();
 
         let (mut t, _) = TextEngine::open(unique_db_path("agent_callgraph")).unwrap();

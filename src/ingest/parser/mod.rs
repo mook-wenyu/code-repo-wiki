@@ -1,14 +1,14 @@
+mod csharp;
+mod go;
+mod java;
+mod javascript;
+mod python;
 mod rust;
 mod typescript;
-mod python;
-mod go;
-mod javascript;
-mod csharp;
-mod java;
 
-use std::path::{Path, PathBuf};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use tree_sitter::{Language, Node, Parser};
 
 /// 全部注册语言处理器的扩展名集合（含前导点，与各处理器 extensions() 逐项一致）。
@@ -93,11 +93,25 @@ pub struct KindRule {
 impl KindRule {
     /// 无签名提取的映射规则
     pub const fn plain(node_kind: &'static str, entity_kind: &'static str) -> Self {
-        Self { node_kind, entity_kind, with_signature: false, sig_delim: '{' }
+        Self {
+            node_kind,
+            entity_kind,
+            with_signature: false,
+            sig_delim: '{',
+        }
     }
     /// 带签名提取的映射规则（sig_delim 为签名截断分隔符）
-    pub const fn with_sig(node_kind: &'static str, entity_kind: &'static str, sig_delim: char) -> Self {
-        Self { node_kind, entity_kind, with_signature: true, sig_delim }
+    pub const fn with_sig(
+        node_kind: &'static str,
+        entity_kind: &'static str,
+        sig_delim: char,
+    ) -> Self {
+        Self {
+            node_kind,
+            entity_kind,
+            with_signature: true,
+            sig_delim,
+        }
     }
 }
 
@@ -141,7 +155,12 @@ pub trait SharedProcessor: Sized {
     /// kind 映射表（差异点数据化）：命中的节点由 record_by_rule 统一提取
     fn kinds() -> &'static [KindRule];
     /// 无法数据化的节点处理钩子（动态 kind / 子节点遍历 / 导入解析）
-    fn handle_special(node: Node, bytes: &[u8], entities: &mut Vec<Entity>, imports: &mut Vec<ImportStmt>);
+    fn handle_special(
+        node: Node,
+        bytes: &[u8],
+        entities: &mut Vec<Entity>,
+        imports: &mut Vec<ImportStmt>,
+    );
     /// tree-sitter 失败时的正则降级（差异点钩子，触发契约由 extract 统一）
     fn fallback(source: &str) -> (Vec<Entity>, Vec<ImportStmt>);
     /// walk 完成后的文档关联钩子（默认无操作）
@@ -168,7 +187,9 @@ pub trait SharedProcessor: Sized {
         };
 
         let mut cursor = tree.walk();
-        if !cursor.goto_first_child() { return (entities, imports); }
+        if !cursor.goto_first_child() {
+            return (entities, imports);
+        }
 
         'walk: loop {
             let node = cursor.node();
@@ -176,10 +197,16 @@ pub trait SharedProcessor: Sized {
                 Some(rule) => Self::record_by_rule(node, bytes, rule, &mut entities),
                 None => Self::handle_special(node, bytes, &mut entities, &mut imports),
             }
-            if cursor.goto_first_child() { continue; }
+            if cursor.goto_first_child() {
+                continue;
+            }
             loop {
-                if cursor.goto_next_sibling() { continue 'walk; }
-                if !cursor.goto_parent() { break 'walk; }
+                if cursor.goto_next_sibling() {
+                    continue 'walk;
+                }
+                if !cursor.goto_parent() {
+                    break 'walk;
+                }
             }
         }
 
@@ -190,26 +217,51 @@ pub trait SharedProcessor: Sized {
 
     /// 按 kinds() 规则统一提取实体（与各语言原 match 分支输出一致）
     fn record_by_rule(node: Node, bytes: &[u8], rule: &KindRule, entities: &mut Vec<Entity>) {
-        if let Some(name) = node.child_by_field_name("name").and_then(|n| n.utf8_text(bytes).ok()) {
+        if let Some(name) = node
+            .child_by_field_name("name")
+            .and_then(|n| n.utf8_text(bytes).ok())
+        {
             let sig = if rule.with_signature {
-                node.utf8_text(bytes).ok()
+                node.utf8_text(bytes)
+                    .ok()
                     .and_then(|t| t.split(rule.sig_delim).next().map(|s| s.trim().to_string()))
-            } else { None };
+            } else {
+                None
+            };
             entities.push(Entity {
-                name: name.to_string(), kind: rule.entity_kind.to_string(),
-                line_start: node.start_position().row + 1,                line_end: node.end_position().row + 1,
-                doc_comment: None, signature: sig, visibility: None,
+                name: name.to_string(),
+                kind: rule.entity_kind.to_string(),
+                line_start: node.start_position().row + 1,
+                line_end: node.end_position().row + 1,
+                doc_comment: None,
+                signature: sig,
+                visibility: None,
             });
         }
     }
 
     /// 统一 FileInsight 组装（empty 早退 + extract），语言侧 parse 一行调用
-    fn parse_file(source: &str, path: &Path) -> Result<FileInsight> {        let language = Self::language();
+    fn parse_file(source: &str, path: &Path) -> Result<FileInsight> {
+        let language = Self::language();
         if source.is_empty() {
-            return Ok(FileInsight { path: path.to_path_buf(), language: language.into(), entities: vec![], imports: vec![], doc_comments: vec![], source: source.to_string() });
+            return Ok(FileInsight {
+                path: path.to_path_buf(),
+                language: language.into(),
+                entities: vec![],
+                imports: vec![],
+                doc_comments: vec![],
+                source: source.to_string(),
+            });
         }
         let (entities, imports) = Self::extract(source, path);
-        Ok(FileInsight { path: path.to_path_buf(), language: language.into(), entities, imports, doc_comments: vec![], source: source.to_string() })
+        Ok(FileInsight {
+            path: path.to_path_buf(),
+            language: language.into(),
+            entities,
+            imports,
+            doc_comments: vec![],
+            source: source.to_string(),
+        })
     }
 }
 
@@ -242,9 +294,8 @@ fn fill_visibilities(source: &str, entities: &mut Vec<Entity>) {
             }
             let token = t.split_whitespace().next().unwrap_or("");
             e.visibility = match token {
-                "pub" | "pub(crate)" | "pub(super)" | "private" | "protected" | "internal" | "export" => {
-                    Some(token.to_string())
-                }
+                "pub" | "pub(crate)" | "pub(super)" | "private" | "protected" | "internal"
+                | "export" => Some(token.to_string()),
                 _ => None,
             };
             break;
@@ -260,7 +311,9 @@ pub struct ParserRegistry {
 impl ParserRegistry {
     /// 创建注册表并注册所有内置处理器
     pub fn new() -> Self {
-        let mut reg = Self { parsers: Vec::new() };
+        let mut reg = Self {
+            parsers: Vec::new(),
+        };
         reg.register(Box::new(rust::RustProcessor::new().unwrap()));
         reg.register(Box::new(typescript::TypeScriptProcessor::new().unwrap()));
         reg.register(Box::new(python::PythonProcessor::new().unwrap()));
@@ -280,7 +333,10 @@ impl ParserRegistry {
     pub fn get_for_file(&self, path: &Path) -> Option<&dyn LanguageProcessor> {
         let ext = path.extension()?.to_str()?;
         let ext_str = format!(".{}", ext);
-        self.parsers.iter().find(|p| p.extensions().contains(&ext_str.as_str())).map(|b| b.as_ref())
+        self.parsers
+            .iter()
+            .find(|p| p.extensions().contains(&ext_str.as_str()))
+            .map(|b| b.as_ref())
     }
 }
 

@@ -54,8 +54,7 @@ impl SearchStore {
     /// 补 changed_files，否则旧实体索引丢失）。
     pub fn open(path: impl AsRef<Path>) -> Result<(Self, bool)> {
         let db_path = path.as_ref();
-        let conn = Connection::open(db_path)
-            .context("打开 SQLite 数据库失败")?;
+        let conn = Connection::open(db_path).context("打开 SQLite 数据库失败")?;
         Self::configure_connection(&conn)?;
 
         // audit-srch-09：打开时做完整性校验——损坏的索引库若静默打开，
@@ -64,9 +63,11 @@ impl SearchStore {
         // need_reindex（调用方走全量重索引自愈，与旧 schema 迁移同一条
         // 恢复路径）。
         let integrity_corrupt = conn
-            .query_row("PRAGMA integrity_check", [], |row| -> rusqlite::Result<String> {
-                row.get(0)
-            })
+            .query_row(
+                "PRAGMA integrity_check",
+                [],
+                |row| -> rusqlite::Result<String> { row.get(0) },
+            )
             // integrity_check 本身报错也是损坏的强信号：FTS5 虚拟表结构
             // 损坏时校验过程会直接抛错（如 "invalid fts5 file format"）
             // 而非返回错误行
@@ -79,8 +80,7 @@ impl SearchStore {
             // 脏页残留）。主库删除失败（权限/占用）则传播错误，不静默。
             drop(conn);
             Self::remove_index_files(db_path)?;
-            let conn = Connection::open(db_path)
-                .context("重建 SQLite 数据库失败")?;
+            let conn = Connection::open(db_path).context("重建 SQLite 数据库失败")?;
             Self::configure_connection(&conn)?;
             conn.execute_batch(CREATE_ENTITIES_V2)
                 .context("重建 FTS5 表失败")?;
@@ -152,9 +152,8 @@ impl SearchStore {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => {
-                    return Err(e).with_context(|| {
-                        format!("删除损坏索引库失败: {}", candidate.display())
-                    });
+                    return Err(e)
+                        .with_context(|| format!("删除损坏索引库失败: {}", candidate.display()));
                 }
             }
         }
@@ -174,7 +173,9 @@ impl SearchStore {
         for part in parts {
             for k in extract_keywords(part) {
                 // 2-gram 全部为 CJK 字才进 tokens 列
-                if k.chars().all(|c| matches!(c as u32, 0x4E00..=0x9FFF | 0x3400..=0x4DBF | 0xF900..=0xFAFF)) {
+                if k.chars().all(
+                    |c| matches!(c as u32, 0x4E00..=0x9FFF | 0x3400..=0x4DBF | 0xF900..=0xFAFF),
+                ) {
                     out.push(k);
                 }
             }
@@ -184,19 +185,18 @@ impl SearchStore {
 
     /// 批量插入实体到 FTS5 表
     pub fn insert_entities_batch(&self, items: &[(CodeNode, String)]) -> Result<()> {
-        let mut stmt = self.conn.prepare(
-            "INSERT INTO entities (name, kind, signature, source, file_path, node_json, tokens)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
-        ).context("准备 FTS5 插入语句失败")?;
+        let mut stmt = self
+            .conn
+            .prepare(
+                "INSERT INTO entities (name, kind, signature, source, file_path, node_json, tokens)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            )
+            .context("准备 FTS5 插入语句失败")?;
 
         for (node, source) in items {
-            let node_json = serde_json::to_string(node)
-                .context("序列化 CodeNode 失败")?;
-            let tokens = Self::cjk_tokens(&[
-                &node.name,
-                node.signature.as_deref().unwrap_or(""),
-                source,
-            ]);
+            let node_json = serde_json::to_string(node).context("序列化 CodeNode 失败")?;
+            let tokens =
+                Self::cjk_tokens(&[&node.name, node.signature.as_deref().unwrap_or(""), source]);
             stmt.execute(rusqlite::params![
                 node.name,
                 node.kind.as_str(),
@@ -208,7 +208,8 @@ impl SearchStore {
                 crate::incremental::norm_sep(node.file_path.as_deref().unwrap_or("")).as_str(),
                 node_json,
                 tokens,
-            ]).context("插入 FTS5 条目失败")?;
+            ])
+            .context("插入 FTS5 条目失败")?;
         }
         Ok(())
     }
@@ -239,7 +240,10 @@ impl SearchStore {
         // 静默零命中）；双引号是 FTS5 字面量转义，任何词安全，免维护保留词表。
         // extract_keywords 已剥离引号/括号/逻辑词分隔，词内不会含 `"`。
         let quoted: Vec<String> = terms.iter().map(|t| format!("\"{}\"", t)).collect();
-        let match_expr = format!("{{name signature source tokens}} : ({})", quoted.join(" OR "));
+        let match_expr = format!(
+            "{{name signature source tokens}} : ({})",
+            quoted.join(" OR ")
+        );
 
         // FTS5 MATCH 查询，bm25() 返回负数（越小越相关）
         let sql = format!(
@@ -250,8 +254,7 @@ impl SearchStore {
              LIMIT {}",
             limit
         );
-        let mut stmt = self.conn.prepare(&sql)
-            .context("准备 FTS5 查询语句失败")?;
+        let mut stmt = self.conn.prepare(&sql).context("准备 FTS5 查询语句失败")?;
 
         // 词表来自 extract_keywords 切分（已剥离特殊字符），正常不会
         // 语法错误；残留错误统一转为空结果 + 告警（三引擎一致，不向
@@ -284,26 +287,29 @@ impl SearchStore {
     /// 参数与 file_path 列同基准：写入时已归一化（票 08），删除键也归一化，
     /// 保证 Windows 反斜杠路径（调用方传入）与入库正斜杠键精确匹配。
     pub fn delete_entities_by_file(&self, file_path: &str) -> Result<usize> {
-        let count = self.conn.execute(
-            "DELETE FROM entities WHERE file_path = ?1",
-            rusqlite::params![crate::incremental::norm_sep(file_path)],
-        ).context("删除 FTS5 条目失败")?;
+        let count = self
+            .conn
+            .execute(
+                "DELETE FROM entities WHERE file_path = ?1",
+                rusqlite::params![crate::incremental::norm_sep(file_path)],
+            )
+            .context("删除 FTS5 条目失败")?;
         Ok(count)
     }
 
     /// 获取 FTS5 表中的文档总数
     pub fn entity_count(&self) -> Result<usize> {
-        let count: usize = self.conn.query_row(
-            "SELECT COUNT(*) FROM entities",
-            [],
-            |row| row.get(0),
-        ).context("查询 FTS5 文档数失败")?;
+        let count: usize = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM entities", [], |row| row.get(0))
+            .context("查询 FTS5 文档数失败")?;
         Ok(count)
     }
 
     /// 清空 FTS5 表
     pub fn clear_entities(&self) -> Result<()> {
-        self.conn.execute("DELETE FROM entities", [])
+        self.conn
+            .execute("DELETE FROM entities", [])
             .context("清空 FTS5 表失败")?;
         Ok(())
     }
@@ -329,7 +335,8 @@ mod tests {
             file_path: Some(file.into()),
             line_range: Some((1, 10)),
             doc_comment: None,
-            signature: Some(format!("fn {}()", name)), visibility: None,
+            signature: Some(format!("fn {}()", name)),
+            visibility: None,
             module_path: vec![],
         }
     }
@@ -339,8 +346,14 @@ mod tests {
         let (store, need_reindex) = SearchStore::open(tmp_db_path("fts")).unwrap();
         assert!(!need_reindex, "新库无需重建");
         let items = vec![
-            (make_node("authenticate", "src/auth.rs"), "fn authenticate(user: &str)".to_string()),
-            (make_node("save_session", "src/storage.rs"), "fn save_session(id: u64)".to_string()),
+            (
+                make_node("authenticate", "src/auth.rs"),
+                "fn authenticate(user: &str)".to_string(),
+            ),
+            (
+                make_node("save_session", "src/storage.rs"),
+                "fn save_session(id: u64)".to_string(),
+            ),
         ];
         store.insert_entities_batch(&items).unwrap();
         assert_eq!(store.entity_count().unwrap(), 2);
@@ -357,7 +370,10 @@ mod tests {
         let items = vec![
             (make_node("or", "src/or.rs"), "fn or()".to_string()),
             (make_node("and", "src/and.rs"), "fn and()".to_string()),
-            (make_node("normal", "src/normal.rs"), "fn normal()".to_string()),
+            (
+                make_node("normal", "src/normal.rs"),
+                "fn normal()".to_string(),
+            ),
         ];
         store.insert_entities_batch(&items).unwrap();
 
@@ -395,8 +411,14 @@ mod tests {
     fn test_fts_cjk_substring_search() {
         let (store, _) = SearchStore::open(tmp_db_path("fts_cjk")).unwrap();
         let items = vec![
-            (make_node("提取配置", "src/config.rs"), "fn 提取配置() 读取合并后的配置".to_string()),
-            (make_node("save_session", "src/storage.rs"), "fn save_session(id: u64)".to_string()),
+            (
+                make_node("提取配置", "src/config.rs"),
+                "fn 提取配置() 读取合并后的配置".to_string(),
+            ),
+            (
+                make_node("save_session", "src/storage.rs"),
+                "fn save_session(id: u64)".to_string(),
+            ),
         ];
         store.insert_entities_batch(&items).unwrap();
 
@@ -423,14 +445,16 @@ mod tests {
             conn.execute_batch(
                 "CREATE VIRTUAL TABLE entities USING fts5(
                     name, kind, signature, source, file_path, node_json
-                );"
-            ).unwrap();
+                );",
+            )
+            .unwrap();
             conn.pragma_update(None, "user_version", 1).unwrap();
             conn.execute(
                 "INSERT INTO entities (name, kind, signature, source, file_path, node_json)
                  VALUES ('old_fn', 'function', 'fn old_fn()', 'old code', 'src/old.rs', '{}')",
                 [],
-            ).unwrap();
+            )
+            .unwrap();
         }
 
         // 第一次 open：检测旧 schema，重建为 v2，返回 need_reindex
@@ -439,9 +463,10 @@ mod tests {
         assert_eq!(store.entity_count().unwrap(), 0, "旧索引数据已清空");
 
         // 新数据写入后中文检索可用（v2 tokens 列生效）
-        let items = vec![
-            (make_node("验证迁移", "src/new.rs"), "fn 验证迁移()".to_string()),
-        ];
+        let items = vec![(
+            make_node("验证迁移", "src/new.rs"),
+            "fn 验证迁移()".to_string(),
+        )];
         store.insert_entities_batch(&items).unwrap();
         let results = store.search_fts("迁移", 5).unwrap();
         assert_eq!(results.len(), 1, "迁移后 v2 检索正常");

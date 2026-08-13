@@ -13,7 +13,7 @@ use crate::ingest::parser::FileInsight;
 use crate::model::KnowledgeGraph;
 use crate::project::ProjectRoot;
 
-use self::change::{classify_entity_changes_at, no_entity_change_files, EntityChangeSet};
+use self::change::{EntityChangeSet, classify_entity_changes_at, no_entity_change_files};
 use self::impact::{propagate_impact, propagate_impact_semantic};
 use self::state::GenerationState;
 
@@ -99,7 +99,10 @@ fn status_has_source_changes(
     // 产物目录相对仓库根归一化（output_dir 可能是 root 化注入的绝对路径）
     let out_abs = config.output_dir().to_string_lossy().replace('\\', "/");
     let root_abs = root.path().to_string_lossy().replace('\\', "/");
-    let out_norm = out_abs.strip_prefix(&root_abs).map(|s| s.trim_start_matches('/')).unwrap_or(&out_abs);
+    let out_norm = out_abs
+        .strip_prefix(&root_abs)
+        .map(|s| s.trim_start_matches('/'))
+        .unwrap_or(&out_abs);
     match repo.statuses(None) {
         Ok(statuses) => statuses.iter().any(|s| {
             let Some(path) = s.path() else { return false };
@@ -182,12 +185,10 @@ pub fn run_incremental_update_at(
     if let Ok(state) = GenerationState::load(&state_dir)
         && !state.failed_modules.is_empty()
     {
-        let snapshot_path =
-            crate::output::export_snapshot_path(config.output_dir());
+        let snapshot_path = crate::output::export_snapshot_path(config.output_dir());
         let mut failed_files: Vec<std::path::PathBuf> = Vec::new();
         if let Ok(content) = std::fs::read_to_string(&snapshot_path)
-            && let Ok(snapshot) =
-                serde_json::from_str::<crate::output::ExportSnapshot>(&content)
+            && let Ok(snapshot) = serde_json::from_str::<crate::output::ExportSnapshot>(&content)
         {
             for card in &snapshot.cards {
                 if state.failed_modules.contains(&card.module_name) {
@@ -224,7 +225,12 @@ pub fn run_incremental_update_at(
         }
     }
 
-    Ok(IncrementalResult { changed_files, affected_modules, entity_changes, has_deleted_files })
+    Ok(IncrementalResult {
+        changed_files,
+        affected_modules,
+        entity_changes,
+        has_deleted_files,
+    })
 }
 
 /// FileWatch 策略的增量更新
@@ -250,7 +256,11 @@ fn run_file_watch_incremental(
     let mut changed_files: Vec<PathBuf> = Vec::new();
 
     for insight in insights {
-        if let Ok(true) = state.as_ref().map(|s| s.is_file_changed(root, &insight.path)).unwrap_or(Ok(true)) {
+        if let Ok(true) = state
+            .as_ref()
+            .map(|s| s.is_file_changed(root, &insight.path))
+            .unwrap_or(Ok(true))
+        {
             changed_files.push(insight.path.clone());
         }
     }
@@ -350,16 +360,28 @@ fn run_file_watch_incremental(
             .collect()
     };
     let affected_modules = if entity_changes.changes.is_empty() {
-        propagate_impact(&changed_for_impact, graph, crate::config::schema::IMPACT_MAX_DEPTH)
+        propagate_impact(
+            &changed_for_impact,
+            graph,
+            crate::config::schema::IMPACT_MAX_DEPTH,
+        )
     } else {
-        propagate_impact_semantic(&changed_for_impact, &entity_changes, graph, crate::config::schema::IMPACT_MAX_DEPTH)
+        propagate_impact_semantic(
+            &changed_for_impact,
+            &entity_changes,
+            graph,
+            crate::config::schema::IMPACT_MAX_DEPTH,
+        )
     };
 
     // 中途存盘已移除：分析阶段推进 file_fingerprints/last_commit_hash 会使
     // 生成崩溃后下次 update 指纹比对检不出变更（changed_files 空 → 静默
     // 跳过 → 产物永久失配）。磁盘状态停留上次成功状态，保护字段天然保留；
     // 生成成功后由 lib.rs:617 save_generation_state 统一推进。
-    tracing::info!("FileWatch 增量分析完成: {} 个模块受影响", affected_modules.len());
+    tracing::info!(
+        "FileWatch 增量分析完成: {} 个模块受影响",
+        affected_modules.len()
+    );
     // FileWatch 的删除判定 = 变更集中存在磁盘上已不存在的路径（删除事件）
     // 与上方 exists_at_root 同基准（root.path() 前缀）：changed_files 为
     // 相对路径，裸判 exists 落在进程 cwd 上，cwd 漂移会误判删除
@@ -395,7 +417,10 @@ mod tests {
     /// 下游删除清理（cleanup_deleted_outputs）才能命中并清除旧输出
     #[test]
     fn test_deleted_files_in_changed_set() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_deleted_changed_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_deleted_changed_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let repo = git2::Repository::init(&dir).unwrap();
         let mut cfg = repo.config().unwrap();
@@ -408,7 +433,13 @@ mod tests {
         std::fs::write(src.join("foo.rs"), "fn foo() {}\n").unwrap();
         crate::test_git::commit_all(&dir, "init");
         // 基线 = 第一 commit：diff 才能覆盖第二次提交的删除变更
-        let first_hash = repo.head().unwrap().peel_to_commit().unwrap().id().to_string();
+        let first_hash = repo
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id()
+            .to_string();
 
         // 基线 = 第一 commit 时含 foo.rs 的状态（文件仍存在，指纹可计算；
         // v30 FileWatch 删除检测=旧指纹∖本次 insights，指纹表必须有 foo.rs）
@@ -432,8 +463,14 @@ mod tests {
         let graph = KnowledgeGraph::default();
         let state_dir = dir.join(".state");
 
-        let (changed, _affected, _entity_changes, _has_deleted) =
-            run_file_watch_incremental(&ProjectRoot::new(dir.clone()), &insights, &graph, &state_dir, &[]).unwrap();
+        let (changed, _affected, _entity_changes, _has_deleted) = run_file_watch_incremental(
+            &ProjectRoot::new(dir.clone()),
+            &insights,
+            &graph,
+            &state_dir,
+            &[],
+        )
+        .unwrap();
         assert!(
             changed.iter().any(|p| p == Path::new("src/foo.rs")),
             "被删文件路径应计入 changed_files（否则删除清理与索引清理永不触发）: {:?}",
@@ -448,7 +485,10 @@ mod tests {
     /// 清理旧输出——删除文件不在 insights 中，指纹比对永远捕获不到
     #[test]
     fn test_file_watch_deleted_path_in_changed_files() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_watch_deleted_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_watch_deleted_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let src = dir.join("src");
         std::fs::create_dir_all(&src).unwrap();
@@ -458,15 +498,22 @@ mod tests {
         let insight = make_insight(src.join("a.rs").to_string_lossy().as_ref());
         let state_dir = dir.join(".state");
         let root = crate::project::ProjectRoot::new(dir.clone());
-        let state = GenerationState::from_insights(&root, std::slice::from_ref(&insight), "test").unwrap();
+        let state =
+            GenerationState::from_insights(&root, std::slice::from_ref(&insight), "test").unwrap();
         state.save(&state_dir).unwrap();
 
         // watch 事件传入已删除路径（磁盘上不存在）
         let deleted = src.join("b.rs");
         let graph = KnowledgeGraph::default();
 
-        let (changed, _affected, _entity_changes, _has_deleted) =
-            run_file_watch_incremental(&root, std::slice::from_ref(&insight), &graph, &state_dir, std::slice::from_ref(&deleted)).unwrap();
+        let (changed, _affected, _entity_changes, _has_deleted) = run_file_watch_incremental(
+            &root,
+            std::slice::from_ref(&insight),
+            &graph,
+            &state_dir,
+            std::slice::from_ref(&deleted),
+        )
+        .unwrap();
         assert_eq!(
             changed,
             vec![deleted],
@@ -480,7 +527,10 @@ mod tests {
     /// （指纹覆盖 watch 事件丢失的变更，watch 覆盖指纹捕获不到的删除）
     #[test]
     fn test_file_watch_union_fingerprint_and_watch_paths() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_watch_union_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_watch_union_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let src = dir.join("src");
         std::fs::create_dir_all(&src).unwrap();
@@ -490,7 +540,8 @@ mod tests {
         let insight = make_insight(src.join("a.rs").to_string_lossy().as_ref());
         let state_dir = dir.join(".state");
         let root = crate::project::ProjectRoot::new(dir.clone());
-        let state = GenerationState::from_insights(&root, std::slice::from_ref(&insight), "test").unwrap();
+        let state =
+            GenerationState::from_insights(&root, std::slice::from_ref(&insight), "test").unwrap();
         state.save(&state_dir).unwrap();
         std::fs::write(src.join("a.rs"), "v2").unwrap();
 
@@ -498,8 +549,14 @@ mod tests {
         let deleted = src.join("b.rs");
         let graph = KnowledgeGraph::default();
 
-        let (changed, _affected, _entity_changes, _has_deleted) =
-            run_file_watch_incremental(&root, std::slice::from_ref(&insight), &graph, &state_dir, std::slice::from_ref(&deleted)).unwrap();
+        let (changed, _affected, _entity_changes, _has_deleted) = run_file_watch_incremental(
+            &root,
+            std::slice::from_ref(&insight),
+            &graph,
+            &state_dir,
+            std::slice::from_ref(&deleted),
+        )
+        .unwrap();
         assert!(
             changed.contains(&insight.path),
             "指纹命中的文件应计入: {:?}",
@@ -520,7 +577,10 @@ mod tests {
     /// 保护字段由磁盘旧状态天然承载。
     #[test]
     fn test_file_watch_midway_save_preserves_protection() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_watch_protect_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_watch_protect_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let src = dir.join("src");
         std::fs::create_dir_all(&src).unwrap();
@@ -531,25 +591,50 @@ mod tests {
 
         // 旧状态：带人工保护（模拟上次生成完成后的状态）
         let root = crate::project::ProjectRoot::new(dir.clone());
-        let mut old = GenerationState::from_insights(&root, std::slice::from_ref(&insight), "old").unwrap();
+        let mut old =
+            GenerationState::from_insights(&root, std::slice::from_ref(&insight), "old").unwrap();
         old.protected_docs = vec!["wiki/zh/manual.md".to_string()];
-        old.doc_fingerprints = std::collections::HashMap::from([("wiki/zh/manual.md".to_string(), "fp".to_string())]);
+        old.doc_fingerprints =
+            std::collections::HashMap::from([("wiki/zh/manual.md".to_string(), "fp".to_string())]);
         old.save(&state_dir).unwrap();
 
         // 触发 FileWatch 增量（内容变更 → 指纹比对命中；分析不写盘）
         std::fs::write(src.join("a.rs"), "v2").unwrap();
         let changed = src.join("b.rs");
         let graph = KnowledgeGraph::default();
-        run_file_watch_incremental(&root, std::slice::from_ref(&insight), &graph, &state_dir, std::slice::from_ref(&changed)).unwrap();
+        run_file_watch_incremental(
+            &root,
+            std::slice::from_ref(&insight),
+            &graph,
+            &state_dir,
+            std::slice::from_ref(&changed),
+        )
+        .unwrap();
 
         // 磁盘状态必须保留保护字段（中途失败后人工修改保护不失效）
         let saved = GenerationState::load(&state_dir).unwrap();
-        assert_eq!(saved.protected_docs, vec!["wiki/zh/manual.md"], "中途存盘不得清空保护集");
-        assert_eq!(saved.doc_fingerprints.get("wiki/zh/manual.md").map(String::as_str), Some("fp"));
+        assert_eq!(
+            saved.protected_docs,
+            vec!["wiki/zh/manual.md"],
+            "中途存盘不得清空保护集"
+        );
+        assert_eq!(
+            saved
+                .doc_fingerprints
+                .get("wiki/zh/manual.md")
+                .map(String::as_str),
+            Some("fp")
+        );
         // 分析阶段不得推进指纹/commit：磁盘状态须与旧值一致
         // （P0-5：崩溃后下次 update 用旧指纹比对，才能正确检出本次变更）
-        assert_eq!(saved.last_commit_hash, old.last_commit_hash, "分析不得推进 last_commit_hash");
-        assert_eq!(saved.file_fingerprints, old.file_fingerprints, "分析不得推进文件指纹（旧状态含 a.rs 的 v1 指纹）");
+        assert_eq!(
+            saved.last_commit_hash, old.last_commit_hash,
+            "分析不得推进 last_commit_hash"
+        );
+        assert_eq!(
+            saved.file_fingerprints, old.file_fingerprints,
+            "分析不得推进文件指纹（旧状态含 a.rs 的 v1 指纹）"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -558,7 +643,10 @@ mod tests {
     /// 空 diff 时应回退全量生成，避免首用产出空 wiki
     #[test]
     fn test_first_update_no_baseline_falls_back_full() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_first_update_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_first_update_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let repo = git2::Repository::init(&dir).unwrap();
         let mut cfg = repo.config().unwrap();
@@ -573,8 +661,14 @@ mod tests {
         let graph = KnowledgeGraph::default();
         let state_dir = dir.join(".state");
 
-        let (changed, _affected, _entity_changes, _has_deleted) =
-            run_file_watch_incremental(&ProjectRoot::new(dir.clone()), &insights, &graph, &state_dir, &[]).unwrap();
+        let (changed, _affected, _entity_changes, _has_deleted) = run_file_watch_incremental(
+            &ProjectRoot::new(dir.clone()),
+            &insights,
+            &graph,
+            &state_dir,
+            &[],
+        )
+        .unwrap();
         assert_eq!(
             changed,
             vec![PathBuf::from("a.rs")],
@@ -588,7 +682,10 @@ mod tests {
     /// A1 配套：有基线 + 无变更 → 正常跳过（不被回退全量误伤）
     #[test]
     fn test_with_baseline_no_change_skips() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_skip_nochange_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_skip_nochange_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let repo = git2::Repository::init(&dir).unwrap();
         let mut cfg = repo.config().unwrap();
@@ -597,7 +694,13 @@ mod tests {
 
         std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
         crate::test_git::commit_all(&dir, "init");
-        let head_hash = repo.head().unwrap().peel_to_commit().unwrap().id().to_string();
+        let head_hash = repo
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id()
+            .to_string();
 
         let insights = vec![make_insight("a.rs")];
         let graph = KnowledgeGraph::default();
@@ -612,9 +715,19 @@ mod tests {
         .unwrap();
         baseline.save(&state_dir).unwrap();
 
-        let (changed, _affected, _entity_changes, _has_deleted) =
-            run_file_watch_incremental(&ProjectRoot::new(dir.clone()), &insights, &graph, &state_dir, &[]).unwrap();
-        assert!(changed.is_empty(), "有基线且无变更时应跳过，不得回退全量: {:?}", changed);
+        let (changed, _affected, _entity_changes, _has_deleted) = run_file_watch_incremental(
+            &ProjectRoot::new(dir.clone()),
+            &insights,
+            &graph,
+            &state_dir,
+            &[],
+        )
+        .unwrap();
+        assert!(
+            changed.is_empty(),
+            "有基线且无变更时应跳过，不得回退全量: {:?}",
+            changed
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -624,7 +737,10 @@ mod tests {
     /// 且不静默（warn 由 tracing 输出，行为断言为回退全量）
     #[test]
     fn test_corrupt_state_falls_back_full() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_corrupt_state_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_corrupt_state_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let repo = git2::Repository::init(&dir).unwrap();
         let mut cfg = repo.config().unwrap();
@@ -642,8 +758,14 @@ mod tests {
         let insights = vec![make_insight("a.rs")];
         let graph = KnowledgeGraph::default();
 
-        let (changed, _affected, _entity_changes, _has_deleted) =
-            run_file_watch_incremental(&ProjectRoot::new(dir.clone()), &insights, &graph, &state_dir, &[]).unwrap();
+        let (changed, _affected, _entity_changes, _has_deleted) = run_file_watch_incremental(
+            &ProjectRoot::new(dir.clone()),
+            &insights,
+            &graph,
+            &state_dir,
+            &[],
+        )
+        .unwrap();
         assert_eq!(
             changed,
             vec![PathBuf::from("a.rs")],
@@ -675,7 +797,13 @@ mod tests {
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(dir.join("src").join("a.rs"), "fn a() {}\n").unwrap();
         crate::test_git::commit_all(&dir, "init");
-        let head = repo.head().unwrap().peel_to_commit().unwrap().id().to_string();
+        let head = repo
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id()
+            .to_string();
 
         let mut config = make_config();
         config.output_dir = Some(dir.join("out"));
@@ -741,11 +869,7 @@ mod tests {
         );
         // 还原后产物目录内出现新文件 → 仍跳过（产物不算源码变更）
         std::fs::write(dir.join("src").join("a.rs"), "fn a() {}\n").unwrap();
-        std::fs::write(
-            config.output_dir().join("out.txt"),
-            "not code",
-        )
-        .unwrap();
+        std::fs::write(config.output_dir().join("out.txt"), "not code").unwrap();
         assert!(
             should_skip_noop(&ProjectRoot::new(dir.clone()), &config).unwrap(),
             "产物目录变更不应阻断跳过"
@@ -759,12 +883,9 @@ mod tests {
         let (dir, head, config) = setup_noop_fixture();
         // 只存基线，不建产物目录
         let insights = vec![make_insight("src/a.rs")];
-        let state = GenerationState::from_insights(
-            &ProjectRoot::new(dir.clone()),
-            &insights,
-            &head,
-        )
-        .unwrap();
+        let state =
+            GenerationState::from_insights(&ProjectRoot::new(dir.clone()), &insights, &head)
+                .unwrap();
         let state_dir = config.output_dir().join(".state");
         state.save(&state_dir).unwrap();
 
@@ -791,8 +912,10 @@ mod tests {
     /// changed_files（下次 update 补生成），no-op 快速判定同时放行。
     #[test]
     fn test_incremental_merges_failed_modules_from_state() {
-        let dir = std::env::temp_dir()
-            .join(format!("code_repo_wiki_test_failed_retry_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_failed_retry_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let root = ProjectRoot::new(dir.clone());
         std::fs::create_dir_all(dir.join("src").join("m20")).unwrap();
@@ -805,7 +928,13 @@ mod tests {
         std::fs::write(dir.join("src").join("m20").join("a.rs"), "pub fn fa() {}\n").unwrap();
         std::fs::write(dir.join("src").join("m20").join("b.rs"), "pub fn fb() {}\n").unwrap();
         crate::test_git::commit_all(&dir, "init");
-        let head = repo.head().unwrap().peel_to_commit().unwrap().id().to_string();
+        let head = repo
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id()
+            .to_string();
 
         // 状态：基线 = 当前 HEAD，failed_modules = ["src::m20"]（社区名体系）
         let state_dir = dir.join(".state");
@@ -849,11 +978,15 @@ mod tests {
         let graph = KnowledgeGraph::default();
         let result = run_incremental_update_at(&root, &insights, &graph, &config, &[]).unwrap();
         assert!(
-            result.changed_files.contains(&PathBuf::from("src/m20/a.rs")),
+            result
+                .changed_files
+                .contains(&PathBuf::from("src/m20/a.rs")),
             "失败模块的存活文件必须并入变更集（补生成）"
         );
         assert!(
-            result.changed_files.contains(&PathBuf::from("src/m20/b.rs")),
+            result
+                .changed_files
+                .contains(&PathBuf::from("src/m20/b.rs")),
             "同模块全部存活文件都并入"
         );
 

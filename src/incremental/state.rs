@@ -58,8 +58,8 @@ impl GenerationState {
         let file = std::fs::File::open(&state_path)
             .with_context(|| format!("打开状态文件失败: {}", state_path.display()))?;
         let reader = std::io::BufReader::new(file);
-        let state: GenerationState = serde_json::from_reader(reader)
-            .with_context(|| "解析状态文件 JSON 失败")?;
+        let state: GenerationState =
+            serde_json::from_reader(reader).with_context(|| "解析状态文件 JSON 失败")?;
         Ok(state)
     }
 
@@ -79,14 +79,35 @@ impl GenerationState {
         let state_path = state_dir.join("generation_state.json");
 
         let mut obj = serde_json::Map::new();
-        obj.insert("last_commit_hash".into(), serde_json::to_value(&self.last_commit_hash)?);
-        obj.insert("file_fingerprints".into(), sorted_json_object(&self.file_fingerprints)?);
-        obj.insert("generated_at".into(), serde_json::to_value(&self.generated_at)?);
-        obj.insert("doc_fingerprints".into(), sorted_json_object(&self.doc_fingerprints)?);
+        obj.insert(
+            "last_commit_hash".into(),
+            serde_json::to_value(&self.last_commit_hash)?,
+        );
+        obj.insert(
+            "file_fingerprints".into(),
+            sorted_json_object(&self.file_fingerprints)?,
+        );
+        obj.insert(
+            "generated_at".into(),
+            serde_json::to_value(&self.generated_at)?,
+        );
+        obj.insert(
+            "doc_fingerprints".into(),
+            sorted_json_object(&self.doc_fingerprints)?,
+        );
         obj.insert("doc_modules".into(), sorted_json_object(&self.doc_modules)?);
-        obj.insert("protected_docs".into(), serde_json::to_value(&self.protected_docs)?);
-        obj.insert("tool_version".into(), serde_json::to_value(&self.tool_version)?);
-        obj.insert("failed_modules".into(), serde_json::to_value(&self.failed_modules)?);
+        obj.insert(
+            "protected_docs".into(),
+            serde_json::to_value(&self.protected_docs)?,
+        );
+        obj.insert(
+            "tool_version".into(),
+            serde_json::to_value(&self.tool_version)?,
+        );
+        obj.insert(
+            "failed_modules".into(),
+            serde_json::to_value(&self.failed_modules)?,
+        );
 
         let content = serde_json::to_string_pretty(&serde_json::Value::Object(obj))?;
         crate::fs::write_file_atomic(&state_path, &content)
@@ -387,11 +408,19 @@ mod tests {
             failed_modules: vec![],
         };
 
-        assert!(!state.is_file_changed(&ProjectRoot::new(dir.clone()), &file_path).unwrap());
+        assert!(
+            !state
+                .is_file_changed(&ProjectRoot::new(dir.clone()), &file_path)
+                .unwrap()
+        );
 
         // 修改文件
         std::fs::write(&file_path, "world").unwrap();
-        assert!(state.is_file_changed(&ProjectRoot::new(dir.clone()), &file_path).unwrap());
+        assert!(
+            state
+                .is_file_changed(&ProjectRoot::new(dir.clone()), &file_path)
+                .unwrap()
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -411,16 +440,20 @@ mod tests {
 
         let path = PathBuf::from("nonexistent.rs");
         // 新文件（不在指纹表中）应视为"已变更"
-        assert!(state
-            .is_file_changed(&ProjectRoot::new(std::env::temp_dir()), &path)
-            .unwrap());
+        assert!(
+            state
+                .is_file_changed(&ProjectRoot::new(std::env::temp_dir()), &path)
+                .unwrap()
+        );
     }
 
     /// A3：卡片指纹与 wiki 页指纹一起记录，人工编辑的卡片可被检测保护
     #[test]
     fn test_record_doc_fingerprints_includes_cards() {
-        let dir = std::env::temp_dir()
-            .join(format!("code_repo_wiki_test_card_fp_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_card_fp_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
 
         // 预写 wiki 页与卡片（路径与 render_all 落盘一致）
@@ -459,7 +492,9 @@ mod tests {
             features: Vec::new(),
         };
 
-        let (fps, modules) = GenerationState::record_doc_fingerprints(&[doc], &[card], &dir, &["zh".into()]).unwrap();
+        let (fps, modules) =
+            GenerationState::record_doc_fingerprints(&[doc], &[card], &dir, &["zh".into()])
+                .unwrap();
         assert!(
             fps.contains_key(&card_path.to_string_lossy().to_string()),
             "已落盘的卡片应计入指纹（人工编辑后检测保护的前提）"
@@ -469,12 +504,16 @@ mod tests {
             "wiki 页应计入指纹"
         );
         assert_eq!(
-            modules.get(&card_path.to_string_lossy().to_string()).map(String::as_str),
+            modules
+                .get(&card_path.to_string_lossy().to_string())
+                .map(String::as_str),
             Some("src::testmodule"),
             "卡片指纹应记录模块归属（反向同步的精确匹配依据）"
         );
         assert_eq!(
-            modules.get(&wiki_path.to_string_lossy().to_string()).map(String::as_str),
+            modules
+                .get(&wiki_path.to_string_lossy().to_string())
+                .map(String::as_str),
             Some("src::testmodule"),
             "wiki 页指纹应记录模块归属（module_path 连接规则）"
         );
@@ -497,7 +536,9 @@ mod tests {
             features: Vec::new(),
         };
 
-        let (fps2, modules2) = GenerationState::record_doc_fingerprints(&[], &[missing_card], &dir, &["zh".into()]).unwrap();
+        let (fps2, modules2) =
+            GenerationState::record_doc_fingerprints(&[], &[missing_card], &dir, &["zh".into()])
+                .unwrap();
         assert!(fps2.is_empty(), "文件不存在时不应记录指纹");
         assert!(modules2.is_empty(), "文件不存在时不应记录模块归属");
 
@@ -530,8 +571,14 @@ mod tests {
         };
         fresh.preserve_protection(&old);
         assert_eq!(fresh.protected_docs, vec!["a.md"]);
-        assert_eq!(fresh.doc_fingerprints.get("a.md").map(String::as_str), Some("fp"));
-        assert_eq!(fresh.doc_modules.get("a.md").map(String::as_str), Some("src"));
+        assert_eq!(
+            fresh.doc_fingerprints.get("a.md").map(String::as_str),
+            Some("fp")
+        );
+        assert_eq!(
+            fresh.doc_modules.get("a.md").map(String::as_str),
+            Some("src")
+        );
         // commit hash 不被旧值覆盖（只合并保护字段）
         assert_eq!(fresh.last_commit_hash.as_deref(), Some("new"));
     }
@@ -560,8 +607,15 @@ mod tests {
             failed_modules: vec![],
         };
         fresh.preserve_protection(&old);
-        assert_eq!(fresh.protected_docs, vec!["new.md"], "新状态保护字段非空时应保留新值");
-        assert_eq!(fresh.doc_fingerprints.get("new.md").map(String::as_str), Some("new"));
+        assert_eq!(
+            fresh.protected_docs,
+            vec!["new.md"],
+            "新状态保护字段非空时应保留新值"
+        );
+        assert_eq!(
+            fresh.doc_fingerprints.get("new.md").map(String::as_str),
+            Some("new")
+        );
         assert!(!fresh.doc_fingerprints.contains_key("old.md"));
     }
 
@@ -570,8 +624,10 @@ mod tests {
     /// 保证同状态同字节，防 git diff 噪音与确定性契约破坏）
     #[test]
     fn test_save_is_byte_deterministic() {
-        let dir = std::env::temp_dir()
-            .join(format!("code_repo_wiki_test_state_deterministic_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_state_deterministic_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
 
         // 故意乱序插入，且键序跨越不同前缀，确保排序逻辑真正生效
@@ -612,9 +668,18 @@ mod tests {
 
         // load 兼容：排序后的 JSON 反序列化回等值状态
         let loaded = GenerationState::load(&dir).unwrap();
-        assert_eq!(loaded.file_fingerprints.get("z.rs").map(String::as_str), Some("z-fp"));
-        assert_eq!(loaded.file_fingerprints.get("a/b.rs").map(String::as_str), Some("b-fp"));
-        assert_eq!(loaded.doc_modules.get("wiki/zh/aa.md").map(String::as_str), Some("a"));
+        assert_eq!(
+            loaded.file_fingerprints.get("z.rs").map(String::as_str),
+            Some("z-fp")
+        );
+        assert_eq!(
+            loaded.file_fingerprints.get("a/b.rs").map(String::as_str),
+            Some("b-fp")
+        );
+        assert_eq!(
+            loaded.doc_modules.get("wiki/zh/aa.md").map(String::as_str),
+            Some("a")
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -626,8 +691,10 @@ mod tests {
     fn test_detect_manually_modified_read_failure_is_protected() {
         use std::os::windows::fs::OpenOptionsExt;
 
-        let dir = std::env::temp_dir()
-            .join(format!("code_repo_wiki_test_detect_readfail_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_detect_readfail_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let locked = dir.join("locked.md");
@@ -667,8 +734,10 @@ mod tests {
     /// A5：常规分支——指纹不匹配计入、文件不存在跳过、指纹匹配不计入
     #[test]
     fn test_detect_manually_modified_regular_branches() {
-        let dir = std::env::temp_dir()
-            .join(format!("code_repo_wiki_test_detect_regular_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_detect_regular_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -691,7 +760,10 @@ mod tests {
                     "definitely-not-matching".to_string(),
                 ),
                 // 文件不存在 → 跳过
-                (dir.join("missing.md").to_string_lossy().to_string(), "x".to_string()),
+                (
+                    dir.join("missing.md").to_string_lossy().to_string(),
+                    "x".to_string(),
+                ),
             ]),
             doc_modules: HashMap::new(),
             protected_docs: Vec::new(),
@@ -703,7 +775,12 @@ mod tests {
         std::fs::write(&edited, "被人改了").unwrap();
 
         let modified = state.detect_manually_modified();
-        assert_eq!(modified.len(), 1, "只有内容不符的文件应计入: {:?}", modified);
+        assert_eq!(
+            modified.len(),
+            1,
+            "只有内容不符的文件应计入: {:?}",
+            modified
+        );
         assert!(modified.iter().any(|p| Path::new(p) == edited.as_path()));
 
         let _ = std::fs::remove_dir_all(&dir);

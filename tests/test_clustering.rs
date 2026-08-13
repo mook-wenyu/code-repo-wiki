@@ -23,20 +23,30 @@ struct MockEmbedder;
 
 impl code_repo_wiki::analysis::feature::Embedder for MockEmbedder {
     fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
-        Ok(if text.starts_with("process") || text.starts_with("checksum") {
-            vec![1.0, 0.0]
-        } else {
-            vec![0.0, 1.0]
-        })
+        Ok(
+            if text.starts_with("process") || text.starts_with("checksum") {
+                vec![1.0, 0.0]
+            } else {
+                vec![0.0, 1.0]
+            },
+        )
     }
     fn embed_batch(&self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
         texts.iter().map(|t| self.embed(t)).collect()
     }
     fn cosine_similarity(&self, a: &[f32], b: &[f32]) -> f64 {
-        let dot: f64 = a.iter().zip(b).map(|(x, y)| (*x as f64) * (*y as f64)).sum();
+        let dot: f64 = a
+            .iter()
+            .zip(b)
+            .map(|(x, y)| (*x as f64) * (*y as f64))
+            .sum();
         let na: f64 = a.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
         let nb: f64 = b.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
-        if na == 0.0 || nb == 0.0 { 0.0 } else { dot / (na * nb) }
+        if na == 0.0 || nb == 0.0 {
+            0.0
+        } else {
+            dot / (na * nb)
+        }
     }
 }
 
@@ -99,10 +109,7 @@ fn test_community_detection_and_features() {
             code_repo_wiki::analysis::feature::detect_features(&graph, Some(&MockEmbedder))?;
 
         // 1. 模块检测：社区检测生效，模块名唯一且不含文件名
-        assert!(
-            !graph.modules.is_empty(),
-            "a/b 两个独立目录应检出模块"
-        );
+        assert!(!graph.modules.is_empty(), "a/b 两个独立目录应检出模块");
         let mut names: Vec<&str> = graph.modules.iter().map(|m| m.name.as_str()).collect();
         names.sort();
         names.dedup();
@@ -130,10 +137,7 @@ fn test_community_detection_and_features() {
 
         // 2. 特征聚类：a 内的跨文件调用（process → checksum）应形成特征
         //（语义聚类，MockEmbedder 注入）
-        assert!(
-            !graph.features.is_empty(),
-            "a 目录的跨文件调用应形成特征"
-        );
+        assert!(!graph.features.is_empty(), "a 目录的跨文件调用应形成特征");
         let feature_names: Vec<String> = graph
             .features
             .iter()

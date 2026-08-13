@@ -79,6 +79,9 @@ mod tests {
     #[test]
     fn test_extract_keywords_empty() {
         assert!(extract_keywords("").is_empty(), "空串返回空");
-        assert!(extract_keywords("！！！---").is_empty(), "纯标点无关键词返回空");
+        assert!(
+            extract_keywords("！！！---").is_empty(),
+            "纯标点无关键词返回空"
+        );
     }
 }

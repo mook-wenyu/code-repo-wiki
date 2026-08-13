@@ -116,8 +116,8 @@ pub fn classify_entity_changes_at(
         // 无上次生成记录（首次生成）时无法读旧内容，视为无实体变化
         return Ok(EntityChangeSet::default());
     }
-    let repo = git2::Repository::open(root.path())
-        .with_context(|| "实体级变化分类需要 Git 仓库")?;
+    let repo =
+        git2::Repository::open(root.path()).with_context(|| "实体级变化分类需要 Git 仓库")?;
     // commit/tree 只解析一次（避免每个文件重复 find_commit 的 ODB 开销）
     let from_commit = repo.find_commit(git2::Oid::from_str(&diff.from_commit)?)?;
     let from_tree = from_commit.tree()?;
@@ -182,12 +182,7 @@ pub fn classify_entity_changes_at(
 ///
 /// 同名实体按签名归一化集合比较：签名集合不变 → BodyChanged；
 /// 签名集合变化 → SignatureChanged；数量变化 → Added/Removed。
-fn compare_entities(
-    set: &mut EntityChangeSet,
-    path: &Path,
-    old: &[Entity],
-    new: &[Entity],
-) {
+fn compare_entities(set: &mut EntityChangeSet, path: &Path, old: &[Entity], new: &[Entity]) {
     let old_by_name: HashMap<&str, Vec<&Entity>> = group_by_name(old);
     let new_by_name: HashMap<&str, Vec<&Entity>> = group_by_name(new);
 
@@ -324,7 +319,8 @@ mod tests {
             line_start: start,
             line_end: end,
             doc_comment: None,
-            signature: Some(sig.into()), visibility: None,
+            signature: Some(sig.into()),
+            visibility: None,
         }
     }
 

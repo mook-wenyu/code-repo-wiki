@@ -69,7 +69,8 @@ fn make_graph() -> KnowledgeGraph {
                     file_path: None,
                     line_range: None,
                     doc_comment: None,
-                    signature: None, visibility: None,
+                    signature: None,
+                    visibility: None,
                     module_path: vec![m.to_string()],
                 }),
             )
@@ -151,7 +152,11 @@ async fn test_llm_failure_retries_once_then_succeeds() {
 
     let doc = generate_index_guide(&provider, &graph, &[], &config).await;
     assert_eq!(doc.content, "# 阅读指南\n\n- [core](wiki/zh/core.md)\n");
-    assert_eq!(provider.calls.load(Ordering::Relaxed), 2, "应恰好调用 2 次（1 次失败 + 1 次重试）");
+    assert_eq!(
+        provider.calls.load(Ordering::Relaxed),
+        2,
+        "应恰好调用 2 次（1 次失败 + 1 次重试）"
+    );
 }
 
 /// 正常路径（LLM 成功）：产物直接采用 LLM 输出（含模块链接），
@@ -165,7 +170,10 @@ async fn test_success_path_uses_llm_content_with_links() {
     };
 
     let doc = generate_index_guide(&provider, &graph, &[], &config).await;
-    assert!(doc.content.contains("wiki/zh/core.md"), "正常路径产物应含模块链接");
+    assert!(
+        doc.content.contains("wiki/zh/core.md"),
+        "正常路径产物应含模块链接"
+    );
     assert_eq!(doc.title, "index");
     assert_eq!(doc.kind, DocumentKind::TableOfContents);
     assert_eq!(doc.language, "zh");
@@ -180,7 +188,10 @@ fn test_fallback_sorted_by_in_degree_then_name() {
 
     let doc = fallback_index_guide(&graph, &config);
     let links = link_lines(&doc.content);
-    assert!(links[0].starts_with("- [core](wiki/zh/core.md)"), "入度最高者应排首位");
+    assert!(
+        links[0].starts_with("- [core](wiki/zh/core.md)"),
+        "入度最高者应排首位"
+    );
     assert!(
         links[1] < links[2],
         "同入度模块应按名称字典序: {} < {}",
@@ -188,7 +199,12 @@ fn test_fallback_sorted_by_in_degree_then_name() {
         links[2]
     );
     assert_eq!(doc.references.len(), 5, "references 应覆盖全部模块");
-    assert!(doc.references.iter().all(|r| r.target_path.starts_with("wiki/zh/")), "references 应指向主语言模块页");
+    assert!(
+        doc.references
+            .iter()
+            .all(|r| r.target_path.starts_with("wiki/zh/")),
+        "references 应指向主语言模块页"
+    );
 }
 
 /// ② 仅主语言：expand_languages 配置时，index.md 只出现在主语言目录
@@ -259,12 +275,27 @@ max_concurrent = 1
     );
     assert!(result.is_ok(), "流水线应成功: {:?}", result.err());
 
-    let zh_index = work_dir.join(".code-repo-wiki").join("wiki").join("zh").join("index.md");
-    assert!(zh_index.exists(), "index.md 应写入主语言目录 .code-repo-wiki/wiki/zh/");
-    let content = std::fs::read_to_string(&zh_index).unwrap();
-    assert!(content.contains("wiki/zh/"), "正常路径产物应含模块链接，实际: {content}");
+    let zh_index = work_dir
+        .join(".code-repo-wiki")
+        .join("wiki")
+        .join("zh")
+        .join("index.md");
     assert!(
-        !work_dir.join(".code-repo-wiki").join("wiki").join("en").join("index.md").exists(),
+        zh_index.exists(),
+        "index.md 应写入主语言目录 .code-repo-wiki/wiki/zh/"
+    );
+    let content = std::fs::read_to_string(&zh_index).unwrap();
+    assert!(
+        content.contains("wiki/zh/"),
+        "正常路径产物应含模块链接，实际: {content}"
+    );
+    assert!(
+        !work_dir
+            .join(".code-repo-wiki")
+            .join("wiki")
+            .join("en")
+            .join("index.md")
+            .exists(),
         "index.md 只写主语言，其他语言目录不得出现"
     );
 
@@ -289,14 +320,23 @@ async fn test_index_guide_degrades_bad_mermaid() {
 
     let graph = make_graph();
     let config = WikiConfig::default();
-    let provider = BadMermaidProvider { calls: AtomicUsize::new(0) };
+    let provider = BadMermaidProvider {
+        calls: AtomicUsize::new(0),
+    };
 
     let doc = generate_index_guide(&provider, &graph, &[], &config).await;
-    assert!(!doc.content.contains("```mermaid"), "坏图不应以 mermaid 块出现");
+    assert!(
+        !doc.content.contains("```mermaid"),
+        "坏图不应以 mermaid 块出现"
+    );
     assert!(doc.content.contains("```text"), "坏块应降级为 text fence");
     assert!(
         doc.content.contains("code-repo-wiki: mermaid parse failed"),
         "应含降级标记注释"
     );
-    assert_eq!(provider.calls.load(Ordering::Relaxed), 1, "坏图不应触发重试（只降级）");
+    assert_eq!(
+        provider.calls.load(Ordering::Relaxed),
+        1,
+        "坏图不应触发重试（只降级）"
+    );
 }

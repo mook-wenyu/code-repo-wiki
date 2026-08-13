@@ -70,8 +70,19 @@ pub fn lint(output_dir: &Path, source_roots: &[PathBuf]) -> Vec<LintIssue> {
 
         issues.extend(check_orphan_pages(&pages, &link_sources, lang));
         issues.extend(check_broken_links(&pages, lang));
-        issues.extend(check_stale(&pages, &output_dir.join("cards").join(lang), source_roots, lang));
-        issues.extend(check_citations(&pages, output_dir, source_roots, lang, &source_entity_ranges));
+        issues.extend(check_stale(
+            &pages,
+            &output_dir.join("cards").join(lang),
+            source_roots,
+            lang,
+        ));
+        issues.extend(check_citations(
+            &pages,
+            output_dir,
+            source_roots,
+            lang,
+            &source_entity_ranges,
+        ));
         issues.extend(check_vctx_tokens(&pages, output_dir, source_roots, lang));
         issues.extend(check_entity_coverage(
             &pages,
@@ -187,7 +198,12 @@ fn check_broken_links(pages: &[PathBuf], lang: &str) -> Vec<LintIssue> {
 /// 3. 过时检查：模块页/卡片生成时间 < 其源文件 mtime
 ///    （从产物内容提取源文件路径——相关文件段，与源码根下对应文件的 mtime 对比；
 ///    相关文件段含 `..` 越界段时跳过该源路径，防 root 外 metadata 探测）
-fn check_stale(pages: &[PathBuf], cards_dir: &Path, source_roots: &[PathBuf], lang: &str) -> Vec<LintIssue> {
+fn check_stale(
+    pages: &[PathBuf],
+    cards_dir: &Path,
+    source_roots: &[PathBuf],
+    lang: &str,
+) -> Vec<LintIssue> {
     // 同时检查 wiki 页与 cards 卡片；逐项携带来源目录名（"wiki"/"cards"）,
     // 否则 path 恒标 wiki/ 会把卡片误标成 wiki 路径（真实卡片在 cards/{lang}/ 下）
     let mut stale_targets: Vec<(PathBuf, &'static str)> =
@@ -210,10 +226,10 @@ fn check_stale(pages: &[PathBuf], cards_dir: &Path, source_roots: &[PathBuf], la
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default();
-        let page_mtime = std::fs::metadata(page)
-            .and_then(|m| m.modified())
-            .ok();
-        let Some(page_time) = page_mtime else { continue };
+        let page_mtime = std::fs::metadata(page).and_then(|m| m.modified()).ok();
+        let Some(page_time) = page_mtime else {
+            continue;
+        };
         for src in extract_source_files(&content) {
             // 统一路径逃逸过滤（与 check_citations/check_vctx_tokens 同一
             // detect_path_escape）：`..` 越界段 / Windows 根相对与盘符相对
@@ -404,9 +420,7 @@ fn parse_vctx_token(s: &str) -> Result<VctxToken, String> {
     let (end_str, rest) = rest
         .split_once('@')
         .ok_or_else(|| "缺 @ 哈希分隔".to_string())?;
-    let end: usize = end_str
-        .parse()
-        .map_err(|_| "结束行号非数字".to_string())?;
+    let end: usize = end_str.parse().map_err(|_| "结束行号非数字".to_string())?;
     let hash = rest
         .strip_suffix("]]")
         .ok_or_else(|| "哈希段后缺 ]] 收尾".to_string())?;
@@ -578,10 +592,7 @@ fn api_known_entities(api_content: &str) -> std::collections::HashSet<String> {
             // 签名如 `pub fn authenticate(username: &str) -> Option<User>`：
             // 取第一个 '(' 前的最后标识符（跳过 pub/fn 等关键字前缀）
             let inner = &l[l.find('`').unwrap() + 1..];
-            inner
-                .split('`')
-                .next()
-                .and_then(entity_name_from_signature)
+            inner.split('`').next().and_then(entity_name_from_signature)
         })
         .collect()
 }
@@ -658,7 +669,9 @@ fn check_entity_coverage(
             issues.push(LintIssue {
                 kind: "entity-coverage",
                 path: format!("wiki/{lang}/{file_name}"),
-                message: format!("实体覆盖率: 页面声称的实体 `{entity}` 不在 api.md 清单中（可能是编造或已删除）"),
+                message: format!(
+                    "实体覆盖率: 页面声称的实体 `{entity}` 不在 api.md 清单中（可能是编造或已删除）"
+                ),
             });
         }
     }
@@ -684,8 +697,7 @@ fn collect_source_entities(
     std::collections::HashSet<String>,
     std::collections::HashSet<String>,
 ) {
-    let mut ranges: crate::output::citation::EntityRanges =
-        std::collections::HashMap::new();
+    let mut ranges: crate::output::citation::EntityRanges = std::collections::HashMap::new();
     let mut names: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut path_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     let registry = crate::ingest::parser::ParserRegistry::new();
@@ -695,8 +707,12 @@ fn collect_source_entities(
         }
         for entry in walk_files(root) {
             collect_path_names(&entry, root, &mut path_names);
-            let Some(processor) = registry.get_for_file(&entry) else { continue };
-            let Ok(source) = std::fs::read_to_string(&entry) else { continue };
+            let Some(processor) = registry.get_for_file(&entry) else {
+                continue;
+            };
+            let Ok(source) = std::fs::read_to_string(&entry) else {
+                continue;
+            };
             if let Ok(insight) = processor.parse(&source, &entry) {
                 let key = citation_key(&entry);
                 ranges.insert(
@@ -721,12 +737,10 @@ fn collect_source_entities(
 /// 只收集 Normal 组件，过滤 RootDir/Prefix/CurDir/ParentDir；文件段取 stem
 /// （去扩展名）——声称侧路径引用（`src/main.rs`）已由 extract_entity_names
 /// 先行剔除，这里放行的形态是裸目录段名（`core`）与裸文件 stem（`main`）。
-fn collect_path_names(
-    entry: &Path,
-    root: &Path,
-    out: &mut std::collections::HashSet<String>,
-) {
-    let Ok(rel) = entry.strip_prefix(root) else { return };
+fn collect_path_names(entry: &Path, root: &Path, out: &mut std::collections::HashSet<String>) {
+    let Ok(rel) = entry.strip_prefix(root) else {
+        return;
+    };
     let mut components: Vec<std::path::Component> = rel.components().collect();
     if let Some(std::path::Component::Normal(file_seg)) = components.pop() {
         let name = file_seg.to_string_lossy();
@@ -791,7 +805,9 @@ fn check_stale_entities(
 /// 生产仓库正常布局下深度有限，不引入额外依赖）
 fn walk_files(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir) else { return out };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -939,7 +955,9 @@ fn claimed_backtick_inner(line: &str) -> Option<&str> {
 fn extract_entity_names(content: &str, modules: &std::collections::HashSet<String>) -> Vec<String> {
     let mut out = Vec::new();
     for line in content.lines() {
-        let Some(inner) = claimed_backtick_inner(line) else { continue };
+        let Some(inner) = claimed_backtick_inner(line) else {
+            continue;
+        };
         if modules.contains(inner) {
             continue;
         }
@@ -1045,7 +1063,9 @@ fn has_code_extension(path: &str) -> bool {
 /// 判定（KNOWN-04 全局收敛——两处逐份复制正是此前不对称的根因）。
 pub(crate) fn is_root_relative_or_drive_relative(p: &Path) -> bool {
     let mut comps = p.components();
-    let Some(first) = comps.next() else { return false };
+    let Some(first) = comps.next() else {
+        return false;
+    };
     // 根相对：仅根分隔符开头、无盘符前缀（`\foo`、`/foo`）
     if matches!(first, std::path::Component::RootDir) && !p.is_absolute() {
         return true;
@@ -1235,7 +1255,10 @@ mod tests {
             .open(&src_file)
             .unwrap();
         let _ = filetime_set(&src_file, now);
-        let _ = filetime_set(&wiki.join("b.md"), now - std::time::Duration::from_secs(3600));
+        let _ = filetime_set(
+            &wiki.join("b.md"),
+            now - std::time::Duration::from_secs(3600),
+        );
         (dir, vec![src_root])
     }
 
@@ -1255,19 +1278,25 @@ mod tests {
         let issues = lint(&dir, &src_roots);
         // 孤儿页: a.md 链接 b 但无任何入链 → 应命中
         assert!(
-            issues.iter().any(|i| i.kind == "orphan" && i.path.ends_with("a.md")),
+            issues
+                .iter()
+                .any(|i| i.kind == "orphan" && i.path.ends_with("a.md")),
             "a.md 无入链应为孤儿, 实际: {:?}",
             issues
         );
         // b.md 被 a 链接 → 不应是孤儿
         assert!(
-            !issues.iter().any(|i| i.kind == "orphan" && i.path.ends_with("b.md")),
+            !issues
+                .iter()
+                .any(|i| i.kind == "orphan" && i.path.ends_with("b.md")),
             "b.md 有入链不应是孤儿, 实际: {:?}",
             issues
         );
         // 断链: a.md 指向 c.md 不存在
         assert!(
-            issues.iter().any(|i| i.kind == "broken" && i.message.contains("c.md")),
+            issues
+                .iter()
+                .any(|i| i.kind == "broken" && i.message.contains("c.md")),
             "a.md → c.md 应为断链, 实际: {:?}",
             issues
         );
@@ -1278,10 +1307,8 @@ mod tests {
     ///（note 是追加式知识日志，无任何入链；修复前全局豁免表缺 _log 误报 orphan）
     #[test]
     fn test_lint_log_not_reported_as_orphan() {
-        let dir = std::env::temp_dir().join(format!(
-            "code_repo_wiki_lint_log_{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("code_repo_wiki_lint_log_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let wiki = dir.join("wiki").join("zh");
         std::fs::create_dir_all(&wiki).unwrap();
@@ -1297,12 +1324,16 @@ mod tests {
         let issues = lint(&dir, &[]);
         let _ = std::fs::remove_dir_all(&dir);
         assert!(
-            !issues.iter().any(|i| i.kind == "orphan" && i.path.ends_with("_log.md")),
+            !issues
+                .iter()
+                .any(|i| i.kind == "orphan" && i.path.ends_with("_log.md")),
             "_log.md 不得报孤儿, 实际: {:?}",
             issues
         );
         assert!(
-            issues.iter().any(|i| i.kind == "orphan" && i.path.ends_with("m.md")),
+            issues
+                .iter()
+                .any(|i| i.kind == "orphan" && i.path.ends_with("m.md")),
             "普通无入链页面仍应报孤儿, 实际: {:?}",
             issues
         );
@@ -1314,10 +1345,8 @@ mod tests {
     /// 重写源文件刷新 mtime 后 lint 应报 stale。
     #[test]
     fn test_lint_stale_detects_newer_source() {
-        let dir = std::env::temp_dir().join(format!(
-            "code_repo_wiki_lint_stale_{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("code_repo_wiki_lint_stale_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let wiki = dir.join("wiki").join("zh");
         std::fs::create_dir_all(&wiki).unwrap();
@@ -1447,10 +1476,8 @@ mod tests {
     /// metadata 必失败，不 stat root 外）
     #[test]
     fn test_resolve_source_path_absolute() {
-        let dir = std::env::temp_dir().join(format!(
-            "code_repo_wiki_resolve_abs_{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("code_repo_wiki_resolve_abs_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let abs = dir.join("abs.rs");
@@ -1493,7 +1520,10 @@ mod tests {
         assert!(!missed.exists(), "未命中的兜底路径不应存在");
         let empty = resolve_source_path(&[], "src/ghost.rs");
         assert_eq!(empty, PathBuf::new());
-        assert!(std::fs::metadata(&empty).is_err(), "空路径 metadata 必须失败");
+        assert!(
+            std::fs::metadata(&empty).is_err(),
+            "空路径 metadata 必须失败"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1504,12 +1534,30 @@ mod tests {
     fn test_is_root_relative_or_drive_relative_forms() {
         #[cfg(windows)]
         {
-            assert!(is_root_relative_or_drive_relative(Path::new(r"\foo")), "根相对 \\foo");
-            assert!(is_root_relative_or_drive_relative(Path::new(r"/foo")), "根相对 /foo");
-            assert!(is_root_relative_or_drive_relative(Path::new("C:foo")), "盘符相对 C:foo");
-            assert!(!is_root_relative_or_drive_relative(Path::new("src/foo.rs")), "正常相对");
-            assert!(!is_root_relative_or_drive_relative(Path::new(r"C:\foo")), "盘符绝对走 containment");
-            assert!(!is_root_relative_or_drive_relative(Path::new(r"C:/foo")), "盘符绝对走 containment");
+            assert!(
+                is_root_relative_or_drive_relative(Path::new(r"\foo")),
+                "根相对 \\foo"
+            );
+            assert!(
+                is_root_relative_or_drive_relative(Path::new(r"/foo")),
+                "根相对 /foo"
+            );
+            assert!(
+                is_root_relative_or_drive_relative(Path::new("C:foo")),
+                "盘符相对 C:foo"
+            );
+            assert!(
+                !is_root_relative_or_drive_relative(Path::new("src/foo.rs")),
+                "正常相对"
+            );
+            assert!(
+                !is_root_relative_or_drive_relative(Path::new(r"C:\foo")),
+                "盘符绝对走 containment"
+            );
+            assert!(
+                !is_root_relative_or_drive_relative(Path::new(r"C:/foo")),
+                "盘符绝对走 containment"
+            );
         }
         #[cfg(not(windows))]
         {
@@ -1527,12 +1575,27 @@ mod tests {
     fn test_detect_path_escape_rejects_root_relative_and_drive_relative() {
         #[cfg(windows)]
         {
-            assert!(detect_path_escape(r"\foo.rs", &[]).is_some(), "\\foo.rs 应拒绝");
-            assert!(detect_path_escape(r"/foo.rs", &[]).is_some(), "/foo.rs 应拒绝");
-            assert!(detect_path_escape("C:foo.rs", &[]).is_some(), "C:foo.rs 应拒绝");
+            assert!(
+                detect_path_escape(r"\foo.rs", &[]).is_some(),
+                "\\foo.rs 应拒绝"
+            );
+            assert!(
+                detect_path_escape(r"/foo.rs", &[]).is_some(),
+                "/foo.rs 应拒绝"
+            );
+            assert!(
+                detect_path_escape("C:foo.rs", &[]).is_some(),
+                "C:foo.rs 应拒绝"
+            );
         }
-        assert!(detect_path_escape("../foo.rs", &[]).is_some(), ".. 越界段应拒绝");
-        assert!(detect_path_escape("src/foo.rs", &[]).is_none(), "正常相对路径不应拒绝");
+        assert!(
+            detect_path_escape("../foo.rs", &[]).is_some(),
+            ".. 越界段应拒绝"
+        );
+        assert!(
+            detect_path_escape("src/foo.rs", &[]).is_none(),
+            "正常相对路径不应拒绝"
+        );
     }
 
     /// KNOWN-04 纵深防御：resolve_source_path 对根相对/盘符相对形态即使绕过
@@ -1550,7 +1613,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         // 常规相对路径正常解析到 root 内
         let normal = resolve_source_path(std::slice::from_ref(&dir), "src/ghost.rs");
-        assert!(normal.starts_with(&dir), "常规相对路径必须解析到 root 内: {:?}", normal);
+        assert!(
+            normal.starts_with(&dir),
+            "常规相对路径必须解析到 root 内: {:?}",
+            normal
+        );
         // 根相对/盘符相对形态：必须返回空路径（不可达，不返回 root 外路径）
         for bad in [r"\foo.rs", r"/foo.rs", "C:foo.rs"] {
             let resolved = resolve_source_path(std::slice::from_ref(&dir), bad);
@@ -1587,7 +1654,9 @@ mod tests {
         let issues = lint(&dir, std::slice::from_ref(&dir));
         let _ = std::fs::remove_dir_all(&dir);
         assert!(
-            !issues.iter().any(|i| i.kind == "stale" || i.kind == "source-missing"),
+            !issues
+                .iter()
+                .any(|i| i.kind == "stale" || i.kind == "source-missing"),
             "根相对/盘符相对相关文件不得解析（不报 stale/source-missing）, 实际: {:?}",
             issues
         );
@@ -1679,7 +1748,9 @@ mod tests {
         let issues = lint(&dir, std::slice::from_ref(&dir));
         let _ = std::fs::remove_dir_all(&dir);
         assert!(
-            issues.iter().any(|i| i.kind == "stale" && i.path.ends_with("lib.md")),
+            issues
+                .iter()
+                .any(|i| i.kind == "stale" && i.path.ends_with("lib.md")),
             "应命中 root 的 src/lib.rs 并报 stale, 实际: {:?}",
             issues
         );
@@ -1699,10 +1770,10 @@ mod tests {
         let wiki = dir.join("wiki").join("zh");
         std::fs::create_dir_all(&wiki).unwrap();
         // root 外（dir 的父级 = temp_dir）真实存在该文件（越界但存在）
-        let escape_dir = dir.parent().unwrap().join(format!(
-            "escape_dir_stale_{}",
-            std::process::id()
-        ));
+        let escape_dir = dir
+            .parent()
+            .unwrap()
+            .join(format!("escape_dir_stale_{}", std::process::id()));
         std::fs::create_dir_all(&escape_dir).unwrap();
         let escape_path_rel = format!("../escape_dir_stale_{}/x.rs", std::process::id());
         std::fs::write(
@@ -1740,10 +1811,8 @@ mod tests {
         let wiki = dir.join("wiki").join("zh");
         std::fs::create_dir_all(&wiki).unwrap();
         // root（= dir）外真实存在该文件（绝对路径越界但存在）
-        let outside = std::env::temp_dir().join(format!(
-            "outside_abs_stale_{}.rs",
-            std::process::id()
-        ));
+        let outside =
+            std::env::temp_dir().join(format!("outside_abs_stale_{}.rs", std::process::id()));
         std::fs::write(&outside, "line1\n").unwrap();
         let abs = outside.to_string_lossy().to_string();
         // 页面相关文件段写 root 外绝对路径
@@ -1792,10 +1861,7 @@ mod tests {
         // src/lib.rs，project_root.join 会落在 temp_dir 下而非真实源码位置，
         // resolve_source_path 又已去除 cwd 兜底（root-first），文件将不可达、
         // 被误报 bad-citation，实体表键恒不命中
-        let rel = format!(
-            "{}/src/lib.rs",
-            dir.file_name().unwrap().to_string_lossy()
-        );
+        let rel = format!("{}/src/lib.rs", dir.file_name().unwrap().to_string_lossy());
         // a.md 引用 1-1 行（f 的实体区间内）→ 合法，不应报 overlap
         std::fs::write(wiki.join("a.md"), format!("# A\n\n- 源: {rel}:1-1\n")).unwrap();
         // b.md 引用 3-3 行（无实体覆盖）→ 应报 overlap
@@ -1816,7 +1882,14 @@ mod tests {
             now - std::time::Duration::from_secs(3600),
         );
         // `./` 段形态：join(".") 在 Windows 与 Unix 均保留 CurDir 段
-        let dot_roots = vec![src_root.join(".").join("lib.rs").parent().unwrap().to_path_buf()];
+        let dot_roots = vec![
+            src_root
+                .join(".")
+                .join("lib.rs")
+                .parent()
+                .unwrap()
+                .to_path_buf(),
+        ];
         let plain_roots = vec![src_root.clone()];
         for (tag, roots) in [("dot", dot_roots), ("plain", plain_roots)] {
             let issues = lint(&dir, &roots);
@@ -1849,14 +1922,18 @@ mod tests {
     #[test]
     fn test_extract_source_files() {
         let files = extract_source_files("## 相关文件\n\n- `src/lib.rs`\n- `tests/a.rs`\n");
-        assert_eq!(files, vec!["src/lib.rs".to_string(), "tests/a.rs".to_string()]);
+        assert_eq!(
+            files,
+            vec!["src/lib.rs".to_string(), "tests/a.rs".to_string()]
+        );
         // 链接行不应误提取
         assert!(extract_source_files("- [x](wiki/zh/a.md)").is_empty());
     }
 
     #[test]
     fn test_lint_empty_dir() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_lint_empty_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("code_repo_wiki_lint_empty_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("wiki").join("zh")).unwrap();
         let issues = lint(&dir, &[]);
@@ -1867,7 +1944,8 @@ mod tests {
     /// 语言目录缺失时 lint 不 panic
     #[test]
     fn test_lint_no_wiki_dir() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_lint_nodir_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("code_repo_wiki_lint_nodir_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let issues = lint(&dir, &[]);
         assert!(issues.is_empty());
@@ -1877,17 +1955,14 @@ mod tests {
     /// P1-4 引用存在性：产物中的 `path:line` 引用指向不存在的文件 → bad-citation
     #[test]
     fn test_lint_bad_citation_missing_file() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_lint_cite_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("code_repo_wiki_lint_cite_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let out = dir.join(".code-repo-wiki"); // output_dir 的父目录 = 项目根
         let wiki = out.join("wiki").join("zh");
         std::fs::create_dir_all(&wiki).unwrap();
         // 页面引用不存在的文件
-        std::fs::write(
-            wiki.join("m.md"),
-            "# M\n\n核心逻辑见 `src/ghost.rs:10`\n",
-        )
-        .unwrap();
+        std::fs::write(wiki.join("m.md"), "# M\n\n核心逻辑见 `src/ghost.rs:10`\n").unwrap();
         std::fs::create_dir_all(dir.join("src")).unwrap();
 
         let issues = lint(&out, &[]);
@@ -1902,7 +1977,10 @@ mod tests {
     /// P1-4 引用存在性：引用真实存在的文件且行号合法 → 无 bad-citation
     #[test]
     fn test_lint_bad_citation_valid_passes() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_lint_cite_ok_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_cite_ok_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let out = dir.join(".code-repo-wiki");
         let wiki = out.join("wiki").join("zh");
@@ -1910,11 +1988,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(dir.join("src").join("real.rs"), "line1\nline2\n").unwrap();
         // 页面引用真实文件（相对项目根路径,output_dir 父目录解析命中）
-        std::fs::write(
-            wiki.join("m.md"),
-            "# M\n\n核心逻辑见 `src/real.rs:1`\n",
-        )
-        .unwrap();
+        std::fs::write(wiki.join("m.md"), "# M\n\n核心逻辑见 `src/real.rs:1`\n").unwrap();
 
         let issues = lint(&out, &[]);
         assert!(
@@ -1930,7 +2004,10 @@ mod tests {
     /// 无实体文件（README）→ 放行
     #[test]
     fn test_lint_bad_citation_overlap_detects_wrong_location() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_lint_overlap_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_overlap_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let out = dir.join(".code-repo-wiki");
         let wiki = out.join("wiki").join("zh");
@@ -1938,7 +2015,8 @@ mod tests {
         let src_root = dir.join("src");
         std::fs::create_dir_all(&src_root).unwrap();
         // 10 行源码：实体区间 (2,2)（fn server 定义在第 2 行）
-        let source = "line1\npub fn server() {}\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
+        let source =
+            "line1\npub fn server() {}\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
         std::fs::write(src_root.join("server.rs"), source).unwrap();
         std::fs::write(dir.join("README.md"), "docs\n").unwrap();
         // 页面：引用 2 行（覆盖实体，合法）+ 引用 8 行（文件内但区间外）+ README（无实体）
@@ -1979,7 +2057,8 @@ mod tests {
     }
     #[test]
     fn test_lint_entity_coverage_detects_fake() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_lint_cov_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("code_repo_wiki_lint_cov_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let wiki = dir.join("wiki").join("zh");
         std::fs::create_dir_all(&wiki).unwrap();
@@ -1997,9 +2076,16 @@ mod tests {
         .unwrap();
 
         let issues = lint(&dir, &[]);
-        let cov: Vec<_> = issues.iter().filter(|i| i.kind == "entity-coverage").collect();
+        let cov: Vec<_> = issues
+            .iter()
+            .filter(|i| i.kind == "entity-coverage")
+            .collect();
         assert_eq!(cov.len(), 1, "只应报编造实体, 实际: {:?}", issues);
-        assert!(cov[0].message.contains("FakeEntity"), "应指向 FakeEntity: {}", cov[0].message);
+        assert!(
+            cov[0].message.contains("FakeEntity"),
+            "应指向 FakeEntity: {}",
+            cov[0].message
+        );
         assert!(!cov[0].message.contains("Foo"), "真实实体不应误报");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2010,7 +2096,10 @@ mod tests {
     /// 编造的实体名仍必须报（防幻觉语义不变）
     #[test]
     fn test_lint_entity_coverage_accepts_module_names() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_lint_cov_mod_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_cov_mod_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let wiki = dir.join("wiki").join("zh");
         std::fs::create_dir_all(&wiki).unwrap();
@@ -2028,9 +2117,16 @@ mod tests {
         .unwrap();
 
         let issues = lint(&dir, &[]);
-        let cov: Vec<_> = issues.iter().filter(|i| i.kind == "entity-coverage").collect();
+        let cov: Vec<_> = issues
+            .iter()
+            .filter(|i| i.kind == "entity-coverage")
+            .collect();
         assert_eq!(cov.len(), 1, "只应报编造实体, 实际: {:?}", issues);
-        assert!(cov[0].message.contains("GhostEntity"), "应指向编造实体: {}", cov[0].message);
+        assert!(
+            cov[0].message.contains("GhostEntity"),
+            "应指向编造实体: {}",
+            cov[0].message
+        );
         assert!(
             !cov.iter().any(|i| i.message.contains("src")),
             "模块名引用不应误报: {:?}",
@@ -2046,7 +2142,10 @@ mod tests {
     /// 语义不变）。
     #[test]
     fn test_lint_entity_coverage_accepts_real_subdir_and_path_refs() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_lint_cov_path_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_cov_path_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let wiki = dir.join("wiki").join("zh");
         std::fs::create_dir_all(&wiki).unwrap();
@@ -2054,7 +2153,11 @@ mod tests {
         let src = dir.join("src");
         for (sub, func) in [("core", "Foo"), ("net", "Bar"), ("service", "Baz")] {
             std::fs::create_dir_all(src.join(sub)).unwrap();
-            std::fs::write(src.join(sub).join("mod.rs"), format!("pub fn {func}() {{}}\n")).unwrap();
+            std::fs::write(
+                src.join(sub).join("mod.rs"),
+                format!("pub fn {func}() {{}}\n"),
+            )
+            .unwrap();
         }
         std::fs::write(src.join("main.rs"), "fn main() {}\n").unwrap();
         // api.md：模块名 src / src::lib + 叶子实体 Foo/Bar（权威清单）
@@ -2072,11 +2175,21 @@ mod tests {
 
         // 双 source_roots：仓库根 + src 子目录，覆盖现实校验的两种挂载点
         let issues = lint(&dir, &[dir.clone(), src.clone()]);
-        let cov: Vec<_> = issues.iter().filter(|i| i.kind == "entity-coverage").collect();
-        assert_eq!(cov.len(), 0, "真实子目录名与路径引用不应误报, 实际: {:?}", issues);
+        let cov: Vec<_> = issues
+            .iter()
+            .filter(|i| i.kind == "entity-coverage")
+            .collect();
+        assert_eq!(
+            cov.len(),
+            0,
+            "真实子目录名与路径引用不应误报, 实际: {:?}",
+            issues
+        );
         // 路径扩展名防回归：`## 相关文件` 的 `src/main.rs` 不产生 `rs` 声称
         assert!(
-            !issues.iter().any(|i| i.kind == "entity-coverage" && i.message.contains("`rs`")),
+            !issues
+                .iter()
+                .any(|i| i.kind == "entity-coverage" && i.message.contains("`rs`")),
             "路径引用不应派生 `rs` 声称: {:?}",
             issues
         );
@@ -2086,9 +2199,16 @@ mod tests {
         content.push_str("\n- `GhostFactory` — 编造的实体\n");
         std::fs::write(wiki.join("src.md"), content).unwrap();
         let issues = lint(&dir, &[dir.clone(), src.clone()]);
-        let cov: Vec<_> = issues.iter().filter(|i| i.kind == "entity-coverage").collect();
+        let cov: Vec<_> = issues
+            .iter()
+            .filter(|i| i.kind == "entity-coverage")
+            .collect();
         assert_eq!(cov.len(), 1, "真编造应报 1 条, 实际: {:?}", issues);
-        assert!(cov[0].message.contains("GhostFactory"), "应指向 GhostFactory: {}", cov[0].message);
+        assert!(
+            cov[0].message.contains("GhostFactory"),
+            "应指向 GhostFactory: {}",
+            cov[0].message
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2102,7 +2222,11 @@ mod tests {
             "签名应提取实体真名（跳过 fn 关键字）: {:?}",
             names
         );
-        assert!(!names.contains(&"fn".to_string()), "关键字不应被提取: {:?}", names);
+        assert!(
+            !names.contains(&"fn".to_string()),
+            "关键字不应被提取: {:?}",
+            names
+        );
         assert!(names.contains(&"foo_bar".to_string()));
     }
 
@@ -2112,15 +2236,40 @@ mod tests {
     #[test]
     fn test_entity_name_filters_noise_tokens() {
         assert_eq!(entity_name_from_signature("`P`"), None, "单字符应过滤");
-        assert_eq!(entity_name_from_signature("`_`"), None, "下划线单字符应过滤");
+        assert_eq!(
+            entity_name_from_signature("`_`"),
+            None,
+            "下划线单字符应过滤"
+        );
         assert_eq!(entity_name_from_signature("`2`"), None, "纯数字应过滤");
-        assert_eq!(entity_name_from_signature("fn x()"), None, "单字符函数名应过滤");
-        let content = "## 核心实体\n\n- `Server`（struct）\n- `src` — 目录\n- `P` — 噪声\n- `2` — 数字\n";
+        assert_eq!(
+            entity_name_from_signature("fn x()"),
+            None,
+            "单字符函数名应过滤"
+        );
+        let content =
+            "## 核心实体\n\n- `Server`（struct）\n- `src` — 目录\n- `P` — 噪声\n- `2` — 数字\n";
         let names = extract_entity_names(content, &std::collections::HashSet::new());
-        assert!(names.contains(&"Server".to_string()), "正常实体应保留: {:?}", names);
-        assert!(names.contains(&"src".to_string()), "多字符实体应保留: {:?}", names);
-        assert!(!names.contains(&"P".to_string()), "单字符噪声不应声称: {:?}", names);
-        assert!(!names.contains(&"2".to_string()), "纯数字噪声不应声称: {:?}", names);
+        assert!(
+            names.contains(&"Server".to_string()),
+            "正常实体应保留: {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"src".to_string()),
+            "多字符实体应保留: {:?}",
+            names
+        );
+        assert!(
+            !names.contains(&"P".to_string()),
+            "单字符噪声不应声称: {:?}",
+            names
+        );
+        assert!(
+            !names.contains(&"2".to_string()),
+            "纯数字噪声不应声称: {:?}",
+            names
+        );
     }
 
     /// v21 I 轮 Unity 抽样核证回归：三类后缀污染最后标识符，导致 stale
@@ -2196,7 +2345,10 @@ mod tests {
     /// G2：产物中的 mermaid fence 语法错误 → bad-mermaid；合法图不报
     #[test]
     fn test_lint_bad_mermaid_detects_broken_diagram() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_lint_mermaid_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_mermaid_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let wiki = dir.join("wiki").join("zh");
         std::fs::create_dir_all(&wiki).unwrap();
@@ -2215,8 +2367,16 @@ mod tests {
         let issues = lint(&dir, &[]);
         let bad: Vec<_> = issues.iter().filter(|i| i.kind == "bad-mermaid").collect();
         assert_eq!(bad.len(), 1, "只有坏图应报 bad-mermaid, 实际: {:?}", issues);
-        assert!(bad[0].path.ends_with("bad.md"), "应指向坏图页面: {}", bad[0].path);
-        assert!(bad[0].message.contains("Unterminated"), "错误消息应可读: {}", bad[0].message);
+        assert!(
+            bad[0].path.ends_with("bad.md"),
+            "应指向坏图页面: {}",
+            bad[0].path
+        );
+        assert!(
+            bad[0].message.contains("Unterminated"),
+            "错误消息应可读: {}",
+            bad[0].message
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2225,7 +2385,10 @@ mod tests {
     /// 源码根为空（扫描失败/无源码）时跳过检查，不把"扫描失败"误报成"文档过期"
     #[test]
     fn test_lint_stale_entity_detects_deleted_symbol() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_lint_stale_entity_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_stale_entity_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let wiki = dir.join("wiki").join("zh");
         std::fs::create_dir_all(&wiki).unwrap();
@@ -2243,8 +2406,15 @@ mod tests {
         let issues = lint(&dir, &[src_root]);
         let stale: Vec<_> = issues.iter().filter(|i| i.kind == "stale-entity").collect();
         assert_eq!(stale.len(), 1, "只应报已删除的 beta, 实际: {:?}", issues);
-        assert!(stale[0].message.contains("beta"), "应指向 beta: {}", stale[0].message);
-        assert!(!stale[0].message.contains("alpha"), "源码存在的实体不应误报");
+        assert!(
+            stale[0].message.contains("beta"),
+            "应指向 beta: {}",
+            stale[0].message
+        );
+        assert!(
+            !stale[0].message.contains("alpha"),
+            "源码存在的实体不应误报"
+        );
 
         // 源码根为空 → 跳过检查（扫描失败与文档过期是不同信号，不能混淆）
         let empty_root = dir.join("empty_src");
@@ -2263,7 +2433,8 @@ mod tests {
     /// 页面引用 `../x.rs` 即使文件存在也报 bad-citation（越根读取防护）
     #[test]
     fn test_lint_bad_citation_rejects_dotdot() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_lint_dotdot_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("code_repo_wiki_lint_dotdot_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let out = dir.join(".code-repo-wiki");
         let wiki = out.join("wiki").join("zh");
@@ -2284,7 +2455,11 @@ mod tests {
         let issues = lint(&out, &[]);
         let bad: Vec<_> = issues.iter().filter(|i| i.kind == "bad-citation").collect();
         assert_eq!(bad.len(), 1, "越界段应报 bad-citation, 实际: {:?}", issues);
-        assert!(bad[0].message.contains("越界段 .."), "消息应说明越界: {}", bad[0].message);
+        assert!(
+            bad[0].message.contains("越界段 .."),
+            "消息应说明越界: {}",
+            bad[0].message
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2313,7 +2488,12 @@ mod tests {
         let issues = lint(&out, std::slice::from_ref(&dir));
         let _ = std::fs::remove_dir_all(&dir);
         let bad: Vec<_> = issues.iter().filter(|i| i.kind == "bad-citation").collect();
-        assert_eq!(bad.len(), 1, "root 外绝对路径引用应报 bad-citation, 实际: {:?}", issues);
+        assert_eq!(
+            bad.len(),
+            1,
+            "root 外绝对路径引用应报 bad-citation, 实际: {:?}",
+            issues
+        );
         assert!(
             bad[0].message.contains("越出源码根"),
             "消息应说明越界: {}",
@@ -2326,7 +2506,10 @@ mod tests {
     /// 2cf24dba），防实现自身偏差（自洽计算无法发现"两侧同错"）。
     #[test]
     fn test_lint_vctx_valid_passes() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_lint_vctx_ok_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_vctx_ok_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let out = dir.join(".code-repo-wiki");
         let wiki = out.join("wiki").join("zh");
@@ -2353,7 +2536,10 @@ mod tests {
     /// 写坏的标记必须可观测）
     #[test]
     fn test_lint_vctx_missing_file_and_malformed() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_lint_vctx_miss_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_vctx_miss_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let out = dir.join(".code-repo-wiki");
         let wiki = out.join("wiki").join("zh");
@@ -2366,7 +2552,12 @@ mod tests {
 
         let issues = lint(&out, &[]);
         let bad: Vec<_> = issues.iter().filter(|i| i.kind == "bad-vctx").collect();
-        assert_eq!(bad.len(), 2, "缺失文件与格式不完整各报一条, 实际: {:?}", issues);
+        assert_eq!(
+            bad.len(),
+            2,
+            "缺失文件与格式不完整各报一条, 实际: {:?}",
+            issues
+        );
         assert!(
             bad.iter().any(|i| i.message.contains("ghost.rs")),
             "应指向缺失文件: {:?}",
@@ -2383,7 +2574,10 @@ mod tests {
     /// v28 t06：行区间越界（end > 文件总行数）→ bad-vctx
     #[test]
     fn test_lint_vctx_range_out_of_bounds() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_lint_vctx_range_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_vctx_range_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let out = dir.join(".code-repo-wiki");
         let wiki = out.join("wiki").join("zh");
@@ -2399,7 +2593,11 @@ mod tests {
         let issues = lint(&out, &[]);
         let bad: Vec<_> = issues.iter().filter(|i| i.kind == "bad-vctx").collect();
         assert_eq!(bad.len(), 1, "越界引用应报 bad-vctx, 实际: {:?}", issues);
-        assert!(bad[0].message.contains("越界"), "消息应说明越界: {}", bad[0].message);
+        assert!(
+            bad[0].message.contains("越界"),
+            "消息应说明越界: {}",
+            bad[0].message
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2407,7 +2605,10 @@ mod tests {
     /// 行号对、内容错也报警，补 bad-citation 结构校验之外的内容维度）
     #[test]
     fn test_lint_vctx_hash_mismatch() {
-        let dir = std::env::temp_dir().join(format!("code_repo_wiki_lint_vctx_hash_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_vctx_hash_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let out = dir.join(".code-repo-wiki");
         let wiki = out.join("wiki").join("zh");
@@ -2425,7 +2626,11 @@ mod tests {
         let issues = lint(&out, &[]);
         let bad: Vec<_> = issues.iter().filter(|i| i.kind == "bad-vctx").collect();
         assert_eq!(bad.len(), 1, "内容变更后旧哈希应报错, 实际: {:?}", issues);
-        assert!(bad[0].message.contains("哈希不匹配"), "消息应说明哈希不一致: {}", bad[0].message);
+        assert!(
+            bad[0].message.contains("哈希不匹配"),
+            "消息应说明哈希不一致: {}",
+            bad[0].message
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2446,10 +2651,7 @@ mod tests {
         std::fs::create_dir_all(&wiki).unwrap();
         // root（= dir）外真实存在该文件，内容哈希恰好匹配标记（若被读取会
         // 静默通过哈希校验）——必须被 containment 拦截并报 bad-vctx
-        let outside = std::env::temp_dir().join(format!(
-            "outside_abs_vctx_{}",
-            std::process::id()
-        ));
+        let outside = std::env::temp_dir().join(format!("outside_abs_vctx_{}", std::process::id()));
         std::fs::write(&outside, "hello\n").unwrap();
         let abs = outside.to_string_lossy().to_string();
         std::fs::write(
@@ -2462,7 +2664,12 @@ mod tests {
         let _ = std::fs::remove_file(&outside);
         let _ = std::fs::remove_dir_all(&dir);
         let bad: Vec<_> = issues.iter().filter(|i| i.kind == "bad-vctx").collect();
-        assert_eq!(bad.len(), 1, "root 外绝对路径 vctx 应报 bad-vctx, 实际: {:?}", issues);
+        assert_eq!(
+            bad.len(),
+            1,
+            "root 外绝对路径 vctx 应报 bad-vctx, 实际: {:?}",
+            issues
+        );
         assert!(
             bad[0].message.contains("越出源码根"),
             "消息应说明越界: {}",

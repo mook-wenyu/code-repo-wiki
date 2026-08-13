@@ -1,6 +1,6 @@
-use std::path::{Path, PathBuf};
 use anyhow::{Result, bail};
 use ignore::WalkBuilder;
+use std::path::{Path, PathBuf};
 
 use crate::ingest::parser::SUPPORTED_EXTENSIONS;
 
@@ -13,10 +13,9 @@ const MAX_FILES: usize = 100_000;
 const MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
 
 const BINARY_EXTENSIONS: &[&str] = &[
-    ".exe", ".dll", ".bin", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg",
-    ".pdf", ".ttf", ".woff", ".woff2", ".eot", ".zip", ".tar", ".gz", ".7z",
-    ".rar", ".mp3", ".mp4", ".avi", ".mov", ".wasm", ".o", ".obj", ".lib",
-    ".a", ".so", ".dylib", ".pyc", ".class",
+    ".exe", ".dll", ".bin", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".pdf", ".ttf",
+    ".woff", ".woff2", ".eot", ".zip", ".tar", ".gz", ".7z", ".rar", ".mp3", ".mp4", ".avi",
+    ".mov", ".wasm", ".o", ".obj", ".lib", ".a", ".so", ".dylib", ".pyc", ".class",
 ];
 
 fn is_binary_extension(path: &Path) -> bool {
@@ -32,9 +31,22 @@ fn is_binary_extension(path: &Path) -> bool {
 /// 任意深度剪枝的噪音目录（依赖/缓存/构建产物，嵌套出现也剪）：
 /// node_modules/target/.git 等项目普遍依赖目录，出现在任意层级都应跳过。
 pub const NOISE_DIRS: &[&str] = &[
-    "node_modules", ".venv", "venv", "vendor", "Pods", "Library",
-    "target", ".next", ".nuxt", ".output", "coverage", ".cache",
-    "__pycache__", ".pytest_cache", ".mypy_cache", "bower_components",
+    "node_modules",
+    ".venv",
+    "venv",
+    "vendor",
+    "Pods",
+    "Library",
+    "target",
+    ".next",
+    ".nuxt",
+    ".output",
+    "coverage",
+    ".cache",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    "bower_components",
     ".git",
 ];
 
@@ -49,8 +61,9 @@ pub const NOISE_DIRS: &[&str] = &[
 /// Temp/（Unity 编译缓存）与 Logs/（编辑器日志）均为根级生成物，
 /// 全量入扫会放大图构建/分析成本；嵌套出现（如 Unity 内嵌子项目
 /// 的 src/Packages/）仍按普通源码目录保留，语义与其余根级清单一致。
-pub const ROOT_ONLY_NOISE_DIRS: &[&str] =
-    &["dist", "build", "out", "bin", "obj", "Packages", "Temp", "Logs"];
+pub const ROOT_ONLY_NOISE_DIRS: &[&str] = &[
+    "dist", "build", "out", "bin", "obj", "Packages", "Temp", "Logs",
+];
 
 /// 噪音目录判定：任意深度清单直接命中；根级清单仅 entry.depth()==1 时命中
 /// （depth 0=仓库根自身，1=根的直接子目录——构建产物通常在根级出现）
@@ -160,7 +173,9 @@ impl Scanner {
             }
 
             if files.len() >= limit {
-                bail!("源文件数超过上限 {limit}（噪音目录已自动跳过；若项目确需更多请精简或忽略多余内容）");
+                bail!(
+                    "源文件数超过上限 {limit}（噪音目录已自动跳过；若项目确需更多请精简或忽略多余内容）"
+                );
             }
             files.push(path.to_path_buf());
         }
@@ -201,7 +216,10 @@ mod tests {
 
         let scanner = Scanner::new(&dir);
         let files = scanner.scan().unwrap();
-        let names: Vec<String> = files.iter().map(|p| p.to_string_lossy().replace('\\', "/")).collect();
+        let names: Vec<String> = files
+            .iter()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .collect();
         assert!(names.iter().any(|n| n.ends_with("src/a.rs")));
         assert!(names.iter().any(|n| n.ends_with("src/sub/b.ts")));
         assert_eq!(files.len(), 2, "非支持语言与二进制应被过滤: {names:?}");
@@ -222,9 +240,15 @@ mod tests {
 
         let scanner = Scanner::new(&dir);
         let files = scanner.scan().unwrap();
-        let names: Vec<String> = files.iter().map(|p| p.to_string_lossy().replace('\\', "/")).collect();
+        let names: Vec<String> = files
+            .iter()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .collect();
         assert_eq!(names.len(), 1, "噪音目录应被跳过: {names:?}");
-        assert!(names[0].ends_with("src/main.rs"), "唯一产物应为主源码: {names:?}");
+        assert!(
+            names[0].ends_with("src/main.rs"),
+            "唯一产物应为主源码: {names:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -258,10 +282,17 @@ mod tests {
 
         let scanner = Scanner::new(&dir);
         let files = scanner.scan().unwrap();
-        let names: Vec<String> = files.iter().map(|p| p.to_string_lossy().replace('\\', "/")).collect();
+        let names: Vec<String> = files
+            .iter()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .collect();
         assert_eq!(names.len(), 1, "超大文件应被跳过: {names:?}");
         assert!(names[0].ends_with("small.rs"), "仅小文件应保留: {names:?}");
-        assert_eq!(scanner.skipped_oversized(), 1, "超限文件应计入 skipped_oversized");
+        assert_eq!(
+            scanner.skipped_oversized(),
+            1,
+            "超限文件应计入 skipped_oversized"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -281,11 +312,26 @@ mod tests {
 
         let scanner = Scanner::new(&dir);
         let files = scanner.scan().unwrap();
-        let names: Vec<String> = files.iter().map(|p| p.to_string_lossy().replace('\\', "/")).collect();
-        assert!(names.iter().any(|n| n.ends_with("src/bin/main.rs")), "src/bin 是合法源码目录不应被剪: {names:?}");
-        assert!(names.iter().any(|n| n.ends_with("src/main.rs")), "src 顶层源码应保留: {names:?}");
-        assert!(!names.iter().any(|n| n.starts_with("bin/")), "根级 bin/ 应被剪枝: {names:?}");
-        assert!(!names.iter().any(|n| n.starts_with("dist/")), "根级 dist/ 应被剪枝: {names:?}");
+        let names: Vec<String> = files
+            .iter()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .collect();
+        assert!(
+            names.iter().any(|n| n.ends_with("src/bin/main.rs")),
+            "src/bin 是合法源码目录不应被剪: {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n.ends_with("src/main.rs")),
+            "src 顶层源码应保留: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.starts_with("bin/")),
+            "根级 bin/ 应被剪枝: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.starts_with("dist/")),
+            "根级 dist/ 应被剪枝: {names:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -301,19 +347,43 @@ mod tests {
         std::fs::create_dir_all(dir.join("Logs")).unwrap();
         std::fs::create_dir_all(dir.join("src/Packages/local")).unwrap();
         std::fs::write(dir.join("Assets/Scripts/Game.cs"), "class Game {}").unwrap();
-        std::fs::write(dir.join("Packages/com.unity.test-framework/Test.cs"), "class T {}").unwrap();
+        std::fs::write(
+            dir.join("Packages/com.unity.test-framework/Test.cs"),
+            "class T {}",
+        )
+        .unwrap();
         std::fs::write(dir.join("Temp/Il2Cpp/gen.cs"), "class G {}").unwrap();
         std::fs::write(dir.join("Logs/editor.cs"), "class L {}").unwrap();
         std::fs::write(dir.join("src/Packages/local/Helper.cs"), "class H {}").unwrap();
 
         let scanner = Scanner::new(&dir);
         let files = scanner.scan().unwrap();
-        let names: Vec<String> = files.iter().map(|p| p.to_string_lossy().replace('\\', "/")).collect();
-        assert!(names.iter().any(|n| n.ends_with("Assets/Scripts/Game.cs")), "主源码应保留: {names:?}");
-        assert!(names.iter().any(|n| n.ends_with("src/Packages/local/Helper.cs")), "嵌套 Packages 是合法源码目录不应被剪: {names:?}");
-        assert!(!names.iter().any(|n| n.starts_with("Packages/")), "根级 Packages/ 应被剪枝: {names:?}");
-        assert!(!names.iter().any(|n| n.starts_with("Temp/")), "根级 Temp/ 应被剪枝: {names:?}");
-        assert!(!names.iter().any(|n| n.starts_with("Logs/")), "根级 Logs/ 应被剪枝: {names:?}");
+        let names: Vec<String> = files
+            .iter()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .collect();
+        assert!(
+            names.iter().any(|n| n.ends_with("Assets/Scripts/Game.cs")),
+            "主源码应保留: {names:?}"
+        );
+        assert!(
+            names
+                .iter()
+                .any(|n| n.ends_with("src/Packages/local/Helper.cs")),
+            "嵌套 Packages 是合法源码目录不应被剪: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.starts_with("Packages/")),
+            "根级 Packages/ 应被剪枝: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.starts_with("Temp/")),
+            "根级 Temp/ 应被剪枝: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.starts_with("Logs/")),
+            "根级 Logs/ 应被剪枝: {names:?}"
+        );
         assert_eq!(files.len(), 2, "仅主源码与嵌套目录文件应保留: {names:?}");
 
         let _ = std::fs::remove_dir_all(&dir);

@@ -61,10 +61,19 @@ fn test_scan_and_parse_fixture() {
         .iter()
         .flat_map(|i| i.entities.iter().map(|e| e.name.as_str()))
         .collect();
-    assert!(all_names.contains(&"authenticate"), "应包含 authenticate 函数");
+    assert!(
+        all_names.contains(&"authenticate"),
+        "应包含 authenticate 函数"
+    );
     assert!(all_names.contains(&"User"), "应包含 User 结构体");
-    assert!(all_names.contains(&"SessionStore"), "应包含 SessionStore 结构体");
-    assert!(all_names.contains(&"save_session"), "应包含 save_session 函数");
+    assert!(
+        all_names.contains(&"SessionStore"),
+        "应包含 SessionStore 结构体"
+    );
+    assert!(
+        all_names.contains(&"save_session"),
+        "应包含 save_session 函数"
+    );
 }
 
 #[test]
@@ -111,10 +120,7 @@ fn test_search_index_build_and_query() {
             ) {
                 return None;
             }
-            let source = node
-                .signature
-                .clone()
-                .unwrap_or_else(|| node.name.clone());
+            let source = node.signature.clone().unwrap_or_else(|| node.name.clone());
             Some((node.clone(), source))
         })
         .collect();
@@ -127,10 +133,7 @@ fn test_search_index_build_and_query() {
 
     // 搜索已知符号
     let results = engine.search("authenticate", 5).expect("搜索失败");
-    assert!(
-        !results.is_empty(),
-        "搜索 'authenticate' 应返回结果"
-    );
+    assert!(!results.is_empty(), "搜索 'authenticate' 应返回结果");
     assert!(
         results[0].0.name.contains("authenticate"),
         "首个结果应为 authenticate"
@@ -146,7 +149,8 @@ fn test_search_index_build_and_query() {
 
 #[test]
 fn test_incremental_remove_by_file() {
-    let tmp_dir = std::env::temp_dir().join(format!("code_repo_wiki_incr_test_{}", std::process::id()));
+    let tmp_dir =
+        std::env::temp_dir().join(format!("code_repo_wiki_incr_test_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp_dir);
     std::fs::create_dir_all(&tmp_dir).expect("创建临时目录失败");
     let index_path = tmp_dir.join("text_index.bin");
@@ -161,7 +165,8 @@ fn test_incremental_remove_by_file() {
         file_path: Some("src/alpha.rs".into()),
         line_range: Some((1, 5)),
         doc_comment: None,
-        signature: Some("fn alpha_handler()".into()), visibility: None,
+        signature: Some("fn alpha_handler()".into()),
+        visibility: None,
         module_path: vec![],
     };
     let node_b = code_repo_wiki::model::CodeNode {
@@ -171,12 +176,16 @@ fn test_incremental_remove_by_file() {
         file_path: Some("src/beta.rs".into()),
         line_range: Some((1, 3)),
         doc_comment: None,
-        signature: Some("fn beta_processor()".into()), visibility: None,
+        signature: Some("fn beta_processor()".into()),
+        visibility: None,
         module_path: vec![],
     };
 
     engine
-        .index_batch(&[(node_a, "fn alpha_handler()".into()), (node_b, "fn beta_processor()".into())])
+        .index_batch(&[
+            (node_a, "fn alpha_handler()".into()),
+            (node_b, "fn beta_processor()".into()),
+        ])
         .expect("索引失败");
     assert_eq!(engine.doc_count(), 2);
 
@@ -208,5 +217,5 @@ fn test_config_roundtrip() {
     assert_eq!(parsed.llm.api_key_env, "OPENCODEGO2_API_KEY");
     assert_eq!(parsed.wiki.language, "zh");
     assert_eq!(parsed.output_dir(), std::path::Path::new(".code-repo-wiki"));
-        assert!(!parsed.embed.model.is_empty());
+    assert!(!parsed.embed.model.is_empty());
 }

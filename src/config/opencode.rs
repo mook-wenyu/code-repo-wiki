@@ -38,7 +38,9 @@ fn inject_exe_path(template: &str, exe_json: &str) -> Result<String> {
     let placeholder = "execa(\"code-repo-wiki\"";
     let replaced = template.replace(placeholder, &format!("execa({exe_json}"));
     if replaced == template {
-        anyhow::bail!("插件模板占位符缺失（未找到 {placeholder:?}），请同步更新 plugin-template.ts 与替换逻辑");
+        anyhow::bail!(
+            "插件模板占位符缺失（未找到 {placeholder:?}），请同步更新 plugin-template.ts 与替换逻辑"
+        );
     }
     Ok(replaced)
 }
@@ -99,12 +101,17 @@ impl OpenCodeConfig {
             // 顶层必须是对象（数组/标量 JSON 无键可清，属配置错误，显式报错而非兜底）
             value
                 .as_object_mut()
-                .with_context(|| format!("opencode.json 顶层应为 JSON 对象: {}", self.config_path.display()))?
+                .with_context(|| {
+                    format!(
+                        "opencode.json 顶层应为 JSON 对象: {}",
+                        self.config_path.display()
+                    )
+                })?
                 .remove("plugins");
         }
 
-        let output = serde_json::to_string_pretty(&value)
-            .with_context(|| "序列化 opencode.json 失败")?;
+        let output =
+            serde_json::to_string_pretty(&value).with_context(|| "序列化 opencode.json 失败")?;
         // 父目录（如 ~/.config/opencode/）可能不存在（全新环境），写入前创建
         if let Some(parent) = self.config_path.parent() {
             std::fs::create_dir_all(parent)
@@ -142,7 +149,12 @@ impl OpenCodeConfig {
         let had_plugins = value.get("plugins").is_some();
         value
             .as_object_mut()
-            .with_context(|| format!("opencode.json 顶层应为 JSON 对象: {}", self.config_path.display()))?
+            .with_context(|| {
+                format!(
+                    "opencode.json 顶层应为 JSON 对象: {}",
+                    self.config_path.display()
+                )
+            })?
             .remove("plugins");
         // 清理后若配置文件已无任何键（空对象——含从未有过 plugins 键的
         // 历史空壳），直接删除文件：保留 `{}` 只会让用户疑惑，且下次
@@ -157,7 +169,10 @@ impl OpenCodeConfig {
                 .with_context(|| format!("写入配置文件失败: {}", self.config_path.display()))?;
         }
 
-        tracing::info!("code-repo-wiki 插件配置已清理: {}", self.config_path.display());
+        tracing::info!(
+            "code-repo-wiki 插件配置已清理: {}",
+            self.config_path.display()
+        );
         Ok(())
     }
 
@@ -176,9 +191,7 @@ impl OpenCodeConfig {
             .parent()
             .ok_or_else(|| anyhow::anyhow!("无法定位 OpenCode 配置根目录"))?;
         for dir in ["plugins", "plugin"] {
-            let plugin_file = config_root
-                .join(dir)
-                .join("code-repo-wiki.ts");
+            let plugin_file = config_root.join(dir).join("code-repo-wiki.ts");
             if plugin_file.exists() {
                 return Ok(true);
             }
@@ -242,9 +255,8 @@ impl OpenCodeConfig {
         // 路径经 JSON 字符串转义（Windows 反斜杠/引号安全）。
         let exe_path = std::env::current_exe()
             .with_context(|| "无法定位当前可执行文件路径（插件无法绑定绝对路径）")?;
-        let exe_json =
-            serde_json::to_string(&exe_path.to_string_lossy().to_string())
-                .with_context(|| "序列化可执行文件路径失败")?;
+        let exe_json = serde_json::to_string(&exe_path.to_string_lossy().to_string())
+            .with_context(|| "序列化可执行文件路径失败")?;
         let template = {
             // 模板内嵌编译（include_str）：插件模板只含 execa("code-repo-wiki")
             // 占位（下方注入 current_exe 绝对路径），不含任何编译期路径，
@@ -264,7 +276,10 @@ impl OpenCodeConfig {
                 tracing::info!("插件文件已是最新，跳过: {}", plugin_path.display());
                 return Ok(false);
             }
-            tracing::info!("插件文件内容与模板不一致，升级覆盖: {}", plugin_path.display());
+            tracing::info!(
+                "插件文件内容与模板不一致，升级覆盖: {}",
+                plugin_path.display()
+            );
         }
         std::fs::create_dir_all(plugin_path.parent().unwrap())
             .with_context(|| format!("创建插件目录失败: {}", plugin_path.display()))?;
@@ -313,24 +328,18 @@ impl OpenCodeConfig {
     /// USERPROFILE 优先于 HOME（两者都存在时 HOME 可能是
     /// Cygwin/残留值）。拆成纯函数以便测试不依赖进程级环境变量
     /// （并行测试对全局 env 的读写是竞态）。
-    pub fn config_dir_from(
-        userprofile: Option<&str>,
-        home: Option<&str>,
-    ) -> Result<PathBuf> {
-        let user_home = userprofile
-            .or(home)
-            .map(PathBuf::from)
-            .ok_or_else(|| {
-                anyhow::anyhow!("无法确定用户级配置目录（USERPROFILE 与 HOME 均未设置）")
-            })?;
+    pub fn config_dir_from(userprofile: Option<&str>, home: Option<&str>) -> Result<PathBuf> {
+        let user_home = userprofile.or(home).map(PathBuf::from).ok_or_else(|| {
+            anyhow::anyhow!("无法确定用户级配置目录（USERPROFILE 与 HOME 均未设置）")
+        })?;
         Ok(user_home.join(".config").join("opencode"))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
     use super::*;
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -338,7 +347,11 @@ mod tests {
     /// 在临时目录中创建模拟的 opencode.json（每个测试独立目录，防并行冲突）
     fn setup_temp_config(initial: Option<&str>) -> (PathBuf, PathBuf) {
         let id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("code-repo-wiki-opencode-test-{}-{}", std::process::id(), id));
+        let dir = std::env::temp_dir().join(format!(
+            "code-repo-wiki-opencode-test-{}-{}",
+            std::process::id(),
+            id
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("创建临时目录失败");
         let path = dir.join("opencode.json");
@@ -356,7 +369,8 @@ mod tests {
         let plugin_dir = dir.join("plugins");
         std::fs::create_dir_all(&plugin_dir).expect("创建插件目录失败");
         let path = plugin_dir.join("code-repo-wiki.ts");
-        std::fs::write(&path, "export const RepoWikiPlugin = () => ({});").expect("写入插件文件失败");
+        std::fs::write(&path, "export const RepoWikiPlugin = () => ({});")
+            .expect("写入插件文件失败");
         path
     }
 
@@ -367,7 +381,8 @@ mod tests {
         let plugin_dir = dir.join(".opencode").join("plugins");
         std::fs::create_dir_all(&plugin_dir).expect("创建插件目录失败");
         let path = plugin_dir.join("code-repo-wiki.ts");
-        std::fs::write(&path, "export const RepoWikiPlugin = () => ({});").expect("写入插件文件失败");
+        std::fs::write(&path, "export const RepoWikiPlugin = () => ({});")
+            .expect("写入插件文件失败");
         path
     }
 
@@ -376,13 +391,19 @@ mod tests {
     fn test_install_plugin_removes_invalid_plugins_key() {
         let initial = r#"{"plugins":[{"name":"code-repo-wiki","path":".opencode/plugins/code-repo-wiki.ts","enabled":true}]}"#;
         let (dir, path) = setup_temp_config(Some(initial));
-        let mut config = OpenCodeConfig { config_path: path.clone(), project_root: dir.clone() };
+        let mut config = OpenCodeConfig {
+            config_path: path.clone(),
+            project_root: dir.clone(),
+        };
 
         config.install_plugin().unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
         let value: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert!(value.get("plugins").is_none(), "install 后不应残留无效的 plugins 键");
+        assert!(
+            value.get("plugins").is_none(),
+            "install 后不应残留无效的 plugins 键"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -391,14 +412,21 @@ mod tests {
     #[test]
     fn test_install_plugin_noop_when_clean() {
         let (dir, path) = setup_temp_config(Some(r#"{}"#));
-        let mut config = OpenCodeConfig { config_path: path.clone(), project_root: dir.clone() };
+        let mut config = OpenCodeConfig {
+            config_path: path.clone(),
+            project_root: dir.clone(),
+        };
 
         config.install_plugin().unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
         let value: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert!(value.get("plugins").is_none());
-        assert_eq!(value.as_object().unwrap().len(), 0, "干净配置不应被写入内容");
+        assert_eq!(
+            value.as_object().unwrap().len(),
+            0,
+            "干净配置不应被写入内容"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -407,7 +435,10 @@ mod tests {
     #[test]
     fn test_install_plugin_creates_config_when_missing() {
         let (dir, path) = setup_temp_config(None);
-        let mut config = OpenCodeConfig { config_path: path.clone(), project_root: dir.clone() };
+        let mut config = OpenCodeConfig {
+            config_path: path.clone(),
+            project_root: dir.clone(),
+        };
 
         config.install_plugin().unwrap();
 
@@ -423,11 +454,18 @@ mod tests {
     #[test]
     fn test_install_plugin_aborts_on_unreadable_config() {
         // config_path 指向目录：read_to_string 对目录必然 Err（Windows 权限模拟不可靠）
-        let dir = std::env::temp_dir().join(format!("rw_opencode_unreadable_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("rw_opencode_unreadable_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let mut cfg = OpenCodeConfig { config_path: dir.clone(), project_root: dir.clone() };
+        let mut cfg = OpenCodeConfig {
+            config_path: dir.clone(),
+            project_root: dir.clone(),
+        };
         let err = cfg.install_plugin().unwrap_err();
-        assert!(err.to_string().contains("已中止写回"), "应显式中止并说明原因: {err}");
+        assert!(
+            err.to_string().contains("已中止写回"),
+            "应显式中止并说明原因: {err}"
+        );
         assert!(dir.is_dir(), "目录本身不应被写坏");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -437,7 +475,10 @@ mod tests {
     fn test_uninstall_plugin_removes_invalid_key_preserves_others() {
         let initial = r#"{"plugins":[{"name":"code-repo-wiki","enabled":true}],"theme":"dark"}"#;
         let (dir, path) = setup_temp_config(Some(initial));
-        let mut config = OpenCodeConfig { config_path: path.clone(), project_root: dir.clone() };
+        let mut config = OpenCodeConfig {
+            config_path: path.clone(),
+            project_root: dir.clone(),
+        };
 
         config.uninstall_plugin().unwrap();
 
@@ -453,7 +494,10 @@ mod tests {
     #[test]
     fn test_uninstall_plugin_noop_when_file_missing() {
         let (dir, path) = setup_temp_config(None);
-        let mut config = OpenCodeConfig { config_path: path, project_root: dir.clone() };
+        let mut config = OpenCodeConfig {
+            config_path: path,
+            project_root: dir.clone(),
+        };
 
         config.uninstall_plugin().unwrap();
 
@@ -494,7 +538,11 @@ mod tests {
         let (dir, _) = setup_temp_config(None);
         let plugin_dir = dir.join("plugin");
         std::fs::create_dir_all(&plugin_dir).unwrap();
-        std::fs::write(plugin_dir.join("code-repo-wiki.ts"), "export const RepoWikiPlugin = () => ({});").unwrap();
+        std::fs::write(
+            plugin_dir.join("code-repo-wiki.ts"),
+            "export const RepoWikiPlugin = () => ({});",
+        )
+        .unwrap();
         let config = OpenCodeConfig {
             config_path: dir.join("opencode.json"),
             project_root: dir.clone(),
@@ -514,7 +562,10 @@ mod tests {
             config_path: dir.join("opencode.json"),
             project_root: dir.clone(),
         };
-        assert!(!config.is_installed().unwrap(), "旧版项目级插件不应视为已安装");
+        assert!(
+            !config.is_installed().unwrap(),
+            "旧版项目级插件不应视为已安装"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -524,7 +575,10 @@ mod tests {
     fn test_install_plugin_file_migrates_legacy_project_plugin() {
         let (dir, _) = setup_temp_config(None);
         let legacy = setup_legacy_project_plugin(&dir);
-        let mut config = OpenCodeConfig { config_path: dir.join("opencode.json"), project_root: dir.clone() };
+        let mut config = OpenCodeConfig {
+            config_path: dir.join("opencode.json"),
+            project_root: dir.clone(),
+        };
 
         let wrote = config.install_plugin_file().unwrap();
         assert!(wrote, "迁移时应实际写入用户级插件文件");
@@ -543,7 +597,10 @@ mod tests {
         let (dir, _) = setup_temp_config(None);
         let user_plugin = setup_plugin_file(&dir);
         let legacy = setup_legacy_project_plugin(&dir);
-        let mut config = OpenCodeConfig { config_path: dir.join("opencode.json"), project_root: dir.clone() };
+        let mut config = OpenCodeConfig {
+            config_path: dir.join("opencode.json"),
+            project_root: dir.clone(),
+        };
 
         config.uninstall_plugin_file().unwrap();
 
@@ -565,12 +622,17 @@ mod tests {
         let dir = OpenCodeConfig::config_dir_from(Some("C:\\Users\\testuser"), None).unwrap();
         assert_eq!(
             dir,
-            PathBuf::from("C:\\Users\\testuser").join(".config").join("opencode"),
+            PathBuf::from("C:\\Users\\testuser")
+                .join(".config")
+                .join("opencode"),
             "USERPROFILE 应优先于 HOME"
         );
         // HOME 兜底（USERPROFILE 缺失）
         let dir2 = OpenCodeConfig::config_dir_from(None, Some("/home/t")).unwrap();
-        assert_eq!(dir2, PathBuf::from("/home/t").join(".config").join("opencode"));
+        assert_eq!(
+            dir2,
+            PathBuf::from("/home/t").join(".config").join("opencode")
+        );
         // 双缺失 → 显式报错
         assert!(OpenCodeConfig::config_dir_from(None, None).is_err());
     }
@@ -593,9 +655,18 @@ mod tests {
     fn test_non_object_config_errors() {
         for (tag, initial) in [("arr", "[1,2,3]"), ("str", "\"oops\"")] {
             let (dir, path) = setup_temp_config(Some(initial));
-            let mut config = OpenCodeConfig { config_path: path.clone(), project_root: dir.clone() };
-            assert!(config.install_plugin().is_err(), "install 对非对象配置应报错 ({tag})");
-            assert!(config.uninstall_plugin().is_err(), "uninstall 对非对象配置应报错 ({tag})");
+            let mut config = OpenCodeConfig {
+                config_path: path.clone(),
+                project_root: dir.clone(),
+            };
+            assert!(
+                config.install_plugin().is_err(),
+                "install 对非对象配置应报错 ({tag})"
+            );
+            assert!(
+                config.uninstall_plugin().is_err(),
+                "uninstall 对非对象配置应报错 ({tag})"
+            );
             let _ = std::fs::remove_dir_all(&dir);
         }
     }
@@ -606,7 +677,10 @@ mod tests {
     #[test]
     fn test_install_plugin_file_injects_absolute_exe_path() {
         let (dir, _) = setup_temp_config(None);
-        let mut config = OpenCodeConfig { config_path: dir.join("opencode.json"), project_root: dir.clone() };
+        let mut config = OpenCodeConfig {
+            config_path: dir.join("opencode.json"),
+            project_root: dir.clone(),
+        };
 
         let wrote = config.install_plugin_file().unwrap();
         assert!(wrote, "首次安装应实际写入插件文件");
@@ -659,7 +733,10 @@ export const RepoWikiPlugin = () => {
     execa("some-other-tool", ["--version"]);
 };"#;
         let err = inject_exe_path(template, r#""/usr/local/bin/code-repo-wiki""#).unwrap_err();
-        assert!(err.to_string().contains("占位符缺失"), "错误应说明占位符缺失: {err}");
+        assert!(
+            err.to_string().contains("占位符缺失"),
+            "错误应说明占位符缺失: {err}"
+        );
     }
 
     /// audit-cfg-01：插件模板 --config 路径字面量断言——root 提供时指向

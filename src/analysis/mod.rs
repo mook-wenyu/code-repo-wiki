@@ -3,7 +3,6 @@ pub mod feature;
 pub mod graph;
 pub mod module;
 
-
 use anyhow::Result;
 
 use crate::ingest::parser::FileInsight;
@@ -20,52 +19,52 @@ pub fn detect_modules(graph: &KnowledgeGraph) -> Result<Vec<ModuleCluster>> {
     Ok(detector.detect())
 }
 
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-        use crate::ingest::parser::{Entity, FileInsight, ImportStmt};
-        use std::path::PathBuf;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ingest::parser::{Entity, FileInsight, ImportStmt};
+    use std::path::PathBuf;
 
-        #[test]
-        fn test_full_pipeline() {
-            let insights = vec![
-                FileInsight {
-                    path: PathBuf::from("src/main.rs"),
-                    language: "rust".into(),
-                    entities: vec![Entity {
-                        name: "main".into(),
-                        kind: "fn".into(),
-                        line_start: 1,
-                        line_end: 5,
-                        doc_comment: None,
-                        signature: Some("fn main()".into()),
-                        visibility: None,
-                    }],
-                    imports: vec![],
-                    doc_comments: vec![],
-                    source: String::new(),
-                },
-                FileInsight {
-                    path: PathBuf::from("src/lib.rs"),
-                    language: "rust".into(),
-                    entities: vec![Entity {
-                        name: "add".into(),
-                        kind: "fn".into(),
-                        line_start: 1,
-                        line_end: 3,
-                        doc_comment: None,
-                        signature: Some("fn add(a: i32, b: i32) -> i32".into()),
-                        visibility: None,
-                    }],
-                    imports: vec![ImportStmt {
-                        source: "crate::main".into(),
-                        alias: None,
-                        line: 1,
-                    }],
-                    doc_comments: vec![],
-                    source: String::new(),
-                },
-            ];
+    #[test]
+    fn test_full_pipeline() {
+        let insights = vec![
+            FileInsight {
+                path: PathBuf::from("src/main.rs"),
+                language: "rust".into(),
+                entities: vec![Entity {
+                    name: "main".into(),
+                    kind: "fn".into(),
+                    line_start: 1,
+                    line_end: 5,
+                    doc_comment: None,
+                    signature: Some("fn main()".into()),
+                    visibility: None,
+                }],
+                imports: vec![],
+                doc_comments: vec![],
+                source: String::new(),
+            },
+            FileInsight {
+                path: PathBuf::from("src/lib.rs"),
+                language: "rust".into(),
+                entities: vec![Entity {
+                    name: "add".into(),
+                    kind: "fn".into(),
+                    line_start: 1,
+                    line_end: 3,
+                    doc_comment: None,
+                    signature: Some("fn add(a: i32, b: i32) -> i32".into()),
+                    visibility: None,
+                }],
+                imports: vec![ImportStmt {
+                    source: "crate::main".into(),
+                    alias: None,
+                    line: 1,
+                }],
+                doc_comments: vec![],
+                source: String::new(),
+            },
+        ];
 
         let graph = build_graph(&insights).expect("构建图失败");
         assert!(graph.graph.node_count() > 0);

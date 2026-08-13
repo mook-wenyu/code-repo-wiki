@@ -22,13 +22,19 @@ fn assert_no_duplicates(entities: &[Entity]) {
         assert!(
             seen.insert(key),
             "同一实体出现两次: {} (kind={}, line={})",
-            e.name, e.kind, e.line_start
+            e.name,
+            e.kind,
+            e.line_start
         );
     }
 }
 
 /// 通过注册表解析源码并返回 FileInsight
-fn parse_src(language: &str, source: &str, path: &str) -> code_repo_wiki::ingest::parser::FileInsight {
+fn parse_src(
+    language: &str,
+    source: &str,
+    path: &str,
+) -> code_repo_wiki::ingest::parser::FileInsight {
     let registry = ParserRegistry::new();
     let processor = registry
         .get_for_file(Path::new(path))
@@ -40,64 +46,172 @@ fn parse_src(language: &str, source: &str, path: &str) -> code_repo_wiki::ingest
 
 #[test]
 fn test_rust_entity_and_import() {
-    let insight = parse_src("Rust", "use std::collections::HashMap;\nstruct Point { x: i32 }\nfn add(a: i32, b: i32) -> i32 { a + b }\n", "main.rs");
-    assert!(insight.entities.iter().any(|e| e.name == "Point" && e.kind == "struct"));
-    assert!(insight.entities.iter().any(|e| e.name == "add" && e.kind == "function"));
-    assert!(insight.imports.iter().any(|i| i.source == "std::collections::HashMap"));
+    let insight = parse_src(
+        "Rust",
+        "use std::collections::HashMap;\nstruct Point { x: i32 }\nfn add(a: i32, b: i32) -> i32 { a + b }\n",
+        "main.rs",
+    );
+    assert!(
+        insight
+            .entities
+            .iter()
+            .any(|e| e.name == "Point" && e.kind == "struct")
+    );
+    assert!(
+        insight
+            .entities
+            .iter()
+            .any(|e| e.name == "add" && e.kind == "function")
+    );
+    assert!(
+        insight
+            .imports
+            .iter()
+            .any(|i| i.source == "std::collections::HashMap")
+    );
     assert_no_duplicates(&insight.entities);
 }
 
 #[test]
 fn test_python_entity_and_import() {
-    let insight = parse_src("Python", "import os\nfrom typing import List\nclass Person:\n    pass\n\ndef greet(name: str) -> str:\n    return name\n", "app.py");
-    assert!(insight.entities.iter().any(|e| e.name == "Person" && e.kind == "class"));
-    assert!(insight.entities.iter().any(|e| e.name == "greet" && e.kind == "function"));
+    let insight = parse_src(
+        "Python",
+        "import os\nfrom typing import List\nclass Person:\n    pass\n\ndef greet(name: str) -> str:\n    return name\n",
+        "app.py",
+    );
+    assert!(
+        insight
+            .entities
+            .iter()
+            .any(|e| e.name == "Person" && e.kind == "class")
+    );
+    assert!(
+        insight
+            .entities
+            .iter()
+            .any(|e| e.name == "greet" && e.kind == "function")
+    );
     assert!(insight.imports.iter().any(|i| i.source == "os"));
-    assert!(insight.imports.iter().any(|i| i.source.starts_with("from typing")));
+    assert!(
+        insight
+            .imports
+            .iter()
+            .any(|i| i.source.starts_with("from typing"))
+    );
     assert_no_duplicates(&insight.entities);
 }
 
 #[test]
 fn test_go_entity_and_import() {
-    let insight = parse_src("Go", "package main\nimport \"fmt\"\ntype Point struct { X int }\nfunc add(a int, b int) int { return a + b }\n", "main.go");
-    assert!(insight.entities.iter().any(|e| e.name == "Point" && e.kind == "struct"));
-    assert!(insight.entities.iter().any(|e| e.name == "add" && e.kind == "function"));
+    let insight = parse_src(
+        "Go",
+        "package main\nimport \"fmt\"\ntype Point struct { X int }\nfunc add(a int, b int) int { return a + b }\n",
+        "main.go",
+    );
+    assert!(
+        insight
+            .entities
+            .iter()
+            .any(|e| e.name == "Point" && e.kind == "struct")
+    );
+    assert!(
+        insight
+            .entities
+            .iter()
+            .any(|e| e.name == "add" && e.kind == "function")
+    );
     assert!(insight.imports.iter().any(|i| i.source == "fmt"));
     assert_no_duplicates(&insight.entities);
 }
 
 #[test]
 fn test_java_entity_and_import() {
-    let insight = parse_src("Java", "import java.util.List;\nclass Calculator {\n    public int add(int a, int b) { return a + b; }\n}\n", "Main.java");
-    assert!(insight.entities.iter().any(|e| e.name == "Calculator" && e.kind == "class"));
-    assert!(insight.entities.iter().any(|e| e.name == "add" && e.kind == "function"));
+    let insight = parse_src(
+        "Java",
+        "import java.util.List;\nclass Calculator {\n    public int add(int a, int b) { return a + b; }\n}\n",
+        "Main.java",
+    );
+    assert!(
+        insight
+            .entities
+            .iter()
+            .any(|e| e.name == "Calculator" && e.kind == "class")
+    );
+    assert!(
+        insight
+            .entities
+            .iter()
+            .any(|e| e.name == "add" && e.kind == "function")
+    );
     assert!(insight.imports.iter().any(|i| i.source == "java.util.List"));
     assert_no_duplicates(&insight.entities);
 }
 
 #[test]
 fn test_csharp_entity_and_import() {
-    let insight = parse_src("C#", "using System;\nnamespace App {\n    class Player { }\n}\n", "Program.cs");
-    assert!(insight.entities.iter().any(|e| e.name == "App" && e.kind == "mod"));
-    assert!(insight.entities.iter().any(|e| e.name == "Player" && e.kind == "class"));
+    let insight = parse_src(
+        "C#",
+        "using System;\nnamespace App {\n    class Player { }\n}\n",
+        "Program.cs",
+    );
+    assert!(
+        insight
+            .entities
+            .iter()
+            .any(|e| e.name == "App" && e.kind == "mod")
+    );
+    assert!(
+        insight
+            .entities
+            .iter()
+            .any(|e| e.name == "Player" && e.kind == "class")
+    );
     assert!(insight.imports.iter().any(|i| i.source == "System"));
     assert_no_duplicates(&insight.entities);
 }
 
 #[test]
 fn test_javascript_entity_and_import() {
-    let insight = parse_src("JavaScript", "import { useState } from \"react\";\nfunction greet(name) { return name; }\nclass Foo {}\n", "app.js");
-    assert!(insight.entities.iter().any(|e| e.name == "greet" && e.kind == "function"));
-    assert!(insight.entities.iter().any(|e| e.name == "Foo" && e.kind == "class"));
+    let insight = parse_src(
+        "JavaScript",
+        "import { useState } from \"react\";\nfunction greet(name) { return name; }\nclass Foo {}\n",
+        "app.js",
+    );
+    assert!(
+        insight
+            .entities
+            .iter()
+            .any(|e| e.name == "greet" && e.kind == "function")
+    );
+    assert!(
+        insight
+            .entities
+            .iter()
+            .any(|e| e.name == "Foo" && e.kind == "class")
+    );
     assert!(insight.imports.iter().any(|i| i.source == "react"));
     assert_no_duplicates(&insight.entities);
 }
 
 #[test]
 fn test_typescript_entity_and_import() {
-    let insight = parse_src("TypeScript", "import { Component } from \"react\";\ninterface Props { name: string; }\nfunction greet(name: string): string { return name; }\n", "app.ts");
-    assert!(insight.entities.iter().any(|e| e.name == "Props" && e.kind == "interface"));
-    assert!(insight.entities.iter().any(|e| e.name == "greet" && e.kind == "function"));
+    let insight = parse_src(
+        "TypeScript",
+        "import { Component } from \"react\";\ninterface Props { name: string; }\nfunction greet(name: string): string { return name; }\n",
+        "app.ts",
+    );
+    assert!(
+        insight
+            .entities
+            .iter()
+            .any(|e| e.name == "Props" && e.kind == "interface")
+    );
+    assert!(
+        insight
+            .entities
+            .iter()
+            .any(|e| e.name == "greet" && e.kind == "function")
+    );
     assert!(insight.imports.iter().any(|i| i.source == "react"));
     assert_no_duplicates(&insight.entities);
 }
@@ -106,49 +220,77 @@ fn test_typescript_entity_and_import() {
 
 #[test]
 fn test_rust_broken_source_no_panic_no_dup() {
-    let insight = parse_src("Rust", "struct Point { x: i32 }\nfn broken(a: i32, {", "broken.rs");
+    let insight = parse_src(
+        "Rust",
+        "struct Point { x: i32 }\nfn broken(a: i32, {",
+        "broken.rs",
+    );
     assert!(!insight.entities.is_empty(), "损坏源码应产出至少一个实体");
     assert_no_duplicates(&insight.entities);
 }
 
 #[test]
 fn test_python_broken_source_no_panic_no_dup() {
-    let insight = parse_src("Python", "class Person:\n    pass\n\ndef broken(a, b:\n", "broken.py");
+    let insight = parse_src(
+        "Python",
+        "class Person:\n    pass\n\ndef broken(a, b:\n",
+        "broken.py",
+    );
     assert!(!insight.entities.is_empty(), "损坏源码应产出至少一个实体");
     assert_no_duplicates(&insight.entities);
 }
 
 #[test]
 fn test_go_broken_source_no_panic_no_dup() {
-    let insight = parse_src("Go", "type Point struct { X int }\nfunc broken(a int, {", "broken.go");
+    let insight = parse_src(
+        "Go",
+        "type Point struct { X int }\nfunc broken(a int, {",
+        "broken.go",
+    );
     assert!(!insight.entities.is_empty(), "损坏源码应产出至少一个实体");
     assert_no_duplicates(&insight.entities);
 }
 
 #[test]
 fn test_java_broken_source_no_panic_no_dup() {
-    let insight = parse_src("Java", "class Broken {\n    public void m(int a, { }\n", "Broken.java");
+    let insight = parse_src(
+        "Java",
+        "class Broken {\n    public void m(int a, { }\n",
+        "Broken.java",
+    );
     assert!(!insight.entities.is_empty(), "损坏源码应产出至少一个实体");
     assert_no_duplicates(&insight.entities);
 }
 
 #[test]
 fn test_csharp_broken_source_no_panic_no_dup() {
-    let insight = parse_src("C#", "class Broken {\n    public void M(int a, { }\n", "Broken.cs");
+    let insight = parse_src(
+        "C#",
+        "class Broken {\n    public void M(int a, { }\n",
+        "Broken.cs",
+    );
     assert!(!insight.entities.is_empty(), "损坏源码应产出至少一个实体");
     assert_no_duplicates(&insight.entities);
 }
 
 #[test]
 fn test_javascript_broken_source_no_panic_no_dup() {
-    let insight = parse_src("JavaScript", "class Foo {}\nfunction broken(a, { }", "broken.js");
+    let insight = parse_src(
+        "JavaScript",
+        "class Foo {}\nfunction broken(a, { }",
+        "broken.js",
+    );
     assert!(!insight.entities.is_empty(), "损坏源码应产出至少一个实体");
     assert_no_duplicates(&insight.entities);
 }
 
 #[test]
 fn test_typescript_broken_source_no_panic_no_dup() {
-    let insight = parse_src("TypeScript", "interface Props { name: string; }\nfunction broken(a: string, { }", "broken.ts");
+    let insight = parse_src(
+        "TypeScript",
+        "interface Props { name: string; }\nfunction broken(a: string, { }",
+        "broken.ts",
+    );
     assert!(!insight.entities.is_empty(), "损坏源码应产出至少一个实体");
     assert_no_duplicates(&insight.entities);
 }
@@ -157,17 +299,39 @@ fn test_typescript_broken_source_no_panic_no_dup() {
 
 #[test]
 fn test_mixed_repo_all_languages_have_entities() {
-    let dir = std::env::temp_dir().join(format!("code_repo_wiki_dedup_7lang_{}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("code_repo_wiki_dedup_7lang_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
 
     let files: [(&str, &str); 7] = [
-        ("main.rs", "struct Point { x: i32 }\nfn add(a: i32, b: i32) -> i32 { a + b }\nuse std::collections::HashMap;\n"),
-        ("app.py", "import os\nclass Person:\n    pass\n\ndef greet(name):\n    return name\n"),
-        ("main.go", "package main\nimport \"fmt\"\ntype Point struct { X int }\nfunc add(a int, b int) int { return a + b }\n"),
-        ("Main.java", "import java.util.List;\nclass Calc {\n    public int add(int a, int b) { return a + b; }\n}\n"),
-        ("Program.cs", "using System;\nnamespace App {\n    class Program {\n        public void Run() { }\n    }\n}\n"),
-        ("app.js", "import { x } from \"mod\";\nfunction greet(name) { return name; }\nclass Foo {}\n"),
-        ("app.ts", "import { Component } from \"react\";\ninterface Props { name: string; }\nfunction greet(name: string): string { return name; }\n"),
+        (
+            "main.rs",
+            "struct Point { x: i32 }\nfn add(a: i32, b: i32) -> i32 { a + b }\nuse std::collections::HashMap;\n",
+        ),
+        (
+            "app.py",
+            "import os\nclass Person:\n    pass\n\ndef greet(name):\n    return name\n",
+        ),
+        (
+            "main.go",
+            "package main\nimport \"fmt\"\ntype Point struct { X int }\nfunc add(a int, b int) int { return a + b }\n",
+        ),
+        (
+            "Main.java",
+            "import java.util.List;\nclass Calc {\n    public int add(int a, int b) { return a + b; }\n}\n",
+        ),
+        (
+            "Program.cs",
+            "using System;\nnamespace App {\n    class Program {\n        public void Run() { }\n    }\n}\n",
+        ),
+        (
+            "app.js",
+            "import { x } from \"mod\";\nfunction greet(name) { return name; }\nclass Foo {}\n",
+        ),
+        (
+            "app.ts",
+            "import { Component } from \"react\";\ninterface Props { name: string; }\nfunction greet(name: string): string { return name; }\n",
+        ),
     ];
     for (name, content) in &files {
         std::fs::write(dir.join(name), content).unwrap();
@@ -177,7 +341,9 @@ fn test_mixed_repo_all_languages_have_entities() {
     let mut parsed = 0;
     for (name, _) in &files {
         let file = dir.join(name);
-        let processor = registry.get_for_file(&file).expect("注册表应含全部语言处理器");
+        let processor = registry
+            .get_for_file(&file)
+            .expect("注册表应含全部语言处理器");
         let source = std::fs::read_to_string(&file).unwrap();
         let insight = processor.parse(&source, &file).unwrap();
         assert!(!insight.entities.is_empty(), "{name} 应产出至少一个实体");

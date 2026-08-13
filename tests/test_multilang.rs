@@ -35,7 +35,7 @@ max_concurrent = 4
 /// 验证 write_document 支持语言参数（独立写盘到对应语言目录）
 #[test]
 fn test_write_document_language_param() {
-    use code_repo_wiki::model::{WikiDocument, Reference, DocumentKind};
+    use code_repo_wiki::model::{DocumentKind, Reference, WikiDocument};
     let doc = WikiDocument {
         title: "Test".into(),
         kind: DocumentKind::WikiPage,
@@ -52,7 +52,10 @@ fn test_write_document_language_param() {
         fingerprint: None,
     };
 
-    let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_multilang_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "code_repo_wiki_test_multilang_{}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
 
@@ -70,15 +73,15 @@ fn test_write_document_language_param() {
 /// 验证 render_all 按文档自身语言分组写入（多语言独立生成，不再按语言循环复制）
 #[test]
 fn test_render_all_multi_lang_dirs() {
-    use code_repo_wiki::model::*;
     use code_repo_wiki::config::schema::*;
+    use code_repo_wiki::model::*;
 
     let config = WikiConfig {
         wiki: WikiSection {
             language: "zh".into(),
             guide: Default::default(),
         },
-                ..Default::default()
+        ..Default::default()
     };
     let graph = KnowledgeGraph::default();
     let make_doc = |language: &str| WikiDocument {
@@ -93,7 +96,10 @@ fn test_render_all_multi_lang_dirs() {
         fingerprint: None,
     };
 
-    let dir = std::env::temp_dir().join(format!("code_repo_wiki_test_multilang_render_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "code_repo_wiki_test_multilang_render_{}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
 
     // 模拟 output.dir
@@ -104,7 +110,14 @@ fn test_render_all_multi_lang_dirs() {
 
     // 中文版与英文版独立生成，各自写入自己的语言目录
     let docs = vec![make_doc("zh"), make_doc("en")];
-    code_repo_wiki::output::render_all(&docs, &[], &graph, &multi_config, &std::collections::HashSet::new()).unwrap();
+    code_repo_wiki::output::render_all(
+        &docs,
+        &[],
+        &graph,
+        &multi_config,
+        &std::collections::HashSet::new(),
+    )
+    .unwrap();
     assert!(dir.join("wiki").join("zh").join("core.md").exists());
     assert!(dir.join("wiki").join("en").join("core.md").exists());
     // v22 起卡片只按配置语言（主语言）独立写盘——卡片不随页面语言复制

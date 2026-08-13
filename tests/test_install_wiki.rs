@@ -53,12 +53,24 @@ fn test_install_wiki_creates_agents_md() {
     let content = std::fs::read_to_string(&path).unwrap();
     assert!(content.contains(START), "应含 START 标记，实际: {content}");
     assert!(content.contains(END), "应含 END 标记，实际: {content}");
-    assert!(content.contains("code-repo-wiki update"), "应含 code-repo-wiki update 指引，实际: {content}");
+    assert!(
+        content.contains("code-repo-wiki update"),
+        "应含 code-repo-wiki update 指引，实际: {content}"
+    );
     // Phase 16.5：注入块按 agents.md 五要素重写——MCP 工具清单（wiki_ 前缀）
     // 与完成定义判据必须在注入块中
-    assert!(content.contains("wiki_search"), "应含 MCP 工具清单（wiki_search），实际: {content}");
-    assert!(content.contains("wiki_status"), "应含 MCP 工具清单（wiki_status），实际: {content}");
-    assert!(content.contains("完成定义"), "应含完成定义判据，实际: {content}");
+    assert!(
+        content.contains("wiki_search"),
+        "应含 MCP 工具清单（wiki_search），实际: {content}"
+    );
+    assert!(
+        content.contains("wiki_status"),
+        "应含 MCP 工具清单（wiki_status），实际: {content}"
+    );
+    assert!(
+        content.contains("完成定义"),
+        "应含完成定义判据，实际: {content}"
+    );
 
     let _ = std::fs::remove_dir_all(&work_dir);
 }
@@ -79,7 +91,10 @@ fn test_install_wiki_idempotent_preserves_user_content() {
     assert!(out2.status.success(), "重复 install 应成功");
     let content2 = std::fs::read_to_string(&path).unwrap();
     assert_eq!(content1, content2, "重复 install 应幂等（内容不变）");
-    assert!(content2.starts_with("# 用户项目说明\n"), "用户内容应保留在块之前，实际: {content2}");
+    assert!(
+        content2.starts_with("# 用户项目说明\n"),
+        "用户内容应保留在块之前，实际: {content2}"
+    );
 
     let _ = std::fs::remove_dir_all(&work_dir);
 }
@@ -112,7 +127,10 @@ fn test_uninstall_wiki_removes_block() {
         !content.contains("块内容") && !content.contains("旧名块内容"),
         "两代标记块内容都应被移除，实际: {content}"
     );
-    assert!(content.contains("用户头部") && content.contains("用户尾部"), "用户内容应保留，实际: {content}");
+    assert!(
+        content.contains("用户头部") && content.contains("用户尾部"),
+        "用户内容应保留，实际: {content}"
+    );
 
     // 再次卸载：未安装 → 退出码 0 且提示
     let out2 = run_bin_with_envs(&work_dir, &["uninstall", "--force"], &envs_ref);
@@ -138,10 +156,22 @@ fn test_install_wiki_migrates_legacy_block() {
     let out = run_bin_with_envs(&work_dir, &["install"], &envs_ref);
     assert!(out.status.success(), "install 应成功");
     let content = std::fs::read_to_string(&path).unwrap();
-    assert!(content.contains(START) && content.contains(END), "应注入新标记块，实际: {content}");
-    assert!(!content.contains(LEGACY_START), "旧标记块应被迁移替换，实际: {content}");
-    assert!(!content.contains("旧名块内容"), "旧块内容应被替换，实际: {content}");
-    assert!(content.contains("用户头部") && content.contains("用户尾部"), "用户内容应保留: {content}");
+    assert!(
+        content.contains(START) && content.contains(END),
+        "应注入新标记块，实际: {content}"
+    );
+    assert!(
+        !content.contains(LEGACY_START),
+        "旧标记块应被迁移替换，实际: {content}"
+    );
+    assert!(
+        !content.contains("旧名块内容"),
+        "旧块内容应被替换，实际: {content}"
+    );
+    assert!(
+        content.contains("用户头部") && content.contains("用户尾部"),
+        "用户内容应保留: {content}"
+    );
 
     let _ = std::fs::remove_dir_all(&work_dir);
 }
@@ -158,14 +188,34 @@ fn test_install_wiki_also_claude_writes_both() {
     assert!(out.status.success(), "install --claude 应成功");
     let agents = std::fs::read_to_string(work_dir.join("AGENTS.md")).unwrap();
     let claude = std::fs::read_to_string(work_dir.join("CLAUDE.md")).unwrap();
-    assert!(agents.contains(START) && agents.contains(END), "AGENTS.md 应含标记对");
-    assert!(claude.contains(START) && claude.contains(END), "CLAUDE.md 应含标记对");
-    assert_eq!(agents, claude, "CLAUDE.md 应原样写入与 AGENTS.md 相同的注入块");
+    assert!(
+        agents.contains(START) && agents.contains(END),
+        "AGENTS.md 应含标记对"
+    );
+    assert!(
+        claude.contains(START) && claude.contains(END),
+        "CLAUDE.md 应含标记对"
+    );
+    assert_eq!(
+        agents, claude,
+        "CLAUDE.md 应原样写入与 AGENTS.md 相同的注入块"
+    );
     let claude_json = home.join(".claude.json");
-    assert!(claude_json.exists(), "--claude 应注册用户级 ~/.claude.json，实际路径: {}", claude_json.display());
-    let parsed: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&claude_json).unwrap()).unwrap();
-    assert!(parsed["mcpServers"]["code-repo-wiki"].is_object(), "~/.claude.json 应含 code-repo-wiki MCP 条目");
-    assert!(!work_dir.join(".mcp.json").exists(), "v39 起不再写项目根 .mcp.json");
+    assert!(
+        claude_json.exists(),
+        "--claude 应注册用户级 ~/.claude.json，实际路径: {}",
+        claude_json.display()
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&claude_json).unwrap()).unwrap();
+    assert!(
+        parsed["mcpServers"]["code-repo-wiki"].is_object(),
+        "~/.claude.json 应含 code-repo-wiki MCP 条目"
+    );
+    assert!(
+        !work_dir.join(".mcp.json").exists(),
+        "v39 起不再写项目根 .mcp.json"
+    );
 
     let out2 = run_bin_with_envs(&work_dir, &["uninstall", "--force"], &envs_ref);
     assert!(out2.status.success(), "uninstall 应成功");
@@ -173,8 +223,12 @@ fn test_install_wiki_also_claude_writes_both() {
     let claude2 = std::fs::read_to_string(work_dir.join("CLAUDE.md")).unwrap();
     assert!(!agents2.contains(START), "AGENTS.md 标记应被移除");
     assert!(!claude2.contains(START), "CLAUDE.md 标记应被移除");
-    let parsed2: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&claude_json).unwrap()).unwrap();
-    assert!(parsed2["mcpServers"].get("code-repo-wiki").is_none(), "uninstall 应移除 ~/.claude.json MCP 条目");
+    let parsed2: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&claude_json).unwrap()).unwrap();
+    assert!(
+        parsed2["mcpServers"].get("code-repo-wiki").is_none(),
+        "uninstall 应移除 ~/.claude.json MCP 条目"
+    );
 
     let _ = std::fs::remove_dir_all(&work_dir);
     let _ = std::fs::remove_dir_all(&home);
@@ -202,7 +256,10 @@ fn test_half_marker_errors_and_preserves_file() {
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
-        assert!(combined.contains("不完整"), "{cmd} 应报半标记错误，实际: {combined}");
+        assert!(
+            combined.contains("不完整"),
+            "{cmd} 应报半标记错误，实际: {combined}"
+        );
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             broken,

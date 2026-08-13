@@ -16,12 +16,15 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::config::schema::WikiConfig;
 use crate::project::ProjectRoot;
 
-use super::{collect_wiki_pages, measure_coverage, measure_doc_info, measure_lint, DocInfoReport, LintReport, TimeReport, CoverageReport};
+use super::{
+    CoverageReport, DocInfoReport, LintReport, TimeReport, collect_wiki_pages, measure_coverage,
+    measure_doc_info, measure_lint,
+};
 
 /// 清单中的单个仓库条目（本地路径与远程 URL 二选一；commit 可选钉死）
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,7 +110,12 @@ pub fn parse_manifest(path: &Path) -> Result<Vec<RepoEntry>> {
             } else {
                 name.to_string()
             };
-            RepoEntry { name, url: Some(target.to_string()), local: None, commit }
+            RepoEntry {
+                name,
+                url: Some(target.to_string()),
+                local: None,
+                commit,
+            }
         } else {
             let name = if name.is_empty() {
                 // 平台无关的路径文件名提取：反斜杠在非 Windows 平台不是分隔符，
@@ -136,7 +144,12 @@ pub fn parse_manifest(path: &Path) -> Result<Vec<RepoEntry>> {
             } else {
                 manifest_dir.join(p)
             };
-            RepoEntry { name, url: None, local: Some(abs), commit }
+            RepoEntry {
+                name,
+                url: None,
+                local: Some(abs),
+                commit,
+            }
         };
         if entry.name.is_empty() {
             bail!("清单第 {} 行解析失败（仓库名为空）: {line}", idx + 1);
@@ -204,7 +217,10 @@ pub fn run_manifest(
                                 tracing::info!("bench: 已 fetch 更新克隆 {}", dest.display());
                             }
                             Err(e) => {
-                                tracing::warn!("bench: 克隆 {} origin 远程读取失败（跳过 fetch）: {e}", dest.display());
+                                tracing::warn!(
+                                    "bench: 克隆 {} origin 远程读取失败（跳过 fetch）: {e}",
+                                    dest.display()
+                                );
                             }
                         }
                     }
@@ -270,11 +286,8 @@ pub fn run_manifest(
         // 运行期配置：磁盘模板已脱敏（api_key 置空），从模板文件加载后把内存
         // 配置的真实凭据合并回加载结果——评测进程使用真实 key，磁盘产物
         // 不含凭据（v52 T08a 修复：旧实现运行侧 key 丢失导致真实 LLM 跑分失败）
-        let mut config = crate::load_config_with_output(
-            Some(&template_path),
-            Some(&out_dir),
-            &root,
-        )?;
+        let mut config =
+            crate::load_config_with_output(Some(&template_path), Some(&out_dir), &root)?;
         config.llm.api_key = template_config.llm.api_key.clone();
         config.embed.api_key = template_config.embed.api_key.clone();
         let res = crate::run_pipeline_with_config(
@@ -333,7 +346,11 @@ pub fn run_manifest(
 }
 
 fn empty_coverage() -> CoverageReport {
-    CoverageReport { total_entities: 0, covered_entities: 0, ratio: 0.0 }
+    CoverageReport {
+        total_entities: 0,
+        covered_entities: 0,
+        ratio: 0.0,
+    }
 }
 fn empty_doc_info() -> DocInfoReport {
     DocInfoReport {
@@ -349,22 +366,37 @@ fn empty_doc_info() -> DocInfoReport {
     }
 }
 fn empty_lint() -> LintReport {
-    LintReport { total_issues: 0, by_kind: Default::default() }
+    LintReport {
+        total_issues: 0,
+        by_kind: Default::default(),
+    }
 }
 fn empty_time() -> TimeReport {
-    TimeReport { scan_ms: 0, generate_ms: 0, total_ms: 0 }
+    TimeReport {
+        scan_ms: 0,
+        generate_ms: 0,
+        total_ms: 0,
+    }
 }
 
 /// 渲染清单跑分 Markdown 矩阵（确定性：仓库顺序 = 清单顺序，不排序）
 pub fn render_manifest_markdown(report: &ManifestReport) -> String {
     let mut out = String::new();
-    out.push_str(&format!("# 清单跑分报告（{} 仓库）\n\n", report.repos.len()));
+    out.push_str(&format!(
+        "# 清单跑分报告（{} 仓库）\n\n",
+        report.repos.len()
+    ));
     out.push_str(&format!("> 生成时间: {}\n\n", report.generated_at));
-    out.push_str("| 仓库 | 实体 | 覆盖 | 页面 | 词数 | 交叉引用 | 代码块 | 图 | lint 问题 | 耗时(ms) |\n");
+    out.push_str(
+        "| 仓库 | 实体 | 覆盖 | 页面 | 词数 | 交叉引用 | 代码块 | 图 | lint 问题 | 耗时(ms) |\n",
+    );
     out.push_str("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
     for r in &report.repos {
         if let Some(err) = &r.error {
-            out.push_str(&format!("| {} | — | — | — | — | — | — | — | **失败**: {err} | — |\n", r.name));
+            out.push_str(&format!(
+                "| {} | — | — | — | — | — | — | — | **失败**: {err} | — |\n",
+                r.name
+            ));
         } else {
             out.push_str(&format!(
                 "| {} | {} | {:.1}% | {} | {} | {} | {} | {} | {} | {} |\n",
@@ -423,13 +455,22 @@ mod tests {
         let entries = parse_manifest(&manifest).unwrap();
         assert_eq!(entries.len(), 4);
         assert_eq!(entries[0].name, "repo-a");
-        assert_eq!(entries[0].local.as_deref(), Some(Path::new("D:\\tmp\\repo-a")));
+        assert_eq!(
+            entries[0].local.as_deref(),
+            Some(Path::new("D:\\tmp\\repo-a"))
+        );
         assert_eq!(entries[0].commit, None);
         assert_eq!(entries[1].name, "repo-b");
-        assert_eq!(entries[1].url.as_deref(), Some("https://github.com/owner/repo-b.git"));
+        assert_eq!(
+            entries[1].url.as_deref(),
+            Some("https://github.com/owner/repo-b.git")
+        );
         assert_eq!(entries[2].name, "命名仓库");
         assert_eq!(entries[3].name, "钉死版本");
-        assert_eq!(entries[3].url.as_deref(), Some("https://github.com/owner/repo-d.git"));
+        assert_eq!(
+            entries[3].url.as_deref(),
+            Some("https://github.com/owner/repo-d.git")
+        );
         assert_eq!(entries[3].commit.as_deref(), Some("abc1234"));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -438,31 +479,58 @@ mod tests {
     #[test]
     fn test_checkout_commit_pins_worktree() {
         use git2::Repository;
-        let base = std::env::temp_dir().join(format!("rw_manifest_checkout_{}", std::process::id()));
+        let base =
+            std::env::temp_dir().join(format!("rw_manifest_checkout_{}", std::process::id()));
         std::fs::create_dir_all(&base).unwrap();
         let repo = Repository::init(&base).unwrap();
         // 固定 autocrlf=false：GitHub Windows runner 的系统级 Git 配置
         // （Git for Windows 默认 core.autocrlf=true）会被 libgit2 读取，
         // checkout 时把内容转 CRLF 导致断言失败——测试内钉死行为，与平台无关
-        repo.config().unwrap().set_bool("core.autocrlf", false).unwrap();
+        repo.config()
+            .unwrap()
+            .set_bool("core.autocrlf", false)
+            .unwrap();
         let sig = git2::Signature::now("t", "t@t").unwrap();
         let mut idx = repo.index().unwrap();
         std::fs::write(base.join("f.txt"), "v1\n").unwrap();
         idx.add_path(Path::new("f.txt")).unwrap();
         idx.write().unwrap();
         let tree1 = idx.write_tree().unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, "first", &repo.find_tree(tree1).unwrap(), &[]).unwrap();
+        repo.commit(
+            Some("HEAD"),
+            &sig,
+            &sig,
+            "first",
+            &repo.find_tree(tree1).unwrap(),
+            &[],
+        )
+        .unwrap();
         let c1 = repo.head().unwrap().peel_to_commit().unwrap().id();
         std::fs::write(base.join("f.txt"), "v2\n").unwrap();
         let mut idx = repo.index().unwrap();
         idx.add_path(Path::new("f.txt")).unwrap();
         idx.write().unwrap();
         let tree2 = idx.write_tree().unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, "second", &repo.find_tree(tree2).unwrap(), &[&repo.find_commit(c1).unwrap()]).unwrap();
+        repo.commit(
+            Some("HEAD"),
+            &sig,
+            &sig,
+            "second",
+            &repo.find_tree(tree2).unwrap(),
+            &[&repo.find_commit(c1).unwrap()],
+        )
+        .unwrap();
         assert_eq!(std::fs::read_to_string(base.join("f.txt")).unwrap(), "v2\n");
         checkout_commit(&base, &c1.to_string()).unwrap();
-        assert_eq!(std::fs::read_to_string(base.join("f.txt")).unwrap(), "v1\n", "钉死后工作树应为第一 commit 内容");
-        assert!(checkout_commit(&base, "deadbeef00").is_err(), "不存在的 commit 应报错");
+        assert_eq!(
+            std::fs::read_to_string(base.join("f.txt")).unwrap(),
+            "v1\n",
+            "钉死后工作树应为第一 commit 内容"
+        );
+        assert!(
+            checkout_commit(&base, "deadbeef00").is_err(),
+            "不存在的 commit 应报错"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -480,7 +548,12 @@ mod tests {
         let manifest_path = base.join("manifest.txt");
         std::fs::write(
             &manifest_path,
-            format!("{}\n{}\n{}\n", base.join("repo-a").display(), base.join("repo-b").display(), base.join("missing-repo").display()),
+            format!(
+                "{}\n{}\n{}\n",
+                base.join("repo-a").display(),
+                base.join("repo-b").display(),
+                base.join("missing-repo").display()
+            ),
         )
         .unwrap();
 
@@ -496,7 +569,11 @@ mod tests {
         let report = run_manifest(&entries, &template, &work_dir).unwrap();
         assert_eq!(report.repos.len(), 3);
         assert_eq!(report.repos[0].name, "repo-a");
-        assert!(report.repos[0].error.is_none(), "repo-a 应成功: {:?}", report.repos[0].error);
+        assert!(
+            report.repos[0].error.is_none(),
+            "repo-a 应成功: {:?}",
+            report.repos[0].error
+        );
         assert_eq!(report.repos[0].coverage.total_entities, 1, "应解析出 alpha");
         assert!(report.repos[0].doc_info.pages > 0, "mock 生成后应有产物页");
         assert!(report.repos[2].error.is_some(), "缺失路径应标注失败");
@@ -509,7 +586,8 @@ mod tests {
     /// v52 T08a：写盘模板配置必须脱敏——api_key 不得以明文落盘
     #[test]
     fn test_manifest_template_sanitizes_api_key() {
-        let base = std::env::temp_dir().join(format!("rw_manifest_sanitize_{}", std::process::id()));
+        let base =
+            std::env::temp_dir().join(format!("rw_manifest_sanitize_{}", std::process::id()));
         std::fs::create_dir_all(&base).unwrap();
         let work_dir = base.join("work");
         let mut template = WikiConfig::default();
@@ -518,7 +596,10 @@ mod tests {
         let report = run_manifest(&entries, &template, &work_dir).unwrap();
         assert!(report.repos.is_empty(), "空清单评测应正常完成");
         let content = std::fs::read_to_string(work_dir.join("template-config.toml")).unwrap();
-        assert!(!content.contains("sk-test-secret-123456"), "api_key 不得明文落盘: {content}");
+        assert!(
+            !content.contains("sk-test-secret-123456"),
+            "api_key 不得明文落盘: {content}"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 }

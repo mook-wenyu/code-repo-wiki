@@ -76,9 +76,19 @@ fn list_wiki_pages(repo: &Path) -> Vec<String> {
 }
 
 /// 构造仓库 + 返回 ProjectRoot/config_path（每个测试独立临时目录）
-fn setup(guide: WikiGuideSection) -> (std::path::PathBuf, code_repo_wiki::project::ProjectRoot, std::path::PathBuf) {
+fn setup(
+    guide: WikiGuideSection,
+) -> (
+    std::path::PathBuf,
+    code_repo_wiki::project::ProjectRoot,
+    std::path::PathBuf,
+) {
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let repo = std::env::temp_dir().join(format!("code_repo_wiki_guide_{}_{}", std::process::id(), seq));
+    let repo = std::env::temp_dir().join(format!(
+        "code_repo_wiki_guide_{}_{}",
+        std::process::id(),
+        seq
+    ));
     let _ = std::fs::remove_dir_all(&repo);
     std::fs::create_dir_all(&repo).expect("创建临时仓库失败");
     build_fixture_repo(&repo, guide).expect("构造测试仓库失败");
@@ -128,7 +138,10 @@ fn test_guide_pages_filters_unmatched_modules() {
     );
     // 生成结果中不出现白名单外模块的文档
     assert!(
-        result.documents.iter().all(|d| d.module_path != vec!["src".to_string(), "b".to_string()]),
+        result
+            .documents
+            .iter()
+            .all(|d| d.module_path != vec!["src".to_string(), "b".to_string()]),
         "生成结果不应包含 src/b 模块文档"
     );
     let _ = std::fs::remove_dir_all(&repo);
@@ -242,8 +255,11 @@ fn test_guide_pages_keeps_existing_unmatched_pages() {
         },
         ..Default::default()
     };
-    std::fs::write(repo.join("config2.toml"), toml::to_string_pretty(&config2).expect("序列化 config2 失败"))
-        .expect("写 config2 失败");
+    std::fs::write(
+        repo.join("config2.toml"),
+        toml::to_string_pretty(&config2).expect("序列化 config2 失败"),
+    )
+    .expect("写 config2 失败");
     code_repo_wiki::run_pipeline(
         Some(&repo.join("config2.toml")),
         None,
@@ -306,7 +322,9 @@ pub fn beta() -> &'static str { "beta2" }
     .expect("增量更新不应因白名单外变更报错");
     // 增量不产生 src/b 的文档（白名单外）；也不产生 src/a 的文档（无变更）
     assert!(
-        inc.documents.iter().all(|d| d.module_path != vec!["src".to_string(), "b".to_string()]),
+        inc.documents
+            .iter()
+            .all(|d| d.module_path != vec!["src".to_string(), "b".to_string()]),
         "增量不应生成白名单外模块 src/b 的文档"
     );
     let _ = std::fs::remove_dir_all(&repo);
@@ -318,7 +336,13 @@ pub fn beta() -> &'static str { "beta2" }
 fn test_trim_guide_notes_concise_truncates() {
     // concise：5 条 → 取前 3 条，超长截断至 160 字符+省略号，附省略说明
     let long: String = "长".repeat(200);
-    let notes: Vec<String> = vec![long.clone(), "短".into(), "a".into(), "b".into(), "c".into()];
+    let notes: Vec<String> = vec![
+        long.clone(),
+        "短".into(),
+        "a".into(),
+        "b".into(),
+        "c".into(),
+    ];
     let out = trim_guide_notes(GuideTier::Concise, &notes);
     assert_eq!(out.len(), 4); // 3 条 + 省略说明
     assert_eq!(out[0].chars().count(), 161); // 160 + 省略号

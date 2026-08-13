@@ -475,18 +475,32 @@ fn render_progress(
 ) -> Option<String> {
     if evt.stage == "done" {
         // 完成态：TTY 下清掉行内残留（摘要行随后接管 stdout）；非 TTY 无残留
-        return if tty { Some("\r\u{1b}[K".to_string()) } else { None };
+        return if tty {
+            Some("\r\u{1b}[K".to_string())
+        } else {
+            None
+        };
     }
     let line = match (evt.current, evt.total) {
         (Some(c), Some(t)) if t > 0 => {
-            format!("进度 [{}] {}/{}（{}%）", stage_zh(evt.stage), c, t, evt.percent)
+            format!(
+                "进度 [{}] {}/{}（{}%）",
+                stage_zh(evt.stage),
+                c,
+                t,
+                evt.percent
+            )
         }
         _ => format!("进度 [{}] {}%", stage_zh(evt.stage), evt.percent),
     };
     let stage_changed = state.last_stage != Some(evt.stage);
     if tty {
         // 行内刷新：阶段切换先换行（上一阶段完整行保留），同阶段原地覆盖
-        let prefix = if state.last_stage.is_some() && stage_changed { "\n" } else { "" };
+        let prefix = if state.last_stage.is_some() && stage_changed {
+            "\n"
+        } else {
+            ""
+        };
         state.last_stage = Some(evt.stage);
         state.last_percent = evt.percent;
         state.last_quarter = evt.current;
@@ -513,9 +527,18 @@ fn render_progress(
 /// audit-cli-12 收敛两处近 30 行重复闭包）
 fn progress_json_cb() -> impl Fn(code_repo_wiki::ProgressEvent) {
     |evt| {
-        let cur = evt.current.map(|c| c.to_string()).unwrap_or_else(|| "null".into());
-        let tot = evt.total.map(|c| c.to_string()).unwrap_or_else(|| "null".into());
-        println!(r#"{{"stage":"{}","progress":{},"current":{},"total":{}}}"#, evt.stage, evt.percent, cur, tot);
+        let cur = evt
+            .current
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "null".into());
+        let tot = evt
+            .total
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "null".into());
+        println!(
+            r#"{{"stage":"{}","progress":{},"current":{},"total":{}}}"#,
+            evt.stage, evt.percent, cur, tot
+        );
     }
 }
 
@@ -568,7 +591,15 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Generate { config, output, force, progress_json, root, wait, skip_if_locked } => {
+        Commands::Generate {
+            config,
+            output,
+            force,
+            progress_json,
+            root,
+            wait,
+            skip_if_locked,
+        } => {
             let root = resolve_root(root.as_deref())?;
             // Phase 15.2：--wait/--skip-if-locked 转 LockOptions（锁冲突策略见
             // lib.rs::LockOptions；--wait 0 视为立即超时=不等待）
@@ -586,7 +617,10 @@ fn main() -> anyhow::Result<()> {
                 // JSONL 进度输出：插件 wiki_generate 流式解析。
                 // v46：新增 current/total 字段（LLM 逐项进度；无项级时为 null）
                 code_repo_wiki::run_pipeline_with_progress(
-                    config.as_deref(), output.as_deref(), force, &root,
+                    config.as_deref(),
+                    output.as_deref(),
+                    force,
+                    &root,
                     &code_repo_wiki::GenerationMode::Full,
                     lock,
                     &progress_json_cb(),
@@ -596,7 +630,10 @@ fn main() -> anyhow::Result<()> {
                 // 非终端（管道/CI/后台）节流输出普通文本行；均走 stderr
                 //（clig.dev 约定），不污染 stdout 业务输出
                 code_repo_wiki::run_pipeline_with_progress(
-                    config.as_deref(), output.as_deref(), force, &root,
+                    config.as_deref(),
+                    output.as_deref(),
+                    force,
+                    &root,
                     &code_repo_wiki::GenerationMode::Full,
                     lock,
                     &text_progress_cb(),
@@ -633,7 +670,16 @@ fn main() -> anyhow::Result<()> {
                 );
             }
         }
-        Commands::Update { config, output, force, progress_json, dry_run, root, wait, skip_if_locked } => {
+        Commands::Update {
+            config,
+            output,
+            force,
+            progress_json,
+            dry_run,
+            root,
+            wait,
+            skip_if_locked,
+        } => {
             // update 命令无外部 watch 事件，watch_paths 传空、change_kind 传 None
             let root = resolve_root(root.as_deref())?;
             // Phase 15.2：--wait/--skip-if-locked 转 LockOptions（--dry-run 不持锁
@@ -651,7 +697,11 @@ fn main() -> anyhow::Result<()> {
                 let scan = code_repo_wiki::ingest::scan_and_parse_at(&root)?;
                 let graph = code_repo_wiki::analysis::build_graph(&scan.insights)?;
                 let inc = code_repo_wiki::incremental::run_incremental_update_at(
-                    &root, &scan.insights, &graph, &cfg, &[],
+                    &root,
+                    &scan.insights,
+                    &graph,
+                    &cfg,
+                    &[],
                 )?;
                 println!(
                     "--dry-run: {} 个文件变更, {} 个模块受影响（未执行生成）",
@@ -673,7 +723,10 @@ fn main() -> anyhow::Result<()> {
             let result = if progress_json {
                 // JSONL 进度输出：与 generate --progress-json 同构，供插件流式解析
                 code_repo_wiki::run_pipeline_with_progress(
-                    config.as_deref(), output.as_deref(), force, &root,
+                    config.as_deref(),
+                    output.as_deref(),
+                    force,
+                    &root,
                     &code_repo_wiki::GenerationMode::Incremental {
                         watch_paths: Vec::new(),
                         change_kind: None,
@@ -683,7 +736,10 @@ fn main() -> anyhow::Result<()> {
                 )?
             } else {
                 code_repo_wiki::run_pipeline_with_progress(
-                    config.as_deref(), output.as_deref(), force, &root,
+                    config.as_deref(),
+                    output.as_deref(),
+                    force,
+                    &root,
                     &code_repo_wiki::GenerationMode::Incremental {
                         watch_paths: Vec::new(),
                         change_kind: None,
@@ -792,7 +848,13 @@ fn main() -> anyhow::Result<()> {
                 }
             };
             code_repo_wiki::commands::sync_from_git(cfg.output_dir())?;
-            tracing::info!("同步完成 (--config {})", config.as_deref().map(|p| p.display().to_string()).unwrap_or_else(|| "默认链".into()));
+            tracing::info!(
+                "同步完成 (--config {})",
+                config
+                    .as_deref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "默认链".into())
+            );
         }
         Commands::Status { config, root } => {
             // --root 提供时以 root 为产物目录基准（跨 cwd 运行 status 能定位正确产物；
@@ -848,14 +910,14 @@ fn main() -> anyhow::Result<()> {
                     eprintln!("lint: 工具问题: {}", e);
                     std::process::exit(2);
                 }
-             };
-             let cfg = match code_repo_wiki::load_config_rooted(config.as_deref(), &root) {
-                 Ok(c) => c,
-                 Err(e) => {
-                     eprintln!("lint: 工具问题（配置加载失败）: {}", e);
-                     std::process::exit(2);
-                 }
-             };
+            };
+            let cfg = match code_repo_wiki::load_config_rooted(config.as_deref(), &root) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("lint: 工具问题（配置加载失败）: {}", e);
+                    std::process::exit(2);
+                }
+            };
             let output_dir = cfg.output_dir();
             // v30+：源码根恒为仓库根（扫描范围已硬编码为全量遍历+内置过滤）
             let source_roots = code_repo_wiki::commands::source_roots(&root);
@@ -893,7 +955,13 @@ fn main() -> anyhow::Result<()> {
             let root = resolve_root(root.as_deref())?;
             code_repo_wiki::key::run(env, config.as_deref(), &root)?;
         }
-        Commands::AstSearch { symbol, language, config, json, root } => {
+        Commands::AstSearch {
+            symbol,
+            language,
+            config,
+            json,
+            root,
+        } => {
             // AST 精确符号查找：不依赖搜索索引，直接扫描源文件解析 AST 定位定义
             let root = resolve_root(root.as_deref())?;
             // audit-cli-02：--language 非法值此前被静默吞掉——execute_ast_search
@@ -903,18 +971,26 @@ fn main() -> anyhow::Result<()> {
             if let Some(lang) = &language {
                 code_repo_wiki::search::ast::get_language(lang)?;
             }
-            let results = code_repo_wiki::execute_ast_search(config.as_deref(), &root, &symbol, language.as_deref())?;
+            let results = code_repo_wiki::execute_ast_search(
+                config.as_deref(),
+                &root,
+                &symbol,
+                language.as_deref(),
+            )?;
             if json {
-                let json_results: Vec<serde_json::Value> = results.iter().map(|hit| {
-                    serde_json::json!({
-                        "name": hit.node.name,
-                        "kind": hit.node.kind.as_str(),
-                        "file": hit.node.file_path,
-                        "lines": hit.node.line_range,
-                        "signature": hit.node.signature,
-                        "source": hit.source,
+                let json_results: Vec<serde_json::Value> = results
+                    .iter()
+                    .map(|hit| {
+                        serde_json::json!({
+                            "name": hit.node.name,
+                            "kind": hit.node.kind.as_str(),
+                            "file": hit.node.file_path,
+                            "lines": hit.node.line_range,
+                            "signature": hit.node.signature,
+                            "source": hit.source,
+                        })
                     })
-                }).collect();
+                    .collect();
                 println!("{}", serde_json::to_string_pretty(&json_results)?);
             } else {
                 if results.is_empty() {
@@ -931,13 +1007,20 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Commands::Export { config, output, skip_generate, root } => {
+        Commands::Export {
+            config,
+            output,
+            skip_generate,
+            root,
+        } => {
             let root = resolve_root(root.as_deref())?;
             // audit-cli-08：--skip-generate 下 --output 此前静默忽略——快照与
             // 产物目录绑定（快照写在 cfg.output_dir()），--output 无落点，
             // 静默吞掉会误导用户以为导出到了指定目录，显式报错防误用。
             if skip_generate && output.is_some() {
-                anyhow::bail!("--skip-generate 从导出快照恢复导出，--output 不生效（快照绑定配置文件 output.dir）；请移除 --output 或去掉 --skip-generate");
+                anyhow::bail!(
+                    "--skip-generate 从导出快照恢复导出，--output 不生效（快照绑定配置文件 output.dir）；请移除 --output 或去掉 --skip-generate"
+                );
             }
             let cfg = code_repo_wiki::load_config_rooted(config.as_deref(), &root)?;
             if skip_generate {
@@ -945,8 +1028,7 @@ fn main() -> anyhow::Result<()> {
                 // render_all 每次写盘后同步写 .state/export_snapshot.json，
                 // 快照缺失时明确报错（不静默回退重生成——回退会掩盖
                 // 快照契约被破坏的事实）。
-                let snapshot_path =
-                    code_repo_wiki::output::export_snapshot_path(cfg.output_dir());
+                let snapshot_path = code_repo_wiki::output::export_snapshot_path(cfg.output_dir());
                 // 票 04 陈旧检测：快照 mtime 早于任一 wiki 页 mtime = 产物在
                 // 快照之后被更新（快照写入失败/被外部改动/产物被手动编辑），
                 // 继续导出会静默输出过期内容——显式报错引导重新生成。
@@ -984,7 +1066,10 @@ fn main() -> anyhow::Result<()> {
                 )?;
             } else {
                 let result = code_repo_wiki::run_pipeline(
-                    config.as_deref(), output.as_deref(), false, &root,
+                    config.as_deref(),
+                    output.as_deref(),
+                    false,
+                    &root,
                     &code_repo_wiki::GenerationMode::Full,
                 )?;
                 code_repo_wiki::output::html::export_html(
@@ -994,18 +1079,26 @@ fn main() -> anyhow::Result<()> {
                     &cfg,
                 )?;
             }
-            tracing::info!("HTML 导出完成 (--config {})", config.as_deref().map(|p| p.display().to_string()).unwrap_or_else(|| "默认链".into()));
+            tracing::info!(
+                "HTML 导出完成 (--config {})",
+                config
+                    .as_deref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "默认链".into())
+            );
         }
         Commands::Note { text, config, root } => {
             // --root 提供时以 root 为产物目录基准（同 status/lint）
             let root = resolve_root(root.as_deref())?;
             let cfg = code_repo_wiki::load_config_rooted(config.as_deref(), &root)?;
-            code_repo_wiki::commands::append_note(
-                cfg.output_dir(),
-                &cfg.wiki.language,
-                &text,
-            )?;
-            tracing::info!("知识记录已写入 (--config {})", config.as_deref().map(|p| p.display().to_string()).unwrap_or_else(|| "默认链".into()));
+            code_repo_wiki::commands::append_note(cfg.output_dir(), &cfg.wiki.language, &text)?;
+            tracing::info!(
+                "知识记录已写入 (--config {})",
+                config
+                    .as_deref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "默认链".into())
+            );
         }
         Commands::Watch { config, root } => {
             let root = resolve_root(root.as_deref())?;
@@ -1028,12 +1121,16 @@ fn main() -> anyhow::Result<()> {
                         // audit-srch2-04：锁冲突判定用类型匹配（LockError）而非
                         // 文案 contains——报错措辞调整会静默破坏 watch 自愈判定
                         if code_repo_wiki::fs::is_lock_conflict(&e) {
-                            eprintln!("code-repo-wiki: 运行锁冲突（另一实例或保守报错），watch 退出: {e}");
+                            eprintln!(
+                                "code-repo-wiki: 运行锁冲突（另一实例或保守报错），watch 退出: {e}"
+                            );
                             std::process::exit(1);
                         }
                         attempts += 1;
                         if attempts >= WATCH_RETRY_MAX {
-                            eprintln!("code-repo-wiki: watch 连续失败 {WATCH_RETRY_MAX} 次，放弃自动重启: {e}");
+                            eprintln!(
+                                "code-repo-wiki: watch 连续失败 {WATCH_RETRY_MAX} 次，放弃自动重启: {e}"
+                            );
                             std::process::exit(1);
                         }
                         eprintln!("code-repo-wiki: watch 监听循环异常退出: {e}");
@@ -1047,44 +1144,72 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Commands::Search { query, top_k, config, json, engine, root } => {
+        Commands::Search {
+            query,
+            top_k,
+            config,
+            json,
+            engine,
+            root,
+        } => {
             // 解析引擎类型：CLI 参数经 clap ValueEnum 校验（非法值在解析期
             // 报错退出码 2，help 列出 possible values），此处仅回退默认常量
             // SEARCH_DEFAULT_ENGINE（v36 起为 Hybrid；hybrid 无 embed key 时
             // 自动降级纯 text）
             let root = resolve_root(root.as_deref())?;
-            let engine_type = engine.unwrap_or(code_repo_wiki::config::schema::SEARCH_DEFAULT_ENGINE);
+            let engine_type =
+                engine.unwrap_or(code_repo_wiki::config::schema::SEARCH_DEFAULT_ENGINE);
             // CLI 显式 -k 优先，未传时回退硬编码默认 SEARCH_DEFAULT_TOP_K
             // N17：top_k 下限收敛到 1（top_k=0 的搜索调用无意义，返回空结果）
-            let top_k = top_k.unwrap_or(code_repo_wiki::config::schema::SEARCH_DEFAULT_TOP_K).max(1);
-            let results = code_repo_wiki::execute_search(config.as_deref(), &root, &query, top_k, &engine_type)?;
+            let top_k = top_k
+                .unwrap_or(code_repo_wiki::config::schema::SEARCH_DEFAULT_TOP_K)
+                .max(1);
+            let results = code_repo_wiki::execute_search(
+                config.as_deref(),
+                &root,
+                &query,
+                top_k,
+                &engine_type,
+            )?;
             if json {
                 // JSON 格式输出（供 OpenCode 插件解析）
-                let json_results: Vec<serde_json::Value> = results.iter().map(|hit| {
-                    serde_json::json!({
-                        "name": hit.node.name,
-                        "kind": hit.node.kind.as_str(),
-                        "score": hit.score,
-                        "file": hit.node.file_path,
-                        "lines": hit.node.line_range,
-                        "signature": hit.node.signature,
-                        "source": hit.source,
-                        "callers": hit.callers,
-                        "callees": hit.callees,
+                let json_results: Vec<serde_json::Value> = results
+                    .iter()
+                    .map(|hit| {
+                        serde_json::json!({
+                            "name": hit.node.name,
+                            "kind": hit.node.kind.as_str(),
+                            "score": hit.score,
+                            "file": hit.node.file_path,
+                            "lines": hit.node.line_range,
+                            "signature": hit.node.signature,
+                            "source": hit.source,
+                            "callers": hit.callers,
+                            "callees": hit.callees,
+                        })
                     })
-                }).collect();
+                    .collect();
                 println!("{}", serde_json::to_string_pretty(&json_results)?);
             } else {
                 // 表格格式输出（人类可读）
                 if results.is_empty() {
                     println!("未找到匹配结果");
                 } else {
-                    println!("{:<4} {:<30} {:<12} {:<8} 文件", "#", "名称", "类型", "分数");
+                    println!(
+                        "{:<4} {:<30} {:<12} {:<8} 文件",
+                        "#", "名称", "类型", "分数"
+                    );
                     println!("{}", "-".repeat(80));
                     for (i, hit) in results.iter().enumerate() {
                         let file = hit.node.file_path.as_deref().unwrap_or("-");
-                        println!("{:<4} {:<30} {:<12} {:<8.2} {}",
-                            i + 1, hit.node.name, hit.node.kind.as_str(), hit.score, file);
+                        println!(
+                            "{:<4} {:<30} {:<12} {:<8.2} {}",
+                            i + 1,
+                            hit.node.name,
+                            hit.node.kind.as_str(),
+                            hit.score,
+                            file
+                        );
                     }
                 }
                 // v32 10.1：语义索引降级显式提示（文本模式）——降级标记由
@@ -1093,12 +1218,17 @@ fn main() -> anyhow::Result<()> {
                 // 失败（配置缺失/损坏）与无标记一样静默——搜索本身已成功，
                 // 提示只是附加信息，不让配置错误打断结果展示。
                 let cfg = code_repo_wiki::load_config_rooted(config.as_deref(), &root).ok();
-                if let Some(reason) = cfg.and_then(|c| code_repo_wiki::semantic_degraded_reason(&c)) {
+                if let Some(reason) = cfg.and_then(|c| code_repo_wiki::semantic_degraded_reason(&c))
+                {
                     println!("语义索引已降级（原因: {}）", reason.trim());
                 }
             }
         }
-        Commands::Install { claude, codex, root } => {
+        Commands::Install {
+            claude,
+            codex,
+            root,
+        } => {
             // v25 起 init 并入 install：先确保用户级默认配置就绪
             // （缺失自动创建，含项目级 config.toml 覆盖链语义），
             // 再执行集成安装（v33 合并版：OpenCode 插件 + 多 Agent MCP
@@ -1122,7 +1252,12 @@ fn main() -> anyhow::Result<()> {
             let rt = code_repo_wiki::get_global_runtime();
             rt.block_on(code_repo_wiki::mcp::serve_stdio(config.as_deref(), root))?;
         }
-        Commands::Card { action, root, wait, skip_if_locked } => {
+        Commands::Card {
+            action,
+            root,
+            wait,
+            skip_if_locked,
+        } => {
             use code_repo_wiki::generate::card as card_cmd;
             // Phase 15.4：card 写卡片同样纳入运行锁；--wait/--skip-if-locked
             // 与 generate/update 同构（Phase 15.2）转 LockOptions
@@ -1135,23 +1270,59 @@ fn main() -> anyhow::Result<()> {
                 CardAction::Generate { module, config } => {
                     (config, card_cmd::CardAction::Generate { module })
                 }
-                CardAction::Modify { module, instruction, reference, config } => (
+                CardAction::Modify {
+                    module,
+                    instruction,
+                    reference,
                     config,
-                    card_cmd::CardAction::Modify { module, instruction, references: reference },
+                } => (
+                    config,
+                    card_cmd::CardAction::Modify {
+                        module,
+                        instruction,
+                        references: reference,
+                    },
                 ),
-                CardAction::Supplement { module, instruction, reference, config } => (
+                CardAction::Supplement {
+                    module,
+                    instruction,
+                    reference,
                     config,
-                    card_cmd::CardAction::Supplement { module, instruction, references: reference },
+                } => (
+                    config,
+                    card_cmd::CardAction::Supplement {
+                        module,
+                        instruction,
+                        references: reference,
+                    },
                 ),
-                CardAction::Rewrite { module, instruction, reference, config } => (
+                CardAction::Rewrite {
+                    module,
+                    instruction,
+                    reference,
                     config,
-                    card_cmd::CardAction::Rewrite { module, instruction, references: reference },
+                } => (
+                    config,
+                    card_cmd::CardAction::Rewrite {
+                        module,
+                        instruction,
+                        references: reference,
+                    },
                 ),
             };
             let root = resolve_root(root.as_deref())?;
             code_repo_wiki::run_card_command(config.as_deref(), &root, &action, lock)?;
         }
-        Commands::Bench { root, repo_name, config, json, judge, rubrics_only, repodoc, reference } => {
+        Commands::Bench {
+            root,
+            repo_name,
+            config,
+            json,
+            judge,
+            rubrics_only,
+            repodoc,
+            reference,
+        } => {
             // 评测基准（U10）：五维自动评测。root 必填（评测对象仓库根），
             // root 经 resolve_root 校验目录存在性（N7）。config 缺省走默认
             // 配置链（E 组：项目级 → 全局 → 创建全局）；repo_name 缺省取
@@ -1187,15 +1358,22 @@ fn main() -> anyhow::Result<()> {
                 println!("{}", code_repo_wiki::bench::render_markdown(&report));
             }
         }
-        Commands::BenchManifest { manifest, config, json, work_dir } => {
+        Commands::BenchManifest {
+            manifest,
+            config,
+            json,
+            work_dir,
+        } => {
             // 清单批量跑分（v21 E 组）：模板配置只取 scope/llm/provider 等
             // 语义字段，产物目录按仓库覆盖为 work_dir/<name>-out/。
             // work_dir 缺省系统临时目录（远程 clone 落地）。
-            let work_dir = work_dir.unwrap_or_else(|| {
-                std::env::temp_dir().join("code-repo-wiki-bench-manifest")
-            });
+            let work_dir = work_dir
+                .unwrap_or_else(|| std::env::temp_dir().join("code-repo-wiki-bench-manifest"));
             let cfg = match config {
-                Some(path) => code_repo_wiki::load_config_rooted(Some(&path), &code_repo_wiki::project::ProjectRoot::new(std::env::current_dir()?))?,
+                Some(path) => code_repo_wiki::load_config_rooted(
+                    Some(&path),
+                    &code_repo_wiki::project::ProjectRoot::new(std::env::current_dir()?),
+                )?,
                 None => {
                     // 缺省走默认加载链（项目级 → 用户级 → 创建用户级）
                     let root = code_repo_wiki::project::ProjectRoot::new(std::env::current_dir()?);
@@ -1207,7 +1385,10 @@ fn main() -> anyhow::Result<()> {
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
-                println!("{}", code_repo_wiki::bench::manifest::render_manifest_markdown(&report));
+                println!(
+                    "{}",
+                    code_repo_wiki::bench::manifest::render_manifest_markdown(&report)
+                );
             }
         }
     }
@@ -1225,7 +1406,12 @@ mod tests {
         current: Option<u32>,
         total: Option<u32>,
     ) -> code_repo_wiki::ProgressEvent {
-        code_repo_wiki::ProgressEvent { stage, percent, current, total }
+        code_repo_wiki::ProgressEvent {
+            stage,
+            percent,
+            current,
+            total,
+        }
     }
 
     #[test]

@@ -3,11 +3,11 @@
 //! 通过 SQLite FTS5 虚拟表实现全文搜索，BM25 排序由 SQLite 内置完成。
 //! 支持并发读取（WAL 模式），写操作自动排队。
 
-use std::path::Path;
 use anyhow::Result;
+use std::path::Path;
 
-use crate::model::CodeNode;
 use super::store::SearchStore;
+use crate::model::CodeNode;
 
 /// BM25 全文搜索引擎
 ///
@@ -31,7 +31,8 @@ impl TextEngine {
 
     /// 索引一个 CodeNode。
     pub fn index(&mut self, node: &CodeNode, source_code: &str) -> Result<()> {
-        self.store.insert_entities_batch(&[(node.clone(), source_code.to_string())])
+        self.store
+            .insert_entities_batch(&[(node.clone(), source_code.to_string())])
     }
 
     /// 批量索引多个实体。
@@ -70,11 +71,14 @@ mod tests {
 
     fn make_node(name: &str, kind: NodeKind) -> CodeNode {
         CodeNode {
-            id: NodeId::new(0), kind, name: name.into(),
+            id: NodeId::new(0),
+            kind,
+            name: name.into(),
             file_path: Some("src/test.rs".into()),
             line_range: Some((1, 5)),
             doc_comment: None,
-            signature: Some(format!("fn {}()", name)), visibility: None,
+            signature: Some(format!("fn {}()", name)),
+            visibility: None,
             module_path: vec![],
         }
     }
@@ -83,7 +87,11 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let mut p = std::env::temp_dir();
-        p.push(format!("text_fts_{}_{}.db", label, COUNTER.fetch_add(1, Ordering::Relaxed)));
+        p.push(format!(
+            "text_fts_{}_{}.db",
+            label,
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
         let _ = std::fs::remove_file(&p);
         p
     }
@@ -91,8 +99,14 @@ mod tests {
     #[test]
     fn test_index_and_search() -> Result<()> {
         let (mut engine, _) = TextEngine::open(tmp_path("index_search"))?;
-        engine.index(&make_node("add_user", NodeKind::Function), "fn add_user(name: &str)")?;
-        engine.index(&make_node("delete_user", NodeKind::Function), "fn delete_user(id: u64)")?;
+        engine.index(
+            &make_node("add_user", NodeKind::Function),
+            "fn add_user(name: &str)",
+        )?;
+        engine.index(
+            &make_node("delete_user", NodeKind::Function),
+            "fn delete_user(id: u64)",
+        )?;
         let results = engine.search("add_user", 10)?;
         assert!(!results.is_empty());
         assert!(results[0].0.name.contains("add_user"));
@@ -134,18 +148,26 @@ mod tests {
     fn test_remove_by_file() -> Result<()> {
         let (mut engine, _) = TextEngine::open(tmp_path("remove"))?;
         let node_a = CodeNode {
-            id: NodeId::new(0), kind: NodeKind::Function,
+            id: NodeId::new(0),
+            kind: NodeKind::Function,
             name: "alpha_unique".into(),
             file_path: Some("src/alpha.rs".into()),
-            line_range: Some((1, 3)), doc_comment: None,
-            signature: None, module_path: vec![], visibility: None,
+            line_range: Some((1, 3)),
+            doc_comment: None,
+            signature: None,
+            module_path: vec![],
+            visibility: None,
         };
         let node_b = CodeNode {
-            id: NodeId::new(1), kind: NodeKind::Function,
+            id: NodeId::new(1),
+            kind: NodeKind::Function,
             name: "beta_unique".into(),
             file_path: Some("src/beta.rs".into()),
-            line_range: Some((1, 3)), doc_comment: None,
-            signature: None, module_path: vec![], visibility: None,
+            line_range: Some((1, 3)),
+            doc_comment: None,
+            signature: None,
+            module_path: vec![],
+            visibility: None,
         };
         engine.index_batch(&[(node_a, "alpha".into()), (node_b, "beta".into())])?;
         assert_eq!(engine.doc_count(), 2);
@@ -162,8 +184,14 @@ mod tests {
     #[test]
     fn test_short_keyword_baseline() -> Result<()> {
         let (mut engine, _) = TextEngine::open(tmp_path("short_keyword"))?;
-        engine.index(&make_node("a_helper", NodeKind::Function), "fn a_helper(x: u32)")?;
-        engine.index(&make_node("udp_send", NodeKind::Function), "fn udp_send(sock: u32)")?;
+        engine.index(
+            &make_node("a_helper", NodeKind::Function),
+            "fn a_helper(x: u32)",
+        )?;
+        engine.index(
+            &make_node("udp_send", NodeKind::Function),
+            "fn udp_send(sock: u32)",
+        )?;
         // 1 字符 token 查询：BM25 token 精确匹配，含单字符 token 的实体命中
         let short = engine.search("a", 10)?;
         assert!(
@@ -172,7 +200,10 @@ mod tests {
         );
         // 2 字符 token 精确查询
         let two = engine.search("udp", 10)?;
-        assert!(two.iter().any(|(n, _)| n.name == "udp_send"), "2 字符 token 应命中");
+        assert!(
+            two.iter().any(|(n, _)| n.name == "udp_send"),
+            "2 字符 token 应命中"
+        );
         Ok(())
     }
 }

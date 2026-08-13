@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, Result};
 
@@ -33,13 +33,11 @@ impl EmbeddingEngine {
             client,
             config: config.clone(),
             call_count: AtomicUsize::new(0),
-            semaphore: Arc::new(tokio::sync::Semaphore::new(
-                {
-                    let mc = config.max_concurrency.unwrap_or(4);
-                    anyhow::ensure!(mc > 0, "max_concurrency 必须为正整数（当前 0）");
-                    mc as usize
-                }
-            )),
+            semaphore: Arc::new(tokio::sync::Semaphore::new({
+                let mc = config.max_concurrency.unwrap_or(4);
+                anyhow::ensure!(mc > 0, "max_concurrency 必须为正整数（当前 0）");
+                mc as usize
+            })),
             rt,
         })
     }
@@ -109,8 +107,11 @@ impl EmbeddingEngine {
         // 串行等待每批 RTT 让大仓批量嵌入分钟级阻塞。buffer_unordered(4)
         // 并发发送、按 chunk 索引收集，保持结果顺序与串行一致。
         const EMBED_CONCURRENCY: usize = 4;
-        let chunks: Vec<&[&str]> = texts.chunks(crate::config::schema::EMBED_BATCH_SIZE).collect();
-        let mut results: Vec<Option<Result<Vec<Vec<f32>>>>> = (0..chunks.len()).map(|_| None).collect();
+        let chunks: Vec<&[&str]> = texts
+            .chunks(crate::config::schema::EMBED_BATCH_SIZE)
+            .collect();
+        let mut results: Vec<Option<Result<Vec<Vec<f32>>>>> =
+            (0..chunks.len()).map(|_| None).collect();
         let model = self.config.model.clone();
 
         use futures::StreamExt;
@@ -122,11 +123,11 @@ impl EmbeddingEngine {
             async move {
                 let body = serde_json::json!({ "model": model, "input": chunk });
 
-            // N16：embedding 请求接入统一重试骨架（与 LLM 通道一致：429/5xx/
-            // 超时/连接失败按指数退避重试，其余 4xx 立即失败）。每轮重试重建
-            // 请求（闭包捕获 body/url/key 的引用）。
-            // v47：retry_with_backoff 输出放宽为 anyhow（send 阶段首字节超时
-            // 保护）；此处直接包一层 Ok(...) 保持 anyhow 语义。
+                // N16：embedding 请求接入统一重试骨架（与 LLM 通道一致：429/5xx/
+                // 超时/连接失败按指数退避重试，其余 4xx 立即失败）。每轮重试重建
+                // 请求（闭包捕获 body/url/key 的引用）。
+                // v47：retry_with_backoff 输出放宽为 anyhow（send 阶段首字节超时
+                // 保护）；此处直接包一层 Ok(...) 保持 anyhow 语义。
                 let resp = crate::generate::llm::retry_with_backoff(
                     crate::generate::llm::MAX_RETRIES,
                     || {
@@ -163,53 +164,51 @@ impl EmbeddingEngine {
             let (idx, resp) = item?;
             self.call_count.fetch_add(1, Ordering::Relaxed);
 
-                let data: serde_json::Value = resp
-                    .json()
-                    .await
-                    .context("解析 Embedding API 响应 JSON 失败")?;
+            let data: serde_json::Value = resp
+                .json()
+                .await
+                .context("解析 Embedding API 响应 JSON 失败")?;
 
-                let embeddings = data["data"]
-                    .as_array()
-                    .context("Embedding 响应缺少 data 字段")?
-                    .iter()
-                    .map(|item| {
-                        let arr = item["embedding"]
-                            .as_array()
-                            .context("嵌入向量缺失")?;
-                        // B6：元素必须全为数字——filter_map 静默丢弃非数字元素会
-                        // 让向量降维而不报错（同批一致变短时维度校验也捕获不到），
-                        // 模型输出异常必须显式失败而非产出残缺向量
-                        arr.iter()
-                            .map(|v| {
-                                v.as_f64()
-                                    .map(|f| f as f32)
-                                    .with_context(|| "嵌入向量包含非数字元素（模型输出异常，拒绝静默丢弃）")
-                            })
-                            .collect::<Result<Vec<f32>>>()
-                    })
-                    .collect::<Result<Vec<_>>>()?;
+            let embeddings = data["data"]
+                .as_array()
+                .context("Embedding 响应缺少 data 字段")?
+                .iter()
+                .map(|item| {
+                    let arr = item["embedding"].as_array().context("嵌入向量缺失")?;
+                    // B6：元素必须全为数字——filter_map 静默丢弃非数字元素会
+                    // 让向量降维而不报错（同批一致变短时维度校验也捕获不到），
+                    // 模型输出异常必须显式失败而非产出残缺向量
+                    arr.iter()
+                        .map(|v| {
+                            v.as_f64().map(|f| f as f32).with_context(
+                                || "嵌入向量包含非数字元素（模型输出异常，拒绝静默丢弃）",
+                            )
+                        })
+                        .collect::<Result<Vec<f32>>>()
+                })
+                .collect::<Result<Vec<_>>>()?;
 
-                // N5 修复：响应校验——data 条数必须与请求批次一致，且同批
-                // 向量维度必须一致。此前只校验"字段存在"，条数不足时
-                // 索引错位（下游 zip 静默丢弃多余/缺失）、维度不一致时
-                // 向量库维度校验失败但错误发生在数据已被吞之后。
-                if embeddings.len() != chunks[idx].len() {
+            // N5 修复：响应校验——data 条数必须与请求批次一致，且同批
+            // 向量维度必须一致。此前只校验"字段存在"，条数不足时
+            // 索引错位（下游 zip 静默丢弃多余/缺失）、维度不一致时
+            // 向量库维度校验失败但错误发生在数据已被吞之后。
+            if embeddings.len() != chunks[idx].len() {
+                anyhow::bail!(
+                    "Embedding 响应数量不匹配：请求 {} 条，返回 {} 条",
+                    chunks[idx].len(),
+                    embeddings.len()
+                );
+            }
+            if let Some(first) = embeddings.first() {
+                let dim = first.len();
+                if let Some(bad) = embeddings.iter().find(|v| v.len() != dim) {
                     anyhow::bail!(
-                        "Embedding 响应数量不匹配：请求 {} 条，返回 {} 条",
-                        chunks[idx].len(),
-                        embeddings.len()
+                        "Embedding 响应维度不一致：{} 维与 {} 维并存",
+                        dim,
+                        bad.len()
                     );
                 }
-                if let Some(first) = embeddings.first() {
-                    let dim = first.len();
-                    if let Some(bad) = embeddings.iter().find(|v| v.len() != dim) {
-                        anyhow::bail!(
-                            "Embedding 响应维度不一致：{} 维与 {} 维并存",
-                            dim,
-                            bad.len()
-                        );
-                    }
-                }
+            }
 
             results[idx] = Some(Ok(embeddings));
         }
@@ -257,8 +256,7 @@ impl Embedder for EmbeddingEngine {
     }
 
     fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        self.rt
-            .block_on(EmbeddingEngine::embed_batch(self, texts))
+        self.rt.block_on(EmbeddingEngine::embed_batch(self, texts))
     }
 
     fn cosine_similarity(&self, a: &[f32], b: &[f32]) -> f64 {
@@ -277,7 +275,9 @@ pub fn build_embedder(
         crate::config::schema::EmbedProvider::Local => {
             #[cfg(feature = "local-embed")]
             {
-                Ok(std::sync::Arc::new(LocalEmbedder::new(&config.local_model)?))
+                Ok(std::sync::Arc::new(LocalEmbedder::new(
+                    &config.local_model,
+                )?))
             }
             #[cfg(not(feature = "local-embed"))]
             {
@@ -311,7 +311,9 @@ impl LocalEmbedder {
             "bge-small-en-v1.5" => fastembed::EmbeddingModel::BGESmallENV15,
             "bge-m3" => fastembed::EmbeddingModel::BGEM3,
             "multilingual-e5-small" => fastembed::EmbeddingModel::MultilingualE5Small,
-            _ => anyhow::bail!("不支持的本地嵌入模型: {model}（可选：bge-small-zh-v1.5/bge-small-en-v1.5/bge-m3/multilingual-e5-small）"),
+            _ => anyhow::bail!(
+                "不支持的本地嵌入模型: {model}（可选：bge-small-zh-v1.5/bge-small-en-v1.5/bge-m3/multilingual-e5-small）"
+            ),
         };
         Ok(Self {
             model,
@@ -427,6 +429,9 @@ mod tests {
             .err()
             .expect("max_concurrency=0 应被构造器拒绝")
             .to_string();
-        assert!(err.contains("必须为正整数"), "错误信息应引导配置修正: {err}");
+        assert!(
+            err.contains("必须为正整数"),
+            "错误信息应引导配置修正: {err}"
+        );
     }
 }

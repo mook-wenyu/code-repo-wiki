@@ -29,11 +29,11 @@
 use std::path::{Path, PathBuf};
 
 use code_repo_wiki::bench::{
-    render_markdown, run_rubrics_only, BenchReport, CompletenessReport, CoverageReport,
-    DocInfoReport, LintReport, TimeReport, UpdateRecallReport,
+    BenchReport, CompletenessReport, CoverageReport, DocInfoReport, LintReport, TimeReport,
+    UpdateRecallReport, render_markdown, run_rubrics_only,
 };
 use code_repo_wiki::config::schema::{
-    LlmProviderType, LlmSection, WikiConfig, WikiSection, SEARCH_INDEX_DIR,
+    LlmProviderType, LlmSection, SEARCH_INDEX_DIR, WikiConfig, WikiSection,
 };
 use code_repo_wiki::model::{CodeNode, NodeId, NodeKind};
 use code_repo_wiki::project::ProjectRoot;
@@ -51,7 +51,12 @@ fn temp_dir(tag: &str) -> PathBuf {
 /// 构造被测仓库：dir/src/<rel> 写入源码，.code-repo-wiki/wiki/zh/<page>
 /// 写入手工产物页（确定性内容，不依赖生成流水线），LLM 恒为 Mock。
 /// 返回 (root, config)。
-fn repo_with_pages(dir: &Path, source_rel: &str, source: &str, pages: &[(&str, &str)]) -> (ProjectRoot, WikiConfig) {
+fn repo_with_pages(
+    dir: &Path,
+    source_rel: &str,
+    source: &str,
+    pages: &[(&str, &str)],
+) -> (ProjectRoot, WikiConfig) {
     let file = dir.join(source_rel);
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(&file, source).unwrap();
@@ -61,12 +66,27 @@ fn repo_with_pages(dir: &Path, source_rel: &str, source: &str, pages: &[(&str, &
         std::fs::write(wiki_zh.join(name), content).unwrap();
     }
     let config = WikiConfig {
-        output_dir: Some(dir.join(".code-repo-wiki").to_string_lossy().into_owned().into()),
-        wiki: WikiSection { language: "zh".into(), guide: Default::default() },
-        llm: LlmSection { provider: LlmProviderType::Mock, ..Default::default() },
+        output_dir: Some(
+            dir.join(".code-repo-wiki")
+                .to_string_lossy()
+                .into_owned()
+                .into(),
+        ),
+        wiki: WikiSection {
+            language: "zh".into(),
+            guide: Default::default(),
+        },
+        llm: LlmSection {
+            provider: LlmProviderType::Mock,
+            ..Default::default()
+        },
         ..Default::default()
     };
-    std::fs::write(dir.join("config.toml"), toml::to_string_pretty(&config).unwrap()).unwrap();
+    std::fs::write(
+        dir.join("config.toml"),
+        toml::to_string_pretty(&config).unwrap(),
+    )
+    .unwrap();
     (ProjectRoot::new(dir.to_path_buf()), config)
 }
 
@@ -87,7 +107,11 @@ fn base_report(completeness: CompletenessReport) -> BenchReport {
     BenchReport {
         repo_name: "demo".into(),
         generated_at: "2026-08-03T00:00:00Z".into(),
-        coverage: CoverageReport { total_entities: 2, covered_entities: 2, ratio: 1.0 },
+        coverage: CoverageReport {
+            total_entities: 2,
+            covered_entities: 2,
+            ratio: 1.0,
+        },
         doc_info: DocInfoReport {
             pages: 1,
             words: 10,
@@ -99,14 +123,21 @@ fn base_report(completeness: CompletenessReport) -> BenchReport {
             llm_judged_modules: 0,
             llm_abstain_modules: 0,
         },
-        lint: LintReport { total_issues: 0, by_kind: Default::default() },
+        lint: LintReport {
+            total_issues: 0,
+            by_kind: Default::default(),
+        },
         update_recall: UpdateRecallReport {
             commits_scanned: 0,
             commits_with_changes: 0,
             correctly_updated: 0,
             recall: 1.0,
         },
-        time: TimeReport { scan_ms: 0, generate_ms: 0, total_ms: 0 },
+        time: TimeReport {
+            scan_ms: 0,
+            generate_ms: 0,
+            total_ms: 0,
+        },
         timings: None,
         tqs: None,
         rubric: None,
@@ -333,7 +364,10 @@ fn test_e2e_degrades_when_index_file_missing_dir_exists() {
 
     let report = run_rubrics_only(&root, &config, "demo", &[]).unwrap();
     let c = &report.completeness;
-    assert!(!c.judged, "索引文件缺失应降级跳过（judged=false），即使 .search 目录存在");
+    assert!(
+        !c.judged,
+        "索引文件缺失应降级跳过（judged=false），即使 .search 目录存在"
+    );
     assert_eq!(c.total_entities, 1, "实体统计仍给出（与 coverage 同源）");
     assert_eq!(c.hit_entities, 0);
     assert_eq!(c.ratio, 0.0, "降级时不虚报命中率");
@@ -343,7 +377,10 @@ fn test_e2e_degrades_when_index_file_missing_dir_exists() {
         md.contains("- 未执行（text 索引缺失——未生成或索引不可用，降级跳过）"),
         "降级渲染应显式标注: {md}"
     );
-    assert!(!md.contains("命中实体数（top-"), "降级分支不得输出命中明细: {md}");
+    assert!(
+        !md.contains("命中实体数（top-"),
+        "降级分支不得输出命中明细: {md}"
+    );
     assert_section_order(&md);
     let _ = std::fs::remove_dir_all(root.path());
 }

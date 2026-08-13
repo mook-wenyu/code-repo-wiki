@@ -54,7 +54,9 @@ pub trait LlmProvider: Send + Sync {
     }
     async fn complete_stream(&self, messages: &[Message]) -> Result<Vec<String>> {
         let _ = messages;
-        Err(anyhow::anyhow!("当前 Provider 未实现流式调用（complete_stream）"))
+        Err(anyhow::anyhow!(
+            "当前 Provider 未实现流式调用（complete_stream）"
+        ))
     }
     /// 带输出预算上限的完整（非流式）调用。
     ///
@@ -222,7 +224,9 @@ where
                     "LLM API 返回可重试状态 {}（第 {} 次尝试）{}: {}",
                     status,
                     attempt + 1,
-                    retry_after.map(|s| format!("，Retry-After {}s", s)).unwrap_or_default(),
+                    retry_after
+                        .map(|s| format!("，Retry-After {}s", s))
+                        .unwrap_or_default(),
                     text.chars().take(2000).collect::<String>()
                 );
             }
@@ -238,7 +242,11 @@ where
             Err(e) => return Err(anyhow::anyhow!("请求失败: {}", e)),
         }
     }
-    tracing::error!("LLM API 调用重试 {} 次后全部失败: {:?}", max_retries, last_error);
+    tracing::error!(
+        "LLM API 调用重试 {} 次后全部失败: {:?}",
+        max_retries,
+        last_error
+    );
     Err(anyhow::anyhow!(
         "LLM API 调用重试 {} 次后全部失败: {:?}",
         max_retries,
@@ -272,7 +280,9 @@ fn parse_sse_stream(
         if line.is_empty() {
             continue;
         }
-        let Some(json_str) = line.strip_prefix(line_prefix) else { continue };
+        let Some(json_str) = line.strip_prefix(line_prefix) else {
+            continue;
+        };
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str)
             && let Some(text) = extract(&val)
         {
@@ -322,7 +332,12 @@ async fn send_with_timeout(
 ) -> Result<reqwest::Response> {
     tokio::time::timeout(timeout, req.send())
         .await
-        .map_err(|_| anyhow::anyhow!("请求超时（{}s 未收到响应首字节，端点可能不可达）", timeout.as_secs()))?
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "请求超时（{}s 未收到响应首字节，端点可能不可达）",
+                timeout.as_secs()
+            )
+        })?
         .map_err(Into::into)
 }
 
@@ -341,7 +356,10 @@ async fn collect_sse(
     // v16 B 组：流式消费的可观测性——长生成场景（分钟级）若无日志，
     // 用户无法区分"模型还在产出"与"卡死无响应"。记录流开始与结束
     // 统计，空闲超时单独 warn（含已收 chunk 数，便于判断进度丢失量）。
-    tracing::info!("SSE 流开始消费（空闲超时保护 {}s）", SSE_IDLE_TIMEOUT.as_secs());
+    tracing::info!(
+        "SSE 流开始消费（空闲超时保护 {}s）",
+        SSE_IDLE_TIMEOUT.as_secs()
+    );
     loop {
         let item = match tokio::time::timeout(SSE_IDLE_TIMEOUT, stream.next()).await {
             Ok(Some(Ok(item))) => item,
@@ -505,13 +523,11 @@ impl OpenAiProvider {
             // audit-gen-03：与生成层信号量共用 llm_effective_concurrency
             // （统一并发语义：None=默认 16，显式配置直接生效）；tokio
             // Semaphore::new 许可数上限约 2^61，u32 配置值远低于此
-            semaphore: Arc::new(tokio::sync::Semaphore::new(
-                {
-                    let mc = crate::config::schema::llm_effective_concurrency(config);
-                    anyhow::ensure!(mc > 0, "max_concurrency 必须为正整数（当前 0）");
-                    mc
-                }
-            )),
+            semaphore: Arc::new(tokio::sync::Semaphore::new({
+                let mc = crate::config::schema::llm_effective_concurrency(config);
+                anyhow::ensure!(mc > 0, "max_concurrency 必须为正整数（当前 0）");
+                mc
+            })),
         })
     }
 }
@@ -552,7 +568,8 @@ impl OpenAiProvider {
         // Responses 协议无此参数（其 effort 走 output_config——本项目未使用，
         // 见 build_responses_body 注释），Anthropic 协议无此参数。
         if let Some(thinking) = self.thinking {
-            body["thinking"] = serde_json::json!({ "type": if thinking { "enabled" } else { "disabled" } });
+            body["thinking"] =
+                serde_json::json!({ "type": if thinking { "enabled" } else { "disabled" } });
         }
         if let Some(effort) = &self.reasoning_effort {
             body["reasoning_effort"] = serde_json::json!(effort);
@@ -574,7 +591,10 @@ impl OpenAiProvider {
         max_output_tokens_override: Option<u32>,
     ) -> serde_json::Value {
         // system 消息 → 顶层 instructions；user/assistant → input items
-        let system = messages.iter().find(|m| m.role == "system").map(|m| &m.content);
+        let system = messages
+            .iter()
+            .find(|m| m.role == "system")
+            .map(|m| &m.content);
         let input: Vec<serde_json::Value> = messages
             .iter()
             .filter(|m| m.role != "system")
@@ -638,9 +658,13 @@ impl LlmProvider for OpenAiProvider {
             .await
             .map_err(|_| anyhow::anyhow!("并发信号量已关闭"))?;
         let chunks = match self.protocol {
-            OpenAiProtocol::Chat => self.chat_complete_stream(messages, max_output_tokens).await?,
+            OpenAiProtocol::Chat => {
+                self.chat_complete_stream(messages, max_output_tokens)
+                    .await?
+            }
             OpenAiProtocol::Responses => {
-                self.responses_complete_stream(messages, max_output_tokens).await?
+                self.responses_complete_stream(messages, max_output_tokens)
+                    .await?
             }
         };
         Ok(chunks.concat())
@@ -670,7 +694,10 @@ impl OpenAiProvider {
         // v47：send 包首字节超时（防端点黑洞挂起——实测 16h 僵尸进程）
         let resp = retry_with_backoff(self.max_retries, || {
             send_with_timeout(
-                self.client.post(&url).bearer_auth(&self.api_key).json(&body),
+                self.client
+                    .post(&url)
+                    .bearer_auth(&self.api_key)
+                    .json(&body),
                 SEND_FIRST_BYTE_TIMEOUT,
             )
         })
@@ -702,7 +729,9 @@ impl OpenAiProvider {
         // P0-8：finish_reason=length 表示输出被 max_tokens 截断——显式报错，
         // 调用方（卡片/页面重试协议）按失败处理，不再把残缺内容当完整产物
         if finish_reason.as_deref() == Some("length") {
-            anyhow::bail!("模型输出被 max_tokens 截断（finish_reason=length），请增大输出预算或简化输入后重试");
+            anyhow::bail!(
+                "模型输出被 max_tokens 截断（finish_reason=length），请增大输出预算或简化输入后重试"
+            );
         }
         Ok(chunks)
     }
@@ -726,7 +755,10 @@ impl OpenAiProvider {
         // v47：send 包首字节超时（防端点黑洞挂起）
         let resp = retry_with_backoff(self.max_retries, || {
             send_with_timeout(
-                self.client.post(&url).bearer_auth(&self.api_key).json(&body),
+                self.client
+                    .post(&url)
+                    .bearer_auth(&self.api_key)
+                    .json(&body),
                 SEND_FIRST_BYTE_TIMEOUT,
             )
         })
@@ -775,7 +807,9 @@ impl OpenAiProvider {
         // （finish_extract 已映射为 "length"）——与 chat/anthropic 路径同语义，
         // 显式报错，不再把部分内容当完整产物
         if finish_reason.as_deref() == Some("length") {
-            anyhow::bail!("模型输出被截断（response.incomplete），请增大 max_output_tokens 或简化输入后重试");
+            anyhow::bail!(
+                "模型输出被截断（response.incomplete），请增大 max_output_tokens 或简化输入后重试"
+            );
         }
         Ok(chunks)
     }
@@ -828,13 +862,11 @@ impl AnthropicProvider {
             call_count: std::sync::atomic::AtomicUsize::new(0),
             // audit-gen-03：与生成层信号量共用 llm_effective_concurrency
             // （统一并发语义：None=默认 16，显式配置直接生效）
-            semaphore: Arc::new(tokio::sync::Semaphore::new(
-                {
-                    let mc = crate::config::schema::llm_effective_concurrency(config);
-                    anyhow::ensure!(mc > 0, "max_concurrency 必须为正整数（当前 0）");
-                    mc
-                }
-            )),
+            semaphore: Arc::new(tokio::sync::Semaphore::new({
+                let mc = crate::config::schema::llm_effective_concurrency(config);
+                anyhow::ensure!(mc > 0, "max_concurrency 必须为正整数（当前 0）");
+                mc
+            })),
         })
     }
 }
@@ -850,7 +882,10 @@ impl AnthropicProvider {
         max_tokens_override: Option<u32>,
     ) -> serde_json::Value {
         // 分离 system 消息与用户/助手消息
-        let system = messages.iter().find(|m| m.role == "system").map(|m| &m.content);
+        let system = messages
+            .iter()
+            .find(|m| m.role == "system")
+            .map(|m| &m.content);
         let non_system: Vec<&Message> = messages.iter().filter(|m| m.role != "system").collect();
 
         // 将非 system 消息转换为 Anthropic 格式
@@ -943,7 +978,9 @@ impl LlmProvider for AnthropicProvider {
         // P0-8：stop_reason=max_tokens 表示输出被 max_tokens 截断——显式报错，
         // 不把残缺内容当完整产物
         if finish_reason.as_deref() == Some("max_tokens") {
-            anyhow::bail!("模型输出被 max_tokens 截断（stop_reason=max_tokens），请增大 max_tokens 或简化输入后重试");
+            anyhow::bail!(
+                "模型输出被 max_tokens 截断（stop_reason=max_tokens），请增大 max_tokens 或简化输入后重试"
+            );
         }
         Ok(chunks)
     }
@@ -1012,7 +1049,9 @@ impl LlmProvider for AnthropicProvider {
         // P0-8：stop_reason=max_tokens 表示输出被 max_tokens 截断——显式报错，
         // 不把残缺内容当完整产物（预算路径同语义）
         if finish_reason.as_deref() == Some("max_tokens") {
-            anyhow::bail!("模型输出被 max_tokens 截断（stop_reason=max_tokens），请增大 max_tokens 或简化输入后重试");
+            anyhow::bail!(
+                "模型输出被 max_tokens 截断（stop_reason=max_tokens），请增大 max_tokens 或简化输入后重试"
+            );
         }
         Ok(chunks.concat())
     }
@@ -1054,8 +1093,7 @@ const MOCK_CARD_JSON: &str = r#"{"summary": "这是 Mock Provider 生成的模�
 /// 非 JSON 类提示词（wiki 页/架构/概览/模块描述等）返回的占位 Markdown，
 /// 含「模拟摘要」锚点与 mock 辨识页脚。不含 ```mermaid 与模板占位符，
 /// 通过下游 mermaid/残留校验（一次调用即成功，不触发重试）。
-const MOCK_MARKDOWN: &str =
-    "# Mock 占位文档\n\n这是 Mock Provider 生成的模拟摘要，用于本地测试与无 Key 演示（非真实文档）。\n";
+const MOCK_MARKDOWN: &str = "# Mock 占位文档\n\n这是 Mock Provider 生成的模拟摘要，用于本地测试与无 Key 演示（非真实文档）。\n";
 
 impl LlmProvider for MockProvider {
     /// 内容语义分流（audit-gen-02）
@@ -1132,15 +1170,25 @@ mod tests {
                 Ok(n) => buf.extend_from_slice(&tmp[..n]),
             }
         }
-        let head_end = buf.windows(4).position(|w| w == b"\r\n\r\n").unwrap_or(buf.len());
+        let head_end = buf
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .unwrap_or(buf.len());
         let head = String::from_utf8_lossy(&buf[..head_end]).to_string();
         let mut lines = head.split("\r\n");
-        let path = lines.next().unwrap_or("").split_whitespace().nth(1).unwrap_or("").to_string();
+        let path = lines
+            .next()
+            .unwrap_or("")
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or("")
+            .to_string();
         let headers: Vec<(String, String)> = lines
             .filter_map(|l| l.split_once(':'))
             .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
             .collect();
-        let content_length = headers.iter()
+        let content_length = headers
+            .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
             .and_then(|(_, v)| v.parse::<usize>().ok())
             .unwrap_or(0);
@@ -1153,10 +1201,15 @@ mod tests {
                 Ok(n) => buf.extend_from_slice(&tmp[..n]),
             }
         }
-        let body =
-            String::from_utf8_lossy(&buf[head_end + HEADER_SEP..head_end + HEADER_SEP + content_length])
-                .to_string();
-        MockRequest { path, headers, body }
+        let body = String::from_utf8_lossy(
+            &buf[head_end + HEADER_SEP..head_end + HEADER_SEP + content_length],
+        )
+        .to_string();
+        MockRequest {
+            path,
+            headers,
+            body,
+        }
     }
 
     /// 启动本地 mock HTTP server：每连接处理一个请求，由 handler 生成响应。
@@ -1178,7 +1231,10 @@ mod tests {
                     let reason = if resp.status == 200 { "OK" } else { "Error" };
                     let raw = format!(
                         "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                        resp.status, reason, resp.body.len(), resp.body
+                        resp.status,
+                        reason,
+                        resp.body.len(),
+                        resp.body
                     );
                     let _ = stream.write_all(raw.as_bytes());
                 });
@@ -1211,7 +1267,10 @@ mod tests {
             .err()
             .expect("max_concurrency=0 应被构造器拒绝")
             .to_string();
-        assert!(err.contains("必须为正整数"), "错误信息应引导配置修正: {err}");
+        assert!(
+            err.contains("必须为正整数"),
+            "错误信息应引导配置修正: {err}"
+        );
     }
 
     /// Anthropic 同款拒绝（T04b 三处统一）
@@ -1224,7 +1283,10 @@ mod tests {
             .err()
             .expect("max_concurrency=0 应被构造器拒绝")
             .to_string();
-        assert!(err.contains("必须为正整数"), "错误信息应引导配置修正: {err}");
+        assert!(
+            err.contains("必须为正整数"),
+            "错误信息应引导配置修正: {err}"
+        );
     }
 
     // ============ 原有测试 ============
@@ -1287,7 +1349,8 @@ data: [DONE]
             }
         });
 
-        let provider = OpenAiProvider::new(&openai_config(&base_url), OpenAiProtocol::Chat).unwrap();
+        let provider =
+            OpenAiProvider::new(&openai_config(&base_url), OpenAiProtocol::Chat).unwrap();
         let messages = vec![Message::system("你是测试助手"), Message::user("你好")];
         let reply = provider.complete(&messages).await.unwrap();
 
@@ -1299,7 +1362,9 @@ data: [DONE]
 
         assert_eq!(req.path, "/v1/chat/completions");
         // Authorization: Bearer <api_key>
-        let auth = req.headers.iter()
+        let auth = req
+            .headers
+            .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case("authorization"))
             .expect("应携带 Authorization 头");
         assert_eq!(auth.1, "Bearer test-key");
@@ -1310,8 +1375,14 @@ data: [DONE]
         assert_eq!(body["messages"][0]["content"], "你是测试助手");
         assert_eq!(body["messages"][1]["role"], "user");
         // v22 起 max_tokens/temperature 硬编码为 None（模型默认），断言不写入
-        assert!(body.get("max_tokens").is_none(), "硬编码后不应写 max_tokens");
-        assert!(body.get("temperature").is_none(), "硬编码后不应写 temperature");
+        assert!(
+            body.get("max_tokens").is_none(),
+            "硬编码后不应写 max_tokens"
+        );
+        assert!(
+            body.get("temperature").is_none(),
+            "硬编码后不应写 temperature"
+        );
         assert_eq!(
             body["stream"].as_bool(),
             Some(true),
@@ -1324,11 +1395,8 @@ data: [DONE]
         // v50：thinking 三态 + reasoning_effort 透传（deepseek 官方参数：
         // thinking: {"type":"enabled"/"disabled"} + reasoning_effort，
         // 2026-08-10 抓取 api-docs.deepseek.com/guides/thinking_mode）
-        let base = OpenAiProvider::new(
-            &openai_config("http://localhost:1"),
-            OpenAiProtocol::Chat,
-        )
-        .unwrap();
+        let base = OpenAiProvider::new(&openai_config("http://localhost:1"), OpenAiProtocol::Chat)
+            .unwrap();
 
         // None：不发送（保持 provider 默认——deepseek-v4 默认启用 thinking）
         let body = base.build_chat_body(&[], false, None);
@@ -1369,7 +1437,8 @@ data: [DONE]
             body: sse.to_string(),
         });
 
-        let provider = OpenAiProvider::new(&openai_config(&base_url), OpenAiProtocol::Chat).unwrap();
+        let provider =
+            OpenAiProvider::new(&openai_config(&base_url), OpenAiProtocol::Chat).unwrap();
         let messages = vec![Message::user("你好")];
         let chunks = provider.complete_stream(&messages).await.unwrap();
 
@@ -1393,21 +1462,29 @@ data: [DONE]
                     // 第一段立即写出，间隔 300ms 后再写第二段
                     let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n";
                     let _ = stream.write_all(head.as_bytes());
-                    let _ = stream.write_all("data: {\"choices\":[{\"delta\":{\"content\":\"第一段\"}}]}\n\n".as_bytes());
+                    let _ = stream.write_all(
+                        "data: {\"choices\":[{\"delta\":{\"content\":\"第一段\"}}]}\n\n".as_bytes(),
+                    );
                     let _ = stream.flush();
                     std::thread::sleep(Duration::from_millis(300));
-                    let _ = stream.write_all("data: {\"choices\":[{\"delta\":{\"content\":\"第二段\"}}]}\n\n".as_bytes());
+                    let _ = stream.write_all(
+                        "data: {\"choices\":[{\"delta\":{\"content\":\"第二段\"}}]}\n\n".as_bytes(),
+                    );
                     let _ = stream.write_all(b"data: [DONE]\n\n");
                     let _ = stream.flush();
                 });
             }
         });
 
-        let provider = OpenAiProvider::new(&openai_config(&base_url), OpenAiProtocol::Chat).unwrap();
+        let provider =
+            OpenAiProvider::new(&openai_config(&base_url), OpenAiProtocol::Chat).unwrap();
         let messages = vec![Message::user("你好")];
         let reply = provider.complete(&messages).await.unwrap();
 
-        assert_eq!(reply, "第一段第二段", "慢流两段必须完整拼接（无总超时截断）");
+        assert_eq!(
+            reply, "第一段第二段",
+            "慢流两段必须完整拼接（无总超时截断）"
+        );
     }
 
     #[tokio::test]
@@ -1419,14 +1496,18 @@ data: [DONE]
         let base_url = spawn_mock_server(move |_req| {
             let n = attempts_server.fetch_add(1, Ordering::Relaxed);
             if n == 0 {
-                MockResponse { status: 500, body: "internal error".into() }
+                MockResponse {
+                    status: 500,
+                    body: "internal error".into(),
+                }
             } else {
                 // 成功响应为 SSE 流（流式路径的输入格式）
                 MockResponse { status: 200, body: "data: {\"choices\":[{\"delta\":{\"content\":\"重试成功\"}}]}\n\ndata: [DONE]\n\n".into() }
             }
         });
 
-        let provider = OpenAiProvider::new(&openai_config(&base_url), OpenAiProtocol::Chat).unwrap();
+        let provider =
+            OpenAiProvider::new(&openai_config(&base_url), OpenAiProtocol::Chat).unwrap();
         let messages = vec![Message::user("你好")];
         let reply = provider.complete(&messages).await.unwrap();
 
@@ -1442,13 +1523,17 @@ data: [DONE]
         let base_url = spawn_mock_server(move |_req| {
             let n = attempts_server.fetch_add(1, Ordering::Relaxed);
             if n == 0 {
-                MockResponse { status: 429, body: "rate limited".into() }
+                MockResponse {
+                    status: 429,
+                    body: "rate limited".into(),
+                }
             } else {
                 MockResponse { status: 200, body: "data: {\"choices\":[{\"delta\":{\"content\":\"限流后成功\"}}]}\n\ndata: [DONE]\n\n".into() }
             }
         });
 
-        let provider = OpenAiProvider::new(&openai_config(&base_url), OpenAiProtocol::Chat).unwrap();
+        let provider =
+            OpenAiProvider::new(&openai_config(&base_url), OpenAiProtocol::Chat).unwrap();
         let messages = vec![Message::user("你好")];
         let reply = provider.complete(&messages).await.unwrap();
 
@@ -1494,7 +1579,8 @@ data: [DONE]
             }
         });
 
-        let provider = OpenAiProvider::new(&openai_config(&base_url), OpenAiProtocol::Chat).unwrap();
+        let provider =
+            OpenAiProvider::new(&openai_config(&base_url), OpenAiProtocol::Chat).unwrap();
         let start = std::time::Instant::now();
         let reply = provider.complete(&[Message::user("你好")]).await.unwrap();
         let elapsed = start.elapsed();
@@ -1515,10 +1601,14 @@ data: [DONE]
         let attempts_server = attempts.clone();
         let base_url = spawn_mock_server(move |_req| {
             attempts_server.fetch_add(1, Ordering::Relaxed);
-            MockResponse { status: 401, body: "unauthorized".into() }
+            MockResponse {
+                status: 401,
+                body: "unauthorized".into(),
+            }
         });
 
-        let provider = OpenAiProvider::new(&openai_config(&base_url), OpenAiProtocol::Chat).unwrap();
+        let provider =
+            OpenAiProvider::new(&openai_config(&base_url), OpenAiProtocol::Chat).unwrap();
         let messages = vec![Message::user("你好")];
         let result = provider.complete(&messages).await;
 
@@ -1533,10 +1623,14 @@ data: [DONE]
         let attempts_server = attempts.clone();
         let base_url = spawn_mock_server(move |_req| {
             attempts_server.fetch_add(1, Ordering::Relaxed);
-            MockResponse { status: 500, body: "internal error".into() }
+            MockResponse {
+                status: 500,
+                body: "internal error".into(),
+            }
         });
 
-        let provider = OpenAiProvider::new(&openai_config(&base_url), OpenAiProtocol::Chat).unwrap();
+        let provider =
+            OpenAiProvider::new(&openai_config(&base_url), OpenAiProtocol::Chat).unwrap();
         let messages = vec![Message::user("你好")];
         let result = provider.complete(&messages).await;
 
@@ -1555,7 +1649,10 @@ data: [DONE]
             if n == 0 {
                 std::thread::sleep(Duration::from_millis(500));
             }
-            MockResponse { status: 200, body: "{}".into() }
+            MockResponse {
+                status: 200,
+                body: "{}".into(),
+            }
         });
 
         let client = Client::builder()
@@ -1745,7 +1842,11 @@ data: [DONE]
         assert_eq!(version_header.1, "2023-06-01");
         let body: serde_json::Value = serde_json::from_str(&req.body).unwrap();
         assert_eq!(body["model"], "claude-test");
-        assert_eq!(body["max_tokens"].as_u64(), Some(8192), "max_tokens 未配置时默认 8192（P2-14：4096 截断长输出）");
+        assert_eq!(
+            body["max_tokens"].as_u64(),
+            Some(8192),
+            "max_tokens 未配置时默认 8192（P2-14：4096 截断长输出）"
+        );
         // system 消息分离到顶层 system 字段
         assert_eq!(body["system"], "你是助手");
         let msgs = body["messages"].as_array().unwrap();
@@ -1785,7 +1886,10 @@ data: [DONE]
             max_concurrency: None,
         };
         let provider = OpenAiProvider::new(&config, OpenAiProtocol::Responses).unwrap();
-        let chunks = provider.complete_stream(&[Message::user("你好")]).await.unwrap();
+        let chunks = provider
+            .complete_stream(&[Message::user("你好")])
+            .await
+            .unwrap();
         assert_eq!(chunks, vec!["你", "好"], "语义化事件应提取 delta 文本");
         assert_eq!(provider.call_count(), 1);
     }
@@ -1818,7 +1922,10 @@ data: [DONE]
         let _ = provider.complete_stream(&messages).await.unwrap();
 
         let req = captured.lock().unwrap().take().expect("应收到一次请求");
-        assert_eq!(req.path, "/v1/responses", "Responses 协议应请求 /responses 端点");
+        assert_eq!(
+            req.path, "/v1/responses",
+            "Responses 协议应请求 /responses 端点"
+        );
         let body: serde_json::Value = serde_json::from_str(&req.body).unwrap();
         assert_eq!(body["model"], "deepseek-v4-flash");
         // system 消息分离到顶层 instructions；user 进 input items
@@ -1830,9 +1937,18 @@ data: [DONE]
         assert_eq!(input[0]["content"][0]["text"], "你好");
         // token 上限与温度参数：v22 起硬编码为 None（交给模型默认），
         // 测试断言"既不写 max_output_tokens 也不写 max_tokens/temperature"
-        assert!(body.get("max_output_tokens").is_none(), "硬编码后不应写 max_output_tokens");
-        assert!(body.get("max_tokens").is_none(), "Responses 不得用 max_tokens 参数名");
-        assert!(body.get("temperature").is_none(), "硬编码后不应写 temperature");
+        assert!(
+            body.get("max_output_tokens").is_none(),
+            "硬编码后不应写 max_output_tokens"
+        );
+        assert!(
+            body.get("max_tokens").is_none(),
+            "Responses 不得用 max_tokens 参数名"
+        );
+        assert!(
+            body.get("temperature").is_none(),
+            "硬编码后不应写 temperature"
+        );
         assert_eq!(body["stream"].as_bool(), Some(true));
     }
 
@@ -1845,7 +1961,10 @@ data: [DONE]
         let requests_server = requests.clone();
         let base_url = spawn_mock_server(move |req| {
             requests_server.lock().unwrap().push(req.path.clone());
-            MockResponse { status: 404, body: "not found".into() }
+            MockResponse {
+                status: 404,
+                body: "not found".into(),
+            }
         });
 
         let config = LlmSection {
@@ -1868,8 +1987,17 @@ data: [DONE]
             "错误消息应说明协议端点不存在: {err}"
         );
         let paths = requests.lock().unwrap();
-        assert_eq!(paths.len(), 1, "404 不应再重发 chat/completions（仅一次 /responses 请求）: {:?}", paths);
-        assert!(paths[0].ends_with("/responses"), "唯一请求应指向 /responses: {:?}", paths);
+        assert_eq!(
+            paths.len(),
+            1,
+            "404 不应再重发 chat/completions（仅一次 /responses 请求）: {:?}",
+            paths
+        );
+        assert!(
+            paths[0].ends_with("/responses"),
+            "唯一请求应指向 /responses: {:?}",
+            paths
+        );
     }
 
     /// v22 修复：评测裁判完整调用带显式输出预算——请求体必须写入
@@ -1908,7 +2036,11 @@ data: [DONE]
         let req = captured.lock().unwrap().take().expect("应收到一次请求");
         assert_eq!(req.path, "/v1/responses");
         let body: serde_json::Value = serde_json::from_str(&req.body).unwrap();
-        assert_eq!(body["max_output_tokens"].as_u64(), Some(16384), "预算应写入 max_output_tokens");
+        assert_eq!(
+            body["max_output_tokens"].as_u64(),
+            Some(16384),
+            "预算应写入 max_output_tokens"
+        );
         assert_eq!(body["stream"].as_bool(), Some(true), "带预算路径仍走流式");
     }
 
@@ -1916,9 +2048,11 @@ data: [DONE]
     /// 截断的残缺内容当完整产物写盘）
     #[tokio::test]
     async fn test_stream_truncation_chat_detected() {
-        let base_url = spawn_mock_server(move |_req| MockResponse {
+        let base_url = spawn_mock_server(move |_req| {
+            MockResponse {
             status: 200,
             body: "data: {\"choices\":[{\"delta\":{\"content\":\"部分内容\"}}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n".into(),
+        }
         });
 
         let config = LlmSection {
@@ -1934,7 +2068,10 @@ data: [DONE]
         let provider = OpenAiProvider::new(&config, OpenAiProtocol::Chat).unwrap();
         let result = provider.complete(&[Message::user("你好")]).await;
 
-        assert!(result.is_err(), "finish_reason=length 必须报错而非静默返回残缺内容");
+        assert!(
+            result.is_err(),
+            "finish_reason=length 必须报错而非静默返回残缺内容"
+        );
         let err = format!("{:?}", result.err().unwrap());
         assert!(err.contains("截断"), "错误消息应说明截断: {err}");
     }
@@ -1942,9 +2079,11 @@ data: [DONE]
     /// P0-8 截断检测：Anthropic stop_reason=max_tokens → 显式报错
     #[tokio::test]
     async fn test_stream_truncation_anthropic_detected() {
-        let base_url = spawn_mock_server(move |_req| MockResponse {
+        let base_url = spawn_mock_server(move |_req| {
+            MockResponse {
             status: 200,
             body: "data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"部分内容\"}}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"}}\n\n".into(),
+        }
         });
 
         let config = LlmSection {
@@ -1968,9 +2107,11 @@ data: [DONE]
     /// P0-8 截断检测：finish_reason=stop 正常终止 → 返回完整内容
     #[tokio::test]
     async fn test_stream_normal_finish_stop_ok() {
-        let base_url = spawn_mock_server(move |_req| MockResponse {
+        let base_url = spawn_mock_server(move |_req| {
+            MockResponse {
             status: 200,
             body: "data: {\"choices\":[{\"delta\":{\"content\":\"正常内容\"}}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".into(),
+        }
         });
 
         let config = LlmSection {
@@ -1992,9 +2133,11 @@ data: [DONE]
     /// （此前事件被检测但从未消费，截断流静默当完整产物——reviewer 阻塞项）
     #[tokio::test]
     async fn test_stream_truncation_responses_detected() {
-        let base_url = spawn_mock_server(move |_req| MockResponse {
+        let base_url = spawn_mock_server(move |_req| {
+            MockResponse {
             status: 200,
             body: "data: {\"type\":\"response.output_text.delta\",\"delta\":\"部分内容\"}\n\ndata: {\"type\":\"response.incomplete\",\"reason\":\"max_output_tokens\"}\n\n".into(),
+        }
         });
 
         let config = LlmSection {
@@ -2010,7 +2153,10 @@ data: [DONE]
         let provider = OpenAiProvider::new(&config, OpenAiProtocol::Responses).unwrap();
         let result = provider.complete(&[Message::user("你好")]).await;
 
-        assert!(result.is_err(), "response.incomplete 必须报错而非静默返回部分内容");
+        assert!(
+            result.is_err(),
+            "response.incomplete 必须报错而非静默返回部分内容"
+        );
         let err = format!("{:?}", result.err().unwrap());
         assert!(err.contains("截断"), "错误消息应说明截断: {err}");
     }

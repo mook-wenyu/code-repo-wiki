@@ -1,5 +1,3 @@
-
-
 // 交叉引用渲染（U08/N13：CrossRefIndex/validate 双套检查删除——lint 的
 // broken 检查（磁盘产物级，CI 门禁）已覆盖引用目标存在性，生成期的
 // 内存级 validate 冗余且与 lint 规则漂移；find_references 仅测试调用，

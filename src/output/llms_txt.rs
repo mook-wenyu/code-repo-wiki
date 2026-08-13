@@ -36,7 +36,10 @@ const LLMS_STALE_DAYS: i64 = 7;
 /// 产物是否过期（纯函数，可测）：mtime 距今 >7 天视为过期
 ///
 /// 未来时间戳（时钟回拨/时区错乱）差值为负，天然不算过期——不误报。
-fn stale_by_age(modified: chrono::DateTime<chrono::Utc>, now: chrono::DateTime<chrono::Utc>) -> Option<String> {
+fn stale_by_age(
+    modified: chrono::DateTime<chrono::Utc>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<String> {
     if now.signed_duration_since(modified) > chrono::TimeDelta::days(LLMS_STALE_DAYS) {
         Some(format!(
             "生成于 {}，距今超过 {LLMS_STALE_DAYS} 天",
@@ -135,7 +138,9 @@ pub fn render_llms_txt(
     out.push_str("- [目录](_toc.md)\n\n");
 
     // 卡片（Agent 结构化知识，主语言目录）
-    if !cards.is_empty() && let Some(primary) = languages.first() {
+    if !cards.is_empty()
+        && let Some(primary) = languages.first()
+    {
         out.push_str("## Cards\n\n");
         let mut card_names: Vec<&str> = cards.iter().map(|c| c.module_name.as_str()).collect();
         card_names.sort_unstable();
@@ -234,7 +239,8 @@ fn build_sections(cards: &[KnowledgeCard]) -> Vec<ModuleSection> {
                 .take(200)
                 .collect(),
             entities: {
-                let mut list: Vec<EntityEntry> = c.key_entities.iter().map(EntityEntry::from).collect();
+                let mut list: Vec<EntityEntry> =
+                    c.key_entities.iter().map(EntityEntry::from).collect();
                 list.sort_unstable_by(|a, b| a.name.cmp(&b.name));
                 list
             },
@@ -330,7 +336,8 @@ pub fn render_llms_full_txt(
     // 档 ①：实体签名截断（只留 名字+类型）
     let mut minimal: Vec<ModuleSection> = Vec::new();
     for mut s in located {
-        s.entities.retain(|e| e.source.is_some() && e.kind != "constant");
+        s.entities
+            .retain(|e| e.source.is_some() && e.kind != "constant");
         minimal.push(s);
     }
     content = minimal
@@ -363,7 +370,9 @@ pub fn render_llms_full_txt(
     }
     let mut final_out = out;
     if !omitted.is_empty() {
-        final_out.push_str(&format!("## 省略模块（预算 {token_budget} tokens 内未展开）\n"));
+        final_out.push_str(&format!(
+            "## 省略模块（预算 {token_budget} tokens 内未展开）\n"
+        ));
         for name in &omitted {
             final_out.push_str(&format!("- {name}\n"));
         }
@@ -393,12 +402,7 @@ pub fn write_llms_full_txt(
     let path = llms_full_txt_path(output_dir);
     // v28 t07：与 write_llms_txt 相同的新鲜度检查（旧产物覆盖前提示）
     warn_if_stale(&path, "llms-full.txt");
-    let content = render_llms_full_txt(
-        &repo_name,
-        cards,
-        &primary_lang,
-        LLMS_FULL_TOKEN_BUDGET,
-    );
+    let content = render_llms_full_txt(&repo_name, cards, &primary_lang, LLMS_FULL_TOKEN_BUDGET);
     crate::fs::write_file_atomic(&path, &content)
 }
 
@@ -452,8 +456,8 @@ mod tests {
         let cards = vec![make_card("src::alpha"), make_card("src::beta")];
         let langs = vec!["zh".to_string(), "en".to_string()];
 
-        let first = render_llms_txt("demo", &docs, &cards, &langs, );
-        let second = render_llms_txt("demo", &docs, &cards, &langs, );
+        let first = render_llms_txt("demo", &docs, &cards, &langs);
+        let second = render_llms_txt("demo", &docs, &cards, &langs);
         assert_eq!(first, second, "同输入两次渲染必须字节一致");
 
         assert!(first.contains("# demo Wiki"), "应含仓库名标题");
@@ -484,7 +488,7 @@ mod tests {
     /// 空文档：仅头部与空节标题（不崩溃）
     #[test]
     fn test_render_llms_txt_empty_docs() {
-        let out = render_llms_txt("demo", &[], &[], &["zh".to_string()], );
+        let out = render_llms_txt("demo", &[], &[], &["zh".to_string()]);
         assert!(out.contains("# demo Wiki"));
         assert!(!out.contains("## Modules"), "无模块页不应出现 Modules 节");
     }
@@ -492,7 +496,10 @@ mod tests {
     // ==================== llms-full.txt（v19 t05） ====================
 
     /// 构造带实体的卡片（kind/source/doc 可控，供裁剪测试）
-    fn make_card_entities(name: &str, entities: Vec<(&str, Option<&str>, Option<&str>)>) -> KnowledgeCard {
+    fn make_card_entities(
+        name: &str,
+        entities: Vec<(&str, Option<&str>, Option<&str>)>,
+    ) -> KnowledgeCard {
         let mut card = make_card(name);
         card.summary = format!("{name} 模块职责一句话");
         card.key_entities = entities
@@ -519,11 +526,14 @@ mod tests {
                     ("alpha", Some("src/beta.rs:10-12"), None),
                 ],
             ),
-            make_card_entities("src::alpha", vec![("server", Some("src/alpha.rs:1-3"), None)]),
+            make_card_entities(
+                "src::alpha",
+                vec![("server", Some("src/alpha.rs:1-3"), None)],
+            ),
         ];
 
-        let first = render_llms_full_txt("demo", &cards, "zh", 32_000, );
-        let second = render_llms_full_txt("demo", &cards, "zh", 32_000, );
+        let first = render_llms_full_txt("demo", &cards, "zh", 32_000);
+        let second = render_llms_full_txt("demo", &cards, "zh", 32_000);
         assert_eq!(first, second, "同输入两次渲染必须字节一致");
 
         assert!(first.contains("# demo Wiki"), "应含仓库名标题");
@@ -532,9 +542,15 @@ mod tests {
             "应含工具版本行"
         );
         assert!(first.contains("## src::alpha"), "模块节标题");
-        assert!(first.contains("src::alpha 模块职责一句话"), "模块职责一句话");
+        assert!(
+            first.contains("src::alpha 模块职责一句话"),
+            "模块职责一句话"
+        );
         // 实体签名行：名字+类型+可见性+定位
-        assert!(first.contains("- server function (pub) — 定位: src/alpha.rs:1-3"), "完整签名行");
+        assert!(
+            first.contains("- server function (pub) — 定位: src/alpha.rs:1-3"),
+            "完整签名行"
+        );
         // 确定性排序：alpha 节在 beta 节前（module_name 字典序）
         let a = first.find("## src::alpha").unwrap();
         let b = first.find("## src::beta").unwrap();
@@ -579,7 +595,7 @@ mod tests {
         // 预算极小（仅能容纳头部）：走完 ②③① 后进入 ④，模块名保留。
         // 头部固定开销含 t07 信号行约 210 字符（≈52 tokens），预算须高于
         // 头部 + 省略节才能验证省略档（模块精简形态 ≈6000 tokens 装不下）
-        let tiny = render_llms_full_txt("demo", &cards, "zh", 80, );
+        let tiny = render_llms_full_txt("demo", &cards, "zh", 80);
         assert!(
             tiny.contains("## 省略模块") && tiny.contains("src::alpha"),
             "整模块省略时模块名必须保留: {tiny}"
@@ -593,7 +609,7 @@ mod tests {
         // 中等预算（容得下 ① 精简形态但容不下完整形态）：
         // 完整形态 ≈2000×55 字符 ≈27.5K tokens，精简形态 ≈8.5K tokens；
         // 断言输出是精简行（无 定位: 前缀）、且不含常量级条目
-        let mid = render_llms_full_txt("demo", &cards, "zh", 20_000, );
+        let mid = render_llms_full_txt("demo", &cards, "zh", 20_000);
         assert!(
             estimate_tokens(&mid) <= 20_000 + 1,
             "输出应落在预算内: {} tokens",
@@ -606,7 +622,7 @@ mod tests {
     /// 空输入：无卡片时仅头部 + 版本行（不崩溃、无节标题）
     #[test]
     fn test_render_llms_full_txt_empty_cards() {
-        let out = render_llms_full_txt("demo", &[], "zh", 32_000, );
+        let out = render_llms_full_txt("demo", &[], "zh", 32_000);
         assert!(out.contains("# demo Wiki"));
         assert!(!out.contains("## "), "无卡片不应出现模块节");
     }
@@ -642,11 +658,16 @@ mod tests {
     /// 写盘冒烟：temp 目录产物正常落盘（内容确定性契约——无时间戳注入）
     #[test]
     fn test_write_llms_txt_smoke_deterministic_content() {
-        let dir = std::env::temp_dir()
-            .join(format!("code_repo_wiki_test_llms_mtime_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_llms_mtime_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let config = WikiConfig { output_dir: Some(dir.to_path_buf()), ..Default::default() };
+        let config = WikiConfig {
+            output_dir: Some(dir.to_path_buf()),
+            ..Default::default()
+        };
         write_llms_txt(&dir, &[], &[], &config).unwrap();
         let content = std::fs::read_to_string(llms_txt_path(&dir)).unwrap();
         assert!(

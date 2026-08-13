@@ -16,8 +16,8 @@
 
 use std::path::Path;
 
+use code_repo_wiki::config::schema::WikiSection;
 use code_repo_wiki::config::schema::{LlmProviderType, LlmSection, WikiConfig};
-use code_repo_wiki::config::schema::{WikiSection};
 
 /// 构造带跨社区调用的临时 git 仓库：
 ///
@@ -78,8 +78,13 @@ fn git_commit_all(repo: &Path, message: &str) -> String {
 
 /// 读取 api.md 全文（增量差分的内容级接缝：实体签名由 graph 渲染，body 变更不改变）
 fn read_api(repo: &Path) -> String {
-    std::fs::read_to_string(repo.join(".code-repo-wiki").join("wiki").join("zh").join("api.md"))
-        .unwrap_or_default()
+    std::fs::read_to_string(
+        repo.join(".code-repo-wiki")
+            .join("wiki")
+            .join("zh")
+            .join("api.md"),
+    )
+    .unwrap_or_default()
 }
 
 /// wiki/zh 目录全部 .md 页：文件名 → 内容（未受影响模块回填零改写断言的数据源）
@@ -90,8 +95,10 @@ fn wiki_pages_snapshot(repo: &Path) -> std::collections::HashMap<String, String>
         for e in es.flatten() {
             let p = e.path();
             if p.extension().is_some_and(|x| x == "md")
-                && let (Some(name), Ok(content)) =
-                    (p.file_name().map(|s| s.to_string_lossy().into_owned()), std::fs::read_to_string(&p))
+                && let (Some(name), Ok(content)) = (
+                    p.file_name().map(|s| s.to_string_lossy().into_owned()),
+                    std::fs::read_to_string(&p),
+                )
             {
                 map.insert(name, content);
             }
@@ -111,7 +118,6 @@ fn doc_titles(result: &code_repo_wiki::AnalysisResult) -> Vec<String> {
 /// 全流程：全量生成 → 真实 git 提交 → 修改 → 增量 → 断言
 #[test]
 fn test_incremental_git_diff_scenarios() {
-
     let repo = std::env::temp_dir().join(format!("code_repo_wiki_git_e2e_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&repo);
     std::fs::create_dir_all(&repo).expect("构造临时仓库失败");
@@ -124,15 +130,26 @@ fn test_incremental_git_diff_scenarios() {
 
     // ---- 首次提交 + 全量生成（建立基线） ----
     git_commit_all(&repo, "init");
-    let base = code_repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &code_repo_wiki::GenerationMode::Full).expect("全量生成失败");
+    let base = code_repo_wiki::run_pipeline(
+        Some(&config_path),
+        None,
+        false,
+        &root,
+        &code_repo_wiki::GenerationMode::Full,
+    )
+    .expect("全量生成失败");
     let base_api = read_api(&repo);
-    assert!(base_api.contains("tcp_process"), "基线 api.md 应含 tcp_process 签名");
+    assert!(
+        base_api.contains("tcp_process"),
+        "基线 api.md 应含 tcp_process 签名"
+    );
     // 基线磁盘页快照（未受影响模块回填零改写断言的数据源）
     let base_pages = wiki_pages_snapshot(&repo);
     // 社区划分护栏：net 与 http 应检出为独立模块（依赖传播断言的前提）
     let module_names: Vec<&str> = base.graph.modules.iter().map(|m| m.name.as_str()).collect();
     assert!(
-        module_names.iter().any(|n| n.contains("net")) && module_names.iter().any(|n| n.contains("http")),
+        module_names.iter().any(|n| n.contains("net"))
+            && module_names.iter().any(|n| n.contains("http")),
         "net/http 应聚为两个独立社区，实际: {module_names:?}"
     );
 
@@ -140,10 +157,23 @@ fn test_incremental_git_diff_scenarios() {
     // 多行 body 使实体的 line_end 变化 → 三元组不等 → BodyChanged → 重生成。
     // 单行同长的 body 修改（行号区间不变）会被三元组判定为「无实体变更」
     // 跳过重生成——A1 的已知边界（仅行号+签名参与判定，见 change.rs 注释）。
-    std::fs::write(&tcp_mod, "pub fn tcp_process(x: u32) -> u32 {\n    udp_process(x) + 42\n}\n").unwrap();
+    std::fs::write(
+        &tcp_mod,
+        "pub fn tcp_process(x: u32) -> u32 {\n    udp_process(x) + 42\n}\n",
+    )
+    .unwrap();
     git_commit_all(&repo, "change body");
-    let inc_a = code_repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &code_repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
-        .expect("增量生成失败");
+    let inc_a = code_repo_wiki::run_pipeline(
+        Some(&config_path),
+        None,
+        false,
+        &root,
+        &code_repo_wiki::GenerationMode::Incremental {
+            watch_paths: vec![],
+            change_kind: None,
+        },
+    )
+    .expect("增量生成失败");
     let titles_a = doc_titles(&inc_a);
     assert!(
         titles_a.iter().any(|t| t.contains("net")),
@@ -180,10 +210,23 @@ fn test_incremental_git_diff_scenarios() {
 
     // ---- 场景 B/D：接口级变化（签名修改） + T2 传播闭环 ----
     // 签名变更 → api.md 反映新签名 + 调用方 http 社区文档被重生成（依赖传播接线）
-    std::fs::write(&tcp_mod, "pub fn tcp_process(x: u32, y: u32) -> u32 { udp_process(x) + y }\n").unwrap();
+    std::fs::write(
+        &tcp_mod,
+        "pub fn tcp_process(x: u32, y: u32) -> u32 { udp_process(x) + y }\n",
+    )
+    .unwrap();
     git_commit_all(&repo, "change signature");
-    let inc_b = code_repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &code_repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
-        .expect("增量生成失败");
+    let inc_b = code_repo_wiki::run_pipeline(
+        Some(&config_path),
+        None,
+        false,
+        &root,
+        &code_repo_wiki::GenerationMode::Incremental {
+            watch_paths: vec![],
+            change_kind: None,
+        },
+    )
+    .expect("增量生成失败");
     let new_api = read_api(&repo);
     assert!(
         new_api.contains("tcp_process(x: u32, y: u32)") && !new_api.contains("tcp_process(x: u32)"),
@@ -196,14 +239,22 @@ fn test_incremental_git_diff_scenarios() {
     );
 
     // ---- 场景 C：无变更 → 增量跳过 ----
-    let inc_c = code_repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &code_repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
-        .expect("无变更增量失败");
+    let inc_c = code_repo_wiki::run_pipeline(
+        Some(&config_path),
+        None,
+        false,
+        &root,
+        &code_repo_wiki::GenerationMode::Incremental {
+            watch_paths: vec![],
+            change_kind: None,
+        },
+    )
+    .expect("无变更增量失败");
     assert!(
         inc_c.documents.is_empty(),
         "无变更时 documents 应为空，实际: {:?}",
         doc_titles(&inc_c)
     );
-
 
     let _ = std::fs::remove_dir_all(&repo);
 }
@@ -213,7 +264,8 @@ fn test_incremental_git_diff_scenarios() {
 /// 与场景 A（函数体修改=BodyChanged 仍重生成）构成对比锚点。
 #[test]
 fn test_incremental_git_whitespace_only_change_keeps_pages() {
-    let repo = std::env::temp_dir().join(format!("code_repo_wiki_git_wsonly_{}", std::process::id()));
+    let repo =
+        std::env::temp_dir().join(format!("code_repo_wiki_git_wsonly_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&repo);
     std::fs::create_dir_all(&repo).expect("构造临时仓库失败");
     build_git_repo(&repo).expect("构造 fixture 失败");
@@ -224,21 +276,41 @@ fn test_incremental_git_whitespace_only_change_keeps_pages() {
 
     // ---- 首次提交 + 全量生成（基线） ----
     git_commit_all(&repo, "init");
-    code_repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &code_repo_wiki::GenerationMode::Full)
-        .expect("全量生成失败");
+    code_repo_wiki::run_pipeline(
+        Some(&config_path),
+        None,
+        false,
+        &root,
+        &code_repo_wiki::GenerationMode::Full,
+    )
+    .expect("全量生成失败");
     let base_api = read_api(&repo);
 
     // ---- 纯空白变化（行尾空格）：签名与行号均不变，实体级分类无记录 ----
-    std::fs::write(&tcp_mod, "pub fn tcp_process(x: u32) -> u32 { udp_process(x) + 42 } \n").unwrap();
+    std::fs::write(
+        &tcp_mod,
+        "pub fn tcp_process(x: u32) -> u32 { udp_process(x) + 42 } \n",
+    )
+    .unwrap();
     git_commit_all(&repo, "whitespace only");
-    let inc = code_repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &code_repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None })
-        .expect("纯空白增量失败");
+    let inc = code_repo_wiki::run_pipeline(
+        Some(&config_path),
+        None,
+        false,
+        &root,
+        &code_repo_wiki::GenerationMode::Incremental {
+            watch_paths: vec![],
+            change_kind: None,
+        },
+    )
+    .expect("纯空白增量失败");
 
     // 回填语义：文档集合 = 快照全集（含未变化的 http 模块——与场景 A 的
     // 「仅重生成 net」形成对照信号），api.md 行号引用不变（零 LLM）
     let titles = doc_titles(&inc);
     assert!(
-        titles.iter().any(|t| t.contains("src::http")) && titles.iter().any(|t| t.contains("src::net")),
+        titles.iter().any(|t| t.contains("src::http"))
+            && titles.iter().any(|t| t.contains("src::net")),
         "纯空白变化应走快照回填（全集含 http），而非重生成（仅含 net），实际: {titles:?}"
     );
     assert_eq!(
@@ -256,7 +328,8 @@ fn test_incremental_git_whitespace_only_change_keeps_pages() {
 /// 断言：删除 standalone.rs 后 net/http 社区产物必须保留。
 #[test]
 fn test_incremental_git_delete_isolated_file_keeps_others() {
-    let repo = std::env::temp_dir().join(format!("code_repo_wiki_git_delisol_{}", std::process::id()));
+    let repo =
+        std::env::temp_dir().join(format!("code_repo_wiki_git_delisol_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&repo);
     std::fs::create_dir_all(&repo).expect("构造临时仓库失败");
     build_git_repo(&repo).expect("构造 fixture 失败");
@@ -270,8 +343,14 @@ fn test_incremental_git_delete_isolated_file_keeps_others() {
 
     // ---- 首次提交 + 全量生成（基线） ----
     git_commit_all(&repo, "init with standalone");
-    code_repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &code_repo_wiki::GenerationMode::Full)
-        .expect("全量生成失败");
+    code_repo_wiki::run_pipeline(
+        Some(&config_path),
+        None,
+        false,
+        &root,
+        &code_repo_wiki::GenerationMode::Full,
+    )
+    .expect("全量生成失败");
     let wiki_dir = repo.join(".code-repo-wiki").join("wiki").join("zh");
     let pages_before: Vec<String> = std::fs::read_dir(&wiki_dir)
         .map(|es| {
@@ -282,7 +361,9 @@ fn test_incremental_git_delete_isolated_file_keeps_others() {
         })
         .unwrap_or_default();
     assert!(
-        pages_before.iter().any(|p| p.contains("net") || p.contains("http")),
+        pages_before
+            .iter()
+            .any(|p| p.contains("net") || p.contains("http")),
         "基线应含 net/http 社区页: {pages_before:?}"
     );
 
@@ -294,7 +375,10 @@ fn test_incremental_git_delete_isolated_file_keeps_others() {
         None,
         false,
         &root,
-        &code_repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None },
+        &code_repo_wiki::GenerationMode::Incremental {
+            watch_paths: vec![],
+            change_kind: None,
+        },
     )
     .expect("删除增量失败");
 
@@ -308,7 +392,9 @@ fn test_incremental_git_delete_isolated_file_keeps_others() {
         })
         .unwrap_or_default();
     assert!(
-        pages_after.iter().any(|p| p.contains("net") || p.contains("http")),
+        pages_after
+            .iter()
+            .any(|p| p.contains("net") || p.contains("http")),
         "删除孤立文件后 net/http 社区产物不得被清空，实际: {pages_after:?}"
     );
 
@@ -319,7 +405,8 @@ fn test_incremental_git_delete_isolated_file_keeps_others() {
 /// 修改一个文件后 force 增量，documents 应含全部模块文档（而非只变更集）
 #[test]
 fn test_force_incremental_regenerates_all() {
-    let repo = std::env::temp_dir().join(format!("code_repo_wiki_git_force_{}", std::process::id()));
+    let repo =
+        std::env::temp_dir().join(format!("code_repo_wiki_git_force_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&repo);
     std::fs::create_dir_all(&repo).expect("构造临时仓库失败");
     build_git_repo(&repo).expect("构造 fixture 失败");
@@ -330,18 +417,31 @@ fn test_force_incremental_regenerates_all() {
 
     // 首次提交 + 全量生成（基线）
     git_commit_all(&repo, "init");
-    code_repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &code_repo_wiki::GenerationMode::Full)
-        .expect("全量生成失败");
+    code_repo_wiki::run_pipeline(
+        Some(&config_path),
+        None,
+        false,
+        &root,
+        &code_repo_wiki::GenerationMode::Full,
+    )
+    .expect("全量生成失败");
 
     // 修改一个文件 → force 增量（force=true）
-    std::fs::write(&tcp_mod, "pub fn tcp_process(x: u32) -> u32 { udp_process(x) + 42 }\n").unwrap();
+    std::fs::write(
+        &tcp_mod,
+        "pub fn tcp_process(x: u32) -> u32 { udp_process(x) + 42 }\n",
+    )
+    .unwrap();
     git_commit_all(&repo, "change body");
     let inc = code_repo_wiki::run_pipeline(
         Some(&config_path),
         None,
         true,
         &root,
-        &code_repo_wiki::GenerationMode::Incremental { watch_paths: vec![], change_kind: None },
+        &code_repo_wiki::GenerationMode::Incremental {
+            watch_paths: vec![],
+            change_kind: None,
+        },
     )
     .expect("force 增量失败");
 

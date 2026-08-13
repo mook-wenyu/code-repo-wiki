@@ -11,7 +11,11 @@ use super::change::{EntityChangeKind, EntityChangeSet};
 ///
 /// 从变更文件节点出发，沿 Imports/Calls 边双向 BFS 遍历 3 层，
 /// 找到所有直接或间接受影响的模块。
-pub fn propagate_impact(changed_files: &[PathBuf], graph: &KnowledgeGraph, max_depth: usize) -> Vec<String> {
+pub fn propagate_impact(
+    changed_files: &[PathBuf],
+    graph: &KnowledgeGraph,
+    max_depth: usize,
+) -> Vec<String> {
     if graph.graph.node_count() == 0 {
         return Vec::new();
     }
@@ -26,7 +30,9 @@ pub fn propagate_impact(changed_files: &[PathBuf], graph: &KnowledgeGraph, max_d
         return Vec::new();
     }
 
-    let mut result: Vec<String> = propagate_from(start_nodes, graph, max_depth).into_iter().collect();
+    let mut result: Vec<String> = propagate_from(start_nodes, graph, max_depth)
+        .into_iter()
+        .collect();
     result.sort();
     result
 }
@@ -93,7 +99,14 @@ pub fn propagate_impact_semantic(
     let interface_files: HashSet<String> = entity_changes
         .changes
         .iter()
-        .filter(|c| matches!(c.kind, EntityChangeKind::Added | EntityChangeKind::Removed | EntityChangeKind::SignatureChanged))
+        .filter(|c| {
+            matches!(
+                c.kind,
+                EntityChangeKind::Added
+                    | EntityChangeKind::Removed
+                    | EntityChangeKind::SignatureChanged
+            )
+        })
         .map(|c| c.file.to_string_lossy().to_string())
         .collect();
 
@@ -156,7 +169,11 @@ fn find_start_nodes(file_paths: &[String], graph: &KnowledgeGraph) -> Vec<NodeId
 }
 
 /// 从起点集合双向 BFS 传播影响，返回受影响模块名集合（起点自身计入）
-fn propagate_from(start_nodes: Vec<NodeId>, graph: &KnowledgeGraph, max_depth: usize) -> HashSet<String> {
+fn propagate_from(
+    start_nodes: Vec<NodeId>,
+    graph: &KnowledgeGraph,
+    max_depth: usize,
+) -> HashSet<String> {
     let mut affected: HashSet<String> = HashSet::new();
 
     for &start in &start_nodes {
@@ -180,7 +197,9 @@ fn propagate_from(start_nodes: Vec<NodeId>, graph: &KnowledgeGraph, max_depth: u
             // edges() 产出 current 作为 source 的边；edges_directed(_, Incoming)
             // 产出 current 作为 target 的边。合并后逐一检查。
             for edge in graph.graph.edges(current).chain(
-                graph.graph.edges_directed(current, petgraph::Direction::Incoming),
+                graph
+                    .graph
+                    .edges_directed(current, petgraph::Direction::Incoming),
             ) {
                 // 确定"另一端的节点"
                 let neighbor = if edge.source() == current {
@@ -214,8 +233,8 @@ fn propagate_from(start_nodes: Vec<NodeId>, graph: &KnowledgeGraph, max_depth: u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use petgraph::stable_graph::StableDiGraph;
     use crate::model::{CodeEdge, CodeNode, NodeKind};
+    use petgraph::stable_graph::StableDiGraph;
 
     fn make_simple_graph() -> KnowledgeGraph {
         let mut g = StableDiGraph::<CodeNode, CodeEdge>::new();
@@ -227,7 +246,8 @@ mod tests {
             file_path: Some("src/core.rs".into()),
             line_range: None,
             doc_comment: None,
-            signature: None, visibility: None,
+            signature: None,
+            visibility: None,
             module_path: vec!["core".into()],
         });
 
@@ -238,7 +258,8 @@ mod tests {
             file_path: Some("src/net.rs".into()),
             line_range: None,
             doc_comment: None,
-            signature: None, visibility: None,
+            signature: None,
+            visibility: None,
             module_path: vec!["net".into()],
         });
 
@@ -249,12 +270,14 @@ mod tests {
             file_path: Some("src/db.rs".into()),
             line_range: None,
             doc_comment: None,
-            signature: None, visibility: None,
+            signature: None,
+            visibility: None,
             module_path: vec!["db".into()],
         });
 
         g.add_edge(
-            core, net,
+            core,
+            net,
             CodeEdge {
                 id: petgraph::stable_graph::EdgeIndex::new(0),
                 kind: EdgeKind::Imports,
@@ -266,7 +289,8 @@ mod tests {
         );
 
         g.add_edge(
-            net, db,
+            net,
+            db,
             CodeEdge {
                 id: petgraph::stable_graph::EdgeIndex::new(1),
                 kind: EdgeKind::Imports,
@@ -280,7 +304,7 @@ mod tests {
         KnowledgeGraph {
             graph: g,
             modules: vec![],
-        features: Vec::new(),
+            features: Vec::new(),
         }
     }
 
@@ -423,11 +447,16 @@ mod tests {
                 file_path: Some(path.into()),
                 line_range: None,
                 doc_comment: None,
-                signature: None, visibility: None,
+                signature: None,
+                visibility: None,
                 module_path: segs.into_iter().map(|s| s.to_string()).collect(),
             });
         }
-        let graph = KnowledgeGraph { graph: g, modules: vec![], features: Vec::new() };
+        let graph = KnowledgeGraph {
+            graph: g,
+            modules: vec![],
+            features: Vec::new(),
+        };
 
         let files = module_files(&["net".into(), "db".into()], &graph);
         assert_eq!(files.len(), 2, "应反查出 net.rs 与 db.rs");
@@ -456,7 +485,8 @@ mod tests {
             file_path: Some("src/a.ts".into()),
             line_range: None,
             doc_comment: None,
-            signature: None, visibility: None,
+            signature: None,
+            visibility: None,
             module_path: vec!["a_ts".into()],
         });
         let _tsx = g.add_node(CodeNode {
@@ -466,20 +496,36 @@ mod tests {
             file_path: Some("src/a.tsx".into()),
             line_range: None,
             doc_comment: None,
-            signature: None, visibility: None,
+            signature: None,
+            visibility: None,
             module_path: vec!["a_tsx".into()],
         });
-        let graph = KnowledgeGraph { graph: g, modules: vec![], features: Vec::new() };
+        let graph = KnowledgeGraph {
+            graph: g,
+            modules: vec![],
+            features: Vec::new(),
+        };
 
         // 仅变更 src/a.ts：不得命中 src/a.tsx 节点
         let changed = vec![PathBuf::from("src/a.ts")];
         let affected = propagate_impact(&changed, &graph, 3);
-        assert_eq!(affected, vec!["a_ts".to_string()], "a.ts 变更只影响 a.ts 所在模块，不得波及 a.tsx");
+        assert_eq!(
+            affected,
+            vec!["a_ts".to_string()],
+            "a.ts 变更只影响 a.ts 所在模块，不得波及 a.tsx"
+        );
 
         // 目录前缀兼容：变更 src/ 命中 src/a.ts 节点（fp.starts_with("src/")）
         let changed_dir = vec![PathBuf::from("src/")];
         let affected_dir = propagate_impact(&changed_dir, &graph, 3);
-        assert!(affected_dir.contains(&"a_ts".to_string()), "目录级变更应命中其下文件节点: {:?}", affected_dir);
-        assert!(affected_dir.contains(&"a_tsx".to_string()), "src/ 下所有节点都应命中");
+        assert!(
+            affected_dir.contains(&"a_ts".to_string()),
+            "目录级变更应命中其下文件节点: {:?}",
+            affected_dir
+        );
+        assert!(
+            affected_dir.contains(&"a_tsx".to_string()),
+            "src/ 下所有节点都应命中"
+        );
     }
 }
