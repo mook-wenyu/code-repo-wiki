@@ -1,5 +1,25 @@
 # 项目状态简报 （AI自动维护，禁止贴代码）
 
+## 六十九、v0.7.2 第三轮集成与生产可用化（2026-08-13）——lint 误报修复/dependency-fabricated 接线/生产 CI/运维文档
+- 前置状态：三个并行 worker（W1 lint 代码 / W2 CI 配置 / W3 docs-bench）完成域内交付，本轮为集成验证——编译闭合、全量测试、CI 门禁、lint 实测复核、分域提交
+- 修改的功能（W1 lint）：
+  - P0-1 entity_name_from_signature 声明关键字分支：impl 块/解构模式返回 None（不再把 impl/From/Iterator 污染名当实体，权威集与 stale-entity 两侧同受益），type 别名取别名本身而非等号右侧被别名类型
+  - P0-2 check_vctx_tokens 跳过机器生成页（api/overview/architecture/_toc/index，_log 手写日志保留），根治 render_api_reference 把 lint 自身文档注释内嵌 vctx 协议示例渲染进 api.md 的持久 bad-vctx 误报
+  - P0-3 dependency-fabricated 新检查接线：模块页「## 依赖关系」声称对照权威集（export_snapshot 模块依赖 + 模块文件 imports 顶级 crate + std/core）校验，权威集完整 Error 级/不完整降 Warning/快照缺失跳过；私有函数 check_dependency_fabricated / resolve_file_crate_imports / load_insights_cache_imports，collect_source_entities 升 5 元组返回（新增 file_imports 投影，与实体同次 parse 零额外成本）；依赖声称提取/校验复用 dependency_check::extract_dependency_claims + validate_claims（fence 感知 + 诚实标记跳过）
+  - 新增 4 测试：test_entity_name_declaration_keyword_branches / test_lint_vctx_skips_generated_pages / test_lint_dependency_fabricated_detects_and_allows / test_lint_dependency_fabricated_warns_when_authority_incomplete
+- 修改的功能（W2 CI / W3 docs）：
+  - ci.yml 新增 lint-artifacts job（PR 常驻）：mock provider 全量生成 sample-repo 产物后对磁盘产物 lint（Error 级退出码阻断）/status 健全性检查，零 key 零触网
+  - artifacts.yml 新增：schedule 每周一 + workflow_dispatch，真实 LLM 全量生成产物（--force）→ lint 门禁 → 产物上传（先于 bench 防 git 回放污染）→ 可选 bench --repodoc 录基线；最小权限 contents: read
+  - .gitattributes 新增（* text=auto + *.sh/*.rs/*.md 显式 LF + *.ps1 保留 CRLF），7 个历史 CRLF 文件 git add --renormalize 归一为 LF（纯 EOL 无内容混入）
+  - docs/how-to/{production,benchmark}.md + bench/production-manifest.txt 新建（基于磁盘真源核证的运维 runbook）
+- 摸到的文件：src/output/lint.rs、.github/workflows/{ci,artifacts}.yml、.gitattributes、.gitignore、rust-toolchain.toml、scripts/cleanup-test-residue.ps1、src/project.rs、tests/fixtures/sample-repo/src/{auth,main,storage}.rs、docs/how-to/{production,benchmark}.md、bench/production-manifest.txt、STATUS.md
+- 是否改变了接口/契约：是——collect_source_entities 返回元组 4→5 元组（新增 file_imports: HashMap<String, Vec<String>>，模块内私有函数）；lint 新增 dependency-fabricated 检查类别（LintIssue.kind 枚举扩展）；ci.yml 新增 job、artifacts.yml 新工作流（不改变既有行为）
+- 验证：cargo check --all-targets --locked 通过；NO_PROXY=127.0.0.1,localhost,::1 cargo test --locked --no-fail-fast 38 个测试二进制 870 passed / 0 failed（866 基线 + 本轮 W1 新增 4；7 个 renormalize 文件回归确认——read_to_string 无字节断言，全量测试通过无回归；generate::llm HTTP mock 等环境性测试在 NO_PROXY 下全部通过，无环境性失败）；cargo fmt --all -- --check exit 0；cargo clippy --all-targets --locked --no-deps -D warnings 0 告警；RUSTDOCFLAGS='-Dwarnings' cargo doc --no-deps --locked 通过；首次全量测试遇 rustc 1.97.1 Windows codegen ICE（编译器 bug，非代码问题），CARGO_INCREMENTAL=0 后稳定全绿
+- lint 实测复核（cargo run -- lint --root .）：bad-vctx 4→0（P0-2 修复生效）；stale-entity 6→2（P0-1 修复消 4 条污染名，余 2 为真·已删符号 test_git_head_oid_returns_head_commit / git_head_oid）；dependency-fabricated 0→20（P0-3 生效，全 Error 级——快照文件可解析判定权威集完整）；bad-citation-overlap 334→332（lint.rs 重写源码位移致 api.md 引用行号漂移）、stale 101、bad-citation 14、entity-ownership 12 告警（目录-stem 命中，既有）不变；合计 481 = 469 error + 12 warning，退出码 1。剩余 error 全部为产物过期伪影（.code-repo-wiki/ 未随源码重生成）：bad-citation-overlap/stale/bad-citation 系文档未刷新，stale-entity 2 条系真删除符号，dependency-fabricated 系过期快照文件列表不全致真依赖误报（如 git2 实为 src/incremental/change.rs 导入却被快照仅列 diff.rs 误报）——均需真实 LLM regen 后复核
+- 提交：07759eb（fix(lint)）→ 5bf056c（chore(ci)）→ 405486c（chore(eol)）→ d9b740e（docs(production)）→ 本次 chore(status)
+- 已知风险（诚实自曝）：首次全量测试遇 rustc codegen ICE（编译器 bug，临时以 CARGO_INCREMENTAL=0 规避，非代码问题）；renormalize 7 个文件为 EOL-only 变更（blob LF 入库、工作树仍 CRLF，下次 checkout 自动 LF，测试无字节断言不受影响）；lint 退出码 1 全部源于产物过期伪影（含 dependency-fabricated 对过期快照的误报面），代码已修复的部分实测归零；bench 基线/生产清单需用户在有网络 + LLM key 环境实际执行（沙箱无法代跑，见 docs/how-to/production.md 第 10 节）；.opencode/ 预存删除文件按既定约定保持不提交；orphan/bad-mermaid 降 warning 为既有行为
+- 下次最该做的事：用户在有网络 + LLM key 环境按 docs/how-to/production.md 清单执行 doctor/generate/lint/search/mcp/export 验收，按 benchmark.md 录 bench 基线（两段跑法），真实 LLM regen 产物后复跑 cargo run -- lint --root . 确认 error 归零（stale/bad-citation-overlap/bad-vctx/stale-entity/dependency-fabricated 应随 regen 消除）
+
 ## 六十八、v0.7.2 第二轮四域集成（2026-08-13）——块去重/doc_comment 四元组/lint severity 化/依赖校验 fence
 - 前置状态：四个并行 worker（R1 检索/索引、R2 生成、R3 lint、R4 增量）已完成域内修复，本轮为集成验证——把仓库恢复为可编译/可测试/全绿，处理跨域残留，分域提交
 - 修改的功能（四域 + 测试适配，5 提交）：
