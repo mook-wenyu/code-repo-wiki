@@ -1,0 +1,34 @@
+# ============================================================
+# code-repo-wiki bench-manifest 清单示例（模板）
+# ============================================================
+# 格式：每行一个仓库；`#` 开头为注释；空行跳过
+#   名字 | 路径或URL | commit
+#
+# 字段说明：
+#   - 名字：报告标识（远程 URL 缺省名时取 URL 最后一段去 .git；
+#     本地路径缺省取目录名；名字为空且可推导时允许省略）
+#   - 路径或URL：本地路径（相对路径基于本清单文件所在目录解析）或
+#     `https://` / `git@` 开头的远程 URL（自动 clone 到 --work-dir）
+#   - commit：评测基准 commit（可选；可解析的 SHA 前缀/分支/标签，
+#     钉死后 checkout 保证跨次可复现；省略用 HEAD）
+#
+# 用法：
+#   code-repo-wiki bench-manifest --manifest bench/production-manifest.txt \
+#       --work-dir <远程仓库落地目录> --json
+#
+# 注意（模板事项）：
+#   1. 本文件是模板——commit 列必须替换为真实值（禁止猜测/编造 commit
+#      hash）。取法：`git rev-parse HEAD`；或删去 commit 列用 HEAD。
+#   2. 清单模式跳过 Update Recall 回放与 LLM 裁判（四快维度
+#      Coverage/Doc Info/lint/Time）；深度评测请用单仓库 `bench --judge`。
+#   3. 每仓库产物输出到 `--work-dir/<名字>-out/`，不污染原仓库。
+#   4. `template-config.toml` 由程序运行期自动写入 `--work-dir`：它是
+#      模板配置的脱敏快照（llm/embed 的 api_key 置空，防明文凭据落盘）；
+#      评测进程实际使用内存合并后的真实凭据，磁盘产物不含 key。
+
+# 示例 1：本地仓库（名字 | 路径；commit 可选，跨次可比建议钉死）
+#   commit 示例值需替换为实际值（`git rev-parse HEAD`）。
+示例本地仓库 | D:\RustProjects\repo-wiki | <填入实际 commit，或删去此列用 HEAD>
+
+# 示例 2：公开远程仓库（名字 | URL；commit 钉死保证跨次可复现）
+serde | https://github.com/serde-rs/serde.git | <填入实际 commit>
