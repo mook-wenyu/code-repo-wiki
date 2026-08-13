@@ -1,5 +1,19 @@
 # 项目状态简报 （AI自动维护，禁止贴代码）
 
+## 六十七、v0.7.2 四域优化（2026-08-13）——真混合检索 + 项目级上下文 + lint 归属/密度/指纹 + BodyChanged 传播
+- 冲突合并解决：本次工作区承续合并历史遗留（多文件 UU 冲突、STATUS.md 与 src/search/ast_chunker.rs 曾被删除、.opencode/ 环境文件被删），已取 HEAD 主线解决——被藏分支为远古版本，其内容已全部丢弃，以 HEAD + 本次四域优化工作区为最终真源；.opencode/ 环境删除文件保持不提交
+- 修改的功能（四域，6 提交）：
+  - search：SearchAgent 级联改恒双路（text+semantic 恒双路召回进 RRF，SEARCH_RRF_K 40.0→20.0）；text 一路失败只跳过 text、语义仍兜底；索引标记加 index_template 版本（SEARCH_INDEX_TEMPLATE_VERSION=2，模型名或模板版本任一变化触发全量重建）；语义索引最小单元升级为结构感知块（block.rs/chunker.rs，块文本=模块路径+作用域+签名+doc+body），vecdb 按 block_id 存取；纯远程嵌入（删 local-embed 特性与 fastembed LocalEmbedder，provider 只留 Remote/Mock）；QueryEmbedCache 进程级查询向量 LRU 缓存（MCP 常驻复用）
+  - generate：卡片阶段注入依赖模块上下文 + 调用方/被调用方上下文（collect_caller_context 真实调用图推导，design_rationale 依据）；wiki 阶段注入依赖方卡片摘要 + 调用索引（CallIndex 预计算一次）；依赖防幻觉校验（output/dependency_check.rs 校验页面依赖声称与真实调用图/导入关系，生成侧重试循环接线）；design_rationale 意图段（LLM 推断模块存在意图 WHY，KnowledgeCard 新增字段）
+  - lint：entity-ownership 归属校验（目录/文件 stem 命中按 rule 4 仅告警，真编造名仍报）；citation_density 引用密度闸（每 200 字符至少 1 条、每 `## ` 节至少 1 条，空页/纯代码节跳过）；stale 指纹化 + stale-entity 反向定位；LintIssue::is_warning，main.rs status/lint 对纯告警级只展示不退出非 0（warning 级不阻断 CI）；semantic_lint 受影响页证据补「设计意图」段提取（意图段内调用/依赖声称参与跨页交叉校验，纯推断无引用佐证不报）
+  - incremental：BodyChanged 沿 Incoming Calls 边深度 1 传播（直接调用方页随行为刷新，不沿 Imports、不加深、整页重写，修复「body 只影响本模块」调用方页面漏更）；should_fallback_full 回退保护（变更面过大：文件数≥200 或占比>0.5 或估算 token>200k 时直接回退全量）；清理 GitDiffResult 死字段（added_lines/deleted_lines）
+- 摸到的文件：src/search/*（agent/hybrid/mod/semantic/vecdb + 新增 block/chunker/query_cache）、src/generate/*（card/chunk/mod/prompt/wiki + 新增 context.rs + embed.rs）、src/output/*（lint/citation/semantic_lint/markdown/mod + 新增 dependency_check.rs + html/llms_txt 测试构造）、src/incremental/*（impact/mod/diff/state）、src/lib.rs、src/main.rs、src/config/schema.rs、src/model/document.rs、Cargo.toml/lock、.github/workflows/ci.yml、config.toml、docs/reference/config.md、README.md、tests/test_incremental_git_e2e.rs、tests/test_incremental_unchanged_backfill.rs、tests/test_overview.rs、tests/test_protected_files.rs、tests/test_v31_empty_chunk_fix.rs、STATUS.md
+- 是否改变了接口/契约：是——SemanticEngine::open 增加 query_cache 参（3 参）；SemanticSearch trait index/index_batch 签名改用 Block；CardGenerator::new 增加 dep_contexts/caller_contexts 两参（4→6 参）；generate_wiki_pages 增 graph/call_index 两参（私有）；SEARCH_RRF_K 40.0→20.0；删 local-embed 特性（EmbedProvider::Local/local_model 删除，effective_embed_model 恒取 config.embed.model）；KnowledgeCard 增 design_rationale 字段（serde default 兼容旧卡旧快照）；ci.yml 删 local-embed 特性编译门禁
+- 验证：全量测试 845 通过 / fmt / clippy / doc 门禁全过（任务前置核实）；提交链 git log 逐提交可追溯；按域拆分后未改动任何文件内容（仅组织提交）
+- 提交：28ad20e（feat(search)）→ 267b4d8（feat(generate)）→ a833f7e（feat(lint)）→ 2aa3e0e（feat(incremental)）→ ffafc7e（test(integration)）→ 本次 chore(status)
+- 已知风险（诚实自曝）：lint 告警级过滤按 message 文本标记（rule 4 仅命中目录/文件 stem 的归属未确认提示）——按提示文本判定是脆约定，后续应改结构字段；QueryEmbedCache 进程级缓存不感知 embed 模型切换，同进程内换模型可能复用旧模型 query 向量；嵌入单条 8000 字符预截断保留（A7 既有），结构感知块超长时尾部被截；B 类测试两测试方案差异——test_incremental_git_e2e 断言 http 随行为刷新（有 Calls 关系）、test_incremental_unchanged_backfill 断言 http 零改写（无 Calls 关系），各自正确但需知悉差异；中间提交（各域拆分）不保证独立编译，最终态绿
+- 下次最该做的事：bench 基线重录（RRF k=20 + 结构感知分块改变检索语义，旧 bench 基线过期）；Qwen3/candle 候选跟进（纯远程嵌入后本地推理能力缺位，评估 candle 轻量推理补位）；stale→重生成补偿闭环（stale 指纹化只告警不自动重生成，待接生成侧补偿）
+
 ## 六十六、v0.7.1 Phase A8（2026-08-13）——增量文档集回填 + entity-coverage 现实校验 + CI 加固
 - 修改的功能（A8 缺陷 A/B + workflows 加固 + 全仓 fmt，5 提交）：
   - DEFECT-A（增量 update 回填未改动模块文档集）：run_generation_filtered 增量非空路径旧实现只把「受影响模块 + 全局文档」放进 GenerationOutput，未受影响仍存在的模块未从导出快照回填，导致 llms.txt/_toc.md/export_snapshot.json/generation_state 全以部分集合为文档集（llms.txt 是全站地图，任何一次生成含增量都必须是全模块集合）。新增 generate/mod.rs::backfill_unchanged_modules 在返回 GenerationOutput 前合并未受影响模块文档/卡片（复用 snapshot_backfill 的 deleted_modules 判据；related_files.is_empty() 保守处理不并入也不判删；排除 failed_modules 防掩盖失败；快照缺失/损坏跳过不阻断），使增量路径返回「完整当前文档集」，下游 render_all/cleanup/save_generation_state 自动恢复正确
