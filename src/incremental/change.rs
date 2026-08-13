@@ -149,20 +149,10 @@ pub fn classify_entity_changes_at(
             .unwrap_or_default();
         compare_entities(&mut set, path, &old_entities, &new_entities);
     }
-    // added：全部实体视为新增
-    for path in &diff.added {
-        if let Some(ents) = current.get(&super::norm_sep(&path.to_string_lossy())) {
-            for e in ents {
-                set.changes.push(EntityChange {
-                    file: path.clone(),
-                    entity_name: e.name.clone(),
-                    kind: EntityChangeKind::Added,
-                    old_range: None,
-                    new_range: Some((e.line_start, e.line_end)),
-                });
-            }
-        }
-    }
+    // added 分支已随 GitDiffResult.added 死字段一并删除：唯一调用方
+    // mod.rs:391 构造时用 ..Default::default() 恒为空，分支实际不可达。
+    // 新增文件的实体变化由 modified 分支覆盖（旧树无此文件 → 旧实体集
+    // 为空 → compare_entities 全量判为 Added）。
     // deleted：从旧内容解析全部实体视为删除
     for path in &diff.deleted {
         for e in read_old_entities(&repo, &from_tree, path, &registry)? {
@@ -232,16 +222,26 @@ fn compare_entities(set: &mut EntityChangeSet, path: &Path, old: &[Entity], new:
             };
             // 按位置顺序配对输出（同名多实体取并集逐条记录）
             for (old_e, new_e) in old_entries.iter().zip(new_entries.iter()) {
-                // v23 A1 实体级分类精化：签名集合相等时进一步比较配对实体三元组
-                // （起止行号 + 签名）。三元组全等 = 该实体的声明与位置均未变化
-                // （变化只可能发生在注释/空白等不产实体的文本上），不记录任何
-                // 变更——生成层据此把整文件判为「无实体变更」跳过重生成。
-                // 任一元素不等（含 zip 顺序错位）→ 保守记录 BodyChanged。
+                // v23 A1 实体级分类精化：签名集合相等时进一步比较配对实体四元组
+                // （起止行号 + 签名 + doc_comment）。四元组全等 = 该实体的声明、
+                // 位置与文档注释均未变化（变化只可能发生在非 doc 的注释/空白等
+                // 不产实体的文本上），不记录任何变更——生成层据此把整文件判为
+                // 「无实体变更」跳过重生成。任一元素不等（含 zip 顺序错位）→
+                // 保守记录 BodyChanged。
+                //
+                // doc_comment 必须参与判定（P0-B 修复）：Rust 的 /// 注释是 LLM
+                // 生成输入（prompt.rs 实体清单首行），就地改写且行数不变时
+                // 行号/签名均不变化——若不比较 doc_comment 会判「无实体变更」，
+                // 模块不重生成，且 save_generation_state 用 from_insights 刷新
+                // 全部指纹后 check_stale 也检不出，页面静默陈旧。
+                // 普通注释不在 doc_comment（仅 Rust/Python 解析器关联），
+                // 纯注释（非 doc）变更仍维持不重生成语义。
                 let unchanged = kind == EntityChangeKind::BodyChanged
                     && old_e.line_start == new_e.line_start
                     && old_e.line_end == new_e.line_end
                     && normalize_sig(old_e.signature.as_deref())
-                        == normalize_sig(new_e.signature.as_deref());
+                        == normalize_sig(new_e.signature.as_deref())
+                    && old_e.doc_comment == new_e.doc_comment;
                 if unchanged {
                     continue;
                 }
@@ -364,5 +364,123 @@ mod tests {
         let a = "fn  f( a : i32 )";
         let b = "fn f(a: i32)";
         assert_eq!(normalize_sig(Some(a)), normalize_sig(Some(b)));
+    }
+
+    /// 带 doc_comment 的实体构造（P0-B 测试用）
+    fn make_entity_doc(name: &str, sig: &str, doc: &str, start: usize, end: usize) -> Entity {
+        Entity {
+            name: name.into(),
+            kind: "fn".into(),
+            line_start: start,
+            line_end: end,
+            doc_comment: Some(doc.into()),
+            signature: Some(sig.into()),
+            visibility: None,
+        }
+    }
+
+    /// P0-B 回归锚：行号/签名全等、仅 doc_comment 不同 → 必须检出 BodyChanged。
+    /// Rust `///` 注释是 LLM 生成输入，就地改写且行数不变时旧判定（三元组
+    /// 全等）会误判「无实体变更」→ 模块不重生成 → 页面静默陈旧。
+    #[test]
+    fn test_doc_comment_change_detected() {
+        let mut set = EntityChangeSet::default();
+        let old = vec![make_entity_doc("f", "fn f()", "旧文档注释", 2, 4)];
+        let new = vec![make_entity_doc("f", "fn f()", "新文档注释", 2, 4)];
+        compare_entities(&mut set, Path::new("src/a.rs"), &old, &new);
+        assert_eq!(set.changes.len(), 1, "doc_comment 变化应检出实体变更");
+        assert_eq!(set.changes[0].kind, EntityChangeKind::BodyChanged);
+        assert_eq!(set.changes[0].old_range, Some((2, 4)));
+        assert_eq!(set.changes[0].new_range, Some((2, 4)));
+        assert!(!set.has_interface_change(), "doc_comment 变化是实现级变化");
+    }
+
+    /// P0-B 负向锚：doc_comment 全等 + 三元组全等 → 仍判无变更
+    /// （纯空白/非 doc 注释变化不重生成的既有语义不受影响）
+    #[test]
+    fn test_doc_comment_unchanged_not_detected() {
+        let mut set = EntityChangeSet::default();
+        let old = vec![make_entity_doc("f", "fn f()", "同一文档注释", 2, 4)];
+        let new = vec![make_entity_doc("f", "fn f()", "同一文档注释", 2, 4)];
+        compare_entities(&mut set, Path::new("src/a.rs"), &old, &new);
+        assert!(
+            set.changes.is_empty(),
+            "doc_comment 全等 + 三元组全等应判无实体变更"
+        );
+    }
+
+    /// P0-B 端到端（源码 fixture）：真实 git 仓库 + Rust 解析器——
+    /// 就地把 `///` 注释改为不同内容（行号/签名不变），classify 必须
+    /// 检出 BodyChanged，且文件不得被 no_entity_change_files 剔除
+    /// （即被纳入重生成范围）。
+    #[test]
+    fn test_classify_doc_comment_change_in_rust_source() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_doc_comment_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let src = dir.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        // 旧内容（提交入 git）：/// 文档注释 + 单行函数
+        std::fs::write(
+            src.join("a.rs"),
+            "/// 旧文档注释\npub fn foo() -> u32 { 1 }\n",
+        )
+        .unwrap();
+
+        let repo = git2::Repository::init(&dir).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "test").unwrap();
+        cfg.set_str("user.email", "test@test.com").unwrap();
+        crate::test_git::commit_all(&dir, "init");
+        let first_hash = repo
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id()
+            .to_string();
+
+        // 新内容（工作区）：仅改文档注释，行号与签名不变
+        std::fs::write(
+            src.join("a.rs"),
+            "/// 新文档注释\npub fn foo() -> u32 { 1 }\n",
+        )
+        .unwrap();
+        let new_source = std::fs::read_to_string(src.join("a.rs")).unwrap();
+        let registry = ParserRegistry::new();
+        let path = Path::new("src/a.rs");
+        let insight = registry
+            .get_for_file(path)
+            .unwrap()
+            .parse(&new_source, path)
+            .unwrap();
+
+        let diff = GitDiffResult {
+            modified: vec![PathBuf::from("src/a.rs")],
+            deleted: vec![],
+            from_commit: first_hash,
+        };
+        let root = crate::project::ProjectRoot::new(dir.clone());
+        let set = classify_entity_changes_at(&root, &diff, std::slice::from_ref(&insight)).unwrap();
+
+        // ① 实体变更被检出：BodyChanged（doc_comment 不同 → 实现级）
+        assert_eq!(set.changes.len(), 1, "仅 doc_comment 变化也应检出实体变更");
+        assert_eq!(set.changes[0].kind, EntityChangeKind::BodyChanged);
+        assert_eq!(set.changes[0].entity_name, "foo");
+        assert!(
+            !set.has_interface_change(),
+            "doc_comment 变化是实现级，不应触发接口级双向传播"
+        );
+        // ② 模块被纳入重生成范围：该文件不得被判为「无实体变更」剔除
+        let excluded = no_entity_change_files(&[PathBuf::from("src/a.rs")], &set, &root);
+        assert!(
+            excluded.is_empty(),
+            "doc_comment 变化的文件不得被剔除出重生成范围: {:?}",
+            excluded
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

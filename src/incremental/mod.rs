@@ -400,7 +400,6 @@ fn run_file_watch_incremental(
                     .map(rel)
                     .collect(),
                 from_commit: state.last_commit_hash.clone().unwrap_or_default(),
-                ..Default::default()
             };
             match classify_entity_changes_at(root, &diff, insights) {
                 Ok(set) => (set, false),

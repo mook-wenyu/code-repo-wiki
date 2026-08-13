@@ -5,18 +5,12 @@ use anyhow::Result;
 /// Git diff 分析结果
 #[derive(Debug, Clone, Default)]
 pub struct GitDiffResult {
-    /// 新增文件列表
-    pub added: Vec<PathBuf>,
     /// 修改文件列表
     pub modified: Vec<PathBuf>,
     /// 删除文件列表
     pub deleted: Vec<PathBuf>,
-    /// 重命名文件列表（旧路径，新路径）
-    pub renamed: Vec<(PathBuf, PathBuf)>,
     /// 起始 commit hash
     pub from_commit: String,
-    /// 目标 commit hash
-    pub to_commit: String,
 }
 
 /// 在指定项目根下获取当前 HEAD commit hash
@@ -39,11 +33,8 @@ mod tests {
     #[test]
     fn test_git_diff_result_default() {
         let result = GitDiffResult::default();
-        assert!(result.added.is_empty());
         assert!(result.modified.is_empty());
         assert!(result.deleted.is_empty());
-        assert!(result.renamed.is_empty());
         assert!(result.from_commit.is_empty());
-        assert!(result.to_commit.is_empty());
     }
 }

@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 
 use petgraph::visit::{EdgeRef, IntoNodeIdentifiers};
@@ -129,18 +129,26 @@ pub fn propagate_impact_semantic(
         .collect();
 
     let mut affected: HashSet<String> = HashSet::new();
+    // 起点批量查询：一次全图遍历按变更文件分组匹配起点（替代逐文件
+    // find_start_nodes 的 N×M 重复遍历——N 个变更文件 × M 个图节点，
+    // 大仓库多 body 变更时是语义传播路径的主要常数成本）。
+    let file_strings: Vec<String> = changed_files
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+    let start_nodes_by_file = find_start_nodes_per_file(&file_strings, graph);
     for file in changed_files {
         let fp = file.to_string_lossy().to_string();
-        let start_nodes = find_start_nodes(std::slice::from_ref(&fp), graph);
-        if start_nodes.is_empty() {
+        // 图中无此文件的节点（未进入图谱）→ 该文件不产生任何影响
+        let Some(start_nodes) = start_nodes_by_file.get(&fp) else {
             continue;
-        }
+        };
         if interface_files.contains(&fp) {
             // 接口级：双向传播（clone：start_nodes 随后还要供 body 分支用）
             affected.extend(propagate_from(start_nodes.clone(), graph, max_depth));
         } else {
             // 实现级：仅起点所在模块
-            for nid in &start_nodes {
+            for nid in start_nodes {
                 let module = graph.graph[*nid].module_path.join("::");
                 if !module.is_empty() {
                     affected.insert(module);
@@ -153,7 +161,7 @@ pub fn propagate_impact_semantic(
         // 调用方，不沿 Imports、不加深层级、不做局部更新（整页重写）。
         if body_files.contains(&fp) {
             affected.extend(propagate_body_callers(
-                start_nodes,
+                start_nodes.clone(),
                 graph,
                 BODY_CALLER_DEPTH,
             ));
@@ -213,6 +221,17 @@ fn propagate_body_callers(
     affected
 }
 
+/// 路径匹配判定：节点文件路径 fp 是否命中变更路径 cfp（路径段为界）
+///
+/// fp/cfp 均已 norm_sep 归一化为正斜杠；trim 尾部 '/' 后按路径段比较：
+/// "src/a.ts" 不再命中 "src/a.tsx"（a.ts 是 a.tsx 的子串），"src/a"
+/// 目录级变更仍命中其下文件（starts_with(cfp + "/")）。find_start_nodes
+/// 与 find_start_nodes_per_file 共用，保证两条查询路径匹配语义一致。
+fn path_matches(fp: &str, cfp: &str) -> bool {
+    let cfp = cfp.trim_end_matches('/');
+    fp == cfp || fp.starts_with(&format!("{cfp}/"))
+}
+
 /// 按文件路径（精确匹配）找到图中的起点节点
 ///
 /// 匹配以路径段为界：节点 file_path 等于变更路径，或以「变更路径 +
@@ -232,17 +251,38 @@ fn find_start_nodes(file_paths: &[String], graph: &KnowledgeGraph) -> Vec<NodeId
                 .as_ref()
                 .map(|fp| {
                     let fp = super::norm_sep(fp);
-                    // 精确匹配：fp/cfp 均已 norm_sep 归一化，正斜杠一致，
-                    // 可直接比较；trim 尾部 '/' 后按路径段比较（"src/a.ts"
-                    // 不再命中 "src/a.tsx"，"src/a" 目录变更仍命中其下文件）。
-                    normalized.iter().any(|cfp| {
-                        let cfp = cfp.trim_end_matches('/');
-                        fp == cfp || fp.starts_with(&format!("{cfp}/"))
-                    })
+                    normalized.iter().any(|cfp| path_matches(&fp, cfp))
                 })
                 .unwrap_or(false)
         })
         .collect()
+}
+
+/// 按文件路径分组查询起点节点（批量版，P2 优化）
+///
+/// 一次全图遍历把每个变更文件匹配到的起点节点按原路径分组返回，供
+/// propagate_impact_semantic 复用——逐文件调用 find_start_nodes 会重复
+/// N 次全图遍历与路径归一化（N=变更文件数、M=图节点数，N×M 开销，
+/// 大仓库多 body 变更时是语义传播路径的主要常数成本）。组内保持
+/// 图节点序，匹配语义与 find_start_nodes 完全一致（共用 path_matches）。
+fn find_start_nodes_per_file(
+    file_paths: &[String],
+    graph: &KnowledgeGraph,
+) -> HashMap<String, Vec<NodeId>> {
+    let normalized: Vec<String> = file_paths.iter().map(|p| super::norm_sep(p)).collect();
+    let mut map: HashMap<String, Vec<NodeId>> = HashMap::new();
+    for nid in graph.graph.node_identifiers() {
+        let node = &graph.graph[nid];
+        if let Some(fp) = node.file_path.as_ref() {
+            let fp = super::norm_sep(fp);
+            for (i, cfp) in normalized.iter().enumerate() {
+                if path_matches(&fp, cfp) {
+                    map.entry(file_paths[i].clone()).or_default().push(nid);
+                }
+            }
+        }
+    }
+    map
 }
 
 /// 从起点集合双向 BFS 传播影响，返回受影响模块名集合（起点自身计入）
@@ -734,5 +774,63 @@ mod tests {
             affected_dir.contains(&"a_tsx".to_string()),
             "src/ 下所有节点都应命中"
         );
+    }
+
+    /// P2 批量起点查询（find_start_nodes_per_file）：一次遍历按路径分组，
+    /// 与逐文件 find_start_nodes 结果一致——精确匹配不误伤同前缀文件、
+    /// 目录前缀命中其下全部节点、未匹配路径无条目。
+    #[test]
+    fn test_find_start_nodes_per_file_groups_consistently() {
+        let mut g = StableDiGraph::<CodeNode, CodeEdge>::new();
+        let mut mk = |id: usize, name: &str, path: &str| {
+            g.add_node(CodeNode {
+                id: NodeId::new(id),
+                kind: NodeKind::File,
+                name: name.into(),
+                file_path: Some(path.into()),
+                line_range: None,
+                doc_comment: None,
+                signature: None,
+                visibility: None,
+                module_path: vec![name.into()],
+            })
+        };
+        let a = mk(0, "a_ts", "src/a.ts");
+        let tsx = mk(1, "a_tsx", "src/a.tsx");
+        let b = mk(2, "b", "src/sub/b.rs");
+        let graph = KnowledgeGraph {
+            graph: g,
+            modules: vec![],
+            features: Vec::new(),
+        };
+
+        let paths: Vec<String> = vec!["src/a.ts".into(), "src/sub/".into(), "src/".into()];
+        let batch = find_start_nodes_per_file(&paths, &graph);
+
+        // 精确匹配：src/a.ts 只命中 a_ts 节点（不误伤 a.tsx）
+        let expect_a = batch.get("src/a.ts").cloned().unwrap_or_default();
+        assert!(expect_a.contains(&a));
+        assert!(!expect_a.contains(&tsx), "a.ts 不得命中 a.tsx 节点");
+
+        // 目录前缀：src/sub/ 命中 b 节点；src/ 命中 a.ts 与 a.tsx
+        assert!(batch.get("src/sub/").is_some_and(|v| v.contains(&b)));
+        assert!(
+            batch
+                .get("src/")
+                .is_some_and(|v| v.contains(&a) && v.contains(&tsx))
+        );
+
+        // 与逐文件查询结果一致（批量 = 逐文件的并集语义）
+        let per_file: Vec<NodeId> = paths
+            .iter()
+            .flat_map(|p| find_start_nodes(std::slice::from_ref(p), &graph))
+            .collect();
+        let batch_all: Vec<NodeId> = batch.values().flat_map(|v| v.iter().copied()).collect();
+        assert_eq!(batch_all.len(), per_file.len());
+
+        // 未匹配路径不在表中
+        assert!(!batch.contains_key("not_exist.rs"));
+        // 空输入 → 空表
+        assert!(find_start_nodes_per_file(&[], &graph).is_empty());
     }
 }
