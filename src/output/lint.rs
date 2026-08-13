@@ -6,7 +6,9 @@
 //! 1. **孤儿页**：没有任何其他页面链接指向的模块页（无人可达 = 可能过期/重复）
 //! 2. **断链**：页面内链接指向不存在的产物文件（复制 crossref 语义，但作用于磁盘产物）
 //! 3. **过时**：页面生成时间戳早于其源文件修改时间（源码已变但文档未更新）
+//!    3b. **source-missing**：产物引用的代码源文件不存在（已删除/未生成，KNOWN-06）
 //! 4. **bad-citation**：正文 `path:line` 引用指向不存在的文件或行号越界（引用契约的静态复核）
+//!    4a. **bad-citation-overlap**：文件存在且行号有效但引用区间不覆盖任何实体（行号对但内容错，v14 B 组）
 //!
 //! 4b. **bad-vctx**：正文 `[[vctx:path#L-a-L-b@hash8]]` 手工标记做 5 步哈希只读校验（vericontext 协议，人工文档护栏：t05 决议不引入生成契约，只识别并校验已有标记）
 //!
@@ -24,7 +26,10 @@ use crate::output::citation;
 /// 单条 lint 问题
 #[derive(Debug, Clone)]
 pub struct LintIssue {
-    /// 问题类别: orphan / broken / stale / bad-citation / bad-vctx / entity-coverage / bad-mermaid / stale-entity
+    /// 问题类别（字符串化清单，audit-out-06 固化；新增类别须同步更新此处与
+    /// 模块头文档，含完整枚举）:
+    /// orphan / broken / stale / source-missing / bad-citation / bad-citation-overlap /
+    /// bad-vctx / entity-coverage / bad-mermaid / stale-entity
     pub kind: &'static str,
     /// 问题文件相对路径（相对 output_dir）
     pub path: String,
@@ -112,10 +117,11 @@ fn check_orphan_pages(pages: &[PathBuf], link_sources: &[PathBuf], lang: &str) -
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default();
         let stem = file_name.trim_end_matches(".md").to_string();
-        // 全局文档(api/overview/architecture/_toc/index)由 TOC/概览引用,不算孤儿
+        // 全局文档(api/overview/architecture/_toc/index)由 TOC/概览引用,不算孤儿；
+        // _log（note 命令追加的知识日志，P1-2）无任何入链但属受管文件,同样豁免
         let is_global = matches!(
             stem.as_str(),
-            "api" | "overview" | "architecture" | "_toc" | "index"
+            "api" | "overview" | "architecture" | "_toc" | "index" | "_log"
         );
         if !is_global && incoming.get(&stem).copied().unwrap_or(0) == 0 {
             issues.push(LintIssue {
@@ -146,6 +152,11 @@ fn check_broken_links(pages: &[PathBuf], lang: &str) -> Vec<LintIssue> {
             if !link.ends_with(".md") || link.contains("://") {
                 continue;
             }
+            // 边界（audit-out-05）：目标存在性只与**当前语言**页面集比对——
+            // target 按 basename 匹配，跨语言链接（如 zh 页指向 wiki/en/foo.md）
+            // 且本语言无同名 basename 时会误报断链。产物当前只生成主语言
+            // （v30 后无扩展语言），属可接受的已知边界；跨语言目标存在性
+            // 不在本检查范围，如需覆盖应改为跨语言页面全集比对。
             // 解析链接目标:可能带 wiki/zh/ 前缀或纯文件名
             let target_name = link.rsplit(['/', '\\']).next().unwrap_or(&link);
             let target_exists = pages.iter().any(|p| {
@@ -290,15 +301,10 @@ fn check_citations(
                 });
                 continue;
             }
-            // 引用相对项目根：output_dir 的上级即项目根（AGENTS.md 生成同约定）；
-            // source_roots 兜底逐根尝试（resolve_source_path 返回实际存在的路径）
-            let project_root = output_dir.parent().unwrap_or_else(|| Path::new("."));
-            let primary_abs = project_root.join(&citation.path);
-            let abs = if primary_abs.exists() {
-                primary_abs
-            } else {
-                resolve_source_path(source_roots, &citation.path)
-            };
+            // 引用路径统一解析（resolve_output_relative_path）：相对项目根优先、
+            // source_roots 兜底——与 check_vctx_tokens 共用同一解析器（P1 收敛，
+            // 消除两处逐份复制的 project_root.join 直连）
+            let abs = resolve_output_relative_path(output_dir, source_roots, &citation.path);
             let total_lines = std::fs::read_to_string(&abs)
                 .map(|s| s.lines().count())
                 .ok();
@@ -474,14 +480,9 @@ fn check_vctx_tokens(
                 });
                 continue;
             }
-            // 路径相对项目根解析（output_dir 的父目录），source_roots 兜底
-            let project_root = output_dir.parent().unwrap_or_else(|| Path::new("."));
-            let primary_abs = project_root.join(&token.path);
-            let abs = if primary_abs.exists() {
-                primary_abs
-            } else {
-                resolve_source_path(source_roots, &token.path)
-            };
+            // 标记路径统一解析（resolve_output_relative_path）：相对项目根优先、
+            // source_roots 兜底——与 check_citations 共用同一解析器（P1 收敛）
+            let abs = resolve_output_relative_path(output_dir, source_roots, &token.path);
             // 严格 UTF-8 读取：失败 = 文件不存在或非 UTF-8（vericontext 同
             // fail-closed 语义：file_missing / invalid_utf8 均拒绝）
             let Ok(source) = std::fs::read_to_string(&abs) else {
@@ -767,18 +768,23 @@ fn check_mermaid(pages: &[PathBuf], lang: &str) -> Vec<LintIssue> {
 }
 
 /// 主语言目录名：api.md 只写主语言一份（render_all 规则），实体覆盖检查以它为权威
+///
+/// 边界（audit-out-09）：探测法（含 api.md 的目录即主语言）依赖 render_all
+/// 只向主语言写 api.md 的约定；改读配置主语言需 lint() 获得 config——调用方
+/// main.rs / bench/mod.rs 均持有 config，但签名变更跨出本文件域（output 之外，
+/// 并行 worker 域），本批保留探测并排序候选目录保证确定性（多语言残留时
+/// 取字典序首目录，不再依赖 read_dir 的无序返回）。
 fn primary_language(output_dir: &Path) -> String {
     // 遍历 wiki/ 下的语言目录，取含 api.md 的那个（主语言）；无则返回空串（跳过检查）
     let wiki_root = output_dir.join("wiki");
     if let Ok(entries) = std::fs::read_dir(&wiki_root) {
-        for entry in entries.flatten() {
-            if entry.path().is_dir()
-                && entry.path().join("api.md").is_file()
-                && let Some(name) = entry.file_name().to_str()
-            {
-                return name.to_string();
-            }
-        }
+        let mut candidates: Vec<String> = entries
+            .flatten()
+            .filter(|e| e.path().is_dir() && e.path().join("api.md").is_file())
+            .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
+            .collect();
+        candidates.sort();
+        return candidates.into_iter().next().unwrap_or_default();
     }
     String::new()
 }
@@ -1037,6 +1043,29 @@ fn path_lexically_within_roots(p: &Path, source_roots: &[PathBuf]) -> bool {
     })
 }
 
+/// 产物内引用/vctx 路径的统一解析入口（P1 收敛，audit-out-01/03）：
+/// 相对项目根（output_dir 的父目录）优先，未命中回退 source_roots 逐根尝试。
+///
+/// 引用契约（citation.rs 模块头）：正文 `path:line` 的路径相对项目根，故优先
+/// 按 project_root.join 解析；source_roots 与项目根分离（--root/--source 独立
+/// 配置）时，产物引用的源文件可能只在某个源码根下，回退由 resolve_source_path
+/// 按 root-first 逐根解析（含绝对路径 containment 校验，root 外不可达）。
+/// check_citations 与 check_vctx_tokens 共用本函数，消除两处逐份复制的
+/// project_root.join 直连（此前正是 P1 不对称的温床）。
+///
+/// 安全前提：调用方已在 detect_path_escape 拒绝 `..` 越界段、根相对/盘符相对
+/// 形态与 root 外绝对路径，故 project_root.join(rel) 恒落在项目根内（不产生
+/// root 外 exists()/读取探测）。
+fn resolve_output_relative_path(output_dir: &Path, source_roots: &[PathBuf], rel: &str) -> PathBuf {
+    let project_root = output_dir.parent().unwrap_or_else(|| Path::new("."));
+    let primary_abs = project_root.join(rel);
+    if primary_abs.exists() {
+        primary_abs
+    } else {
+        resolve_source_path(source_roots, rel)
+    }
+}
+
 /// 将产物中记录的源路径解析为绝对路径（相对源码根逐根尝试）
 ///
 /// root-first 解析（对齐产物路径相对 root 的实践，见 src/ingest/mod.rs 的
@@ -1167,6 +1196,40 @@ mod tests {
             issues
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// P1-2 回归：append_note 写 wiki/{lang}/_log.md 后 lint 不得报 _log 孤儿
+    ///（note 是追加式知识日志，无任何入链；修复前全局豁免表缺 _log 误报 orphan）
+    #[test]
+    fn test_lint_log_not_reported_as_orphan() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_log_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        // 模拟 note 命令产物：_log.md 无任何入链
+        std::fs::write(
+            wiki.join("_log.md"),
+            "# 知识日志\n\n- 2026-08-13: 记录一条决策\n",
+        )
+        .unwrap();
+        // 一个普通页面（无入链，仍应报孤儿——豁免只针对 _log，不扩大化）
+        std::fs::write(wiki.join("m.md"), "# M\n\n内容\n").unwrap();
+
+        let issues = lint(&dir, &[]);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            !issues.iter().any(|i| i.kind == "orphan" && i.path.ends_with("_log.md")),
+            "_log.md 不得报孤儿, 实际: {:?}",
+            issues
+        );
+        assert!(
+            issues.iter().any(|i| i.kind == "orphan" && i.path.ends_with("m.md")),
+            "普通无入链页面仍应报孤儿, 实际: {:?}",
+            issues
+        );
     }
 
     /// 过时检查:产物引用源文件且源文件 mtime 更新 → 报 stale。

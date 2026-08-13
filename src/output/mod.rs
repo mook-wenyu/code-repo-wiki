@@ -20,13 +20,16 @@ use crate::model::{KnowledgeCard, KnowledgeGraph, WikiDocument};
 
 use self::markdown::write_document;
 
-/// 生效的 wiki 语言列表（主语言 + 扩展语言）
+/// 生效的语言列表：v30 起 expand_languages 已删除，恒只含主语言一项
 ///
+/// 命名保留（audit-out-07）：调用方 lib.rs（指纹记录）、generate/card.rs
+/// （`[0]` 取主语言）、generate/mod.rs（按语言循环）仍消费 Vec<String> 形态，
+/// 改名 primary_language + String 返回需同步这些跨模块调用点，超出本批文件域
+/// （output 之外为并行 worker 域），故保留现名并在注释固化"单语言"语义。
 /// 由 generate::collect_languages 移入（消除 output→generate 反向依赖；
 /// generate 侧调用点改向本函数——generate→output 依赖本就存在，card.rs 已用）。
 pub fn wiki_languages(config: &WikiConfig) -> Vec<String> {
-    let languages = vec![config.wiki.language.clone()];
-    languages
+    vec![config.wiki.language.clone()]
 }
 
 /// API 参考页写盘路径：`{}/wiki/{lang}/api.md`（每种语言独立一份）

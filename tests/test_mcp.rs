@@ -61,9 +61,37 @@ async fn rpc_call(stdin: &mut tokio::process::ChildStdin, stdout: &mut tokio::pr
         let trimmed = String::from_utf8(line).expect("MCP 响应应为合法 UTF-8");
         let trimmed = trimmed.trim();
         if !trimmed.is_empty() {
-            return serde_json::from_str(trimmed).unwrap_or_else(|e| panic!("响应非 JSON: {trimmed}: {e}"));
+            let resp: serde_json::Value = serde_json::from_str(trimmed)
+                .unwrap_or_else(|e| panic!("响应非 JSON: {trimmed}: {e}"));
+            // id 对齐断言（audit-out-04）：JSON-RPC 响应必须回显请求 id——
+            // 通知（无 id）不发响应，读到的下一条必是当前请求的响应；id 不
+            // 对齐说明消息流错位（误读了别的消息/旧实现把通知当请求回 -32601）
+            assert_eq!(
+                resp["id"],
+                serde_json::json!(id),
+                "响应 id 应与请求对齐: {resp}"
+            );
+            return resp;
         }
     }
+}
+
+/// JSON-RPC 通知（notification）：无 id、不读响应（只写，fire-and-forget）。
+///
+/// JSON-RPC 2.0 规定通知不得含 id 且服务端不回包；带 id 发通知违反协议，
+/// rmcp 服务端会回 `-32601`（未知请求）——audit-out-04 修复测试侧协议违规，
+/// 服务端行为不变。
+async fn notify(stdin: &mut tokio::process::ChildStdin, method: &str, params: serde_json::Value) {
+    let req = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": method,
+        "params": params,
+    });
+    stdin
+        .write_all(serde_json::to_string(&req).unwrap().as_bytes())
+        .await
+        .unwrap();
+    stdin.write_all(b"\n").await.unwrap();
 }
 
 #[tokio::test]
@@ -96,8 +124,8 @@ async fn test_mcp_initialize_lists_tools_and_calls() {
     .await;
     assert!(resp["result"]["protocolVersion"].is_string(), "握手应返回协议版本: {resp}");
 
-    // 2. notifications/initialized（无响应，直接发后续请求）
-    let _ = rpc_call(&mut stdin, &mut stdout, 2, "notifications/initialized", serde_json::json!({})).await;
+    // 2. notifications/initialized（通知：无 id、不读响应，协议合规发法）
+    notify(&mut stdin, "notifications/initialized", serde_json::json!({})).await;
 
     // 3. tools/list：5 个工具全部注册
     let resp = rpc_call(&mut stdin, &mut stdout, 3, "tools/list", serde_json::json!({})).await;
@@ -212,7 +240,7 @@ async fn test_mcp_lang_traversal_rejected() {
     )
     .await;
     assert!(resp["result"]["protocolVersion"].is_string());
-    let _ = rpc_call(&mut stdin, &mut stdout, 2, "notifications/initialized", serde_json::json!({})).await;
+    notify(&mut stdin, "notifications/initialized", serde_json::json!({})).await;
 
     // 1. wiki_read_page lang 穿越（相对穿越 ../..）：拒绝且不泄漏内容
     let resp = rpc_call(
@@ -334,7 +362,7 @@ async fn test_mcp_status_uses_root_and_shows_degradation() {
     )
     .await;
     assert!(resp["result"]["protocolVersion"].is_string());
-    let _ = rpc_call(&mut stdin, &mut stdout, 2, "notifications/initialized", serde_json::json!({})).await;
+    notify(&mut stdin, "notifications/initialized", serde_json::json!({})).await;
 
     // 1. status：cwd≠root 时仍应就绪（修复前 from_cwd → sub 找不到产物）
     let resp = rpc_call(

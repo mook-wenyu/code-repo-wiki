@@ -7,6 +7,12 @@
 //! 设计：server 无状态（每次工具调用现场加载配置与索引），与 CLI 共享
 //! 同一 lib 入口（execute_search / execute_ast_search），不复制业务逻辑。
 //! 项目根由 `--root` 参数指定（缺省解析 cwd 的 config.toml 项目级配置）。
+//!
+//! 工具返回类型（audit-out-08）：工具返回 String，rmcp tool 宏自动包装成
+//! CallToolResponse 文本块；错误以 `format!("...失败: {e}")` 文本返回，不置
+//! isError=true。置 isError 需改为返回 CallToolResponse{is_error}，会连带改动
+//! 全部工具签名与 tests/test_mcp.rs 的 content 断言，属已知边界——文本式错误
+//! 对 Agent 可读（含具体失败原因），与 CLI 文本模式错误措辞一致。
 
 use std::path::{Path, PathBuf};
 
