@@ -7,6 +7,11 @@ use crate::ingest::parser::SUPPORTED_EXTENSIONS;
 /// 默认扫描文件数上限（超过即报错，避免海量文件拖垮整条管线）
 const MAX_FILES: usize = 100_000;
 
+/// 单文件字节上限（audit-gen-07）：超大源码文件（如生成的 bundle/长测试
+/// fixture）按字节读入会浪费内存且对解析/嵌入无增益，超限跳过并告警，
+/// 计入 ScanOutput.files_failed（与解析失败同口径，失败可观测）。
+const MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
+
 const BINARY_EXTENSIONS: &[&str] = &[
     ".exe", ".dll", ".bin", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg",
     ".pdf", ".ttf", ".woff", ".woff2", ".eot", ".zip", ".tar", ".gz", ".7z",
@@ -58,12 +63,24 @@ fn is_noise_dir(name: &str, at_root_level: bool) -> bool {
 /// 不同项目目录结构不同，路径模式无法通用，语言才是 code-repo-wiki 的能力边界）
 pub struct Scanner {
     root: PathBuf,
+    /// 本次扫描因超单文件字节上限被跳过的文件数（audit-gen-07）。
+    /// 用 Cell 内变：scan 只取 &self，计数在遍历中就地累加。
+    skipped_oversized: std::cell::Cell<usize>,
 }
 
 impl Scanner {
     /// 创建 Scanner，根为项目根目录
     pub fn new(root: &Path) -> Self {
-        Self { root: root.to_path_buf() }
+        Self {
+            root: root.to_path_buf(),
+            skipped_oversized: std::cell::Cell::new(0),
+        }
+    }
+
+    /// 本次扫描因超过单文件字节上限被跳过的文件数（上游并入
+    /// ScanOutput.files_failed，使超大文件跳过可观测、不静默）
+    pub fn skipped_oversized(&self) -> usize {
+        self.skipped_oversized.get()
     }
 
     /// 遍历目录树，返回可解析的源文件列表
@@ -123,6 +140,22 @@ impl Scanner {
                 })
                 .unwrap_or(false);
             if !is_source {
+                continue;
+            }
+
+            // audit-gen-07：单文件字节上限——超限跳过并告警（计入
+            // skipped_oversized，上游并入 files_failed），超大文件对
+            // 读取/解析/嵌入均无增益，读入反而拖垮内存与耗时
+            if let Ok(meta) = entry.metadata()
+                && meta.len() > MAX_FILE_BYTES
+            {
+                tracing::warn!(
+                    "跳过超大文件 {}（{} 字节 > 上限 {} 字节）",
+                    path.display(),
+                    meta.len(),
+                    MAX_FILE_BYTES
+                );
+                self.skipped_oversized.set(self.skipped_oversized.get() + 1);
                 continue;
             }
 
@@ -210,6 +243,25 @@ mod tests {
         // 上限之内正常返回
         let files = scanner.scan_with_limit(10).unwrap();
         assert_eq!(files.len(), 4);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// audit-gen-07：单文件超过字节上限时跳过并计入 skipped_oversized，
+    /// 小文件正常保留
+    #[test]
+    fn test_scanner_skips_oversized_file() {
+        let dir = scratch("oversize");
+        std::fs::write(dir.join("small.rs"), "pub fn small() {}").unwrap();
+        // 6MB 超限文件（上限 5MB）：字节超限即跳过，不读入内存
+        std::fs::write(dir.join("huge.rs"), vec![b'a'; 6 * 1024 * 1024]).unwrap();
+
+        let scanner = Scanner::new(&dir);
+        let files = scanner.scan().unwrap();
+        let names: Vec<String> = files.iter().map(|p| p.to_string_lossy().replace('\\', "/")).collect();
+        assert_eq!(names.len(), 1, "超大文件应被跳过: {names:?}");
+        assert!(names[0].ends_with("small.rs"), "仅小文件应保留: {names:?}");
+        assert_eq!(scanner.skipped_oversized(), 1, "超限文件应计入 skipped_oversized");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

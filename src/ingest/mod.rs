@@ -47,7 +47,20 @@ pub fn scan_and_parse_cached_at(
     let files = scanner
         .scan()?
         .into_iter()
-        .map(|f| f.strip_prefix(root.path()).map(|p| p.to_path_buf()).unwrap_or(f))
+        .map(|f| {
+            // audit-gen-04：strip_prefix 失败（文件不在扫描根内）不再静默
+            // 兜底绝对路径——绝对路径会沿模块名派生污染下游，必须显式告警
+            match f.strip_prefix(root.path()) {
+                Ok(rel) => rel.to_path_buf(),
+                Err(_) => {
+                    tracing::warn!(
+                        "扫描结果含扫描根之外的路径，保留绝对路径（可能污染模块名）: {}",
+                        f.display()
+                    );
+                    f
+                }
+            }
+        })
         .collect::<Vec<_>>();
 
     let mut cache = load_insights_cache(cache_path);
@@ -55,7 +68,9 @@ pub fn scan_and_parse_cached_at(
 
     let mut insights = Vec::new();
     let mut reused = 0usize;
-    let mut files_failed = 0usize;
+    // 失败计数初始含扫描层跳过的超大文件（audit-gen-07：与解析失败同口径，
+    // 超大文件跳过可观测——此前扫描层静默丢弃，files_failed 漏计）
+    let mut files_failed = scanner.skipped_oversized();
     for file in &files {
         let processor = match registry.get_for_file(file) {
             Some(p) => p,

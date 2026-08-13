@@ -502,13 +502,14 @@ impl OpenAiProvider {
             thinking: config.thinking,
             reasoning_effort: config.reasoning_effort.clone(),
             call_count: std::sync::atomic::AtomicUsize::new(0),
-            // P2-8：并发上限来自配置（None=默认 16）；tokio Semaphore::new
-            // 许可数上限约 2^61，u32 配置值远低于此（card.rs 已有先例）
+            // audit-gen-03：与生成层信号量共用 llm_effective_concurrency
+            // （统一并发语义：None=默认 16，显式配置直接生效）；tokio
+            // Semaphore::new 许可数上限约 2^61，u32 配置值远低于此
             semaphore: Arc::new(tokio::sync::Semaphore::new(
                 {
-                    let mc = config.max_concurrency.unwrap_or(16);
+                    let mc = crate::config::schema::llm_effective_concurrency(config);
                     anyhow::ensure!(mc > 0, "max_concurrency 必须为正整数（当前 0）");
-                    mc as usize
+                    mc
                 }
             )),
         })
@@ -828,12 +829,13 @@ impl AnthropicProvider {
             max_tokens: None,
             temperature: None,
             call_count: std::sync::atomic::AtomicUsize::new(0),
-            // P2-8：并发上限来自配置（None=默认 16）
+            // audit-gen-03：与生成层信号量共用 llm_effective_concurrency
+            // （统一并发语义：None=默认 16，显式配置直接生效）
             semaphore: Arc::new(tokio::sync::Semaphore::new(
                 {
-                    let mc = config.max_concurrency.unwrap_or(16);
+                    let mc = crate::config::schema::llm_effective_concurrency(config);
                     anyhow::ensure!(mc > 0, "max_concurrency 必须为正整数（当前 0）");
-                    mc as usize
+                    mc
                 }
             )),
         })
@@ -1044,14 +1046,41 @@ impl Default for MockProvider {
     }
 }
 
+/// Mock 卡片 JSON 占位（audit-gen-02）
+///
+/// summary 保留「模拟摘要」锚点——既有集成测试（test_overview/card 编辑
+/// 往返）以此为 mock 产物辨识信号；key_entities 留空（实体回填由生成管道
+/// 按 chunk 完成，Mock 不伪造实体，避免与真实实体混淆）。
+const MOCK_CARD_JSON: &str = r#"{"summary": "这是 Mock Provider 生成的模拟摘要", "key_entities": [], "design_patterns": [], "todo_notes": []}"#;
+/// Mock Markdown 占位（audit-gen-02）
+///
+/// 非 JSON 类提示词（wiki 页/架构/概览/模块描述等）返回的占位 Markdown，
+/// 含「模拟摘要」锚点与 mock 辨识页脚。不含 ```mermaid 与模板占位符，
+/// 通过下游 mermaid/残留校验（一次调用即成功，不触发重试）。
+const MOCK_MARKDOWN: &str =
+    "# Mock 占位文档\n\n这是 Mock Provider 生成的模拟摘要，用于本地测试与无 Key 演示（非真实文档）。\n";
+
 impl LlmProvider for MockProvider {
-    async fn complete(&self, _messages: &[Message]) -> Result<String> {
+    /// 内容语义分流（audit-gen-02）
+    ///
+    /// 此前所有调用返回同一卡片 JSON——wiki/架构/概览/模块描述等 Markdown
+    /// 类提示词得到的也是 JSON 片段，mock 集成测试产物缺乏内容语义。改为按
+    /// 消息内容分流：卡片类提示词（要求输出原始 JSON）返回占位卡片 JSON；
+    /// 其余返回占位 Markdown。只改变产物内容形态，不改变调用次数与
+    /// 文件存在性语义。
+    async fn complete(&self, messages: &[Message]) -> Result<String> {
         self.call_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Ok(
-            r#"{"summary": "这是 Mock Provider 生成的模拟摘要", "key_entities": []}"#
-                .to_string(),
-        )
+        let wants_json = messages.iter().any(|m| {
+            m.content.contains("输出原始 JSON")
+                || m.content.contains("合法 JSON")
+                || m.content.contains("JSON 对象")
+        });
+        if wants_json {
+            Ok(MOCK_CARD_JSON.to_string())
+        } else {
+            Ok(MOCK_MARKDOWN.to_string())
+        }
     }
 
     async fn complete_stream(&self, _messages: &[Message]) -> Result<Vec<String>> {
@@ -1207,11 +1236,24 @@ mod tests {
     async fn test_mock_provider() {
         let provider = MockProvider::new();
 
+        // 非 JSON 提示词（wiki/架构/描述）：返回占位 Markdown
         let messages = vec![Message::user("测试消息")];
         let result = provider.complete(&messages).await;
         assert!(result.is_ok());
         assert!(result.unwrap().contains("模拟摘要"));
-        assert_eq!(provider.call_count(), 1);
+
+        // audit-gen-02 内容语义分流：卡片类提示词（要求输出原始 JSON）→ 卡片 JSON
+        let card_messages = vec![
+            Message::system("输出原始 JSON 对象本身——不要用 Markdown 代码块包裹"),
+            Message::user("模块数据"),
+        ];
+        let card_result = provider.complete(&card_messages).await.unwrap();
+        assert!(
+            card_result.starts_with('{'),
+            "JSON 类提示词应返回卡片 JSON，实际: {card_result}"
+        );
+        assert!(card_result.contains("模拟摘要"));
+        assert_eq!(provider.call_count(), 2);
     }
 
     #[tokio::test]

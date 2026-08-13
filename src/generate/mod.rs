@@ -180,7 +180,7 @@ pub async fn run_generation(
     let card_gen = CardGenerator::new(
         &provider,
         config.clone(),
-        crate::config::schema::LLM_MAX_CONCURRENT,
+        crate::config::schema::llm_effective_concurrency(&config.llm),
         config.wiki.language.clone(),
     );
     let mut cards = card_gen
@@ -194,9 +194,9 @@ pub async fn run_generation(
     // 4. 按语言独立生成 Wiki 页面（并行，演进计划 T3.1；卡片仅主语言生成一次，
     // 各语言页面复用主语言卡片摘要；语言列表在 generate_wiki_pages 内部计算）
     let wiki_start = Instant::now();
-    let wiki_gen = WikiGenerator::new(&provider, crate::config::schema::LLM_MAX_CONCURRENT);
+    let wiki_gen = WikiGenerator::new(&provider, crate::config::schema::llm_effective_concurrency(&config.llm));
     let mut documents =
-        generate_wiki_pages(&wiki_gen, &chunks, &cards, config, crate::config::schema::LLM_MAX_CONCURRENT, root, &build_entity_ranges(insights), on_progress).await;
+        generate_wiki_pages(&wiki_gen, &chunks, &cards, config, crate::config::schema::llm_effective_concurrency(&config.llm), root, &build_entity_ranges(insights), on_progress).await;
     let wiki_ms = wiki_start.elapsed().as_millis() as u64;
 
     // 5. 生成全局文档（架构概览 + 数据库 Schema，全量/增量共用同一辅助函数）
@@ -416,7 +416,7 @@ pub async fn run_generation_filtered(
     let card_gen = CardGenerator::new(
         &provider,
         config.clone(),
-        crate::config::schema::LLM_MAX_CONCURRENT,
+        crate::config::schema::llm_effective_concurrency(&config.llm),
         config.wiki.language.clone(),
     );
     let mut cards = card_gen
@@ -429,9 +429,9 @@ pub async fn run_generation_filtered(
     // 4. 按语言独立生成 Wiki 页面（并行，演进计划 T3.1；仅变更块；卡片仅主语言生成一次，
     // 各语言页面复用主语言卡片摘要）
     let wiki_start = Instant::now();
-    let wiki_gen = WikiGenerator::new(&provider, crate::config::schema::LLM_MAX_CONCURRENT);
+    let wiki_gen = WikiGenerator::new(&provider, crate::config::schema::llm_effective_concurrency(&config.llm));
     let mut documents =
-        generate_wiki_pages(&wiki_gen, &chunks, &cards, config, crate::config::schema::LLM_MAX_CONCURRENT, root, &build_entity_ranges(insights), on_progress).await;
+        generate_wiki_pages(&wiki_gen, &chunks, &cards, config, crate::config::schema::llm_effective_concurrency(&config.llm), root, &build_entity_ranges(insights), on_progress).await;
     tracing::info!("生成进度: 90% - Wiki 页面生成完成，共 {} 个页面", documents.len());
     let wiki_ms = wiki_start.elapsed().as_millis() as u64;
 

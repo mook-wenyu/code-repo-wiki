@@ -71,6 +71,33 @@ impl EmbeddingEngine {
         let api_key = self.resolve_api_key()?;
         let url = format!("{}/embeddings", self.resolve_base_url());
 
+        // audit-gen-08：单条预截断——embedding 模型输入有 token 上限
+        // （text-embedding 系 8191 token），超长单条（如大函数体）会被
+        // API 拒收或静默截断。用字符数做保守代理：中文 1 字≈1 token、
+        // 英文约 4 字符≈1 token，8000 字符对两种语言都不超模型上下文；
+        // 截断时显式告警（不静默丢弃语义）。
+        const EMBED_MAX_INPUT_CHARS: usize = 8000;
+        let mut truncated = 0usize;
+        let prepared: Vec<String> = texts
+            .iter()
+            .map(|t| {
+                if t.chars().count() > EMBED_MAX_INPUT_CHARS {
+                    truncated += 1;
+                    t.chars().take(EMBED_MAX_INPUT_CHARS).collect()
+                } else {
+                    t.clone()
+                }
+            })
+            .collect();
+        if truncated > 0 {
+            tracing::warn!(
+                "{} 条嵌入文本超过 {} 字符上限，已截断（防 API 拒收/静默截断）",
+                truncated,
+                EMBED_MAX_INPUT_CHARS
+            );
+        }
+        let texts: Vec<&str> = prepared.iter().map(|s| s.as_str()).collect();
+
         // P2-8：并发信号量——整批嵌入占一个许可（批次间并发属 T01-e 范围）
         let _permit = self
             .semaphore
@@ -82,7 +109,7 @@ impl EmbeddingEngine {
         // 串行等待每批 RTT 让大仓批量嵌入分钟级阻塞。buffer_unordered(4)
         // 并发发送、按 chunk 索引收集，保持结果顺序与串行一致。
         const EMBED_CONCURRENCY: usize = 4;
-        let chunks: Vec<&[String]> = texts.chunks(crate::config::schema::EMBED_BATCH_SIZE).collect();
+        let chunks: Vec<&[&str]> = texts.chunks(crate::config::schema::EMBED_BATCH_SIZE).collect();
         let mut results: Vec<Option<Result<Vec<Vec<f32>>>>> = (0..chunks.len()).map(|_| None).collect();
         let model = self.config.model.clone();
 

@@ -10,6 +10,14 @@ use crate::generate::llm::{LlmProvider, Message, Provider};
 use crate::generate::prompt;
 use crate::model::{EntitySummary, KnowledgeCard};
 
+/// 卡片生成输出侧 token 预算（audit-gen-06）
+///
+/// 生成路径此前走 complete()（无输出预算）——推理型模型 reasoning 吞
+/// 预算时卡片 JSON 可能被截断且无感知。接线 complete_with_budget 后：
+/// 请求带 max_tokens、finish_reason=length（截断）时 Provider 显式报错，
+/// 由上层失败隔离记录重试，不再把残缺 JSON 当完整卡片消费。
+const CARD_MAX_OUTPUT_TOKENS: u32 = 8192;
+
 /// 卡片操作动作（CLI card 子命令与 Qoder /knowledge 对等）
 pub enum CardAction {
     /// 为单个模块生成卡片（重新生成）
@@ -122,7 +130,10 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
             &self.language,
             pending_manual_edits,
         );
-        let mut response = self.provider.complete(&messages).await?;
+        let mut response = self
+            .provider
+            .complete_with_budget(&messages, Some(CARD_MAX_OUTPUT_TOKENS))
+            .await?;
         let mut card = match parse_card_response(&response, chunk) {
             Ok(c) => c,
             Err(first_err) => {
@@ -130,7 +141,10 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
                     "你上一次的输出无法解析为合法 JSON（可能包含 Markdown 代码块围栏或尾随解释文本）。\
                      请只输出 JSON 对象本体：不要任何 ``` 围栏、不要 markdown 标记、不要解释、不要尾随内容。".to_string(),
                 ));
-                response = self.provider.complete(&messages).await?;
+                response = self
+                    .provider
+                    .complete_with_budget(&messages, Some(CARD_MAX_OUTPUT_TOKENS))
+                    .await?;
                 parse_card_response(&response, chunk).map_err(|second_err| {
                     anyhow::anyhow!("卡片 JSON 重试仍解析失败（首次: {}；重试: {}）", first_err, second_err)
                 })?

@@ -100,18 +100,36 @@ impl ModuleDescCache {
         }
     }
 
-    /// 原子写盘（temp + rename）；失败仅告警不阻断
+    /// 原子写盘（temp + rename）；失败显式告警不阻断（audit-gen-13：
+    /// 缓存是加速产物，写失败下次重新生成即可，但落盘失败不可静默——
+    /// 静默会导致跨进程复用失效无从排查）
     fn save(&self, path: &Path) {
-        let Ok(content) = serde_json::to_string(&self.entries) else {
-            return;
+        let content = match serde_json::to_string(&self.entries) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("模块描述缓存序列化失败，跳过落盘: {}", e);
+                return;
+            }
         };
         let Some(parent) = path.parent() else {
+            tracing::warn!("模块描述缓存路径无父目录，跳过落盘: {}", path.display());
             return;
         };
-        let _ = std::fs::create_dir_all(parent);
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            tracing::warn!(
+                "模块描述缓存目录创建失败，跳过落盘: {} {}",
+                parent.display(),
+                e
+            );
+            return;
+        }
         let tmp = path.with_extension("json.tmp");
-        if std::fs::write(&tmp, content).is_ok() {
-            let _ = std::fs::rename(&tmp, path);
+        if let Err(e) = std::fs::write(&tmp, content) {
+            tracing::warn!("模块描述缓存写入失败，跳过落盘: {} {}", tmp.display(), e);
+            return;
+        }
+        if let Err(e) = std::fs::rename(&tmp, path) {
+            tracing::warn!("模块描述缓存重命名失败: {} {}", tmp.display(), e);
         }
     }
 }
@@ -521,25 +539,45 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
                         Err(_) => return module.clone(),
                     };
                     let mut enriched = module.clone();
-                    if let Ok(text) = self.describe_module(module, graph, language).await
-                        && !text.trim().is_empty()
-                    {
-                        let description = text.trim().to_string();
-                        // 写回缓存（锁内短操作，不跨 await）——失败不缓存，
-                        // 下次调用重新尝试 LLM
-                        {
-                            let mut guard = self.desc_cache.lock().unwrap_or_else(|e| e.into_inner());
-                            if let Some(cache) = guard.as_mut() {
-                                cache.entries.insert(
-                                    cache_key,
-                                    CacheEntry {
-                                        fingerprint,
-                                        description: description.clone(),
-                                    },
-                                );
+                    match self.describe_module(module, graph, language).await {
+                        Ok(text) if !text.trim().is_empty() => {
+                            let description = text.trim().to_string();
+                            // 写回缓存（锁内短操作，不跨 await）——失败不缓存，
+                            // 下次调用重新尝试 LLM
+                            {
+                                let mut guard = self.desc_cache.lock().unwrap_or_else(|e| e.into_inner());
+                                if let Some(cache) = guard.as_mut() {
+                                    cache.entries.insert(
+                                        cache_key,
+                                        CacheEntry {
+                                            fingerprint,
+                                            description: description.clone(),
+                                        },
+                                    );
+                                }
                             }
+                            enriched.description = Some(description);
                         }
-                        enriched.description = Some(description);
+                        // audit-gen-01：LLM 失败/空文本不再静默吞掉——显式告警
+                        // + 记入失败统计（failed_modules 供增量状态重试），
+                        // 描述缺失由下游按"无描述"降级处理，不中断主流程。
+                        Ok(_) => {
+                            tracing::warn!(
+                                "模块 {} 描述生成为空文本，保留空描述（无职责描述可用）",
+                                module.name
+                            );
+                            self.failed.lock().unwrap_or_else(|e| e.into_inner())
+                                .push(module.name.clone());
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "模块 {} 描述生成失败，保留空描述: {}",
+                                module.name,
+                                e
+                            );
+                            self.failed.lock().unwrap_or_else(|e| e.into_inner())
+                                .push(module.name.clone());
+                        }
                     }
                     enriched
                 }

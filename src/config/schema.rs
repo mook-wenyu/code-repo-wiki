@@ -1,19 +1,24 @@
 use serde::{Deserialize, Serialize};
 
-/// v22 硬编码常量：以下配置项属「算法内部细节 / 无调优需求 / 必填负担」，
-/// 从配置文件移除、以代码常量固定，减少用户配置心智负担（用户拍板：
-/// 推荐 10 项全部硬编码）。如需调整须改代码重新编译。
-/// LLM 并发上限（v50：16 → 128）
+// v22 硬编码常量：以下配置项属「算法内部细节 / 无调优需求 / 必填负担」，
+// 从配置文件移除、以代码常量固定，减少用户配置心智负担（用户拍板：
+// 推荐 10 项全部硬编码）。如需调整须改代码重新编译。
+
+/// 生成层与 Provider 内部信号量统一的有效并发值（audit-gen-03）
 ///
-/// 依据（2026-08-10 权威查证）：
-/// - DeepSeek 官方限流=纯并发数（v4-flash 账户级 2500），无 RPM/TPM——
-///   128 远低于上限；
-/// - 服务端连续批处理（Orca/vLLM）的吞吐拐点约 128 并发：拐点后并发
-///   只买延迟不买吞吐（NVIDIA NIM 官方基准：并发 100→250 吞吐 917→920
-///   持平而 TTFT 8s→88s）——128 是拐点内最大化收益的取值；
-/// - 超限由 llm.rs retry_with_backoff 的 429 全抖动退避兜底（失败计配额，
-///   退避优于重放——OpenAI 官方限流指南）。
-pub const LLM_MAX_CONCURRENT: usize = 128;
+/// 此前存在双层信号量语义不一致：生成层（Card/Wiki/Schema 的 Semaphore）
+/// 硬编码 LLM_MAX_CONCURRENT=128，而 Provider 内部信号量（llm.rs 构造器）
+/// 用 `config.max_concurrency.unwrap_or(16)`——两层串联实际取最小值为生效
+/// 并发，无配置时恒为 16，v50 的 128 提升从未真正生效（且与 DeepSeek 官方
+/// 建议的 8-16 起步冲突）。统一为同一表达式后，生成层与 Provider 取值一致，
+/// 实际生效并发即该值，不再有两层语义差。
+///
+/// None=回落 Provider 内置默认 16；显式配置（含 >16）直接生效——
+/// 生成层不再成为隐藏瓶颈。超限仍由 llm.rs retry_with_backoff 的 429
+/// 全抖动退避兜底。
+pub fn llm_effective_concurrency(llm: &LlmSection) -> usize {
+    llm.max_concurrency.unwrap_or(16) as usize
+}
 /// None=模型默认，不随请求发送
 pub const EMBED_BATCH_SIZE: usize = 20;
 /// 索引目录，相对 output.dir

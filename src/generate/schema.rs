@@ -88,7 +88,7 @@ pub async fn generate_schema_documents_at(
         return Ok(Vec::new());
     }
 
-    let semaphore = tokio::sync::Semaphore::new(crate::config::schema::LLM_MAX_CONCURRENT);
+    let semaphore = tokio::sync::Semaphore::new(crate::config::schema::llm_effective_concurrency(&config.llm));
     let mut handles = Vec::with_capacity(files.len());
     for file in files {
         // 每次迭代重新绑定引用，async move 只移入引用与文件路径
