@@ -7,6 +7,18 @@
 
 （暂无待发布变更）
 
+## [0.7.0] - 2026-08-13
+
+### Changed
+- **Phase A7 全面审计与实现**：路径安全单点守卫（`..` / 根相对 / 盘符相对 / 绝对越 root）+ source-missing 缺失源文件检查
+- **libgit2 Windows 竞态 flaky 修复**：`test_git::commit_all` 公共 git 提交 helper 统一有界重试
+- **配置**：插件 configPath 指向项目配置 / validate_config 落地 / 密钥权限收紧 / key `--env` 对齐 / fixture 清理
+- **生成引擎**：describe_modules 不静默吞错 / MockProvider 分流 / 并发语义统一 / scanner 大小上限 / 预算接线 / 死代码清理 / run_generation_filtered 拆分
+- **降级路径**：骨架降级 fail-fast / Mermaid 显式标注 / Responses 404 显式报错（移除协议回退）/ doctor 协议探测
+- **输出/MCP**：单点解析器收敛 / `_log` 孤儿豁免 / MCP 工具 isError / primary_language 改名
+- **CLI**：update `--output` 复核修正 / ast-search language 校验 / card root global / sync 纳入锁 / dry-run 组合显式 / bench `-c`
+- **搜索锁**：索引重建清空不吞错 / need_reindex 语义去重 / watch `./` 剥离 / 锁池复用 / LockError 结构化 / integrity_check / watch fail-fast
+
 ## [0.6.0] - 2026-08-12
 
 ### Added
