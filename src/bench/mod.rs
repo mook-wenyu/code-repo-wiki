@@ -2491,22 +2491,10 @@ mod tests {
     }
 
     /// git2 提交当前工作区，返回 commit id
+    ///
+    /// 委托给 test_git::commit_all（libgit2 Windows 环境竞态有界重试）。
     fn commit_all(repo_path: &Path, message: &str) -> String {
-        let repo = git2::Repository::open(repo_path).unwrap();
-        let mut index = repo.index().unwrap();
-        index.add_all(["*"], git2::IndexAddOption::DEFAULT, None).unwrap();
-        index.write().unwrap();
-        let tree_id = index.write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-        let sig = git2::Signature::now("bench", "bench@test.com").unwrap();
-        let commit_id = match repo.head().ok() {
-            Some(head) => {
-                let parent = head.peel_to_commit().unwrap();
-                repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent]).unwrap()
-            }
-            None => repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[]).unwrap(),
-        };
-        commit_id.to_string()
+        crate::test_git::commit_all(repo_path, message)
     }
 
     /// 覆盖率：全量生成后实体应全部被提及（mock 产物含模块页）

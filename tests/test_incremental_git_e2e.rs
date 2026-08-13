@@ -69,22 +69,11 @@ fn build_git_repo(repo: &Path) -> anyhow::Result<()> {
 }
 
 /// git2 提交当前工作区全部文件，返回 commit id
+///
+/// 委托给 test_git::commit_all（libgit2 Windows 环境竞态有界重试：
+/// "file changed before we could read it" / .git/index.lock 残留）。
 fn git_commit_all(repo: &Path, message: &str) -> String {
-    let repo = git2::Repository::open(repo).expect("打开 git 仓库失败");
-    let mut index = repo.index().unwrap();
-    index.add_all(["*"], git2::IndexAddOption::DEFAULT, None).unwrap();
-    index.write().unwrap();
-    let tree_id = index.write_tree().unwrap();
-    let tree = repo.find_tree(tree_id).unwrap();
-    let sig = git2::Signature::now("test", "test@test.com").unwrap();
-    let commit_id = match repo.head().ok() {
-        Some(head) => {
-            let parent = head.peel_to_commit().unwrap();
-            repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent]).unwrap()
-        }
-        None => repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[]).unwrap(),
-    };
-    commit_id.to_string()
+    code_repo_wiki::test_git::commit_all(repo, message)
 }
 
 /// 读取 api.md 全文（增量差分的内容级接缝：实体签名由 graph 渲染，body 变更不改变）

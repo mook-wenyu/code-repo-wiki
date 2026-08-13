@@ -845,27 +845,12 @@ fn init_git(dir: &Path, message: &str) {
     let mut cfg = repo.config().unwrap();
     cfg.set_str("user.name", "test").unwrap();
     cfg.set_str("user.email", "test@test.com").unwrap();
-    let mut index = repo.index().unwrap();
-    index.add_all(["*"], git2::IndexAddOption::DEFAULT, None).unwrap();
-    index.write().unwrap();
-    let tree_id = index.write_tree().unwrap();
-    let tree = repo.find_tree(tree_id).unwrap();
-    let sig = git2::Signature::now("test", "test@test.com").unwrap();
-    repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[]).unwrap();
+    let _ = code_repo_wiki::test_git::commit_all(dir, message);
 }
 
 /// 提交当前工作树变更（供增量场景构造）
 fn commit_all(dir: &Path, message: &str) {
-    let repo = git2::Repository::open(dir).unwrap();
-    let mut index = repo.index().unwrap();
-    index.add_all(["*"], git2::IndexAddOption::DEFAULT, None).unwrap();
-    index.write().unwrap();
-    let tree_id = index.write_tree().unwrap();
-    let tree = repo.find_tree(tree_id).unwrap();
-    let sig = git2::Signature::now("test", "test@test.com").unwrap();
-    let parent = repo.head().unwrap().peel_to_commit().unwrap();
-    repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent])
-        .unwrap();
+    let _ = code_repo_wiki::test_git::commit_all(dir, message);
 }
 
 /// v21 A 组（t03）：no-op stdout 契约——外部 AI Coding Agent 以 stdout 为

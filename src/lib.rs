@@ -13,6 +13,7 @@ pub mod project;
 pub mod bench;
 pub mod doctor;
 pub mod key;
+pub mod test_git;
 
 use std::collections::HashMap;
 use std::path::Path;

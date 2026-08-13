@@ -406,13 +406,7 @@ mod tests {
         let src = dir.join("src");
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(src.join("foo.rs"), "fn foo() {}\n").unwrap();
-        let mut index = repo.index().unwrap();
-        index.add_all(["*"], git2::IndexAddOption::DEFAULT, None).unwrap();
-        index.write().unwrap();
-        let tree_id = index.write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-        let sig = git2::Signature::now("test", "test@test.com").unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+        crate::test_git::commit_all(&dir, "init");
         // 基线 = 第一 commit：diff 才能覆盖第二次提交的删除变更
         let first_hash = repo.head().unwrap().peel_to_commit().unwrap().id().to_string();
 
@@ -428,15 +422,10 @@ mod tests {
         .unwrap();
         baseline.save(&state_dir).unwrap();
 
-        // 第二次提交：删除 src/foo.rs（index.remove_path 后再提交；
-        // 必须放在建状态之后——指纹计算需要文件仍在磁盘上）
+        // 第二次提交：删除 src/foo.rs（commit_all 的 add_all 会检测磁盘删除
+        // 并暂存删除变更；必须放在建状态之后——指纹计算需要文件仍在磁盘上）
         std::fs::remove_file(src.join("foo.rs")).unwrap();
-        let mut index = repo.index().unwrap();
-        index.remove_path(Path::new("src/foo.rs")).unwrap();
-        index.write().unwrap();
-        let tree_id = index.write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, "delete", &tree, &[&repo.head().unwrap().peel_to_commit().unwrap()]).unwrap();
+        crate::test_git::commit_all(&dir, "delete");
 
         // insights 只含现存文件（被删文件不在其中）
         let insights: Vec<FileInsight> = Vec::new();
@@ -578,13 +567,7 @@ mod tests {
 
         // 单 commit 仓库（HEAD 无父）：无基线时 diff 为空
         std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
-        let mut index = repo.index().unwrap();
-        index.add_all(["*"], git2::IndexAddOption::DEFAULT, None).unwrap();
-        index.write().unwrap();
-        let tree_id = index.write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-        let sig = git2::Signature::now("test", "test@test.com").unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+        crate::test_git::commit_all(&dir, "init");
 
         let insights = vec![make_insight("a.rs")];
         let graph = KnowledgeGraph::default();
@@ -613,13 +596,7 @@ mod tests {
         cfg.set_str("user.email", "test@test.com").unwrap();
 
         std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
-        let mut index = repo.index().unwrap();
-        index.add_all(["*"], git2::IndexAddOption::DEFAULT, None).unwrap();
-        index.write().unwrap();
-        let tree_id = index.write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-        let sig = git2::Signature::now("test", "test@test.com").unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+        crate::test_git::commit_all(&dir, "init");
         let head_hash = repo.head().unwrap().peel_to_commit().unwrap().id().to_string();
 
         let insights = vec![make_insight("a.rs")];
@@ -655,13 +632,7 @@ mod tests {
         cfg.set_str("user.email", "test@test.com").unwrap();
 
         std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
-        let mut index = repo.index().unwrap();
-        index.add_all(["*"], git2::IndexAddOption::DEFAULT, None).unwrap();
-        index.write().unwrap();
-        let tree_id = index.write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-        let sig = git2::Signature::now("test", "test@test.com").unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+        crate::test_git::commit_all(&dir, "init");
 
         // 写损坏的状态 JSON
         let state_dir = dir.join(".state");
@@ -703,13 +674,7 @@ mod tests {
 
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(dir.join("src").join("a.rs"), "fn a() {}\n").unwrap();
-        let mut index = repo.index().unwrap();
-        index.add_all(["*"], git2::IndexAddOption::DEFAULT, None).unwrap();
-        index.write().unwrap();
-        let tree_id = index.write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-        let sig = git2::Signature::now("test", "test@test.com").unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+        crate::test_git::commit_all(&dir, "init");
         let head = repo.head().unwrap().peel_to_commit().unwrap().id().to_string();
 
         let mut config = make_config();
@@ -751,15 +716,8 @@ mod tests {
         // 基线 = 第一 commit，随后提交第二个 commit → head 变化
         save_baseline(&dir, &config, &first);
 
-        let repo = git2::Repository::open(&dir).unwrap();
         std::fs::write(dir.join("src").join("a.rs"), "fn a() { println!(); }\n").unwrap();
-        let mut index = repo.index().unwrap();
-        index.add_all(["*"], git2::IndexAddOption::DEFAULT, None).unwrap();
-        index.write().unwrap();
-        let tree_id = index.write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-        let sig = git2::Signature::now("test", "test@test.com").unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, "second", &tree, &[&repo.head().unwrap().peel_to_commit().unwrap()]).unwrap();
+        crate::test_git::commit_all(&dir, "second");
 
         assert!(
             !should_skip_noop(&ProjectRoot::new(dir.clone()), &config).unwrap(),
@@ -846,13 +804,7 @@ mod tests {
         cfg.set_str("user.email", "test@test.com").unwrap();
         std::fs::write(dir.join("src").join("m20").join("a.rs"), "pub fn fa() {}\n").unwrap();
         std::fs::write(dir.join("src").join("m20").join("b.rs"), "pub fn fb() {}\n").unwrap();
-        let mut index = repo.index().unwrap();
-        index.add_all(["*"], git2::IndexAddOption::DEFAULT, None).unwrap();
-        index.write().unwrap();
-        let tree_id = index.write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-        let sig = git2::Signature::now("test", "test@test.com").unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+        crate::test_git::commit_all(&dir, "init");
         let head = repo.head().unwrap().peel_to_commit().unwrap().id().to_string();
 
         // 状态：基线 = 当前 HEAD，failed_modules = ["src::m20"]（社区名体系）
