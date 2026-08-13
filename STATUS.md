@@ -1,5 +1,20 @@
 # 项目状态简报 （AI自动维护，禁止贴代码）
 
+## 六十八、v0.7.2 第二轮四域集成（2026-08-13）——块去重/doc_comment 四元组/lint severity 化/依赖校验 fence
+- 前置状态：四个并行 worker（R1 检索/索引、R2 生成、R3 lint、R4 增量）已完成域内修复，本轮为集成验证——把仓库恢复为可编译/可测试/全绿，处理跨域残留，分域提交
+- 修改的功能（四域 + 测试适配，5 提交）：
+  - search（R1）：SemanticEngine::open 加 `model: &str` 参数（lib.rs 4 调用点同步）；dedupe_by_block 块级去重（SEARCH_INDEX_TEMPLATE_VERSION 2→3）；FTS5 v3 加固（file_path/node_json 列 UNINDEXED 只存不索引、bm25 按列权重 name/signature 高权）；vecdb user_version 替代 DDL 解析（<3 旧库 DROP 重建 + need_reindex）；query cache 键改 `{model}\0{query}` 隔离不同模型；Java def_types + ast.rs 节点集补齐
+  - generate（R2）：build_caller_contexts 删 CallIndex 参数（按图入边直接归属调用方模块）；删生产死字段 Chunk.caller_modules；dependency_check fence 感知（复用 citation::fence_ranges 跳过代码围栏内示例）+ 依赖节标题精确匹配（不再 contains 误吞 DI 主题节）；卡片预算闸门统一；design_rationale 空串归一
+  - lint（R3）：LintIssue 加 `severity: Severity` 字段（22+1 构造点补齐），is_warning 由 message 含"告警"文本启发式改为字段判定；orphan/bad-mermaid/entity-ownership 目录-stem 命中降 warning（展示但不阻断退出码，error 级才非 0）；P0-C 三根因（节限定实体提取/剥可见性前缀 pub(crate)/extern ABI/规则 3 归属放行——related_files 恒空时退化用模块短名）；citation::fence_ranges 转 pub(crate) 供 generate 复用；拆函数
+  - incremental（R4）：change.rs 实体判定升四元组（起止行号 + 签名 + doc_comment）——Rust/Python doc_comment 是 LLM 生成输入，就地改写且行数不变时旧三元组漏检 BodyChanged → 模块不重生成 → 页面静默陈旧（P0-B 修复含回归测试）；diff.rs 删 GitDiffResult.added/renamed/to_commit 死字段；impact.rs 批量起点查询（精确匹配不误伤同前缀文件，目录前缀命中全部子节点）
+- 跨域残留处理：incremental/mod.rs 删冗余 `..Default::default()`（R4 删字段后 clippy needless_update，恰 1 行）；output/lint.rs 修 collapsible_if + too_many_arguments（known_entity_issue 9 参，按项目既有 5 处先例 allow）；impact.rs 测试 is_none() → contains_key（unnecessary_get_then_check）；tests/test_cli_smoke.rs 适配 orphan 降 warning 行为断言（原断言 exit 1 已过期，改验证 warning 不阻断 + 新增断链 error 级场景验证 exit 1，三态验证意图保留）
+- 摸到的文件：src/search/*（semantic/vecdb/store/chunker/ast/query_cache）、src/generate/*（card/chunk/context/mod/prompt/wiki）、src/output/*（lint/citation/dependency_check/semantic_lint）、src/incremental/*（change/diff/impact/mod）、src/lib.rs、src/main.rs、tests/test_cli_smoke.rs、STATUS.md
+- 是否改变了接口/契约：是——SemanticEngine::open 加 model 参（4 调用点）；LintIssue 加 severity 字段（public struct）；build_caller_contexts 删 CallIndex 参（2→3 参）；Chunk 删 caller_modules 字段；SEARCH_INDEX_TEMPLATE_VERSION 2→3 + vecdb user_version=3（旧库需重建）；GitDiffResult 删 added/renamed/to_commit
+- 验证：cargo check --all-targets --locked / cargo build --locked 通过；cargo test --locked --no-fail-fast（NO_PROXY=127.0.0.1,localhost,::1，对齐 CI test job env）38 个测试二进制 866 passed / 0 failed；cargo fmt --all -- --check exit 0；cargo clippy --all-targets --locked --no-deps -D warnings 0 告警；RUSTDOCFLAGS='-Dwarnings' cargo doc --no-deps --locked 通过；lint 实测复核：6 条历史 error 误报（crate/anyhow/is_cjk/extract_keywords/path/load_config）0 回归，当前 error 级 459（bad-citation-overlap 334 + stale 101 + bad-citation 14 + stale-entity 6 + bad-vctx 4，产物未随源码重生成所致）/ warning 级 12（entity-ownership 目录-stem 命中），退出码 1
+- 提交：068f373（feat(search)）→ 5db8465（feat(generate)）→ d8bb72a（fix(lint)）→ 0f1ba54（feat(incremental)）→ e81c93b（test(integration)）→ 本次 chore(status)
+- 已知风险（诚实自曝）：30+9 个环境性测试失败非回归（generate::llm / search::semantic / doctor / test_bench_doc_info_llm / test_bench_judge_tri_state / test_cli 的 loopback mock server 测试被沙箱代理拦截返回 502，设 NO_PROXY 后全部通过，CI test job 已设 NO_PROXY 应通过）；orphan/bad-mermaid 降 warning 是有意行为变化（test_cli_smoke 已适配）；rule 2 短名降级启发式（实体名 ≤4 字符视为聚类伪影降 warning，属启发式判定）；known_entity_issue 9 参 allow(clippy::too_many_arguments)（按项目惯例）；lint 退出码 1 因产物过时（stale/citation 系源码变更后未重生成产物，属预期）
+- 下次最该做的事：bench 基线重录（RRF k=20 + 结构感知分块 + FTS5 v3 bm25 改变检索语义，旧 bench 基线过期）；cargo run -- lint 全量清理剩余误报（stale 待产物重生成后复核，bad-citation-overlap 待重生成确认）；dependency-fabricated lint 接线评估（dependency_check 纯函数形态已可 lint 复用，YAGNI 未提前接线）
+
 ## 六十七、v0.7.2 四域优化（2026-08-13）——真混合检索 + 项目级上下文 + lint 归属/密度/指纹 + BodyChanged 传播
 - 冲突合并解决：本次工作区承续合并历史遗留（多文件 UU 冲突、STATUS.md 与 src/search/ast_chunker.rs 曾被删除、.opencode/ 环境文件被删），已取 HEAD 主线解决——被藏分支为远古版本，其内容已全部丢弃，以 HEAD + 本次四域优化工作区为最终真源；.opencode/ 环境删除文件保持不提交
 - 修改的功能（四域，6 提交）：
