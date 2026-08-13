@@ -1,5 +1,19 @@
 # 项目状态简报 （AI自动维护，禁止贴代码）
 
+## 六十三、A7 路径安全与 libgit2 flaky 修复（2026-08-13）
+- 修改的功能：
+  - KNOWN-04 根相对/盘符相对绕过：三调用方（check_stale/check_citations/check_vctx_tokens）收敛到统一 detect_path_escape（`..` 越界段 / Windows 根相对与盘符相对形态 / 绝对路径越出源码根，任一命中即拒绝解析）；新增组件级 is_root_relative_or_drive_relative（`\foo`/`/foo` 根相对、`C:foo` 盘符相对——is_absolute 对二者返回 false 可绕过 containment，join 可逃逸 root）；resolve_source_path 相对分支与兜底对 root.join 结果加 starts_with(root) 纵深防御；生成层 citation.rs check_citation_file_level 复用同一组件级判定（全局收敛）
+  - KNOWN-06 source-missing：check_stale 新增 source-missing issue（引用的代码源文件缺失不再静默跳过）；extract_source_files 限定代码扩展名（SUPPORTED_EXTENSIONS），非代码引用不参与 stale/source-missing
+  - KNOWN-07 containment 误报：absolute_path_within_roots 对不存在目标改按词法 containment 兜底，区分「root 内缺失」（放行报缺失）与「root 外」（拒绝）
+  - KNOWN-05 absolutize cwd 兜底：current_dir 失败改显式 panic（cwd 是相对路径的正当解析基准，静默兜底会把实体表键/containment 判定指向错误基准）
+  - KNOWN-03 libgit2 flaky：新增 src/test_git.rs 公共 git 提交 helper（add_all+write+write_tree+commit，对 Filesystem 类「file changed before we could read it」与 .git/index.lock 残留 GIT_ELOCKED 做最多 4 次×200ms 有界重试，其余错误立即 panic）；bench/incremental/tests 三处重复 git2 提交代码全部委托给 helper（全部 add_all 收敛为 1 处）
+- 摸到的文件：src/output/lint.rs、src/output/citation.rs、src/test_git.rs（新增）、src/lib.rs、src/incremental/mod.rs、src/bench/mod.rs、tests/test_cli_smoke.rs、tests/test_incremental_git_e2e.rs、tests/test_incremental_large_fixture.rs
+- 是否改变了接口/契约：否（lint 签名与 issue 结构未变；source-missing 为新 kind；stale/bad-citation/bad-vctx 对根相对/盘符相对形态由「读取失败跳过」改为「上游拒绝」，行为不可观测）
+- 验证：cargo test --lib 568 通过（output::lint 新增 6 项：is_root_relative 四形态 / detect_path_escape 拒绝 / resolve never-escapes / stale 根相对集成 / source-missing 报缺失 / 非代码不误伤；citation 新增 1 项根相对拒绝）；test_cli_smoke 24 + test_mcp 3 + test_incremental_git_e2e 4 + test_incremental_large_fixture 4 全绿；test_incremental_git_e2e 连续 3 次全绿（此前 5/5 失败，flaky 修复证明）；cargo clippy --all-targets -D warnings 0 告警；对抗验证——临时还原各修复后对应新增测试如预期 FAIL（根相对检测还原→forms/detect FAIL；resolve 纵深防御还原→never-escapes FAIL 返回 `C:\foo.rs` root 外路径；代码扩展名过滤还原→非代码引用误报 source-missing FAIL；source-missing 分支还原→缺失源文件测试 FAIL），恢复后全部 PASS
+- 提交：f94bbbb（fix(lint) 路径安全）→ 6cc4d35（test(git) flaky helper）
+- 已知风险：盘符相对 `C:foo` 在 citation 提取层即被冒号截断（冒号非路径字符），不构成 citation 逃逸向量，仅 check_stale 相关文件段（反引号包裹无冒号拆分）是其实战向量；test_git helper 的重试判定按 Filesystem 类，会重试该类的非瞬时错误但 4 次有界后即 panic 不吞错；canonicalize 校验本身对目标做一次 stat，结果只用于拒绝
+- 下次最该做的事：STATUS.md 历史条目与新条目去重（可选）；A7 其余 KNOWN 项审计收尾
+
 ## 六十二、P1 绝对路径 containment 修复：root 外绝对路径拒绝解析（2026-08-13）
 - 修改的功能：resolve_source_path 的绝对路径分支加 containment 校验（canonicalize 后必须落在某个源码根 canonicalize 结果内，超界/不存在返回空路径=不可达，不 stat root 外文件）；三个调用方 check_stale/check_citations/check_vctx_tokens 在 project_root.join 之前对绝对路径做同位置拦截（join(abs)=abs 会绕过 resolve_source_path，必须在调用方拦截）——stale warn 跳过、citations/vctx 报 bad-citation/bad-vctx「绝对路径越出源码根」，与 `..` 越界段过滤行为一致；新增 absolute_path_within_roots 辅助函数（复用 absolutize 处理相对 root，Windows `\\?\` 前缀两侧同源直接可比，不做跨调用缓存——lint 主导成本是源码扫描）
 - 摸到的文件：src/output/lint.rs
