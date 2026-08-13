@@ -16,7 +16,6 @@ use petgraph::visit::EdgeRef;
 
 use crate::generate::chunk::Chunk;
 use crate::model::{EdgeKind, KnowledgeCard, KnowledgeGraph};
-use crate::search::callgraph::CallIndex;
 
 /// 依赖模块上下文：模块名 + 可选摘要（卡片阶段无卡片 → 摘要为 None）
 #[derive(Debug, Clone)]
@@ -64,45 +63,53 @@ pub fn build_dependency_contexts(
 
 /// 构建调用方模块上下文列表（wiki 页「## 调用方」节的数据源）
 ///
-/// 依据 = 搜索层预计算调用索引 `CallIndex`（符号名 → (调用者, 被调用者)）。
-/// 对每个本模块实体，取其调用者符号名，经「符号名 → 模块名」映射聚合到
-/// 调用方模块；同一调用方模块下收集「本模块被其调用的符号」（调用方视角
-/// 看到的入口点）。
+/// 依据 = 图上真实 Calls 入边（谁调用本模块）按源模块聚合，与
+/// `collect_caller_context` 同款技术（真实边 + NodeId 精确模块归属）：
+/// - 模块归属走 `ModuleCluster.node_ids → 节点 → 模块名`（build_node_to_module_map），
+///   不依赖符号名；
+/// - 同一调用方模块下收集「本模块被其调用的符号名」（调用方视角看到的入口点）。
 ///
-/// 已知局限：CallIndex 以符号名为键，跨模块同名符号会合并（先到先得），
-/// 属可接受的启发式——调用方模块名的颗粒度用于提示词，不参与产物断言。
+/// 为何弃用 CallIndex：旧实现按符号名先到先得 + 纯名字键聚合调用方，跨模块
+/// 同名符号（`new`/`parse`/`default`/`search` 高频重名）会把其他模块同名符号
+/// 的调用方串进本模块——调用方节混入非真实调用方，属提示词输入噪声。按边
+/// 扫描后模块归属精确，同名符号互不串扰。确定性契约：调用方模块 BTreeMap
+/// 排序、符号 BTreeSet 去重（跨次稳定）。
 pub fn build_caller_contexts(
     chunk: &Chunk,
     graph: &KnowledgeGraph,
-    call_index: &CallIndex,
     summary_of: &dyn Fn(&str) -> Option<String>,
 ) -> Vec<CallerContext> {
-    // 符号名 → 模块名（先到先得，与 export_modules/index 同规则）
-    let mut symbol_module: HashMap<&str, &str> = HashMap::new();
-    for module in &graph.modules {
-        for nid in &module.node_ids {
-            if let Some(node) = graph.graph.node_weight(*nid) {
-                symbol_module
-                    .entry(node.name.as_str())
-                    .or_insert(module.name.as_str());
-            }
-        }
-    }
-
     let self_module = chunk.module_path.join("::");
+    let node_to_module = crate::generate::chunk::build_node_to_module_map(&graph.modules);
+    // 本模块的节点集合（graph.modules 按模块名定位；Level 0 无模块时为空）
+    let self_nodes: BTreeSet<_> = graph
+        .modules
+        .iter()
+        .filter(|m| m.name == self_module)
+        .flat_map(|m| m.node_ids.iter().copied())
+        .collect();
     // 调用方模块 → 本模块被其调用的符号名集合（BTreeMap/BTreeSet 排序去重）
     let mut caller_symbols: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-    for entity in &chunk.entities {
-        if let Some((callers, _)) = call_index.get(&entity.name) {
-            for caller in callers {
-                if let Some(&cm) = symbol_module.get(caller.as_str())
-                    && cm != self_module.as_str()
-                {
-                    caller_symbols
-                        .entry(cm)
-                        .or_default()
-                        .insert(entity.name.as_str());
-                }
+    for nid in self_nodes {
+        for e in graph
+            .graph
+            .edges_directed(nid, petgraph::Direction::Incoming)
+        {
+            if graph.graph[e.id()].kind != EdgeKind::Calls {
+                continue;
+            }
+            let Some(&cm) = node_to_module.get(&e.source()) else {
+                continue;
+            };
+            if cm == self_module.as_str() {
+                continue;
+            }
+            // 被调符号名 = 本模块该节点的符号名（调用方视角的入口点）
+            if let Some(node) = graph.graph.node_weight(nid) {
+                caller_symbols
+                    .entry(cm)
+                    .or_default()
+                    .insert(node.name.as_str());
             }
         }
     }
@@ -302,13 +309,144 @@ mod tests {
         }
     }
 
+    /// 构造测试用 CodeNode（File 与 Function 节点通用，line_range 对测试逻辑无影响）
+    fn graph_node(name: &str, kind: NodeKind, file: &str, module: &[&str]) -> CodeNode {
+        CodeNode {
+            id: petgraph::stable_graph::NodeIndex::new(0),
+            kind,
+            name: name.into(),
+            file_path: Some(file.into()),
+            line_range: Some((1, 5)),
+            doc_comment: None,
+            signature: None,
+            visibility: None,
+            module_path: module.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// 构造四模块图：src::a 与 src::b 各含同名函数 `new`，src::c 调 a 的 new、
+    /// src::d 调 b 的 new——验证同名符号按 Calls 边 + NodeId 精确归属，
+    /// 不按符号名合并（旧 CallIndex 实现会把 c 串进 b 的调用方）。
+    fn same_name_new_graph() -> KnowledgeGraph {
+        let mut g = StableDiGraph::<CodeNode, CodeEdge>::new();
+        let file_a = g.add_node(graph_node(
+            "a.rs",
+            NodeKind::File,
+            "src/a/a.rs",
+            &["src", "a"],
+        ));
+        let a_new = g.add_node(graph_node(
+            "new",
+            NodeKind::Function,
+            "src/a/a.rs",
+            &["src", "a"],
+        ));
+        let file_c = g.add_node(graph_node(
+            "c.rs",
+            NodeKind::File,
+            "src/c/c.rs",
+            &["src", "c"],
+        ));
+        let c_caller = g.add_node(graph_node(
+            "caller",
+            NodeKind::Function,
+            "src/c/c.rs",
+            &["src", "c"],
+        ));
+        let file_b = g.add_node(graph_node(
+            "b.rs",
+            NodeKind::File,
+            "src/b/b.rs",
+            &["src", "b"],
+        ));
+        let b_new = g.add_node(graph_node(
+            "new",
+            NodeKind::Function,
+            "src/b/b.rs",
+            &["src", "b"],
+        ));
+        let file_d = g.add_node(graph_node(
+            "d.rs",
+            NodeKind::File,
+            "src/d/d.rs",
+            &["src", "d"],
+        ));
+        let d_caller = g.add_node(graph_node(
+            "caller",
+            NodeKind::Function,
+            "src/d/d.rs",
+            &["src", "d"],
+        ));
+
+        let mut idx = 0usize;
+        let mut add_edge = |s, t, kind, g: &mut StableDiGraph<CodeNode, CodeEdge>| {
+            g.add_edge(
+                s,
+                t,
+                CodeEdge {
+                    id: petgraph::stable_graph::EdgeIndex::new(idx),
+                    kind,
+                    source: s,
+                    target: t,
+                    weight: 1.0,
+                    location: None,
+                },
+            );
+            idx += 1;
+        };
+        for (s, t) in [
+            (file_a, a_new),
+            (file_c, c_caller),
+            (file_b, b_new),
+            (file_d, d_caller),
+        ] {
+            add_edge(s, t, EdgeKind::Contains, &mut g);
+        }
+        add_edge(c_caller, a_new, EdgeKind::Calls, &mut g);
+        add_edge(d_caller, b_new, EdgeKind::Calls, &mut g);
+
+        KnowledgeGraph {
+            graph: g,
+            modules: vec![
+                ModuleCluster {
+                    name: "src::a".into(),
+                    node_ids: vec![file_a, a_new],
+                    cohesion: 0.9,
+                    coupling: 0.1,
+                    description: None,
+                },
+                ModuleCluster {
+                    name: "src::b".into(),
+                    node_ids: vec![file_b, b_new],
+                    cohesion: 0.9,
+                    coupling: 0.1,
+                    description: None,
+                },
+                ModuleCluster {
+                    name: "src::c".into(),
+                    node_ids: vec![file_c, c_caller],
+                    cohesion: 0.9,
+                    coupling: 0.1,
+                    description: None,
+                },
+                ModuleCluster {
+                    name: "src::d".into(),
+                    node_ids: vec![file_d, d_caller],
+                    cohesion: 0.9,
+                    coupling: 0.1,
+                    description: None,
+                },
+            ],
+            features: Vec::new(),
+        }
+    }
+
     fn chunk_of(module_path: &str, entities: Vec<Entity>, dependencies: Vec<String>) -> Chunk {
         Chunk {
             module_path: module_path.split("::").map(|s| s.to_string()).collect(),
             entities,
             imports: vec![],
             dependencies,
-            caller_modules: vec![],
             file_paths: vec![],
             entity_sources: vec![],
         }
@@ -355,10 +493,9 @@ mod tests {
     #[test]
     fn test_build_caller_contexts_groups_by_caller_module() {
         let graph = two_module_graph();
-        let index = crate::search::callgraph::CallGraph::new(&graph).build_call_index();
-        // src::b 的 chunk：实体 callee 被 src::a 的 caller 调用
+        // src::b 的 chunk：实体 callee 被 src::a 的 caller 调用（Calls 入边推导）
         let chunk_b = chunk_of("src::b", vec![make_entity("callee")], vec![]);
-        let ctxs = build_caller_contexts(&chunk_b, &graph, &index, &|_| None);
+        let ctxs = build_caller_contexts(&chunk_b, &graph, &|_| None);
         assert_eq!(ctxs.len(), 1);
         assert_eq!(ctxs[0].module_name, "src::a");
         // 符号 = 本模块（src::b）被 src::a 调用的入口符号
@@ -367,7 +504,35 @@ mod tests {
 
         // src::a 的 chunk：无人调用 → 空调用方列表
         let chunk_a = chunk_of("src::a", vec![make_entity("caller")], vec![]);
-        assert!(build_caller_contexts(&chunk_a, &graph, &index, &|_| None).is_empty());
+        assert!(build_caller_contexts(&chunk_a, &graph, &|_| None).is_empty());
+    }
+
+    /// 同名符号归属失真回归：src::a 与 src::b 各含同名函数 `new`，src::c 调
+    /// a 的 new、src::d 调 b 的 new。旧实现按符号名（CallIndex 先到先得合并）
+    /// 会把 c 串进 b 的调用方；按 Calls 边 + NodeId 精确归属后，各模块调用方
+    /// 节只含真实调用方，不含同名非调用方。
+    #[test]
+    fn test_build_caller_contexts_same_name_symbols_not_mixed() {
+        let graph = same_name_new_graph();
+        // a 的 new 被 src::c 调用 → 调用方 = {src::c}
+        let chunk_a = chunk_of("src::a", vec![make_entity("new")], vec![]);
+        let ctxs_a = build_caller_contexts(&chunk_a, &graph, &|_| None);
+        assert_eq!(ctxs_a.len(), 1);
+        assert_eq!(ctxs_a[0].module_name, "src::c");
+        assert_eq!(ctxs_a[0].symbols, vec!["new".to_string()]);
+
+        // b 的 new 被 src::d 调用 → 调用方 = {src::d}，不得混入 src::c
+        //（c 调的是 a 的同名 new，不是 b 的）
+        let chunk_b = chunk_of("src::b", vec![make_entity("new")], vec![]);
+        let ctxs_b = build_caller_contexts(&chunk_b, &graph, &|_| None);
+        assert_eq!(ctxs_b.len(), 1);
+        assert_eq!(ctxs_b[0].module_name, "src::d");
+        assert_eq!(ctxs_b[0].symbols, vec!["new".to_string()]);
+        assert!(
+            !ctxs_b.iter().any(|c| c.module_name == "src::c"),
+            "同名非调用方不得混入调用方节: {:?}",
+            ctxs_b
+        );
     }
 
     #[test]

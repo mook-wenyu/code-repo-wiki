@@ -239,8 +239,6 @@ pub async fn run_generation(
         &provider,
         crate::config::schema::llm_effective_concurrency(&config.llm),
     );
-    // 调用索引预计算一次（wiki 页循环按 chunk 查调用方，避免每页重扫全图）
-    let call_index = crate::search::callgraph::CallGraph::new(graph).build_call_index();
     let mut documents = generate_wiki_pages(
         &wiki_gen,
         &chunks,
@@ -249,7 +247,6 @@ pub async fn run_generation(
         crate::config::schema::llm_effective_concurrency(&config.llm),
         root,
         graph,
-        &call_index,
         &build_entity_ranges(insights),
         on_progress,
     )
@@ -410,7 +407,6 @@ pub async fn run_generation_filtered(
         &provider,
         crate::config::schema::llm_effective_concurrency(&config.llm),
     );
-    let call_index = crate::search::callgraph::CallGraph::new(graph).build_call_index();
     let mut documents = generate_wiki_pages(
         &wiki_gen,
         &chunks,
@@ -419,7 +415,6 @@ pub async fn run_generation_filtered(
         crate::config::schema::llm_effective_concurrency(&config.llm),
         root,
         graph,
-        &call_index,
         &build_entity_ranges(insights),
         on_progress,
     )
@@ -817,8 +812,8 @@ fn backfill_features(
 /// 卡片摘要按 chunk 索引一一对应；并发受 max_concurrent 信号量控制，
 /// join_all 保序收集——与串行版的产出顺序一致，页面集合不变。
 /// 失败页面跳过并告警（不中断整体生成）。
-// 例外说明（复杂度红线 5 参数规则）：10 个参数均为相互独立的上下文项
-// （生成器/输入/配置/并发/图/调用索引/输出/进度回调），引入包装结构体反而
+// 例外说明（复杂度红线 5 参数规则）：9 个参数均为相互独立的上下文项
+// （生成器/输入/配置/并发/图/输出/进度回调），引入包装结构体反而
 // 降低调用点可读性；进度回调为显式注入契约（v46），不并入上下文结构。
 #[allow(clippy::too_many_arguments)]
 async fn generate_wiki_pages<P: LlmProvider>(
@@ -829,7 +824,6 @@ async fn generate_wiki_pages<P: LlmProvider>(
     max_concurrent: usize,
     root: &crate::project::ProjectRoot,
     graph: &KnowledgeGraph,
-    call_index: &crate::search::callgraph::CallIndex,
     entity_ranges: &crate::output::citation::EntityRanges,
     on_progress: &dyn Fn(crate::ProgressEvent),
 ) -> Vec<WikiDocument> {
@@ -864,7 +858,7 @@ async fn generate_wiki_pages<P: LlmProvider>(
         // （真实调用图推导）。在循环内预计算为 owned 数据再移入 async 任务
         // ——闭包 summary_of 借用 cards_map，不能跨 await 借用。
         let dep_contexts = context::build_dependency_contexts(chunk, &cards_map, &summary_of);
-        let caller_contexts = context::build_caller_contexts(chunk, graph, call_index, &summary_of);
+        let caller_contexts = context::build_caller_contexts(chunk, graph, &summary_of);
         let semaphore = semaphore.clone();
         let lang_cfg = lang_cfg.clone();
         let done = done.clone();

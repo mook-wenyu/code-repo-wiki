@@ -197,8 +197,12 @@ fn caller_context_section(title: &str, contexts: &[CallerContext], budget: usize
     format!("\n## {title}\n{}", lines.join("\n"))
 }
 
-/// 生成模块摘要的 user prompt
-fn module_summary_user_prompt(chunk: &Chunk, dep_contexts: &[DependencyContext]) -> String {
+/// 生成模块摘要的各节（卡片阶段主输入：模块路径/实体/导入/关联文件/依赖）
+///
+/// 返回各节 Vec 而不在函数内做总预算拼接——由调用方统一进一次
+/// join_under_budget 总闸门，这样调用方/人工修改节也受 PROMPT_INPUT_TOKEN_BUDGET
+/// 约束（与 wiki 阶段 wiki_page_user_prompt 同形态），超预算按优先级丢弃后置节。
+fn module_summary_sections(chunk: &Chunk, dep_contexts: &[DependencyContext]) -> Vec<String> {
     let mut parts = Vec::new();
 
     parts.push(format!("模块路径: {}", chunk.module_path.join("::")));
@@ -283,7 +287,7 @@ fn module_summary_user_prompt(chunk: &Chunk, dep_contexts: &[DependencyContext])
         PROMPT_DEP_CONTEXT_BUDGET,
     ));
 
-    join_under_budget(parts, PROMPT_INPUT_TOKEN_BUDGET)
+    parts
 }
 
 /// 生成架构概览的 system prompt
@@ -482,25 +486,32 @@ pub fn knowledge_card_prompt(
     caller_contexts: &[CallerContext],
 ) -> Vec<Message> {
     let system = knowledge_card_system_prompt(language);
-    let mut user = module_summary_user_prompt(chunk, dep_contexts);
+    // 卡片阶段所有节在同一总预算内拼接（对齐 wiki 阶段 join_under_budget 形态）：
+    // caller_context_section 与 pending_manual_edits 此前在模块节闸门之后 append，
+    // 不受 PROMPT_INPUT_TOKEN_BUDGET 约束——超预算时整条 prompt 仍会超限。
+    // 统一进一次总闸门后，超预算按优先级丢弃后置节（模块主输入优先，
+    // 调用方上下文/人工修改节可降级丢弃），预算内输出内容保持不变。
+    let mut sections = module_summary_sections(chunk, dep_contexts);
     // 设计意图依据：调用方/被调用方上下文（真实调用图推导），供 LLM 推断
     // 该模块存在理由。空上下文（Level 0 或无人调用）不生成节。
-    user.push_str(&caller_context_section(
+    sections.push(caller_context_section(
         "调用方与被调用方",
         caller_contexts,
         PROMPT_DEP_CONTEXT_BUDGET,
     ));
     // 人工修改待同步：只在存在记录时注入，避免空节污染输入
     if !pending_manual_edits.is_empty() {
-        user.push_str("\n\n## 人工修改待同步\n\n");
-        user.push_str(
+        let mut manual = String::from("\n\n## 人工修改待同步\n\n");
+        manual.push_str(
             "以下页面被人工修改，与代码最新状态可能不一致。\
              请结合这些修改生成卡片描述（如更新摘要、实体说明），但不要删除下述记录本身：\n",
         );
         for note in pending_manual_edits {
-            user.push_str(&format!("- {note}\n"));
+            manual.push_str(&format!("- {note}\n"));
         }
+        sections.push(manual);
     }
+    let user = join_under_budget(sections, PROMPT_INPUT_TOKEN_BUDGET);
     vec![Message::system(system), Message::user(user)]
 }
 
@@ -843,7 +854,6 @@ mod tests {
             entities: vec![],
             imports: vec![],
             dependencies: vec![],
-            caller_modules: vec![],
             file_paths: vec![],
             entity_sources: vec![],
         }
@@ -1093,7 +1103,6 @@ mod tests {
             }],
             imports: vec![],
             dependencies: vec![],
-            caller_modules: vec![],
             entity_sources: vec![std::path::PathBuf::from("src/alpha.rs")],
             file_paths: vec![std::path::PathBuf::from("src/alpha.rs")],
         };
@@ -1304,6 +1313,31 @@ mod tests {
         assert!(joined.contains("## 实体列表"));
         assert!(!joined.contains("## 导入语句"), "超预算节应被丢弃");
         assert!(joined.starts_with("模块路径: a"), "首节必须保留");
+    }
+
+    /// 卡片阶段总预算闸门（P2）：caller_context_section 与 pending_manual_edits
+    /// 此前在模块节闸门之后 append，不受 PROMPT_INPUT_TOKEN_BUDGET 约束；
+    /// 统一进 join_under_budget 后，超预算时后置节被丢弃、总长受约束。
+    #[test]
+    fn test_knowledge_card_prompt_budget_gate_covers_later_sections() {
+        let chunk = make_test_chunk(&["src", "alpha"]);
+        // 人工修改记录超预算：末节在总闸门内被丢弃，卡片 prompt 总长受约束
+        let huge = vec![format!("manual {}", "x".repeat(200_000))];
+        let messages = knowledge_card_prompt(&chunk, "zh", &huge, &[], &[]);
+        let user = &messages[1].content;
+        assert!(
+            estimate_input_tokens(user) < PROMPT_INPUT_TOKEN_BUDGET,
+            "超预算的后置节应被总闸门丢弃: {}",
+            estimate_input_tokens(user)
+        );
+        assert!(
+            !user.contains("人工修改待同步"),
+            "超预算时人工修改节应被丢弃: {}",
+            user
+        );
+        // 预算内输入照常注入（零破坏）
+        let messages = knowledge_card_prompt(&chunk, "zh", &["小记录".to_string()], &[], &[]);
+        assert!(messages[1].content.contains("人工修改待同步"));
     }
 
     /// 依赖模块节注入：knowledge_card_prompt 带 dep_contexts 时生成「## 依赖模块」节，

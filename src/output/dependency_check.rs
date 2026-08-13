@@ -7,9 +7,10 @@
 //!   ∪ {"std"/"core"} 前缀（Rust 标准库）
 //!   ∪ 诚实标记行「（信息不足）」（显式标注未知，不构成声称）。
 //!
-//! 另一个用途：lint.rs（磁盘级 lint，S3 接线）可调用纯函数
-//! `extract_dependency_claims` + `validate_claims`，以自身的模块清单
-//! （图/快照）构建允许集，对产物页面做同样的防幻觉检查。
+//! 另一个用途：纯函数形态（`extract_dependency_claims` + `validate_claims`）
+//! 保持 lint 可复用——磁盘级 lint 当前未接线（等 lint 域稳定，YAGNI 不提前
+//! 接线）；如需 lint 复用，以自身的模块清单（图/快照）构建允许集，对产物
+//! 页面做同样的防幻觉检查。
 
 use std::collections::BTreeSet;
 
@@ -37,32 +38,52 @@ pub enum DependencyViolationReason {
 /// 节范围 = `## 依赖关系`（及变体）标题到下一个 `## ` 标题之间；
 /// 只取 `- 模块名` 列表行，剥掉 backtick 与「—」后的说明。
 /// 诚实标记行（含「信息不足」）跳过——显式标注未知不算声称。
+/// fence 感知：代码围栏区间内的 `- xxx` 是示例代码而非声称（示例常写
+/// 假模块名），与 citation::extract_citations 同基准跳过围栏。
 pub fn extract_dependency_claims(content: &str) -> Vec<String> {
+    let fences = crate::output::citation::fence_ranges(content);
     let mut claims = Vec::new();
     let mut in_section = false;
-    for line in content.lines() {
+    let mut offset = 0usize;
+    let mut fence_idx = 0usize;
+    for line in content.split('\n') {
+        while fence_idx < fences.len() && offset >= fences[fence_idx].1 {
+            fence_idx += 1;
+        }
+        // 围栏区间（含开/闭行）整体跳过：围栏内是代码/示例，不参与
+        // 节标题判定也不提取声称
+        if fence_idx < fences.len() && offset >= fences[fence_idx].0 {
+            offset += line.len() + 1;
+            continue;
+        }
         let t = line.trim();
         if t.starts_with("## ") {
             in_section = is_dependency_section(t);
-            continue;
-        }
-        if in_section && let Some(item) = t.strip_prefix("- ") {
-            if item.contains("信息不足") {
-                continue;
-            }
-            let name = claim_name_from_line(item);
-            if !name.is_empty() {
-                claims.push(name);
+        } else if in_section && let Some(item) = t.strip_prefix("- ") {
+            // 诚实标记行（含「信息不足」）跳过——显式标注未知不算声称
+            if !item.contains("信息不足") {
+                let name = claim_name_from_line(item);
+                if !name.is_empty() {
+                    claims.push(name);
+                }
             }
         }
+        offset += line.len() + 1;
     }
     claims
 }
 
-/// 依赖小节标题判定（容忍 LLM 措辞变体：## 依赖关系 / ## 依赖 / ## Dependencies）
+/// 依赖小节标题判定（精确档：整标题匹配，不再 contains）
+///
+/// 旧版 `contains("依赖")` 会把「## 依赖注入实现」这类 DI 主题节误判为依赖节，
+/// 其下所有 `- ` 行（Spring/Dagger 等）变依赖声称 → UnknownExternal 误报，
+/// 白费一次 LLM 重试。只认依赖节的确切标题变体。
 fn is_dependency_section(heading: &str) -> bool {
-    let lower = heading.trim_start_matches('#').trim().to_lowercase();
-    lower.contains("依赖") || lower.starts_with("dependenc")
+    let title = heading.trim_start_matches('#').trim().to_lowercase();
+    matches!(
+        title.as_str(),
+        "依赖" | "依赖关系" | "dependencies" | "dependency"
+    )
 }
 
 /// 从单行声称提取模块名（`- 名称` 或 `- 名称 — 说明` / `- \`名称\` — 说明`）
@@ -114,7 +135,8 @@ fn looks_like_internal_module(claim: &str) -> bool {
     matches!(top, "crate" | "src" | "self" | "super")
 }
 
-/// 纯函数校验（供 lint.rs S3 接线复用）：claims 对照 allowed 集合出违反
+/// 纯函数校验（生成期校验的判定核心；磁盘级 lint 当前未接线，如需 lint
+/// 复用可自行构建允许集调用）：claims 对照 allowed 集合出违反
 pub fn validate_claims<'a>(
     claims: impl IntoIterator<Item = &'a str>,
     allowed: &BTreeSet<String>,
@@ -185,7 +207,6 @@ mod tests {
                 })
                 .collect(),
             dependencies: deps.iter().map(|s| s.to_string()).collect(),
-            caller_modules: vec![],
             file_paths: vec![],
             entity_sources: vec![],
         }
@@ -211,6 +232,33 @@ mod tests {
         assert_eq!(
             extract_dependency_claims(content),
             vec!["tokio".to_string()]
+        );
+    }
+
+    /// fence 感知：围栏内的 `- xxx` 是示例代码不是依赖声称（示例常写假模块名，
+    /// 旧实现会误提取 → UnknownExternal 误报白费一次 LLM 重试）
+    #[test]
+    fn test_extract_skips_fenced_code() {
+        let content =
+            "## 依赖关系\n- src::db — 持久层\n\n```rust\nlet x = 1;\n- fake_crate\n```\n- tokio\n";
+        let claims = extract_dependency_claims(content);
+        assert_eq!(
+            claims,
+            vec!["src::db".to_string(), "tokio".to_string()],
+            "围栏内声称不应被提取: {claims:?}"
+        );
+    }
+
+    /// 节标题精确档：「依赖注入实现」这类 DI 主题节不是依赖声称节——
+    /// 旧版 contains("依赖") 误判后其下所有 `- ` 行（Spring/Dagger）变声称
+    #[test]
+    fn test_dependency_injection_section_not_treated_as_dependency() {
+        let content = "## 依赖注入实现\n- Spring\n- Dagger\n\n## 依赖关系\n- src::db\n";
+        let claims = extract_dependency_claims(content);
+        assert_eq!(
+            claims,
+            vec!["src::db".to_string()],
+            "DI 主题节不应被解析为依赖节: {claims:?}"
         );
     }
 

@@ -569,7 +569,12 @@ fn parse_card_response(response: &str, chunk: &Chunk) -> Result<KnowledgeCard> {
     // 设计意图（WHY）：LLM 从调用方/被调用方上下文推断的模块存在理由。
     // 跨域契约：KnowledgeCard.design_rationale 字段由 model/document.rs 的
     // 并行 worker 负责添加（本域只读取/回填），缺失（旧 JSON）时保持 None。
-    let design_rationale = parsed["design_rationale"].as_str().map(|s| s.to_string());
+    // 空串/纯空白归一为 None——否则 markdown.rs 会渲染出空「设计意图」节。
+    let design_rationale = parsed["design_rationale"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
 
     Ok(KnowledgeCard {
         module_name: chunk.module_path.join("::"),
@@ -716,6 +721,24 @@ mod tests {
         assert_eq!(
             card.design_rationale.as_deref(),
             Some("被运行时加载器调用，提供全局配置的单一入口")
+        );
+
+        // 空串/纯空白归一为 None（避免 markdown 渲染出空「设计意图」节）
+        let empty = r#"{"summary": "配置模块", "key_entities": [], "design_rationale": ""}"#;
+        assert!(
+            parse_card_response(empty, &chunk)
+                .unwrap()
+                .design_rationale
+                .is_none(),
+            "空字符串应归一为 None"
+        );
+        let blank = r#"{"summary": "配置模块", "key_entities": [], "design_rationale": "   "}"#;
+        assert!(
+            parse_card_response(blank, &chunk)
+                .unwrap()
+                .design_rationale
+                .is_none(),
+            "纯空白应归一为 None"
         );
     }
 

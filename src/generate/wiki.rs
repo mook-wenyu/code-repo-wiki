@@ -1243,7 +1243,6 @@ mod tests {
             entities: vec![],
             imports: vec![],
             dependencies: vec![],
-            caller_modules: vec![],
             file_paths: vec![],
             entity_sources: vec![],
         };
@@ -1678,7 +1677,6 @@ mod tests {
             entities: vec![],
             imports: vec![],
             dependencies: vec!["tokio".into(), "serde".into()],
-            caller_modules: vec![],
             file_paths: vec![],
             entity_sources: vec![],
         };
@@ -1699,7 +1697,6 @@ mod tests {
             entities: vec![],
             imports: vec![],
             dependencies: vec!["src::analysis".into(), "src::output".into()],
-            caller_modules: vec![],
             file_paths: vec![],
             entity_sources: vec![],
         };
