@@ -162,6 +162,7 @@ fn parse_conflicts(content: &str) -> Vec<LintIssue> {
                 kind: "semantic-conflict",
                 path: format!("wiki/{}", page),
                 message: format!("语义矛盾: 声明「{claim}」与{conflict}"),
+                severity: crate::output::lint::Severity::Error,
             })
         })
         .collect()

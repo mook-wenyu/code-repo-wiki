@@ -59,7 +59,11 @@ fn has_valid_extension(path: &str) -> bool {
 /// 返回 `(start, end)` 字节偏移对，start 为围栏开行起点、end 为闭行
 /// 终点（含换行）；文末未闭合的围栏覆盖到文末。仅行首围栏（可带前导
 /// 空白）参与配对，代码内容里的 ``` 行视为闭合。
-fn fence_ranges(content: &str) -> Vec<(usize, usize)> {
+///
+/// pub(crate)：生成层 dependency_check 复用同一 fence 区间判定（R2 跨域
+/// 契约——fence 感知是「代码块内内容不算正文」的单一事实来源，逐处复制
+/// 是此前不对称的根因）。
+pub(crate) fn fence_ranges(content: &str) -> Vec<(usize, usize)> {
     let mut ranges = Vec::new();
     let mut in_fence = false;
     let mut fence_start = 0usize;

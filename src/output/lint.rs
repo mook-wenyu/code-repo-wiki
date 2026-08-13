@@ -12,8 +12,8 @@
 //!
 //! 4b. **bad-vctx**：正文 `[[vctx:path#L-a-L-b@hash8]]` 手工标记做 5 步哈希只读校验（vericontext 协议，人工文档护栏：t05 决议不引入生成契约，只识别并校验已有标记）
 //!
-//! 5. **entity-coverage**：页面声称的实体不在 api.md 权威清单（LLM 编造的第二道闸；api.md 的模块名（## 节标题）属已知名——合成页按模块名引用不是实体声称；v0.7.1 DEFECT-B 起加源码现实校验——真实目录段名/文件 stem/AST 解析实体同样放行，路径引用（`src/main.rs`）由声称侧剔除，不产生派生 token）
-//!    5a. **entity-ownership**（A8 幻觉缓解，收紧要害）：entity-coverage 只管「名字是否存在于代码库」——编造名恰好撞上真实目录段名/文件 stem（如编造 `Authenticator` 恰有 authenticator.rs）会漏网。归属校验收紧：模块页声称的实体必须归属正确——api 权威实体归属模块 == 页面模块放行；归属其他模块的 api 实体须在页面内有真实 file:line 引用（bad-citation 级），无引用报 entity-ownership（error）；源码 AST 实体须所属文件 ∈ 页面关联文件；仅命中目录段名/文件 stem 的放行但降为告警级（保留 DEFECT-B 宽容）；合成页（无模块归属）只做存在性校验
+//! 5. **entity-coverage**：页面声称的实体不在 api.md 权威清单（LLM 编造的第二道闸；api.md 的模块名（## 节标题）属已知名——合成页按模块名引用不是实体声称；v0.7.1 DEFECT-B 起加源码现实校验——真实目录段名/文件 stem/AST 解析实体同样放行，路径引用（`src/main.rs`）由声称侧剔除，不产生派生 token；R2 起声称提取限定实体节，跳过「依赖关系」/「使用方式」小节——依赖节的外部 crate 名/模块引用不是实体声称）
+//!    5a. **entity-ownership**（A8 幻觉缓解，收紧要害）：entity-coverage 只管「名字是否存在于代码库」——编造名恰好撞上真实目录段名/文件 stem（如编造 `Authenticator` 恰有 authenticator.rs）会漏网。归属校验收紧：模块页声称的实体必须归属正确——api 权威实体归属模块 == 页面模块放行；归属其他模块的 api 实体须在页面内有真实 file:line 引用（bad-citation 级），无引用报 entity-ownership（error，R2 起「声称行自带引用」或「实体名过短」两类归属不可靠情况降为告警级）；源码 AST 实体须文件级归属正确——所属文件 ∈ 页面关联文件，模块页无「相关文件」节时退化按「实体文件 stem == 模块短名」判定（R2 修结构性死代码）；仅命中目录段名/文件 stem 的放行但降为告警级（保留 DEFECT-B 宽容）；合成页（无模块归属）只做存在性校验
 //! 6. **bad-mermaid**：产物中的 mermaid fence 无法被 merman 解析（历史产物/人工编辑/增量遗留）
 //! 7. **stale-entity**：api.md 权威清单的实体在当前源码中不存在（文档引用了已删除/重命名的符号）；A8 起做反向定位——扫描模块页声称实体，对每个 stale 实体报出「页面引用了已删除实体 X」（无人引用的仍挂在 api.md 兜底）
 //!
@@ -23,6 +23,16 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::output::citation;
+
+/// 问题严重级别（R2 结构化替代 message 内嵌"（告警）"标记，网络权威明确：
+/// 严重级别是结构化数据，不应编码进展示文本）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    /// 阻断级：lint/status 退出码非 0（CI 门禁语义）
+    Error,
+    /// 告警级：仅展示不阻断退出码
+    Warning,
+}
 
 /// 单条 lint 问题
 #[derive(Debug, Clone)]
@@ -34,17 +44,17 @@ pub struct LintIssue {
     pub kind: &'static str,
     /// 问题文件相对路径（相对 output_dir）
     pub path: String,
-    /// 问题描述
+    /// 问题描述（纯展示，不再内嵌严重级别标记）
     pub message: String,
+    /// 严重级别：Error 阻断 lint/status 退出码，Warning 仅展示不阻断
+    pub severity: Severity,
 }
 
 impl LintIssue {
-    /// 是否告警级问题：message 带"（告警）"标记（entity-ownership 规则 4，
-    /// 声称实体仅命中目录/文件 stem 的归属未确认提示——保留 DEFECT-B 宽容
-    /// 但不再静默）。告警级不阻断 lint/status 的退出码（CI 门禁语义：
-    /// 仅 error 级导致失败）。
+    /// 是否告警级问题（读取结构化 severity 字段，不再依赖 message 文本
+    /// 匹配——message 是展示文本，级别判定不应耦合其措辞）。
     pub fn is_warning(&self) -> bool {
-        self.message.contains("告警")
+        self.severity == Severity::Warning
     }
 }
 
@@ -196,6 +206,7 @@ fn check_orphan_pages(pages: &[PathBuf], link_sources: &[PathBuf], lang: &str) -
                 kind: "orphan",
                 path: format!("wiki/{lang}/{file_name}"),
                 message: format!("孤儿页: 无任何页面链接指向 {file_name}"),
+                severity: Severity::Warning,
             });
         }
     }
@@ -237,6 +248,7 @@ fn check_broken_links(pages: &[PathBuf], lang: &str) -> Vec<LintIssue> {
                     kind: "broken",
                     path: format!("wiki/{lang}/{file_name}"),
                     message: format!("断链: {link} 指向不存在的产物文件"),
+                    severity: Severity::Error,
                 });
             }
         }
@@ -336,6 +348,7 @@ fn check_stale(
                                         message: format!(
                                             "过时: 源文件 {src} 内容与生成时指纹不一致(源码已变更,文档可能未更新)"
                                         ),
+                                        severity: Severity::Error,
                                     });
                                 }
                             }
@@ -367,6 +380,7 @@ fn check_stale(
                                 "源文件缺失: 产物引用的源文件 `{src}` 不存在（{}）",
                                 abs.display()
                             ),
+                            severity: Severity::Error,
                         });
                     }
                 }
@@ -433,6 +447,7 @@ fn stale_issue_by_mtime(
                     message: format!(
                         "过时: 源文件 {src} 的修改时间晚于页面生成时间(源码已变更,文档可能未更新)"
                     ),
+                    severity: Severity::Error,
                 })
             } else {
                 None
@@ -455,6 +470,7 @@ fn stale_issue_by_mtime(
                         "源文件缺失: 产物引用的源文件 `{src}` 不存在（{}）",
                         abs.display()
                     ),
+                    severity: Severity::Error,
                 })
             }
         }
@@ -496,6 +512,7 @@ fn check_citations(
                     kind: "bad-citation",
                     path: format!("wiki/{lang}/{file_name}"),
                     message: format!("{reason}: `{}`", citation.path),
+                    severity: Severity::Error,
                 });
                 continue;
             }
@@ -511,6 +528,7 @@ fn check_citations(
                     kind: "bad-citation",
                     path: format!("wiki/{lang}/{file_name}"),
                     message: format!("引用不存在: `{}` 指向的文件找不到", citation.path),
+                    severity: Severity::Error,
                 });
                 continue;
             };
@@ -522,6 +540,7 @@ fn check_citations(
                         "引用越界: `{}` 的 {}-{} 行超出文件总行数 {}",
                         citation.path, citation.start, citation.end, n
                     ),
+                    severity: Severity::Error,
                 });
                 continue;
             }
@@ -540,6 +559,7 @@ fn check_citations(
                         "引用位置可疑: `{}` 的 {}-{} 行未覆盖该文件的任何实体（行号可能指向错误位置）",
                         citation.path, citation.start, citation.end
                     ),
+                    severity: Severity::Error,
                 });
             }
         }
@@ -659,6 +679,7 @@ fn check_vctx_tokens(
                         kind: "bad-vctx",
                         path: format!("wiki/{lang}/{file_name}"),
                         message: format!("vctx 标记格式不完整: {reason}"),
+                        severity: Severity::Error,
                     });
                     continue;
                 }
@@ -673,6 +694,7 @@ fn check_vctx_tokens(
                     kind: "bad-vctx",
                     path: format!("wiki/{lang}/{file_name}"),
                     message: format!("vctx {reason}: `{}`", token.path),
+                    severity: Severity::Error,
                 });
                 continue;
             }
@@ -686,6 +708,7 @@ fn check_vctx_tokens(
                     kind: "bad-vctx",
                     path: format!("wiki/{lang}/{file_name}"),
                     message: format!("vctx 目标不存在或非 UTF-8: `{}`", token.path),
+                    severity: Severity::Error,
                 });
                 continue;
             };
@@ -699,6 +722,7 @@ fn check_vctx_tokens(
                         "vctx 行区间越界: `{}` 的 {}-{} 行超出文件总行数 {}",
                         token.path, token.start, token.end, total
                     ),
+                    severity: Severity::Error,
                 });
                 continue;
             }
@@ -711,6 +735,7 @@ fn check_vctx_tokens(
                         "vctx 哈希不匹配: `{}` 的 {}-{} 行内容已变更（现哈希 {actual}，标记为 {}）",
                         token.path, token.start, token.end, token.hash
                     ),
+                    severity: Severity::Error,
                 });
             }
         }
@@ -893,6 +918,7 @@ fn check_entity_coverage(
                 message: format!(
                     "实体覆盖率: 页面声称的实体 `{entity}` 不在 api.md 清单中（可能是编造或已删除）"
                 ),
+                severity: Severity::Error,
             });
         }
     }
@@ -906,8 +932,13 @@ fn check_entity_coverage(
 ///   1. e ∈ api 权威实体集合且归属模块 == 页面模块 → 放行（归属正确）
 ///   2. e ∈ api 权威实体集合且归属模块 != 页面模块 → 需 bad-citation 级引用
 ///      （api.md 中 e 的 file:line 存在于页面）；有引用 → 放行，无引用 → 报
-///      entity-ownership（error）——拦截"跨模块声称无证据"的幻觉
-///   3. e ∈ source_entity_names 且所属文件 ∈ 页面关联文件 → 放行（文件级归属正确）
+///      entity-ownership（error）——拦截"跨模块声称无证据"的幻觉；R2 起
+///      「声称行自带引用」或「实体名过短」两类归属不可靠情况降为告警级
+///   3. e ∈ source_entity_names 且文件级归属正确 → 放行：所属文件 ∈ 页面
+///      关联文件；模块页无「相关文件」节（wiki 页输出格式不含该节，只有
+///      卡片有）时退化按「实体文件 stem == 模块短名」判定（R2 修结构性
+///      死代码——修复前 related_files 恒空使规则 3 恒假，源码实体直接落
+///      规则 5 误报 entity-coverage）
 ///   4. e 仅命中 source_path_names（目录段名/文件 stem）→ 放行但降为告警级
 ///      （保留 DEFECT-B 宽容，但不再完全静默）
 ///   5. 全不满足 → 保持 entity-coverage（error，防编造）
@@ -957,73 +988,217 @@ fn check_entity_ownership(
         let page_module = file_name.trim_end_matches(".md").to_string();
         let related_files = extract_source_files(&content);
         let page_citations = crate::output::citation::extract_citations(&content);
+        // 模块页短名（模块路径最后一段）：模块页无「相关文件」节时，规则 3
+        // 靠「实体文件 stem == 模块短名」判定文件级归属（见 source_entity_file_owned）
+        let module_short_name = page_module_short_name(&modules, &page_module);
 
-        for entity in extract_entity_names(&content, &modules) {
+        for (entity, claim_line) in extract_entity_claims_with_lines(&content, &modules) {
             // 规则 1-2：api 权威实体（归属校验）
-            if known.contains(&entity) {
-                let owned_module = entity_module.get(&entity).map(String::as_str).unwrap_or("");
-                if owned_module.replace("::", "_") == page_module {
-                    // 规则 1：归属正确（实体属于页面自己的模块）
+            match known_entity_issue(
+                &entity,
+                &known,
+                &entity_module,
+                &entity_citations,
+                &page_citations,
+                &claim_line,
+                &page_module,
+                lang,
+                &file_name,
+            ) {
+                // 非 api 权威实体 → 继续规则 3
+                Rule12Outcome::NotKnown => {}
+                // 规则 1 归属正确 / 规则 2 有引用 → 放行，结束本实体处理
+                Rule12Outcome::Pass => continue,
+                Rule12Outcome::Issue(issue) => {
+                    issues.push(issue);
                     continue;
                 }
-                // 规则 2：跨模块声称需 bad-citation 级引用（api.md 中 e 的
-                // file:line 与页面引用区间重叠）；有 → 放行，无 → 报错
-                let has_citation = entity_citations.get(&entity).is_some_and(|api_cites| {
-                    page_citations.iter().any(|pc| {
-                        api_cites.iter().any(|ac| {
-                            crate::output::citation::citation_overlaps_entity(
-                                pc,
-                                &[(ac.start, ac.end)],
-                            )
-                        })
-                    })
-                });
-                if has_citation {
-                    continue;
-                }
-                issues.push(LintIssue {
-                    kind: "entity-ownership",
-                    path: format!("wiki/{lang}/{file_name}"),
-                    message: format!(
-                        "实体归属: 页面声称的实体 `{entity}` 属于模块 `{owned_module}`（非本页面模块 `{page_module}`），且页面无该实体的 file:line 引用"
-                    ),
-                });
-                continue;
             }
-            // 规则 3：源码 AST 实体且所属文件 ∈ 页面关联文件 → 文件级归属正确
-            if source_entity_names.contains(&entity)
-                && entity_name_files.get(&entity).is_some_and(|files| {
-                    files
-                        .iter()
-                        .any(|f| related_files.iter().any(|r| file_matches_related(f, r)))
-                })
-            {
+            // 规则 3：源码 AST 实体且文件级归属正确 → 放行
+            if source_entity_file_owned(
+                &entity,
+                source_entity_names,
+                entity_name_files,
+                &related_files,
+                module_short_name.as_deref(),
+            ) {
                 continue;
             }
             // 规则 4：仅命中目录段名/文件 stem → 告警级放行（保留 DEFECT-B
             // 宽容但不再静默——目录/文件引用归 source-missing/bad-citation 管，
             // 这里只降级提示未确认归属）
-            if source_path_names.contains(&entity) {
-                issues.push(LintIssue {
-                    kind: "entity-ownership",
-                    path: format!("wiki/{lang}/{file_name}"),
-                    message: format!(
-                        "实体归属（告警）: 声称的实体 `{entity}` 仅命中目录/文件 stem（非 api 权威实体），归属未确认"
-                    ),
-                });
+            if let Some(issue) = stem_collision_issue(&entity, source_path_names, lang, &file_name)
+            {
+                issues.push(issue);
                 continue;
             }
             // 规则 5：全不满足 → 保持 entity-coverage（防编造）
-            issues.push(LintIssue {
-                kind: "entity-coverage",
-                path: format!("wiki/{lang}/{file_name}"),
-                message: format!(
-                    "实体覆盖率: 页面声称的实体 `{entity}` 不在 api.md 清单中（可能是编造或已删除）"
-                ),
-            });
+            issues.push(coverage_issue(&entity, lang, &file_name));
         }
     }
     issues
+}
+
+/// 规则 1-2 判定结果：三态区分「非 api 权威实体」（继续规则 3）与
+/// 「api 权威实体已处理」（放行或上报）——两态混淆会让放行的已知实体
+/// 错误落入规则 5 报 entity-coverage。
+enum Rule12Outcome {
+    /// 非 api 权威实体 → 继续规则 3/4/5
+    NotKnown,
+    /// 规则 1 归属正确 / 规则 2 有引用 → 放行，结束本实体的处理
+    Pass,
+    /// 规则 2 跨模块声称无引用 → 上报（含归属降级为告警）
+    Issue(LintIssue),
+}
+
+/// 规则 1-2 判定：api 权威实体归属校验。
+///
+/// 参数多（9 个）是规则上下文所需（权威集/归属表/引用区间/页面位置），
+/// 分组为结构体会让调用点与消息构造都失真，按项目惯例 allow。
+#[allow(clippy::too_many_arguments)]
+fn known_entity_issue(
+    entity: &str,
+    known: &std::collections::HashSet<String>,
+    entity_module: &std::collections::HashMap<String, String>,
+    entity_citations: &std::collections::HashMap<String, Vec<crate::output::citation::Citation>>,
+    page_citations: &[crate::output::citation::Citation],
+    claim_line: &str,
+    page_module: &str,
+    lang: &str,
+    file_name: &str,
+) -> Rule12Outcome {
+    if !known.contains(entity) {
+        return Rule12Outcome::NotKnown;
+    }
+    let owned_module = entity_module.get(entity).map(String::as_str).unwrap_or("");
+    if owned_module.replace("::", "_") == page_module {
+        // 规则 1：归属正确（实体属于页面自己的模块）
+        return Rule12Outcome::Pass;
+    }
+    // 规则 2：跨模块声称需 bad-citation 级引用（api.md 中 e 的 file:line
+    // 与页面引用区间重叠）；有 → 放行，无 → 报错
+    let has_citation = entity_citations.get(entity).is_some_and(|api_cites| {
+        page_citations.iter().any(|pc| {
+            api_cites.iter().any(|ac| {
+                crate::output::citation::citation_overlaps_entity(pc, &[(ac.start, ac.end)])
+            })
+        })
+    });
+    if has_citation {
+        return Rule12Outcome::Pass;
+    }
+    // 附带处理（R2）：归属不可靠的两类情况降为告警（Warning）而非 error——
+    // ① 声称行自带 file:line 引用（实体确有引用证据，只是引用文件/位置与
+    //    api 权威不同，如 `path` 被 `## tests` 伞模块聚类归属到错误模块）；
+    // ② 实体名过短（≤4 字符，如 `path`/`fs`，api 权威集污染高发形态）。
+    // 降级语义：这些情况下"跨模块归属"是聚类伪影而非真幻觉，只提示不阻断。
+    let downgraded =
+        !citation::extract_citations(claim_line).is_empty() || entity.chars().count() <= 4;
+    Rule12Outcome::Issue(LintIssue {
+        kind: "entity-ownership",
+        path: format!("wiki/{lang}/{file_name}"),
+        message: format!(
+            "实体归属: 页面声称的实体 `{entity}` 属于模块 `{owned_module}`（非本页面模块 `{page_module}`），且页面无该实体的 file:line 引用"
+        ),
+        severity: if downgraded {
+            Severity::Warning
+        } else {
+            Severity::Error
+        },
+    })
+}
+
+/// 规则 3 判定：源码 AST 实体且文件级归属正确 → 放行。
+///
+/// 模块页无「相关文件」节（wiki 页输出格式不含该节，只有卡片有）时，
+/// 退化用模块短名判定：实体文件 stem == 页面模块短名即认为文件级归属
+/// 正确。为什么：related_files 恒空时规则 3 恒假，pub(crate) 等未进 api
+/// 权威集的源码实体（如 is_cjk/extract_keywords）会直接落规则 5 误报
+/// entity-coverage——模块页因此对源码实体无覆盖价值，结构性死代码。
+fn source_entity_file_owned(
+    entity: &str,
+    source_entity_names: &std::collections::HashSet<String>,
+    entity_name_files: &std::collections::HashMap<String, Vec<std::path::PathBuf>>,
+    related_files: &[String],
+    module_short_name: Option<&str>,
+) -> bool {
+    if !source_entity_names.contains(entity) {
+        return false;
+    }
+    let Some(files) = entity_name_files.get(entity) else {
+        return false;
+    };
+    if !related_files.is_empty() {
+        // 既有路径：实体文件 ∈ 页面关联文件（文件级归属正确）
+        return files
+            .iter()
+            .any(|f| related_files.iter().any(|r| file_matches_related(f, r)));
+    }
+    // 模块页退化路径：实体文件 stem == 页面模块短名
+    let Some(short) = module_short_name else {
+        return false;
+    };
+    files
+        .iter()
+        .any(|f| f.file_stem().is_some_and(|s| s.to_string_lossy() == short))
+}
+
+/// 规则 4 判定：实体仅命中目录段名/文件 stem → 告警级放行（保留 DEFECT-B
+/// 宽容但不再静默——目录/文件引用归 source-missing/bad-citation 管，这里
+/// 只降级提示未确认归属）。
+fn stem_collision_issue(
+    entity: &str,
+    source_path_names: &std::collections::HashSet<String>,
+    lang: &str,
+    file_name: &str,
+) -> Option<LintIssue> {
+    if !source_path_names.contains(entity) {
+        return None;
+    }
+    Some(LintIssue {
+        kind: "entity-ownership",
+        path: format!("wiki/{lang}/{file_name}"),
+        message: format!(
+            "实体归属: 声称的实体 `{entity}` 仅命中目录/文件 stem（非 api 权威实体），归属未确认"
+        ),
+        severity: Severity::Warning,
+    })
+}
+
+/// 规则 5：全不满足 → entity-coverage（防编造）
+fn coverage_issue(entity: &str, lang: &str, file_name: &str) -> LintIssue {
+    LintIssue {
+        kind: "entity-coverage",
+        path: format!("wiki/{lang}/{file_name}"),
+        message: format!(
+            "实体覆盖率: 页面声称的实体 `{entity}` 不在 api.md 清单中（可能是编造或已删除）"
+        ),
+        severity: Severity::Error,
+    }
+}
+
+/// 页面模块短名（模块路径最后一段）。
+///
+/// 从 api.md 模块名精确反查（`tests::tokenize` → `tokenize`，用
+/// `::`→`_` 归一后与页面 stem 同基准匹配）；未命中（页面模块不在 api.md，
+/// 正常不会出现）时回退从页面 stem 末段切取（`_` 分隔的末段）。
+fn page_module_short_name(
+    modules: &std::collections::HashSet<String>,
+    page_module: &str,
+) -> Option<String> {
+    modules
+        .iter()
+        .find(|m| m.replace("::", "_") == page_module)
+        .and_then(|m| m.rsplit("::").next())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .or_else(|| {
+            page_module
+                .rsplit('_')
+                .next()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+        })
 }
 
 /// 源文件路径是否与页面关联文件引用匹配（A8 规则 3 的文件级归属判定）。
@@ -1220,6 +1395,7 @@ fn check_stale_entities(
                         message: format!(
                             "符号漂移: 页面引用了已删除实体 `{stale}`（api.md 权威清单有但当前源码不存在，已删除或重命名）"
                         ),
+                        severity: Severity::Error,
                     });
                 }
             }
@@ -1231,6 +1407,7 @@ fn check_stale_entities(
                     message: format!(
                         "符号漂移: api.md 中的实体 `{stale}` 在当前源码中不存在（已删除或重命名，文档过期）"
                     ),
+                    severity: Severity::Error,
                 });
             }
         }
@@ -1281,6 +1458,7 @@ fn check_mermaid(pages: &[PathBuf], lang: &str) -> Vec<LintIssue> {
                     issue.block_index + 1,
                     issue.message
                 ),
+                severity: Severity::Warning,
             });
         }
     }
@@ -1339,21 +1517,27 @@ pub fn entity_name_from_signature(sig: &str) -> Option<String> {
     } else {
         trimmed
     };
-    let mut head = match after_attr.find('(') {
-        Some(open) => &after_attr[..open],
-        None => after_attr,
+    // 1) 可见性与关键字修饰符前缀（pub/pub(crate)/pub(super)/pub(in path)/
+    //    async/unsafe/extern "C"/const）必须在找 '(' 之前剥离：`pub(crate)
+    //    fn is_cjk(...)` 的 `pub(crate)` 含 '('，按第一个 '(' 截取会把函数
+    //    名取成 `pub`（crate 在括号内被丢弃）——api 权威集与 stale-entity
+    //    两侧都取到污染名（R2 实测 `pub` 被当实体报 stale-entity）。
+    let stripped = strip_modifier_prefix(after_attr);
+    let mut head = match stripped.find('(') {
+        Some(open) => &stripped[..open],
+        None => stripped,
     };
-    // 1) 泛型约束子句（C# class Foo where T : class / Rust impl<T> Foo<T> where T: Clone）：
+    // 2) 泛型约束子句（C# class Foo where T : class / Rust impl<T> Foo<T> where T: Clone）：
     //    其中的 ':' 会误导继承剥离，必须先切掉
     if let Some(w) = head.find("where") {
         head = &head[..w];
     }
-    // 2) 继承/实现段（C# class Foo : Base, IBar / Java class Foo extends Bar 的 ':'）：
+    // 3) 继承/实现段（C# class Foo : Base, IBar / Java class Foo extends Bar 的 ':'）：
     //    基类名/接口名会污染最后标识符（实测 ScriptableObject/IDisposable 误报）
     if let Some(colon) = head.find(':') {
         head = &head[..colon];
     }
-    // 3) 泛型参数列表（RegisterInstance<TService> / fn foo<T>）：'<' 后是类型参数名
+    // 4) 泛型参数列表（RegisterInstance<TService> / fn foo<T>）：'<' 后是类型参数名
     if let Some(lt) = head.find('<') {
         head = &head[..lt];
     }
@@ -1369,6 +1553,55 @@ pub fn entity_name_from_signature(sig: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+/// 剥离签名开头的可见性与关键字修饰符前缀，返回剩余段。
+///
+/// 支持可叠加组合：`pub(crate) async unsafe extern "C" fn`。逐类剥：
+/// - 带括号可见性：`pub(crate)`/`pub(super)`/`pub(self)`/`pub(in path)`
+/// - 裸关键字：`pub`/`async`/`unsafe`/`const`；`extern` 后可能带 ABI
+///   字符串（`extern "C" fn`）一并剥掉。
+///
+/// 为什么：修饰符前缀含 `(`（pub(crate)）或紧跟 ABI 串时，按第一个 `(`
+/// 截取会把实体名取成 `pub` 等污染名（见 entity_name_from_signature）。
+/// 前缀判定严格按「关键字 + 空白」：`public`/`async_thing` 等以关键字开头
+/// 的普通标识符不是修饰符，不得剥离。
+fn strip_modifier_prefix(sig: &str) -> &str {
+    let mut s = sig.trim();
+    loop {
+        let prev = s;
+        // 带括号可见性：pub(crate) / pub(super) / pub(self) / pub(in path)
+        if let Some(rest) = s.strip_prefix("pub(")
+            && let Some(end) = rest.find(')')
+        {
+            s = rest[end + 1..].trim();
+        }
+        // 裸关键字修饰符（可叠加）；extern 后可能带 "C" ABI 串
+        for kw in ["pub", "async", "unsafe", "const", "extern"] {
+            let Some(rest) = s.strip_prefix(kw) else {
+                continue;
+            };
+            let after_kw = rest.trim_start();
+            // 关键字后必须紧跟空白（或 ABI 引号）才是修饰符；`public` 的
+            // 剩余段 `lic` 无前导空白 → 不是修饰符，跳过本关键字
+            if after_kw.len() == rest.len() && !after_kw.starts_with('"') {
+                continue;
+            }
+            if kw == "extern"
+                && let Some(abi_rest) = after_kw.strip_prefix('"')
+                && let Some(end) = abi_rest.find('"')
+            {
+                s = abi_rest[end + 1..].trim();
+            } else {
+                s = after_kw;
+            }
+            break;
+        }
+        if s == prev {
+            break;
+        }
+    }
+    s
+}
+
 /// 提取 `- \`...\`` 声称行的反引号内文（非声称行返回 None）。
 /// extract_entity_names 借它做模块名原文精确匹配（多段名提取后会被截断），
 /// 不能只依赖 entity_name_from_signature 的提取结果
@@ -1376,6 +1609,58 @@ fn claimed_backtick_inner(line: &str) -> Option<&str> {
     line.trim()
         .strip_prefix("- `")
         .and_then(|rest| rest.find('`').map(|end| &rest[..end]))
+}
+
+/// 非实体声称节判定：`## 依赖关系`/`## 使用方式`（容忍 LLM 措辞变体，
+/// 与 dependency_check 的依赖节判定口径一致）。
+///
+/// 为什么：依赖/使用小节里的 `- \`...\`` 是模块引用与使用说明，不是实体
+/// 声称——`- \`crate::project::ProjectRoot\`` 会被截断成 `crate`、
+/// `- \`anyhow\`` 外部 crate 名会被当实体、`- \`path\` 模块` 跨模块归属
+/// 不可靠。整节跳过消除这四类误报（R2 实测 6 条 error 误报中 4 条源于
+/// 依赖节，另 2 条源于规则 3 死代码）。
+fn is_non_entity_section(heading: &str) -> bool {
+    let lower = heading.trim_start_matches('#').trim().to_lowercase();
+    lower.contains("依赖")
+        || lower.contains("dependenc")
+        || lower.contains("使用方式")
+        || lower.contains("usage")
+}
+
+/// 提取页面声称的实体及声称行（`(name, 行文本)`）。
+///
+/// extract_entity_names 的带行变体：规则 2 归属降级（R2 附带处理）需要判断
+/// 「声称行是否自带 file:line 引用」——实体名本身不携带引用位置，只有行
+/// 文本能做这个判定。
+fn extract_entity_claims_with_lines(
+    content: &str,
+    modules: &std::collections::HashSet<String>,
+) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut in_non_entity_section = false;
+    for line in content.lines() {
+        let t = line.trim();
+        if t.starts_with("## ") {
+            in_non_entity_section = is_non_entity_section(t);
+            continue;
+        }
+        if in_non_entity_section {
+            continue;
+        }
+        let Some(inner) = claimed_backtick_inner(line) else {
+            continue;
+        };
+        if modules.contains(inner) {
+            continue;
+        }
+        if inner.contains('/') || inner.contains('\\') || has_code_extension(inner) {
+            continue;
+        }
+        if let Some(name) = entity_name_from_signature(inner) {
+            out.push((name, line.to_string()));
+        }
+    }
+    out
 }
 
 /// 从模块页内容提取声称的实体名：`- `Name`` 核心实体行（反引号内实体真名）。
@@ -1389,23 +1674,15 @@ fn claimed_backtick_inner(line: &str) -> Option<&str> {
 /// bad-citation 管辖，不是实体声称——`entity_name_from_signature` 会把
 /// `src/main.rs` 截成路径派生 token `rs` 造成误报，这里先行剔除（复用
 /// has_code_extension，与 extract_source_files 的判定口径一致）。
+///
+/// R2：只扫「核心实体」等实体节，跳过「依赖关系」/「使用方式」小节（见
+/// extract_entity_claims_with_lines 的节跟踪），依赖/使用节的名字是模块
+/// 引用与使用说明而非实体声称。
 fn extract_entity_names(content: &str, modules: &std::collections::HashSet<String>) -> Vec<String> {
-    let mut out = Vec::new();
-    for line in content.lines() {
-        let Some(inner) = claimed_backtick_inner(line) else {
-            continue;
-        };
-        if modules.contains(inner) {
-            continue;
-        }
-        if inner.contains('/') || inner.contains('\\') || has_code_extension(inner) {
-            continue;
-        }
-        if let Some(name) = entity_name_from_signature(inner) {
-            out.push(name);
-        }
-    }
-    out
+    extract_entity_claims_with_lines(content, modules)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect()
 }
 
 /// 收集 wiki 根下的语言目录（zh/en/...）
@@ -2626,7 +2903,7 @@ mod tests {
         // （保留 DEFECT-B 宽容但不再完全静默），不再是全放行
         let warn: Vec<_> = issues
             .iter()
-            .filter(|i| i.kind == "entity-ownership" && i.message.contains("告警"))
+            .filter(|i| i.kind == "entity-ownership" && i.severity == Severity::Warning)
             .collect();
         assert_eq!(
             warn.len(),
@@ -2800,7 +3077,7 @@ mod tests {
         let issues = lint(&dir, &[src]);
         let warn: Vec<_> = issues
             .iter()
-            .filter(|i| i.kind == "entity-ownership" && i.message.contains("告警"))
+            .filter(|i| i.kind == "entity-ownership" && i.severity == Severity::Warning)
             .collect();
         assert_eq!(warn.len(), 1, "stem 撞名应降为告警, 实际: {:?}", issues);
         assert!(
@@ -2817,6 +3094,155 @@ mod tests {
             cov[0].message.contains("GhostNope"),
             "应指向 GhostNope: {}",
             cov[0].message
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// R2 规则 3 结构性修复：模块页无「相关文件」节时，源码实体
+    /// （pub(crate) 等未进 api 权威集）靠「实体文件 stem == 模块短名」判定
+    /// 文件级归属 → 放行。修复前 related_files 恒空导致规则 3 恒假，
+    /// is_cjk 这类源码实体直接落规则 5 误报 entity-coverage。
+    #[test]
+    fn test_lint_entity_ownership_rule3_module_page_short_name_passes() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_own_rule3_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        let src = dir.join("src");
+        std::fs::create_dir_all(&wiki).unwrap();
+        std::fs::create_dir_all(&src).unwrap();
+        // 源码：src/tokenize.rs 内定义 pub(crate) 实体（不进 api 权威集）
+        std::fs::write(
+            src.join("tokenize.rs"),
+            "pub(crate) fn is_cjk(c: char) -> bool {}\n",
+        )
+        .unwrap();
+        // api.md：模块节标题存在但无实体条目（如 src::search 空节场景）
+        std::fs::write(wiki.join("api.md"), "# API 参考\n\n## src::tokenize\n").unwrap();
+        // 模块页 src_tokenize.md：核心实体声称 is_cjk，无「相关文件」节
+        std::fs::write(
+            wiki.join("src_tokenize.md"),
+            "# src::tokenize\n\n## 核心实体\n\n- `is_cjk(c: char) -> bool` — 定义于 src/tokenize.rs:15\n- `GhostThing` — 编造的实体\n",
+        )
+        .unwrap();
+
+        let issues = lint(&dir, &[src]);
+        // is_cjk 文件级归属正确 → 放行；GhostThing 全不满足 → 仍报 entity-coverage
+        let cov: Vec<_> = issues
+            .iter()
+            .filter(|i| i.kind == "entity-coverage")
+            .collect();
+        assert_eq!(
+            cov.len(),
+            1,
+            "源码实体应放行、编造实体仍应报, 实际: {:?}",
+            issues
+        );
+        assert!(
+            cov[0].message.contains("GhostThing"),
+            "应指向编造实体: {}",
+            cov[0].message
+        );
+        assert!(
+            !issues.iter().any(|i| i.kind == "entity-ownership"),
+            "is_cjk 不应报归属问题: {:?}",
+            issues
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// R2 附带处理：规则 2 归属降级——跨模块声称且声称行自带 file:line 引用
+    /// （引用文件与 api 权威文件不同，归属不可靠）→ 降为告警（Warning）
+    /// 而非 error（`## tests` 伞模块聚类把 src/project.rs 的 path 归属到
+    /// tests 的误报形态）。
+    #[test]
+    fn test_lint_entity_ownership_rule2_downgraded_when_claim_line_cites() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_own_rule2w_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        // api.md：path 真实实体在 src/project.rs，但被 `## tests` 伞模块聚类归入
+        std::fs::write(
+            wiki.join("api.md"),
+            "# API 参考\n\n## tests\n\n- `pub fn path(&self) -> &Path` — 项目根路径 — src/project.rs:42\n",
+        )
+        .unwrap();
+        // src_config.md：声称 path，声称行自带指向 src/config/mod.rs 的引用
+        // （文件与权威不同 → 归属不可靠）
+        std::fs::write(
+            wiki.join("src_config.md"),
+            "# src::config\n\n## 核心实体\n\n- `path` — 路径模块（src/config/mod.rs:25）\n",
+        )
+        .unwrap();
+
+        let issues = lint(&dir, &[]);
+        let own: Vec<_> = issues
+            .iter()
+            .filter(|i| i.kind == "entity-ownership")
+            .collect();
+        assert_eq!(
+            own.len(),
+            1,
+            "跨模块声称应报一条归属问题, 实际: {:?}",
+            issues
+        );
+        assert!(
+            own[0].severity == Severity::Warning,
+            "声称行自带引用 → 归属降为告警, 实际: {:?}",
+            own[0]
+        );
+        assert!(
+            own[0].message.contains("path"),
+            "应指向 path: {}",
+            own[0].message
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// R2 附带处理：规则 2 归属降级——实体名过短（≤4 字符，如 `fs`）→ 降为
+    /// 告警（Warning）。实体名过短是 api 权威集污染高发形态（类型/模块引用
+    /// 名被伞模块聚类归属到错误模块）。
+    #[test]
+    fn test_lint_entity_ownership_rule2_downgraded_for_short_name() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_own_rule2s_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        std::fs::write(
+            wiki.join("api.md"),
+            "# API 参考\n\n## tests\n\n- `pub fn fs(&self) -> &Path` — 文件系统 — src/fs.rs:42\n",
+        )
+        .unwrap();
+        // 声称 fs，无引用（短名自身即降级触发条件）
+        std::fs::write(
+            wiki.join("src_config.md"),
+            "# src::config\n\n## 核心实体\n\n- `fs` — 文件系统模块\n",
+        )
+        .unwrap();
+
+        let issues = lint(&dir, &[]);
+        let own: Vec<_> = issues
+            .iter()
+            .filter(|i| i.kind == "entity-ownership")
+            .collect();
+        assert_eq!(
+            own.len(),
+            1,
+            "跨模块声称应报一条归属问题, 实际: {:?}",
+            issues
+        );
+        assert!(
+            own[0].severity == Severity::Warning,
+            "过短实体名 → 归属降为告警, 实际: {:?}",
+            own[0]
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3126,6 +3552,41 @@ mod tests {
         assert!(names.contains(&"foo_bar".to_string()));
     }
 
+    /// R2 P0-c(a)：extract_entity_names 只扫「核心实体」等实体节，跳过
+    /// 「依赖关系」/「使用方式」小节——依赖节声称是模块引用/外部 crate 名
+    /// （`crate::project::ProjectRoot` 被截断成 `crate`、`anyhow` 被当实体、
+    /// `path` 模块跨模块归属不可靠），不是实体声称。
+    #[test]
+    fn test_extract_entity_names_skips_dependency_usage_sections() {
+        let content = "## 核心实体\n\n- `Server` — 服务\n\n## 依赖关系\n\n- `crate::project::ProjectRoot` — 依赖\n- `anyhow` — 外部 crate\n- `path` — 模块\n\n## 使用方式\n\n- `NotAnEntity` — 使用说明\n";
+        let names = extract_entity_names(content, &std::collections::HashSet::new());
+        assert!(
+            names.contains(&"Server".to_string()),
+            "核心实体节仍应提取: {:?}",
+            names
+        );
+        assert!(
+            !names.contains(&"crate".to_string()),
+            "依赖节的 crate:: 声称不应截成 crate: {:?}",
+            names
+        );
+        assert!(
+            !names.contains(&"anyhow".to_string()),
+            "依赖节的外部 crate 名不应被当实体: {:?}",
+            names
+        );
+        assert!(
+            !names.contains(&"path".to_string()),
+            "依赖节的模块名不应被当实体: {:?}",
+            names
+        );
+        assert!(
+            !names.contains(&"NotAnEntity".to_string()),
+            "使用节的声称不应被提取: {:?}",
+            names
+        );
+    }
+
     /// v19 t03：单字符与纯数字 token 是 LLM 编造噪声（双仓库实测
     /// `P`/`_`/`a`/`2`），应被过滤以免污染 entity-coverage 声称侧；
     /// 多字符正常实体不受影响。
@@ -3235,6 +3696,50 @@ mod tests {
         assert_eq!(
             entity_name_from_signature("[ContextMenu(\"x\")] public void DoThing()"),
             Some("DoThing".into())
+        );
+    }
+
+    /// R2 P0-c(b)：可见性/关键字修饰符前缀剥离——`pub(crate) fn is_cjk(...)`
+    /// 的 `pub(crate)` 含 '('，修复前按第一个 '(' 截取把实体名取成 `pub`
+    /// （api 权威集污染 + stale-entity 误报）。修复后取到 `is_cjk`。
+    #[test]
+    fn test_entity_name_strips_visibility_modifiers() {
+        assert_eq!(
+            entity_name_from_signature("pub(crate) fn is_cjk(c: char) -> bool"),
+            Some("is_cjk".into()),
+            "pub(crate) 的括号不得抢先于函数名括号"
+        );
+        assert_eq!(
+            entity_name_from_signature("pub(super) fn connect() {}"),
+            Some("connect".into())
+        );
+        assert_eq!(
+            entity_name_from_signature("pub(in crate::foo) fn helper()"),
+            Some("helper".into())
+        );
+        // 叠加修饰符 + extern ABI 串
+        assert_eq!(
+            entity_name_from_signature("pub async unsafe extern \"C\" fn run()"),
+            Some("run".into())
+        );
+        assert_eq!(
+            entity_name_from_signature("const fn compute() -> u32"),
+            Some("compute".into())
+        );
+        // 无修饰符 / 以关键字开头的普通标识符不回退
+        assert_eq!(
+            entity_name_from_signature("pub fn authenticate(username: &str) -> Option<User>"),
+            Some("authenticate".into())
+        );
+        assert_eq!(
+            entity_name_from_signature("pubkey()"),
+            Some("pubkey".into()),
+            "以 pub 开头的标识符不是修饰符，不得剥离"
+        );
+        // impl 块签名（无 '('，`impl<'a> X<'a>`）保持既有提取行为不回归
+        assert_eq!(
+            entity_name_from_signature("impl<'a> ModuleDetector<'a> {"),
+            Some("impl".into())
         );
     }
 

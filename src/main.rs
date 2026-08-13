@@ -926,8 +926,9 @@ fn main() -> anyhow::Result<()> {
             if issues.is_empty() {
                 println!("lint: 通过，无孤儿页/断链/过时问题");
             } else if issues.iter().all(|i| i.is_warning()) {
-                // 仅告警级（entity-ownership 规则 4：仅命中目录/文件 stem 的
-                // 归属未确认提示）：展示但不阻断退出码（CI 门禁语义）
+                // 仅告警级（severity==Warning：orphan / bad-mermaid /
+                // entity-ownership 归属未确认）：展示但不阻断退出码（CI 门禁
+                // 语义——error 级问题才导致退出码非 0）
                 for issue in &issues {
                     println!("lint [{}] {}: {}", issue.kind, issue.path, issue.message);
                 }
