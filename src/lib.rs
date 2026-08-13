@@ -166,7 +166,7 @@ fn save_generation_state(
                 documents,
                 cards,
                 output_dir,
-                &output::wiki_languages(config),
+                &[output::primary_language(config)],
             ) {
                 Ok((fps, modules)) => {
                     // 全量记录指纹与模块归属（含保护集文档）：受保护文档本轮被跳过

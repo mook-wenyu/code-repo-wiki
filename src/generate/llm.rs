@@ -709,9 +709,12 @@ impl OpenAiProvider {
 
     /// Responses API 协议路径（openai provider 的协议，v17 B4）
     ///
-    /// 端点不支持信号（404/400，如服务未提供 /responses）→ 自动回退
-    /// chat/completions 重发一次（t02 拍板；429/5xx 由 retry_with_backoff
-    /// 处理，不触发回退——回退只针对"端点不支持"，不掩盖限流/服务端错误）。
+    /// v51（audit-gen-11）：协议回退已移除。此前 404/400 会静默重发
+    /// chat/completions——base_url 不支持 /responses 时配置错误被掩盖
+    /// （用户以为生成正常，实际协议被静默替换），违反禁兜底。现在
+    /// 显式报错：404 表明 /responses 端点不存在（provider 类型或
+    /// base_url 配置问题，由 doctor 协议探测前置诊断），其余非 2xx
+    /// 按既有错误传播。429/5xx 由 retry_with_backoff 处理，不触发回退。
     async fn responses_complete_stream(
         &self,
         messages: &[Message],
@@ -729,24 +732,18 @@ impl OpenAiProvider {
         })
         .await?;
 
-        if resp.status() == reqwest::StatusCode::NOT_FOUND
-            || resp.status() == reqwest::StatusCode::BAD_REQUEST
-        {
-            // 端点不支持（404）/参数被拒（400）：服务未实现 Responses 协议，
-            // 回退 chat/completions 重发（仅一次——chat 失败按既有错误传播）
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            tracing::warn!(
-                "Responses 端点不支持 ({}: {})，自动回退 chat/completions 重发",
-                status,
-                text.chars().take(500).collect::<String>()
-            );
-            return self.chat_complete_stream(messages, max_output_tokens_override).await;
-        }
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            anyhow::bail!("API 返回错误 ({}): {}", status, text);
+            let detail = text.chars().take(500).collect::<String>();
+            // v51：404 不再回退 chat/completions——显式报错并给出配置引导
+            //（provider 类型 / base_url 形态是根因，静默换协议会掩盖问题）
+            if status == reqwest::StatusCode::NOT_FOUND {
+                anyhow::bail!(
+                    "Responses 协议端点不存在 (404): {detail}。base_url 未提供 /responses（协议不支持或 base_url 配错）——请检查 provider 类型与 base_url；服务不支持 Responses 时应改用 openai-compatible provider（chat/completions）"
+                );
+            }
+            anyhow::bail!("Responses API 返回错误 ({}): {}", status, detail);
         }
 
         // Responses SSE：语义化事件流——data: 行内 type=response.output_text.delta
@@ -1839,21 +1836,16 @@ data: [DONE]
         assert_eq!(body["stream"].as_bool(), Some(true));
     }
 
-    /// v17 B5：Responses 端点不支持（404）→ 自动回退 chat/completions 重发成功
+    /// v51（audit-gen-11）：协议回退移除——Responses 404 不再重发
+    /// chat/completions，显式报错（静默换协议会掩盖 base_url 不支持
+    /// /responses 的配置错误，用户以为生成正常实际协议被替换）
     #[tokio::test]
-    async fn test_responses_falls_back_to_chat_on_404() {
+    async fn test_responses_404_no_fallback_errors() {
         let requests: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let requests_server = requests.clone();
         let base_url = spawn_mock_server(move |req| {
             requests_server.lock().unwrap().push(req.path.clone());
-            if req.path.ends_with("/responses") {
-                MockResponse { status: 404, body: "not found".into() }
-            } else {
-                MockResponse {
-                    status: 200,
-                    body: "data: {\"choices\":[{\"delta\":{\"content\":\"回退成功\"}}]}\n\ndata: [DONE]\n\n".into(),
-                }
-            }
+            MockResponse { status: 404, body: "not found".into() }
         });
 
         let config = LlmSection {
@@ -1867,12 +1859,17 @@ data: [DONE]
             max_concurrency: None,
         };
         let provider = OpenAiProvider::new(&config, OpenAiProtocol::Responses).unwrap();
-        let chunks = provider.complete_stream(&[Message::user("你好")]).await.unwrap();
-        assert_eq!(chunks.join(""), "回退成功");
+        let result = provider.complete_stream(&[Message::user("你好")]).await;
+
+        assert!(result.is_err(), "404 必须显式报错而非回退 chat/completions");
+        let err = format!("{:?}", result.err().unwrap());
+        assert!(
+            err.contains("404") || err.contains("Responses"),
+            "错误消息应说明协议端点不存在: {err}"
+        );
         let paths = requests.lock().unwrap();
-        assert_eq!(paths.len(), 2, "应请求 responses + chat 两次");
-        assert!(paths[0].ends_with("/responses"), "第一次应请求 responses: {:?}", paths);
-        assert!(paths[1].ends_with("/chat/completions"), "回退应请求 chat/completions: {:?}", paths);
+        assert_eq!(paths.len(), 1, "404 不应再重发 chat/completions（仅一次 /responses 请求）: {:?}", paths);
+        assert!(paths[0].ends_with("/responses"), "唯一请求应指向 /responses: {:?}", paths);
     }
 
     /// v22 修复：评测裁判完整调用带显式输出预算——请求体必须写入

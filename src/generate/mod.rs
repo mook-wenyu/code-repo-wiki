@@ -276,59 +276,12 @@ pub async fn run_generation_filtered(
         .cloned()
         .collect();
 
-    // 纯删除场景的模块级补偿（v21 验证轮起，此处补全 mixed 场景）：
-    // 被删文件所属模块（快照卡片 related_files 含被删文件且仍有存活
-    // 文件的卡片 = 部分删除模块）的存活文件并入变更集，走正常重生成
-    // 清除被删实体的页面残留。
-    //
-    // 补偿必须独立于下方空集回填分支执行：删除与修改并存（mixed）时
-    // changed_insights 非空，回填分支不进入——而语义传播的起点（被删
-    // 文件）在当前图中无节点（impact.rs find_start_nodes 找不到即跳过），
-    // 其模块永远进不了 affected_modules，不显式并入则模块页残留旧内容。
-    // 纯删除场景由本逻辑并入后同样落入正常生成路径；快照缺失/损坏时
-    // 跳过补偿（下方回填分支对快照失败有全量回退兜底，不丢数据）。
-    // 模块归属沿用快照 cards.related_files（与 v22 失败补偿同源机制）。
-    let deleted_files: std::collections::HashSet<std::path::PathBuf> = changed_files
-        .iter()
-        .filter(|f| !root.path().join(f).exists())
-        .cloned()
-        .collect();
-    let surviving_files: std::collections::HashSet<std::path::PathBuf> = if deleted_files.is_empty() {
-        std::collections::HashSet::new()
-    } else if let Ok(content) =
-        std::fs::read_to_string(crate::output::export_snapshot_path(config.output_dir()))
-        && let Ok(snapshot) = serde_json::from_str::<crate::output::ExportSnapshot>(&content)
-    {
-        snapshot
-            .cards
-            .iter()
-            .filter(|c| {
-                !c.related_files.is_empty()
-                    && c.related_files.iter().any(|f| deleted_files.contains(Path::new(f)))
-                    && c.related_files.iter().any(|f| root.path().join(f).exists())
-            })
-            .flat_map(|c| c.related_files.iter().map(std::path::PathBuf::from))
-            .collect()
-    } else {
-        std::collections::HashSet::new()
-    };
-    if !surviving_files.is_empty() {
-        let mut present: std::collections::HashSet<std::path::PathBuf> =
-            changed_insights.iter().map(|i| i.path.clone()).collect();
-        let mut merged = 0usize;
-        for insight in insights {
-            if surviving_files.contains(&insight.path) && present.insert(insight.path.clone()) {
-                changed_insights.push(insight.clone());
-                merged += 1;
-            }
-        }
-        if merged > 0 {
-            tracing::info!(
-                "增量生成: 删除文件所属模块的 {} 个存活文件并入变更集，重生成清除被删实体残留",
-                merged
-            );
-        }
-    }
+    // 纯删除场景的模块级补偿（v51 拆分为独立函数 compensate_deleted_files，
+    // 行为不变）：被删文件所属模块的存活文件并入变更集，走正常重生成
+    // 清除被删实体的页面残留。补偿必须独立于下方空集回填分支执行（mixed
+    // 场景 deleted 与 modified 并存时 changed_insights 非空、回填分支不进入），
+    // 详见函数注释。
+    compensate_deleted_files(changed_files, insights, root, config, &mut changed_insights);
 
     if changed_insights.is_empty() {
         // 空集场景（v23 A1 起含「无实体变更」文件：纯空白/注释/换行符变化
@@ -336,51 +289,13 @@ pub async fn run_generation_filtered(
         // 任何部分删除模块）：changed_files 非空但无文件命中影响集时，旧实现
         // 直接返回空输出 → render_all 不写任何产物 → cleanup_stale_outputs
         // 差集语义把**全部**旧产物清空（无关模块页也被删）。
-        // 修复：从导出快照回填未删除模块的旧产物（零 LLM 成本）；
-        // 快照缺失（异常）时回退全量生成，宁可多生成也不丢数据。
-        if let Ok(content) = std::fs::read_to_string(crate::output::export_snapshot_path(config.output_dir()))
-            && let Ok(snapshot) = serde_json::from_str::<crate::output::ExportSnapshot>(&content)
-        {
-            // 快照回填：仅剔除整模块全删（related_files 全部不存在）的卡片与
-            // 文档——部分删除模块的存活文件已在上方并入变更集走重生成，此处
-            // 到达的只有「真无变更可生成」的文件，原样回填旧产物。
-            let deleted_modules: std::collections::HashSet<String> = snapshot
-                .cards
-                .iter()
-                .filter(|c| {
-                    !c.related_files.is_empty()
-                        && c.related_files.iter().all(|f| !root.path().join(f).exists())
-                })
-                .map(|c| c.module_name.clone())
-                .collect();
-            let cards: Vec<KnowledgeCard> = snapshot
-                .cards
-                .into_iter()
-                .filter(|c| !deleted_modules.contains(&c.module_name))
-                .collect();
-            let documents: Vec<WikiDocument> = snapshot
-                .documents
-                .into_iter()
-                .filter(|d| !deleted_modules.contains(&d.title))
-                .collect();
-            tracing::info!(
-                "增量生成: 空集场景（{} 个变更文件），从快照回填 {} 文档 {} 卡片（跳过已删模块 {} 个）",
-                changed_files.len(),
-                documents.len(),
-                cards.len(),
-                deleted_modules.len()
-            );
-            return Ok(GenerationOutput {
-                cards,
-                documents,
-                generation_stats: GenerationStats::default(),
-                timings: crate::GenerationTimings::default(),
-            });
-        } else {
-            tracing::warn!("增量生成: 纯删除场景但导出快照缺失，回退全量生成防止产物误清");
-            // 回退全量：所有现存文件视为变更，走下方正常生成路径
-            changed_insights = insights.to_vec();
+        // v51 拆分为独立函数 snapshot_backfill：快照可用时回填未删除模块的
+        // 旧产物（零 LLM 成本）；快照缺失（异常）时返回 None 回退全量生成，
+        // 宁可多生成也不丢数据。
+        if let Some(output) = snapshot_backfill(changed_files, root, config)? {
+            return Ok(output);
         }
+        changed_insights = insights.to_vec();
     } else {
         tracing::info!("增量生成: {} 个文件变更", changed_insights.len());
     }
@@ -475,6 +390,125 @@ pub async fn run_generation_filtered(
     })
 }
 
+/// 纯删除场景的模块级补偿（v51 拆分自 run_generation_filtered，行为不变）
+///
+/// 被删文件所属模块（快照卡片 related_files 含被删文件且仍有存活
+/// 文件的卡片 = 部分删除模块）的存活文件并入变更集，走正常重生成
+/// 清除被删实体的页面残留。
+///
+/// 补偿必须独立于空集回填分支执行：删除与修改并存（mixed）时
+/// changed_insights 非空，回填分支不进入——而语义传播的起点（被删
+/// 文件）在当前图中无节点（impact.rs find_start_nodes 找不到即跳过），
+/// 其模块永远进不了 affected_modules，不显式并入则模块页残留旧内容。
+/// 纯删除场景由本逻辑并入后同样落入正常生成路径；快照缺失/损坏时
+/// 跳过补偿（空集回填分支对快照失败有全量回退兜底，不丢数据）。
+/// 模块归属沿用快照 cards.related_files（与 v22 失败补偿同源机制）。
+fn compensate_deleted_files(
+    changed_files: &[std::path::PathBuf],
+    insights: &[FileInsight],
+    root: &crate::project::ProjectRoot,
+    config: &WikiConfig,
+    changed_insights: &mut Vec<FileInsight>,
+) {
+    let deleted_files: std::collections::HashSet<std::path::PathBuf> = changed_files
+        .iter()
+        .filter(|f| !root.path().join(f).exists())
+        .cloned()
+        .collect();
+    let surviving_files: std::collections::HashSet<std::path::PathBuf> = if deleted_files.is_empty() {
+        std::collections::HashSet::new()
+    } else if let Ok(content) =
+        std::fs::read_to_string(crate::output::export_snapshot_path(config.output_dir()))
+        && let Ok(snapshot) = serde_json::from_str::<crate::output::ExportSnapshot>(&content)
+    {
+        snapshot
+            .cards
+            .iter()
+            .filter(|c| {
+                !c.related_files.is_empty()
+                    && c.related_files.iter().any(|f| deleted_files.contains(Path::new(f)))
+                    && c.related_files.iter().any(|f| root.path().join(f).exists())
+            })
+            .flat_map(|c| c.related_files.iter().map(std::path::PathBuf::from))
+            .collect()
+    } else {
+        std::collections::HashSet::new()
+    };
+    if !surviving_files.is_empty() {
+        let mut present: std::collections::HashSet<std::path::PathBuf> =
+            changed_insights.iter().map(|i| i.path.clone()).collect();
+        let mut merged = 0usize;
+        for insight in insights {
+            if surviving_files.contains(&insight.path) && present.insert(insight.path.clone()) {
+                changed_insights.push(insight.clone());
+                merged += 1;
+            }
+        }
+        if merged > 0 {
+            tracing::info!(
+                "增量生成: 删除文件所属模块的 {} 个存活文件并入变更集，重生成清除被删实体残留",
+                merged
+            );
+        }
+    }
+}
+
+/// 空集场景的快照回填（v51 拆分自 run_generation_filtered，行为不变）
+///
+/// 增量变更无文件命中影响集时（纯删除/纯文本变化）：changed_files 非空
+/// 但无文件命中影响集，旧实现直接返回空输出 → render_all 不写任何产物 →
+/// cleanup_stale_outputs 差集语义把全部旧产物清空（无关模块页也被删）。
+/// 本函数从导出快照回填未删除模块的旧产物（零 LLM 成本）；快照缺失
+/// （异常）时返回 None，由调用方回退全量生成，宁可多生成也不丢数据。
+fn snapshot_backfill(
+    changed_files: &[std::path::PathBuf],
+    root: &crate::project::ProjectRoot,
+    config: &WikiConfig,
+) -> Result<Option<GenerationOutput>> {
+    if let Ok(content) = std::fs::read_to_string(crate::output::export_snapshot_path(config.output_dir()))
+        && let Ok(snapshot) = serde_json::from_str::<crate::output::ExportSnapshot>(&content)
+    {
+        // 快照回填：仅剔除整模块全删（related_files 全部不存在）的卡片与
+        // 文档——部分删除模块的存活文件已在上方并入变更集走重生成，此处
+        // 到达的只有「真无变更可生成」的文件，原样回填旧产物。
+        let deleted_modules: std::collections::HashSet<String> = snapshot
+            .cards
+            .iter()
+            .filter(|c| {
+                !c.related_files.is_empty()
+                    && c.related_files.iter().all(|f| !root.path().join(f).exists())
+            })
+            .map(|c| c.module_name.clone())
+            .collect();
+        let cards: Vec<KnowledgeCard> = snapshot
+            .cards
+            .into_iter()
+            .filter(|c| !deleted_modules.contains(&c.module_name))
+            .collect();
+        let documents: Vec<WikiDocument> = snapshot
+            .documents
+            .into_iter()
+            .filter(|d| !deleted_modules.contains(&d.title))
+            .collect();
+        tracing::info!(
+            "增量生成: 空集场景（{} 个变更文件），从快照回填 {} 文档 {} 卡片（跳过已删模块 {} 个）",
+            changed_files.len(),
+            documents.len(),
+            cards.len(),
+            deleted_modules.len()
+        );
+        Ok(Some(GenerationOutput {
+            cards,
+            documents,
+            generation_stats: GenerationStats::default(),
+            timings: crate::GenerationTimings::default(),
+        }))
+    } else {
+        tracing::warn!("增量生成: 纯删除场景但导出快照缺失，回退全量生成防止产物误清");
+        Ok(None)
+    }
+}
+
 /// 从全仓库解析结果构建"相对路径 → 实体行区间列表"表（v14 B 组）
 ///
 /// 供引用区间重叠校验使用（validate_citations_against_entities）：
@@ -561,50 +595,50 @@ async fn generate_wiki_pages<P: LlmProvider>(
     entity_ranges: &crate::output::citation::EntityRanges,
     on_progress: &dyn Fn(crate::ProgressEvent),
 ) -> Vec<WikiDocument> {
-    let languages = crate::output::wiki_languages(config);
+    // v51：多语言支持已删除，恒按主语言单值生成（原按语言循环结构移除，
+    // 行为不变——旧 languages 恒为单元素 [config.wiki.language]）
+    let language = crate::output::primary_language(config);
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(max_concurrent.max(1)));
-    let mut handles = Vec::with_capacity(chunks.len() * languages.len());
+    let mut handles = Vec::with_capacity(chunks.len());
     // 记录每个任务的模块名（失败时写入 wiki_gen 的失败列表，T3.2）
-    let mut task_modules = Vec::with_capacity(chunks.len() * languages.len());
+    let mut task_modules = Vec::with_capacity(chunks.len());
     // v46：LLM 逐页进度——并发任务完成计数（fetch_add 线程安全；单线程
     // runtime 轮询下依然成立——join_all 在同一任务内并发轮询各 future）
     let done = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let total = (chunks.len() * languages.len()) as u32;
-    for lang in &languages {
-        let mut lang_cfg = config.clone();
-        lang_cfg.wiki.language = lang.clone();
-        for (i, chunk) in chunks.iter().enumerate() {
-            // P1-1：卡片位 None（空 chunk/失败）→ 摘要为空串，页面照常生成（None 占位保证索引一一对应，不再前移错位）
-            let card_summary = cards
-                .get(i)
-                .and_then(|c| c.as_ref())
-                .map(|c| c.summary.clone())
-                .unwrap_or_default();
-            let semaphore = semaphore.clone();
-            let lang_cfg = lang_cfg.clone();
-            let done = done.clone();
-            task_modules.push(chunk.module_path.join("::"));
-            handles.push(async move {
-                let _permit = semaphore
-                    .acquire()
-                    .await
-                    .map_err(|_| anyhow::anyhow!("信号量已关闭"))?;
-                let result = wiki_gen
-                    .generate_wiki_page(chunk, &card_summary, &lang_cfg, root, Some(entity_ranges))
-                    .await;
-                // 成败均计数并回报进度（失败项也算「已处理」——总数是任务数）
-                // v46：wiki 项级区间 90..95（系数 5）——上限与 output 阶段点
-                //（95%）相接，整条事件流百分比保持单调（90→90+…→95→98→100）
-                let d = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                on_progress(crate::ProgressEvent {
-                    stage: "wiki",
-                    percent: (90 + (d as u64 * 5) / total.max(1) as u64) as u8,
-                    current: Some(d as u32),
-                    total: Some(total),
-                });
-                result
+    let total = chunks.len() as u32;
+    let mut lang_cfg = config.clone();
+    lang_cfg.wiki.language = language.clone();
+    for (i, chunk) in chunks.iter().enumerate() {
+        // P1-1：卡片位 None（空 chunk/失败）→ 摘要为空串，页面照常生成（None 占位保证索引一一对应，不再前移错位）
+        let card_summary = cards
+            .get(i)
+            .and_then(|c| c.as_ref())
+            .map(|c| c.summary.clone())
+            .unwrap_or_default();
+        let semaphore = semaphore.clone();
+        let lang_cfg = lang_cfg.clone();
+        let done = done.clone();
+        task_modules.push(chunk.module_path.join("::"));
+        handles.push(async move {
+            let _permit = semaphore
+                .acquire()
+                .await
+                .map_err(|_| anyhow::anyhow!("信号量已关闭"))?;
+            let result = wiki_gen
+                .generate_wiki_page(chunk, &card_summary, &lang_cfg, root, Some(entity_ranges))
+                .await;
+            // 成败均计数并回报进度（失败项也算「已处理」——总数是任务数）
+            // v46：wiki 项级区间 90..95（系数 5）——上限与 output 阶段点
+            //（95%）相接，整条事件流百分比保持单调（90→90+…→95→98→100）
+            let d = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            on_progress(crate::ProgressEvent {
+                stage: "wiki",
+                percent: (90 + (d as u64 * 5) / total.max(1) as u64) as u8,
+                current: Some(d as u32),
+                total: Some(total),
             });
-        }
+            result
+        });
     }
 
     let results = futures::future::join_all(handles).await;

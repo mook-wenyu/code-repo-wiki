@@ -1,10 +1,10 @@
 //! doctor：环境诊断命令（v17 t08）
 //!
-//! 对运行环境做六查并输出逐项结果，定位"配置加载失败/产物目录不可写/
-//! Key 缺失/网络不可达/版本漂移"类问题，给出可操作提示。语义（wayfinder-v17 t08
-//! 拍板）：全过退出码 0，任一失败退出码 1（与 lint 三态同族，供 CI/脚本
-//! 门禁使用）。网络检查只覆盖 LLM base_url（mock provider 跳过——本地
-//! 模拟不触网，网络检查无意义）。
+//! 对运行环境做七查并输出逐项结果，定位"配置加载失败/产物目录不可写/
+//! Key 缺失/网络不可达/协议不兼容/版本漂移"类问题，给出可操作提示。
+//! 语义（wayfinder-v17 t08 拍板）：全过退出码 0，任一失败退出码 1（与
+//! lint 三态同族，供 CI/脚本门禁使用）。网络与协议检查只覆盖 LLM base_url
+//! （mock provider 跳过——本地模拟不触网，网络检查无意义）。
 
 use anyhow::Result;
 use std::path::Path;
@@ -25,8 +25,31 @@ pub struct CheckResult {
     pub detail: Option<String>,
 }
 
-/// 六查诊断：配置可解析 → 产物目录可写 → 输出目录状态 → LLM Key →
-/// 网络连通性 → 版本漂移。任何一项失败不中断后续检查（一次跑完给出
+/// 协议兼容性探测（v52）：确认配置的 provider 协议形态在 base_url 上
+/// 真实存在。
+///
+/// 发送最小探测请求体（1 token 预算，不解析响应内容），只区分
+/// 「协议存在 / 不存在」：2xx/5xx/4xx（401/403/429 等）均视为端点存在
+/// （认证/限流/服务端错误由实际调用显式报告），仅 404/405 视为协议
+/// 不存在（端点到不了 = 配置形态错误）。网络错误视为不可用。
+async fn probe_protocol(
+    client: &reqwest::Client,
+    url: &str,
+    api_key: &str,
+    body: &serde_json::Value,
+) -> bool {
+    match client.post(url).bearer_auth(api_key).json(body).send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            !(status == reqwest::StatusCode::NOT_FOUND
+                || status == reqwest::StatusCode::METHOD_NOT_ALLOWED)
+        }
+        Err(_) => false,
+    }
+}
+
+/// 七查诊断：配置可解析 → 产物目录可写 → 输出目录状态 → LLM Key →
+/// 网络连通性 → 协议探测 → 版本漂移。任何一项失败不中断后续检查（一次跑完给出
 /// 全景，排障友好）。
 ///
 /// 注意：配置加载失败时无法获得输出目录/Key/网络信息，只返回第一项
@@ -171,7 +194,81 @@ pub fn run(config_path: Option<&Path>, root: &ProjectRoot) -> Result<Vec<CheckRe
         });
     }
 
-    // 6. 版本自检（v19 t01）：产物由哪个工具版本生成，与当前二进制是否一致。
+    // 6. 协议兼容性探测（v52，生产诊断关键）：确认配置的 provider 协议
+    //    形态在 base_url 上真实存在。此前网络检查只证明根路径可达，不证明
+    //    /responses 或 /chat/completions 存在——协议缺失（404/405）时生成
+    //    中途才爆错，且曾存在静默回退掩盖配置错误（v51 移除回退后，本探测
+    //    承担前置诊断职责）。
+    //    mock 跳过（本地模拟不触网）；Anthropic 跳过（messages 端点形态
+    //    固定、无协议 404 风险，网络检查已覆盖可达性）——只探测 OpenAI 系
+    //    双协议（Responses / chat/completions），按 provider 类型取对应端点。
+    let protocol_check = match config.llm.provider {
+        LlmProviderType::Mock | LlmProviderType::Anthropic => CheckResult {
+            name: "协议",
+            ok: true,
+            detail: Some("mock/Anthropic：跳过协议探测（本地模拟不触网 / 协议形态固定）".to_string()),
+        },
+        _ => {
+            let is_responses = config.llm.provider == LlmProviderType::OpenAI;
+            let base_url = config
+                .llm
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+            let endpoint = if is_responses { "responses" } else { "chat/completions" };
+            let url = format!("{}/{}", base_url.trim_end_matches('/'), endpoint);
+            // 最小探测请求体（1 token 预算，stream:false 一次收包；探测只关心
+            // 端点到不到，不解析响应内容——即使 body 被拒（400）也说明端点存在）
+            let body = if is_responses {
+                serde_json::json!({
+                    "model": config.llm.model,
+                    "input": "ping",
+                    "max_output_tokens": 1,
+                    "stream": false,
+                })
+            } else {
+                serde_json::json!({
+                    "model": config.llm.model,
+                    "messages": [{"role": "user", "content": "ping"}],
+                    "max_tokens": 1,
+                    "stream": false,
+                })
+            };
+            let api_key = config.llm.api_key.clone().unwrap_or_default();
+            // 5s 超时（与网络检查同款：探测只关心协议存在性，业务错误由
+            // 实际调用暴露）。reqwest 未启用 blocking feature（与项目异步
+            // 客户端一致），用 tokio runtime 单次 block_on 包装
+            let available = tokio::runtime::Runtime::new()
+                .map(|rt| {
+                    rt.block_on(async {
+                        match reqwest::Client::builder()
+                            .timeout(std::time::Duration::from_secs(5))
+                            .build()
+                        {
+                            Ok(client) => probe_protocol(&client, &url, &api_key, &body).await,
+                            Err(_) => false,
+                        }
+                    })
+                })
+                .unwrap_or(false);
+            let protocol_name = if is_responses { "Responses" } else { "chat/completions" };
+            CheckResult {
+                name: "协议",
+                ok: available,
+                detail: Some(if available {
+                    format!("{} 协议端点存在（POST {url}）", protocol_name)
+                } else {
+                    format!(
+                        "{} 端点不可用（POST {url} 返回 404/405 或连接失败）——请检查 provider 类型与 base_url（如 DeepSeek 仅 v4-flash 支持 Responses；不支持时应改用 openai-compatible provider）",
+                        protocol_name
+                    )
+                }),
+            }
+        }
+    };
+    checks.push(protocol_check);
+
+    // 7. 版本自检（v19 t01）：产物由哪个工具版本生成，与当前二进制是否一致。
     // 捕获 PATH 旧版二进制静默漂移（旧版缺 doctor/dry-run，调用报
     // unrecognized subcommand exit 2，用户无从知道产物是旧格式）。
     // 无状态文件 → 尚未生成，提示首次生成（恒通过，不算失败）。
@@ -222,7 +319,33 @@ pub fn run(config_path: Option<&Path>, root: &ProjectRoot) -> Result<Vec<CheckRe
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::path::PathBuf;
+
+    /// 本地 mock HTTP server：读请求后返回固定状态码响应（协议探测测试用）。
+    /// 响应带 Connection: close；返回形如 http://127.0.0.1:<port> 的 base_url。
+    fn spawn_status_server(status: u16) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 4096];
+                    let _ = stream.read(&mut buf);
+                    let body = r#"{"error":"probe"}"#;
+                    let reason = if status == 200 { "OK" } else { "Error" };
+                    let raw = format!(
+                        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        status, reason, body.len(), body
+                    );
+                    let _ = stream.write_all(raw.as_bytes());
+                });
+            }
+        });
+        base_url
+    }
 
     /// 构造临时目录内的最小 mock 配置（可追加覆盖段）
     fn temp_config(tag: &str, extra: &str) -> (PathBuf, PathBuf) {
@@ -251,7 +374,7 @@ max_concurrent = 1
         let (dir, config) = temp_config("pass", "");
         let root = ProjectRoot::new(dir.clone());
         let checks = run(Some(&config), &root).unwrap();
-        assert_eq!(checks.len(), 6, "应恰好六项检查: {:?}", checks);
+        assert_eq!(checks.len(), 7, "应恰好七项检查: {:?}", checks);
         for c in &checks {
             assert!(c.ok, "{} 应通过: {:?}", c.name, c.detail);
         }
@@ -355,6 +478,82 @@ max_concurrent = 1
             ver.detail.clone().unwrap().contains("由当前版本"),
             "版本一致应通过: {:?}",
             ver.detail
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v52：协议探测——/responses 返回 404（服务未实现）→ 协议检查失败；
+    /// 服务器在监听 → 网络检查仍通过（协议探测独立于网络层，暴露的是
+    /// 协议形态错误而非可达性——生产诊断关键：404 曾触发静默回退掩盖问题）
+    #[test]
+    fn test_doctor_protocol_probe_detects_missing_responses() {
+        let base = spawn_status_server(404);
+        let (dir, config) = temp_config("proto404", "");
+        let cfg_text = std::fs::read_to_string(&config).unwrap();
+        std::fs::write(
+            &config,
+            cfg_text
+                .replace("provider = \"mock\"", "provider = \"openai\"")
+                + &format!("base_url = \"{}/v1\"\n", base),
+        )
+        .unwrap();
+        let root = ProjectRoot::new(dir.clone());
+        let checks = run(Some(&config), &root).unwrap();
+        let proto = checks.iter().find(|c| c.name == "协议").expect("应有协议检查");
+        assert!(!proto.ok, "404 应判协议不可用: {:?}", proto.detail);
+        assert!(
+            proto.detail.clone().unwrap().contains("provider 类型"),
+            "失败说明应给出配置引导: {:?}",
+            proto.detail
+        );
+        let net = checks.iter().find(|c| c.name == "网络").expect("应有网络检查");
+        assert!(net.ok, "监听中的服务器应可达: {:?}", net.detail);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v52：协议探测——/responses 返回 401（认证错误）→ 端点存在，协议
+    /// 可用（认证问题由实际调用暴露，不属于协议探测范围）
+    #[test]
+    fn test_doctor_protocol_probe_ok_on_auth_error() {
+        let base = spawn_status_server(401);
+        let (dir, config) = temp_config("proto401", "");
+        let cfg_text = std::fs::read_to_string(&config).unwrap();
+        std::fs::write(
+            &config,
+            cfg_text
+                .replace("provider = \"mock\"", "provider = \"openai\"")
+                + &format!("base_url = \"{}/v1\"\n", base),
+        )
+        .unwrap();
+        let root = ProjectRoot::new(dir.clone());
+        let checks = run(Some(&config), &root).unwrap();
+        let proto = checks.iter().find(|c| c.name == "协议").expect("应有协议检查");
+        assert!(proto.ok, "401 应判协议可用（端点存在）: {:?}", proto.detail);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v52：chat/completions 协议探测——端点返回 200 → 协议可用
+    ///（openai-compatible 默认配置即此路径：opencode 网关 /chat/completions）
+    #[test]
+    fn test_doctor_protocol_probe_chat_completions_ok() {
+        let base = spawn_status_server(200);
+        let (dir, config) = temp_config("protochat", "");
+        let cfg_text = std::fs::read_to_string(&config).unwrap();
+        std::fs::write(
+            &config,
+            cfg_text
+                .replace("provider = \"mock\"", "provider = \"openai-compatible\"")
+                + &format!("base_url = \"{}/v1\"\n", base),
+        )
+        .unwrap();
+        let root = ProjectRoot::new(dir.clone());
+        let checks = run(Some(&config), &root).unwrap();
+        let proto = checks.iter().find(|c| c.name == "协议").expect("应有协议检查");
+        assert!(proto.ok, "chat/completions 200 应判协议可用: {:?}", proto.detail);
+        assert!(
+            proto.detail.clone().unwrap().contains("chat/completions"),
+            "应说明探测的协议形态: {:?}",
+            proto.detail
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

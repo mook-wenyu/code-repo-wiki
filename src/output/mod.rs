@@ -20,16 +20,15 @@ use crate::model::{KnowledgeCard, KnowledgeGraph, WikiDocument};
 
 use self::markdown::write_document;
 
-/// 生效的语言列表：v30 起 expand_languages 已删除，恒只含主语言一项
+/// 主语言（v51 命名卫生：v30 起 expand_languages 已删除，恒单语言，
+/// 旧名 wiki_languages 残留多语言语义误导调用方）。
 ///
-/// 命名保留（audit-out-07）：调用方 lib.rs（指纹记录）、generate/card.rs
-/// （`[0]` 取主语言）、generate/mod.rs（按语言循环）仍消费 Vec<String> 形态，
-/// 改名 primary_language + String 返回需同步这些跨模块调用点，超出本批文件域
-/// （output 之外为并行 worker 域），故保留现名并在注释固化"单语言"语义。
-/// 由 generate::collect_languages 移入（消除 output→generate 反向依赖；
-/// generate 侧调用点改向本函数——generate→output 依赖本就存在，card.rs 已用）。
-pub fn wiki_languages(config: &WikiConfig) -> Vec<String> {
-    vec![config.wiki.language.clone()]
+/// 返回 `config.wiki.language` 单值；所有调用点按单值消费（生成/渲染/
+/// 指纹记录/索引均只处理主语言）。由 generate::collect_languages 移入
+/// （消除 output→generate 反向依赖；generate 侧调用点改向本函数——
+/// generate→output 依赖本就存在，card.rs 已用）。
+pub fn primary_language(config: &WikiConfig) -> String {
+    config.wiki.language.clone()
 }
 
 /// API 参考页写盘路径：`{}/wiki/{lang}/api.md`（每种语言独立一份）
@@ -310,13 +309,11 @@ pub fn render_all(
 ) -> Result<()> {
     let output_dir = config.output_dir();
     let assets_dir = output_dir.join("assets");
-    let languages = wiki_languages(config);
+    let primary_lang = primary_language(config);
 
-    // 按语言创建目录（扩展语言无文档时也保留空目录，保持目录结构稳定）
-    for lang in &languages {
-        std::fs::create_dir_all(output_dir.join("wiki").join(lang))?;
-        std::fs::create_dir_all(output_dir.join("cards").join(lang))?;
-    }
+    // 创建主语言目录（v30 起多语言已删除，恒单语言；目录结构保持稳定）
+    std::fs::create_dir_all(output_dir.join("wiki").join(&primary_lang))?;
+    std::fs::create_dir_all(output_dir.join("cards").join(&primary_lang))?;
     std::fs::create_dir_all(&assets_dir)?;
 
     // 1. 写入 Wiki 页面（按文档自身语言分组写入对应目录）
@@ -337,30 +334,21 @@ pub fn render_all(
     // 无论页面是否生成成功，卡片都按语言目录全量落盘；受人工修改保护的
     // 卡片跳过（保留人工版）。卡片仅主语言生成一次（generate_all_cards 以
     // 主语言调用），各语言目录写同一份内容——与旧实现语义一致。
-    for lang in &languages {
-        for card in cards {
-            let card_path = card_page_path(output_dir, lang, &card.module_name);
-            if protected.contains(&card_path.to_string_lossy().to_string()) {
-                continue;
-            }
-            crate::fs::write_file_atomic(
-                &card_path,
-                &markdown::render_knowledge_card(card),
-            )?;
+    for card in cards {
+        let card_path = card_page_path(output_dir, &primary_lang, &card.module_name);
+        if protected.contains(&card_path.to_string_lossy().to_string()) {
+            continue;
         }
+        crate::fs::write_file_atomic(
+            &card_path,
+            &markdown::render_knowledge_card(card),
+        )?;
     }
 
     // 1.5 写入 API 参考页（按模块分组的实体清单；内容与语言无关，只写主语言一份；
     // 命中保护集跳过写盘。指纹记录按同一规则：state.rs 对未落盘的 en/api.md 不记指纹）
-    let primary_lang = &config.wiki.language;
-    for lang in &languages {
-        if lang != primary_lang {
-            continue;
-        }
-        let api_path = api_doc_path(output_dir, lang);
-        if protected.contains(&api_path.to_string_lossy().to_string()) {
-            continue;
-        }
+    let api_path = api_doc_path(output_dir, &primary_lang);
+    if !protected.contains(&api_path.to_string_lossy().to_string()) {
         let api_doc = markdown::render_api_reference(graph);
         // v17 t06：mock 模式下合成页（api.md 非 LLM 文档，不走 lib.rs 的
         // documents 注入路径）同样追加占位页脚，标注点保持单一来源
@@ -374,7 +362,6 @@ pub fn render_all(
     }
 
     // 3. 写入 Knowledge Card 索引（JSON 格式，写入主语言目录）
-    let primary_lang = &languages[0];
     let cards_index_json = serde_json::json!({
         "version": "1.0",
         "generated_at": chrono::Utc::now().to_rfc3339(),
@@ -386,7 +373,7 @@ pub fn render_all(
             })
         }).collect::<Vec<_>>(),
     });
-    let cards_index = output_dir.join("cards").join(primary_lang).join("_index.json");
+    let cards_index = output_dir.join("cards").join(&primary_lang).join("_index.json");
     crate::fs::write_file_atomic(&cards_index, &serde_json::to_string_pretty(&cards_index_json)?)?;
 
     // 4. 生成目录页（命中保护集跳过写盘）
@@ -561,12 +548,12 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_languages_default_single() {
+    fn test_primary_language_default_single() {
         let config = WikiConfig::default();
-        assert_eq!(wiki_languages(&config), vec!["zh"]);
+        assert_eq!(primary_language(&config), "zh");
     }
     #[test]
-    fn test_collect_languages_single_main() {
+    fn test_primary_language_single_main() {
         let config = WikiConfig {
             wiki: crate::config::schema::WikiSection {
                 language: "zh".into(),
@@ -575,7 +562,7 @@ mod tests {
             ..Default::default()
         };
         // v30：expand_languages 已删除，恒只生成主语言
-        assert_eq!(wiki_languages(&config), vec!["zh"]);
+        assert_eq!(primary_language(&config), "zh");
     }
 
     /// A4：wiki 页与卡片的路径规则收敛后，路径计算必须与

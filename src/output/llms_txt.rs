@@ -169,7 +169,7 @@ pub fn write_llms_txt(
         .and_then(|p| p.file_name())
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "repo".to_string());
-    let languages = crate::output::wiki_languages(config);
+    let languages = [crate::output::primary_language(config)];
     let path = llms_txt_path(output_dir);
     // v28 t07：写盘前检查既有产物新鲜度——旧产物即将被覆盖，过期提示
     // 必须在覆盖前发出（等价"docs deploy 即 re-parse 触发"）
@@ -389,10 +389,7 @@ pub fn write_llms_full_txt(
         .and_then(|p| p.file_name())
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "repo".to_string());
-    let primary_lang = crate::output::wiki_languages(config)
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "zh".to_string());
+    let primary_lang = crate::output::primary_language(config);
     let path = llms_full_txt_path(output_dir);
     // v28 t07：与 write_llms_txt 相同的新鲜度检查（旧产物覆盖前提示）
     warn_if_stale(&path, "llms-full.txt");
