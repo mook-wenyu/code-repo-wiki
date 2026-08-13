@@ -1,5 +1,14 @@
 # 项目状态简报 （AI自动维护，禁止贴代码）
 
+## 六十五、DEFECT-A 增量 update 未重生成模块回填（2026-08-13）
+- 修改的功能：修复增量非空路径的站点地图缺位——run_generation_filtered 旧实现只把「受影响模块 + 全局文档」放进 GenerationOutput，未受影响仍存在的模块未从导出快照回填，导致 llms.txt/_toc.md/export_snapshot.json/generation_state 全以部分集合为文档集（llms.txt 是全站地图，任何一次生成含增量都必须是全模块集合）。新增 generate/mod.rs::backfill_unchanged_modules 在返回 GenerationOutput 前合并未受影响模块文档/卡片（复用 snapshot_backfill 的 deleted_modules 判据；related_files.is_empty() 保守处理不并入也不判删；排除 failed_modules 防掩盖失败；快照缺失/损坏跳过不阻断），使增量路径返回「完整当前文档集」，下游 render_all/cleanup/save_generation_state 自动恢复正确
+- 摸到的文件：src/generate/mod.rs（新增 backfill_unchanged_modules + 调用点）、tests/test_incremental_git_e2e.rs、tests/test_incremental_large_fixture.rs（改造 3 处固化缺陷行为的测试为完整文档集 + 磁盘零改写断言）、tests/test_incremental_unchanged_backfill.rs（新增，覆盖主场景/删模块/快照缺失三路径）
+- 是否改变了接口/契约：是——GenerationOutput.documents/cards 语义由「本次重生成集」→「当前完整文档集」（增量路径；全量路径不变）；main.rs 页数摘要/export/bench 消费点均按新语义正确工作，no-op 早退路径独立不受影响
+- 验证：cargo test --lib 586 通过；cargo test --test test_incremental_git_e2e --test test_incremental_large_fixture --test test_incremental_unchanged_backfill --test test_e2e 全绿；全量回归 cargo test 全部测试二进制 0 失败（NO_PROXY=127.0.0.1,localhost,::1）；cargo clippy --all-targets -D warnings 0 告警；对抗自审——临时把 deleted_modules 判据/锚点去重还原后新增测试如预期 FAIL
+- 提交：498ebf7（fix(gen) 增量 update 回填未改动模块文档集）
+- 已知风险：快照缺失/损坏时增量路径回退为部分集合（llms.txt 缺未改动模块，spec 接受的不阻断降级）；回填文档若与当前 provider 模式不一致（如真实 LLM 全量后 mock 增量）会被 mock 页脚追加改变内容，属既有交互非本次引入；相关文件页 title 与模块名不一致的模块在整模块删除时不排除其文件级页（沿用 snapshot_backfill 既有 title 判据的边界）
+- 下次最该做的事：真实 LLM API 端到端复验（DeepSeek 402 后缺）；STATUS.md 历史条目与新条目去重（可选）
+
 ## 六十四、v0.7.0 Phase A7 全面审计与实现（2026-08-13）
 - 修改的功能（A7.3-A7.10 全部实现批，6 提交）：
   - 路径安全单点守卫（A7.3）：三调用方收敛统一 detect_path_escape（`..` 越界段 / 根相对 `\foo` / 盘符相对 `C:foo` / 绝对路径越出源码根）；resolve_source_path 相对分支与兜底加 starts_with(root) 纵深防御；check_stale 新增 source-missing 告警（源文件缺失不再静默跳过，代码扩展名限定后非代码引用不参与）
