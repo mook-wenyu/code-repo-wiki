@@ -3,9 +3,21 @@
 本文件记录 code-repo-wiki 的重要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（SemVer）。
 
-## [Unreleased]
+## [0.8.0] - 2026-08-14
 
-（暂无待发布变更）
+### Added
+- **search 检索质量四件套**：真混合检索（向量+全文）、RRF 融合 k=20、结构感知分块、纯远程嵌入（删除本地 fastembed 路径）——远程嵌入默认收敛，本地嵌入不再维护
+- **search 索引加固**：块去重 + vecdb/query cache 加固 + Java 语言支持 + FTS5 UNINDEXED/bm25 排名
+- **generate 项目级上下文**：注入依赖（Imports∪Calls）与调用方摘要、token 预算、依赖防幻觉校验（fence）、`design_rationale` 意图段、调用方边归属
+- **lint severity 化**：`severity` 字段 + entity-ownership 归属校验 + citation_density + dependency-fabricated 磁盘级接线 + 结构性/结构化误报修复 + stale 指纹化与反向定位（warning 级不阻断 CI）
+
+### Changed
+- **incremental 变更检出**：BodyChanged 沿 Calls 深度 1 传播、`should_fallback_full` 回退保护、doc_comment 变更检出、diff 死字段清理
+- **测试适配**：integration 适配新签名/字段、body 传播断言更新（http 页刷新）、orphan 降 warning 行为断言
+
+### CI
+- **产物 lint 门禁**：artifacts.yml 产物 lint 门禁 + 真实产物生成工作流；EOL 统一（历史 CRLF 归一为 LF）
+- **生产文档**：生产部署/bench 基线重录 runbook + manifest 模板
 
 ## [0.7.1] - 2026-08-13
 
