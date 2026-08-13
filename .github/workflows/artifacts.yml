@@ -1,0 +1,89 @@
+name: Artifacts
+
+# 真实产物生成工作流（定时 + 手动）：
+#   1. 对目标仓库（默认=本仓库自身）用真实 LLM 全量生成 Wiki 产物（--force）
+#   2. lint 磁盘产物（Error 级问题阻断——与 ci.yml lint-artifacts 同门禁语义）
+#   3. 上传生成产物（.code-repo-wiki/）供下载/对账
+#   4. 手动触发可附带 bench --repodoc 录基线（需 LLM key，耗时长，默认跳过；
+#      schedule 无 inputs 自然跳过）
+# 注意：需要 secrets.OPENCODEGO2_API_KEY（LLM，config.toml [llm] api_key_env 默认
+# OPENCODEGO2_API_KEY）与 secrets.BAILIAN_API_KEY（嵌入，config.toml [embed]
+# api_key_env 默认 BAILIAN_API_KEY）配置后才能真正跑通生成；未配置时 generate 阶段
+# LLM 调用失败、job 失败。
+
+on:
+  schedule:
+    - cron: '0 3 * * 1' # 每周一 03:00 UTC
+  workflow_dispatch:
+    inputs:
+      repo-ref:
+        description: 目标 ref（分支/tag/commit SHA）；缺省=默认分支
+        required: false
+        default: ''
+      run-bench:
+        description: 是否运行 bench --repodoc 录基线（需 LLM key，耗时长，默认跳过）
+        required: false
+        type: boolean
+        default: false
+
+# 最小权限：产物上传走 Actions artifact 服务，不依赖仓库写权限
+permissions:
+  contents: read
+
+concurrency:
+  group: artifacts-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  generate-artifacts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      # Windows 系统代理劫持 localhost（本地 mock server 场景），Linux 无害
+      NO_PROXY: 127.0.0.1,localhost,::1
+      # LLM key（opencode.ai 网关）
+      OPENCODEGO2_API_KEY: ${{ secrets.OPENCODEGO2_API_KEY }}
+      # 嵌入 key（阿里百炼）
+      BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # schedule/workflow_dispatch 无输入时回退 github.ref（默认分支）；
+          # 手动触发可传 repo-ref 钉住目标 commit/tag
+          ref: ${{ inputs.repo-ref != '' && inputs.repo-ref || github.ref }}
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable 分支（2026-08-05 锁定）
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2 (2.9.2)
+      - name: Install system deps (git2/openssl)
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev zlib1g-dev
+      - name: Build (release)
+        run: cargo build --release --locked
+      - name: Generate wiki artifacts (--force 清空保护集全量重生成)
+        run: ./target/release/code-repo-wiki generate --force --root "$GITHUB_WORKSPACE"
+      - name: Lint generated artifacts (gate，Error 级阻断)
+        run: ./target/release/code-repo-wiki lint --root "$GITHUB_WORKSPACE"
+      # 上传先于 bench：bench 的 git 回放会 reset --hard 工作区（HeadRestoreGuard
+      # 兜底恢复 HEAD），先上传保证产物与 HEAD 一致、不被回放污染
+      - name: Upload wiki artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4 (4.6.2)
+        with:
+          name: code-repo-wiki-artifacts
+          path: .code-repo-wiki/
+          if-no-files-found: error
+      - name: Bench baseline (--repodoc，手动/可选)
+        if: inputs.run-bench == true
+        continue-on-error: true # 基线记录失败不阻断产物交付（LLM 不可用时维度降级）
+        run: ./target/release/code-repo-wiki bench --root "$GITHUB_WORKSPACE" --repodoc --json > bench-report.json
+      - name: Upload bench report
+        if: always() && inputs.run-bench == true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4 (4.6.2)
+        with:
+          name: code-repo-wiki-bench
+          path: bench-report.json
+          if-no-files-found: warn
