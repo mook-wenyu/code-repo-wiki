@@ -1258,46 +1258,66 @@ pub fn semantic_degraded_reason(config: &config::schema::WikiConfig) -> Option<S
 /// 用途：embedding 模型升级（同维度）时强制全量重建语义索引。维度探测
 /// （U04/D2）只覆盖「维度变化」；同维度模型（如 qwen3 → qwen3.7 同为
 /// 1024 维）的向量语义空间不同，新旧向量混存会静默劣化检索结果。
-/// 本标记持久化「索引构建时的模型名」，增量路径与当前配置比对，
-/// 不一致即回退全量重建语义索引。
+/// 本标记持久化「索引构建时的模型名 + 索引文本模板版本」，增量路径与
+/// 当前配置比对，不一致即回退全量重建语义索引。
 fn embed_model_marker(config: &config::schema::WikiConfig) -> std::path::PathBuf {
     search_index_dir(config).join("embed_model.json")
 }
 
-/// 读取索引构建时的 embedding 模型名
+/// 索引文本模板版本：嵌入文本构造格式变更时 bump——模型名相同但模板
+/// 不同（向量空间语义不同）也必须触发全量重建（否则旧向量与新向量
+/// 混存静默劣化，v0.7.2 结构感知分块引入）。
+/// - 0 = v0.7.1 旧格式（`{name} {kind} {signature} {source}`）
+/// - 1 = 混合检索改造（index_text 加作用域/签名/文件路径前置）
+/// - 2 = 结构感知分块（块文本 = 模块路径 + 作用域链 + 文件行 + 可见性 +
+///   签名 + doc 首段 + body，见 src/search/chunker.rs）
+const SEARCH_INDEX_TEMPLATE_VERSION: u32 = 2;
+
+/// 读取索引构建时的 embedding 模型标记（model 名 + index_template 版本）
 ///
 /// - 标记缺失（旧版本构建的索引，模型未知）→ None
 /// - 标记损坏（非 JSON / 缺 model 字段）→ None
 ///
 /// 两者都按「未知模型」保守处理：增量路径视为不匹配并回退全量重建，
 /// 重建成功后写入新标记，自愈收敛（不会反复重建）。
-fn read_embed_model(config: &config::schema::WikiConfig) -> Option<String> {
+fn read_embed_marker(config: &config::schema::WikiConfig) -> Option<(String, u32)> {
     let path = embed_model_marker(config);
     let text = std::fs::read_to_string(&path).ok()?;
-    serde_json::from_str::<serde_json::Value>(&text)
-        .ok()
-        .and_then(|v| v.get("model")?.as_str().map(|s| s.to_string()))
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let model = v.get("model")?.as_str()?.to_string();
+    // v0.7.1 旧标记只有 model 字段——按模板版本 0 处理（与当前版本不等 → 重建）
+    let template = v
+        .get("index_template")
+        .and_then(|t| t.as_u64())
+        .map(|n| n as u32)
+        .unwrap_or(0);
+    Some((model, template))
 }
 
-/// 当前生效的 embedding 模型名（按 provider 区分）
+/// 读取索引构建时的 embedding 模型名（兼容旧调用点，见 read_embed_marker）
+fn read_embed_model(config: &config::schema::WikiConfig) -> Option<String> {
+    read_embed_marker(config).map(|(model, _)| model)
+}
+
+/// 当前生效的 embedding 模型名
 ///
-/// Local 用 local_model（本地 ONNX 模型名），Remote/Mock 用 model——
-/// 语义索引标记必须记录真实参与索引的模型，否则本地换模型（同维度
-/// 如 e5-small 384 与 bge-small-en 384）会静默混用旧向量空间（v33 机制）。
+/// 本地嵌入路径已删除（v0.7.2，纯远程 API），provider 不再区分模型来源，
+/// 恒返回 `config.embed.model`——语义索引标记记录真实参与索引的模型。
 fn effective_embed_model(config: &config::schema::WikiConfig) -> &str {
-    match config.embed.provider {
-        config::schema::EmbedProvider::Local => config.embed.local_model.as_str(),
-        _ => config.embed.model.as_str(),
-    }
+    config.embed.model.as_str()
 }
 
-/// 记录当前 embedding 模型名（只在全量重建语义索引成功后调用）
+/// 记录当前 embedding 模型名 + 索引文本模板版本（只在全量重建语义索引成功后调用）
 ///
 /// 失败仅告警：标记缺失会让下次增量再次走全量重建（保守正确，
 /// 且全量重建会再次尝试写标记，幂等收敛）。
 fn write_embed_model(config: &config::schema::WikiConfig) {
     let path = embed_model_marker(config);
-    let content = serde_json::json!({ "model": effective_embed_model(config) }).to_string();
+    let content = serde_json::json!({
+        "model": effective_embed_model(config),
+        "index_template": SEARCH_INDEX_TEMPLATE_VERSION,
+    })
+    .to_string();
     if let Err(e) = crate::fs::write_file_atomic(&path, &content) {
         tracing::warn!(
             "embedding 模型标记写入失败（下次增量将回退全量重建）: {}",
@@ -1306,12 +1326,18 @@ fn write_embed_model(config: &config::schema::WikiConfig) {
     }
 }
 
-/// 判定索引模型与当前配置是否不匹配（不匹配需回退全量重建语义索引）
+/// 判定索引模型/模板与当前配置是否不匹配（不匹配需回退全量重建语义索引）
 ///
 /// 标记缺失/损坏一律视为不匹配（旧版本构建的索引模型未知，保守重建），
-/// 重建成功后写入新标记自愈收敛。纯文件比对、无网络依赖，可单测。
+/// 重建成功后写入新标记自愈收敛。模型名或模板版本任一变化都判不匹配。
+/// 纯文件比对、无网络依赖，可单测。
 fn embed_model_mismatch(config: &config::schema::WikiConfig) -> bool {
-    read_embed_model(config).as_deref() != Some(effective_embed_model(config))
+    match read_embed_marker(config) {
+        None => true,
+        Some((model, template)) => {
+            model != effective_embed_model(config) || template != SEARCH_INDEX_TEMPLATE_VERSION
+        }
+    }
 }
 
 /// 实体级特征聚类接线（演进计划 T1.2b）
@@ -1352,12 +1378,9 @@ fn build_search_index(
     let index_dir = search_index_dir(config);
     std::fs::create_dir_all(&index_dir)?;
 
-    // 构建文件路径 → 源码的查找表
-    let source_map = build_source_map(file_insights);
-
-    // 收集所有需要索引的实体（U04/D2：与增量路径共用 collect_index_items，
-    // 过滤规则单一来源）
-    let items = collect_index_items(graph, &source_map);
+    // 收集所有需要索引的实体块（U04/D2：与增量路径共用 collect_index_blocks，
+    // 过滤规则单一来源；块文本即「结构感知嵌入文本」见 block.rs）
+    let items = collect_index_blocks(graph, file_insights);
 
     // 全量重建 TextEngine：优先删除旧库（干净起点）；删除失败（Windows
     // 句柄占用/只读）不再静默吞错——显式告警并降级为「打开 + 清空」，
@@ -1372,7 +1395,7 @@ fn build_search_index(
     }
     let (mut text_engine, _) = search::text::TextEngine::open(&text_path)?;
     text_engine.clear()?;
-    text_engine.index_batch(&items)?;
+    text_engine.index_batch(&block_items_to_text_items(&items))?;
 
     // 如果 embed 已启用，构建语义索引
     let semantic_path = index_dir.join("semantic_index.db");
@@ -1398,7 +1421,11 @@ fn build_search_index(
             // 必须把两类失败都按"附加能力"对待）。
             // v32 10.1：降级同时写标记（search/status 显式提示），
             // 成功则清标记。
-            match search::semantic::SemanticEngine::open(&semantic_path, embedder) {
+            match search::semantic::SemanticEngine::open(
+                &semantic_path,
+                embedder,
+                search::query_cache::QueryEmbedCache::shared(),
+            ) {
                 Ok(mut semantic_engine) => {
                     // 删除失败时清空旧库（新库上 clear 为无操作，见
                     // VecDb::clear 表不存在短路）
@@ -1472,13 +1499,12 @@ fn update_search_index_incremental(
     let (mut text_engine, need_reindex) = search::text::TextEngine::open(&text_path)?;
 
     // 分支内统计量提升到外层：函数末尾的汇总日志需要（Rust 作用域）；
-    // source_map/items 同样提升：语义增量段（下方）需要引用。
+    // items 同样提升：语义增量段（下方）需要引用。
     // 延迟初始化（两个分支必赋值其一）：避免空值占位引发
     // unused_assignments 误报，也杜绝「空 Vec 兜底」掩盖逻辑。
-    let source_map = build_source_map(file_insights);
     let mut total_removed = 0;
     let indexed_count;
-    let items: Vec<(model::CodeNode, String)>;
+    let items: Vec<(model::CodeNode, search::block::Block)>;
 
     if need_reindex {
         // v36 schema 迁移 / audit-srch-09 损坏重建：旧版 text 索引（无 CJK
@@ -1488,10 +1514,10 @@ fn update_search_index_incremental(
         // audit-srch2-01：与全量重建同语义（clear + index_batch(all)），
         // clear 兜底防「表非空」残留（损坏重建路径可能留有部分数据）。
         tracing::warn!("文本索引 schema 已升级（CJK tokens 列），重建全量文本索引");
-        items = collect_index_items(graph, &source_map);
+        items = collect_index_blocks(graph, file_insights);
         indexed_count = items.len();
         text_engine.clear()?;
-        text_engine.index_batch(&items)?;
+        text_engine.index_batch(&block_items_to_text_items(&items))?;
     } else {
         // 删除变更文件的旧索引
         for file in changed_files {
@@ -1499,11 +1525,11 @@ fn update_search_index_incremental(
             total_removed += text_engine.remove_by_file(&file_str)?;
         }
 
-        // 重新索引变更文件中的实体（与全量路径共用 collect_index_items，
+        // 重新索引变更文件中的实体（与全量路径共用 collect_index_blocks，
         // 过滤规则单一来源）
         items = incremental_index_items(graph, file_insights, changed_files);
         indexed_count = items.len();
-        text_engine.index_batch(&items)?;
+        text_engine.index_batch(&block_items_to_text_items(&items))?;
     }
 
     // 增量更新语义索引（如已启用）
@@ -1516,7 +1542,11 @@ fn update_search_index_incremental(
         match generate::embed::build_embedder(&config.embed, get_global_runtime().handle().clone())
         {
             Ok(embedder) => {
-                match search::semantic::SemanticEngine::open(&semantic_path, embedder.clone()) {
+                match search::semantic::SemanticEngine::open(
+                    &semantic_path,
+                    embedder.clone(),
+                    search::query_cache::QueryEmbedCache::shared(),
+                ) {
                     Ok(mut semantic_engine) => {
                         // v33：embedding 模型版本化——同维度模型升级强制全量重建。
                         // 维度探测（U04/D2）只覆盖维度变化；同维度模型（维度相同）
@@ -1535,7 +1565,8 @@ fn update_search_index_incremental(
                             let probe_dim = if items.is_empty() {
                                 None
                             } else {
-                                match embedder.embed(&items[0].1) {
+                                // 维度探测用块文本（与真实索引嵌入同源）
+                                match embedder.embed(&items[0].1.text) {
                                     Ok(v) => Some(v.len()),
                                     Err(e) => {
                                         tracing::warn!(
@@ -1564,7 +1595,7 @@ fn update_search_index_incremental(
                                 stored_model,
                                 effective_embed_model(config)
                             );
-                            let all_items = collect_index_items(graph, &source_map);
+                            let all_items = collect_index_blocks(graph, file_insights);
                             semantic_engine.clear()?;
                             semantic_engine.index_batch(&all_items)?;
                             write_embed_model(config);
@@ -1572,7 +1603,7 @@ fn update_search_index_incremental(
                             tracing::warn!(
                                 "embedding 维度变化，回退全量重建语义索引（增量删除+回填会丢全部既有向量）"
                             );
-                            let all_items = collect_index_items(graph, &source_map);
+                            let all_items = collect_index_blocks(graph, file_insights);
                             semantic_engine.clear()?;
                             semantic_engine.index_batch(&all_items)?;
                         } else {
@@ -1615,14 +1646,33 @@ fn update_search_index_incremental(
     Ok(())
 }
 
-/// 收集全部可索引实体（项目/模块/文件级节点跳过），全量与增量路径共用
+/// 收集全部可索引实体块（项目/模块/文件级节点跳过），全量与增量路径共用
+///
+/// v0.7.2：从「收集实体 + 裸源码片段」升级为「结构感知分块」——每文件先用
+/// AstChunker/FileChunker 切成块（块文本 = 模块路径 + 作用域 + 签名 + doc +
+/// body，见 src/search/chunker.rs），再把图 CodeNode 映射到包含其行范围的
+/// 块（嵌套方法并入父块，不产生独立块）。映射失败（const 组等无 name 节点
+/// 被 chunker 跳过 / 文件不在 insights）用合成块兜底，保证实体覆盖不缩水。
 ///
 /// U04/D2 提取：增量路径的"变更文件过滤"是 collect 之后的选择，
 /// 维度变化回退全量重建直接复用本函数，保证过滤规则单一来源。
-fn collect_index_items(
+fn collect_index_blocks(
     graph: &model::KnowledgeGraph,
-    source_map: &std::collections::HashMap<String, String>,
-) -> Vec<(model::CodeNode, String)> {
+    file_insights: &[ingest::parser::FileInsight],
+) -> Vec<(model::CodeNode, search::block::Block)> {
+    // 每文件预分块（结构感知；不支持的语言走 FileChunker 兜底）
+    let mut blocks_by_file: std::collections::HashMap<String, Vec<search::block::Block>> =
+        std::collections::HashMap::new();
+    let mut source_by_file: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for insight in file_insights {
+        let key = insight.path.to_string_lossy().to_string();
+        let language = chunk_language(&insight.language);
+        let blocks = chunk_file(&insight.source, &key, &language);
+        source_by_file.insert(key.clone(), insight.source.clone());
+        blocks_by_file.insert(key, blocks);
+    }
+
     graph
         .graph
         .node_indices()
@@ -1635,25 +1685,126 @@ fn collect_index_items(
             ) {
                 return None;
             }
-            let source = extract_entity_source(node, source_map);
-            Some((node.clone(), source))
+            let file_path = node.file_path.as_deref().unwrap_or("");
+            let block = match blocks_by_file
+                .get(file_path)
+                .and_then(|blocks| find_containing_block(blocks, node.line_range.unwrap_or((0, 0))))
+            {
+                Some(b) => b.clone(),
+                // 无匹配块（chunker 跳过无 name 节点 / 文件不在 insights）→
+                // 用 CodeNode 自身合成块，不丢实体覆盖（语义对齐旧实现）
+                None => synthetic_block(node, source_by_file.get(file_path).map(String::as_str)),
+            };
+            Some((node.clone(), block))
         })
         .collect()
 }
 
-/// 构建文件路径 → 文件源码的查找表（直接使用 FileInsight.source 避免重复 I/O）
-fn build_source_map(
-    insights: &[ingest::parser::FileInsight],
-) -> std::collections::HashMap<String, String> {
-    insights
+/// 按文件语言分块；解析失败/空结果用 FileChunker 整文件一块兜底（不丢覆盖）
+fn chunk_file(source: &str, file_path: &str, language: &str) -> Vec<search::block::Block> {
+    use crate::search::chunker::Chunker; // trait 方法调用需在作用域
+    let mut chunker = search::chunker::chunker_for(language);
+    match chunker.chunk(source, file_path, language) {
+        Ok(blocks) if !blocks.is_empty() => blocks,
+        _ => {
+            let mut file_chunker = search::chunker::FileChunker;
+            file_chunker
+                .chunk(source, file_path, language)
+                .unwrap_or_default()
+        }
+    }
+}
+
+/// 找包含 `node_range` 的块；多个时取行范围最小（最内层）——当前顶层块
+/// 与实体 1:1 覆盖，内层优先为未来嵌套独立块预留
+fn find_containing_block(
+    blocks: &[search::block::Block],
+    node_range: (usize, usize),
+) -> Option<search::block::Block> {
+    blocks
         .iter()
-        .map(|i| (i.path.to_string_lossy().to_string(), i.source.clone()))
+        .filter(|b| b.line_range.0 <= node_range.0 && b.line_range.1 >= node_range.1)
+        .min_by_key(|b| b.line_range.1 - b.line_range.0)
+        .cloned()
+}
+
+/// 从 CodeNode 自身构造合成块（映射失败兜底）：块文本 = 模块路径 + 名称 +
+/// 签名 + doc + body（按 line_range 截取的源码，无源码时 body 为空）。
+fn synthetic_block(node: &model::CodeNode, source: Option<&str>) -> search::block::Block {
+    let file_path = node.file_path.clone().unwrap_or_default();
+    let (start, end) = node.line_range.unwrap_or((1, 1));
+    let body = match (source, node.line_range) {
+        (Some(src), Some((s, e))) => src
+            .lines()
+            .skip(s.saturating_sub(1))
+            .take(e.saturating_sub(s).saturating_add(1))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    };
+    let text = search::block::build_embed_text(
+        &node.module_path,
+        &node.name,
+        node.kind.clone(),
+        &[],
+        &file_path,
+        start,
+        end,
+        node.visibility.as_deref(),
+        node.signature.as_deref().unwrap_or(""),
+        node.doc_comment.as_deref(),
+        &body,
+    );
+    search::block::Block {
+        id: format!("{file_path}#{start}-{end}"),
+        file_path: file_path.clone(),
+        language: String::new(),
+        module_path: node.module_path.clone(),
+        kind: node.kind.clone(),
+        name: node.name.clone(),
+        line_range: (start, end),
+        signature: node.signature.clone().unwrap_or_default(),
+        visibility: node.visibility.clone(),
+        scope: vec![],
+        doc_comment: node.doc_comment.clone(),
+        text,
+        entity: search::block::EntityRef {
+            name: node.name.clone(),
+            file_path: file_path.clone(),
+            line_range: (start, end),
+        },
+    }
+}
+
+/// 解析器语言名 → 分块器语言名（chunker_for/get_language 用小写名：
+/// "rust"/"python"/"javascript"/"typescript"/"go"/"csharp"）
+fn chunk_language(language: &str) -> String {
+    match language.to_ascii_lowercase().as_str() {
+        "c#" => "csharp".to_string(),
+        "typescript" => "typescript".to_string(),
+        "javascript" => "javascript".to_string(),
+        "go" => "go".to_string(),
+        "python" => "python".to_string(),
+        "rust" => "rust".to_string(),
+        // 其余（Java 等 tree-sitter 未接入）原样传入 → FileChunker 兜底
+        other => other.to_string(),
+    }
+}
+
+/// 块 → 文本索引项：FTS5 source 列写入块文本（模块路径/作用域/签名/body
+/// 一并可检索，text 检索从「裸签名片段」升级为「结构感知全文」）
+fn block_items_to_text_items(
+    items: &[(model::CodeNode, search::block::Block)],
+) -> Vec<(model::CodeNode, String)> {
+    items
+        .iter()
+        .map(|(node, block)| (node.clone(), block.text.clone()))
         .collect()
 }
 
-/// 收集增量路径的待索引实体：全量 items 中只保留属于变更文件的实体
+/// 收集增量路径的待索引实体块：全量 items 中只保留属于变更文件的实体
 ///
-/// 与全量路径共用 collect_index_items（过滤规则单一来源），再按
+/// 与全量路径共用 collect_index_blocks（过滤规则单一来源），再按
 /// 变更文件集过滤。路径比较前归一化分隔符（票 08）：node.file_path
 /// 可能是平台反斜杠路径，changed_files 来自 git diff/watch（正斜杠
 /// 或相对路径），比较点必须同基准，否则增量删除/重索引在 Windows
@@ -1662,9 +1813,8 @@ fn incremental_index_items(
     graph: &model::KnowledgeGraph,
     file_insights: &[ingest::parser::FileInsight],
     changed_files: &std::collections::HashSet<std::path::PathBuf>,
-) -> Vec<(model::CodeNode, String)> {
-    let source_map = build_source_map(file_insights);
-    collect_index_items(graph, &source_map)
+) -> Vec<(model::CodeNode, search::block::Block)> {
+    collect_index_blocks(graph, file_insights)
         .into_iter()
         .filter(|(node, _)| {
             let Some(node_file) = node.file_path.as_deref() else {
@@ -1676,34 +1826,6 @@ fn incremental_index_items(
                 .any(|f| incremental::norm_sep(&f.to_string_lossy()) == node_file_norm)
         })
         .collect()
-}
-
-/// 从源码中提取实体对应的代码片段
-///
-/// 根据实体的 line_range 从源文件中截取对应行。
-fn extract_entity_source(
-    node: &model::CodeNode,
-    source_map: &std::collections::HashMap<String, String>,
-) -> String {
-    let file_path = match &node.file_path {
-        Some(p) => p,
-        None => return node.signature.clone().unwrap_or_default(),
-    };
-    let source = match source_map.get(file_path) {
-        Some(s) => s,
-        None => return node.signature.clone().unwrap_or_default(),
-    };
-    let (start, end) = match node.line_range {
-        Some(r) => r,
-        None => return node.signature.clone().unwrap_or_default(),
-    };
-    // 截取对应行（1-based 转 0-based）
-    source
-        .lines()
-        .skip(start.saturating_sub(1))
-        .take(end.saturating_sub(start) + 1)
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 /// 执行搜索查询（供 CLI search 子命令调用）
@@ -1755,7 +1877,11 @@ pub fn execute_search(
                 &config.embed,
                 get_global_runtime().handle().clone(),
             )?;
-            let semantic_engine = search::semantic::SemanticEngine::open(&semantic_path, embedder)?;
+            let semantic_engine = search::semantic::SemanticEngine::open(
+                &semantic_path,
+                embedder,
+                search::query_cache::QueryEmbedCache::shared(),
+            )?;
             let results = semantic_engine.search(query, top_k)?;
             Ok(search::hybrid::semantic_results_to_hits(results))
         }
@@ -1778,7 +1904,11 @@ pub fn execute_search(
                         &config.embed,
                         get_global_runtime().handle().clone(),
                     ) {
-                        Ok(e) => match search::semantic::SemanticEngine::open(&semantic_path, e) {
+                        Ok(e) => match search::semantic::SemanticEngine::open(
+                            &semantic_path,
+                            e,
+                            search::query_cache::QueryEmbedCache::shared(),
+                        ) {
                             Ok(engine) => {
                                 Some(Box::new(engine) as Box<dyn search::semantic::SemanticSearch>)
                             }
@@ -1954,6 +2084,17 @@ mod tests {
         assert!(!embed_model_mismatch(&config));
         assert_eq!(read_embed_model(&config).as_deref(), Some("model-b"));
 
+        // 索引文本模板版本变化（块文本构造变更）→ 模型未变也判定不匹配
+        std::fs::write(
+            dir.join(".search").join("embed_model.json"),
+            r#"{"model":"model-b","index_template":1}"#,
+        )
+        .unwrap();
+        assert!(
+            embed_model_mismatch(&config),
+            "模板版本低于当前应判定不匹配"
+        );
+
         // 标记损坏 → 视为未知模型（不匹配）
         std::fs::write(dir.join(".search").join("embed_model.json"), "{broken").unwrap();
         assert!(embed_model_mismatch(&config), "损坏标记应视为不匹配");
@@ -1961,14 +2102,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// v0.7.2：本地嵌入路径已删除，effective_embed_model 恒返回
+    /// config.embed.model（provider 不再区分模型来源）
     #[test]
-    fn test_effective_embed_model_by_provider() {
+    fn test_effective_embed_model_uses_configured_model() {
         let mut cfg = config::schema::WikiConfig::default();
-        cfg.embed.provider = config::schema::EmbedProvider::Local;
-        cfg.embed.local_model = "bge-small-zh-v1.5".into();
         cfg.embed.model = "qwen3-text".into();
-        assert_eq!(effective_embed_model(&cfg), "bge-small-zh-v1.5");
-        cfg.embed.provider = config::schema::EmbedProvider::Remote;
+        assert_eq!(effective_embed_model(&cfg), "qwen3-text");
+        // Mock 提供方同样用 model（纯远程通道无独立模型来源）
+        cfg.embed.provider = config::schema::EmbedProvider::Mock;
         assert_eq!(effective_embed_model(&cfg), "qwen3-text");
     }
 

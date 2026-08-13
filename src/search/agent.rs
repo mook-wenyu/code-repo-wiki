@@ -7,12 +7,11 @@ use super::text::TextEngine;
 /// 调用链索引：符号名 → (调用者列表, 被调用者列表)
 type CallIndex = HashMap<String, (Vec<String>, Vec<String>)>;
 
-/// 搜索 Agent：自动回溯的多轮搜索策略
+/// 搜索 Agent：混合检索 + 自动回溯的多轮搜索策略
 ///
-/// 优先执行 FTS5（<50ms）→ 结果不足时自动启动语义搜索（~200ms）
-/// → 需要精确定位时 AST 查询（~100ms）。
-/// 各级结果经 RRF 合并后返回；若提供了调用链索引，还会对命中结果
-/// 做调用者/被调用者补全。
+/// v0.7.2 起「真混合」：FTS5（<50ms）+ 语义搜索（~200ms）恒双路召回，
+/// 经 RRF 融合（不再「text 不足才回溯」）。若提供了调用链索引，还会对
+/// 命中结果做调用者/被调用者补全。
 pub struct SearchAgent {
     text: TextEngine,
     /// 语义引擎抽象（v6：trait object 可注入 mock，语义分支可测试）
@@ -38,43 +37,54 @@ impl SearchAgent {
         self
     }
 
-    /// 执行分层搜索。auto_backtrack 控制是否自动回退到语义引擎。
+    /// 执行分层搜索。auto_backtrack 控制是否启用语义一路。
+    ///
+    /// v0.7.2 起「真混合」：auto_backtrack 且语义引擎在场时 text+semantic
+    /// **恒双路召回**进 RRF（删除旧「text 结果 <3 条才回溯」的级联条件——
+    /// 两级检索在不同语义空间召回互补，双路恒跑让 text 强命中与 semantic
+    /// 语义命中都进入融合；级联只在 text 不足时启用会丢语义一路的高价值
+    /// 候选）。纯 text 模式（无语义/回溯关闭）保持原语义。
     pub fn search(&self, query: &str, top_k: usize, auto_backtrack: bool) -> Vec<SearchHit> {
-        // 第一层：FTS5 全文搜索
-        let text_results = match self.text.search(query, top_k) {
-            Ok(r) => r,
-            // U04/P3：text 索引损坏/不可读时不再静默返回空（此前空结果
-            // 被当作"无命中"，掩盖索引损坏事实）——告警后仍返回空，
-            // 调用方按无命中处理，但日志暴露真实原因。
-            Err(e) => {
-                tracing::warn!("text 索引搜索失败（按无命中处理）: {e}");
-                return Vec::new();
-            }
-        };
-        let mut hits = if auto_backtrack && text_results.len() < 3 && self.semantic.is_some() {
-            let mut all = Vec::new();
-            if !text_results.is_empty() {
-                all.push(hybrid::text_results_to_hits(text_results));
-            }
-            if let Some(ref sem) = self.semantic {
-                // U04/P3：语义搜索失败同样告警（此前 if let Ok 吞掉 Err，
-                // 语义引擎故障时静默退化为纯 text 结果，无任何日志）。
-                match sem.search(query, top_k * 2) {
-                    Ok(sem_results) => {
-                        all.push(hybrid::semantic_results_to_hits(sem_results));
-                    }
-                    Err(e) => {
-                        tracing::warn!("语义搜索失败（跳过语义回溯）: {e}");
-                    }
-                }
-            }
-            rrf_merge(&all, top_k, self.rrf_k)
+        let mut hits = if auto_backtrack && self.semantic.is_some() {
+            self.search_hybrid(query, top_k)
         } else {
+            // 纯 text：text 失败按无命中处理（保留告警暴露索引损坏）
+            let text_results = match self.text.search(query, top_k) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!("text 索引搜索失败（按无命中处理）: {e}");
+                    Vec::new()
+                }
+            };
             hybrid::text_results_to_hits(text_results)
         };
         // 调用链补全：对命中结果填充调用者/被调用者
         self.enrich_call_chain(&mut hits);
         hits
+    }
+
+    /// 真混合：text + semantic 恒双路召回，经 RRF 融合。
+    ///
+    /// **修 bug**：旧实现 text 失败时 `return Vec::new()`，语义可用也不
+    /// 兜底；此处 text 失败只跳过 text 一路，semantic 结果仍进 RRF——
+    /// 一路缺席不拖累另一路的可用召回。
+    fn search_hybrid(&self, query: &str, top_k: usize) -> Vec<SearchHit> {
+        let mut all = Vec::new();
+        match self.text.search(query, top_k) {
+            Ok(r) => all.push(hybrid::text_results_to_hits(r)),
+            Err(e) => {
+                tracing::warn!("text 索引搜索失败（跳过 text 一路，保留语义）: {e}");
+            }
+        }
+        if let Some(ref sem) = self.semantic {
+            match sem.search(query, top_k * 2) {
+                Ok(sem_results) => all.push(hybrid::semantic_results_to_hits(sem_results)),
+                Err(e) => {
+                    tracing::warn!("语义搜索失败（跳过语义一路）: {e}");
+                }
+            }
+        }
+        rrf_merge(&all, top_k, self.rrf_k)
     }
 
     /// 调用链补全：按命中符号名查 call_index，填充 callers/callees；无索引时直接跳过
@@ -163,10 +173,17 @@ mod tests {
     }
 
     impl SemanticSearch for MockSemantic {
-        fn index(&mut self, _node: &CodeNode, _source_code: &str) -> anyhow::Result<()> {
+        fn index(
+            &mut self,
+            _node: &CodeNode,
+            _block: &crate::search::block::Block,
+        ) -> anyhow::Result<()> {
             Ok(())
         }
-        fn index_batch(&mut self, _items: &[(CodeNode, String)]) -> anyhow::Result<()> {
+        fn index_batch(
+            &mut self,
+            _items: &[(CodeNode, crate::search::block::Block)],
+        ) -> anyhow::Result<()> {
             Ok(())
         }
         fn search(&self, _query: &str, _limit: usize) -> anyhow::Result<Vec<(CodeNode, f32)>> {
@@ -224,10 +241,12 @@ mod tests {
         assert!(results.is_empty(), "回溯关闭时不应使用语义结果");
     }
 
-    /// FTS 命中足够（≥3 条）时不触发语义回溯（分层搜索的成本控制语义）
+    /// v0.7.2 真混合语义反转：FTS 命中足够（≥3 条）时语义结果仍参与
+    /// 融合（不再因 text 足够而跳过语义一路——双路召回互补，语义命中
+    /// 应进入最终结果）
     #[test]
-    fn test_agent_skips_semantic_when_text_sufficient() {
-        // 构造 3 条使 FTS 命中 ≥3，验证不触发回溯
+    fn test_agent_hybrid_includes_semantic_when_text_sufficient() {
+        // 构造 3 条使 FTS 命中 ≥3（旧级联条件不触发语义回溯的场景）
         let path = unique_db_path("agent_text3");
         let (mut t, _) = TextEngine::open(&path).unwrap();
         let _ = t.index(&mock_node("add_user"), "fn add_user(name: &str)");
@@ -237,17 +256,40 @@ mod tests {
             results: vec![(mock_node("sem_hit"), 0.95)],
         });
         let agent = SearchAgent::new(t, Some(semantic), 60.0);
-        // 查询 "user"：FTS 命中 3 条 → 不回溯，语义结果不应混入
+        // 查询 "user"：FTS 命中 3 条且语义 mock 返回 sem_hit——
+        // 真混合下语义结果必须进入融合结果
         let results = agent.search("user", 5, true);
         assert!(
-            results.iter().all(|h| h.node.name != "sem_hit"),
-            "FTS 足够时不应触发语义回溯: {:?}",
+            results.iter().any(|h| h.node.name == "sem_hit"),
+            "真混合下语义命中应进入融合结果: {:?}",
             results
                 .iter()
                 .map(|h| h.node.name.clone())
                 .collect::<Vec<_>>()
         );
-        assert!(results.len() >= 3, "FTS 应有 3 条命中: {:?}", results.len());
+        assert!(results.len() >= 3, "text 命中仍保留: {:?}", results.len());
+    }
+
+    /// v0.7.2 修 bug：text 索引失败（损坏/表被删）时不再整体返回空——
+    /// 语义引擎在场则返回纯语义结果（旧实现 text Err 直接 return Vec::new，
+    /// 语义可用也不兜底）
+    #[test]
+    fn test_agent_text_failure_falls_back_to_semantic() {
+        let path = unique_db_path("agent_text_fail");
+        let (t, _) = TextEngine::open(&path).unwrap();
+        // 用独立连接 DROP entities 虚表，使 t.search 报 "no such table"
+        //（SQLite schema 变更对既有连接可见，prepare 时重读 schema 报错）
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch("DROP TABLE entities;").unwrap();
+        drop(conn);
+
+        let semantic = Box::new(MockSemantic {
+            results: vec![(mock_node("sem_hit"), 0.95)],
+        });
+        let agent = SearchAgent::new(t, Some(semantic), 60.0);
+        let results = agent.search("anything", 5, true);
+        assert_eq!(results.len(), 1, "text 失败时语义结果应兜底返回");
+        assert_eq!(results[0].node.name, "sem_hit");
     }
 
     #[test]

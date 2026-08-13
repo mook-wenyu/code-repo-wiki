@@ -33,9 +33,12 @@ pub const SEARCH_DEFAULT_TOP_K: usize = 10;
 ///
 /// P2-7：60.0 是 SIGIR'09 原文默认（面向多路融合的共识投票）；本工具
 /// 是两路（text BM25 + semantic 向量）融合，2025 检索共识建议两路场景
-/// 20-40——k 越小排名头部权重越陡（强命中更突出）。取 40.0（区间中值，
-/// 兼顾强命中突出与候选覆盖）。v30 哲学：算法细节硬编码，不设配置项。
-pub const SEARCH_RRF_K: f64 = 40.0;
+/// 20-40——k 越小排名头部权重越陡（强命中更突出）。v0.7.2 起从 40.0
+/// 降到 20.0：hybrid 已从「结果不足才回溯」改为「恒双路召回」（两路
+/// 恒在场，强命中更需要被 RRF 突出），区间下界 20.0 让 top1/top2 的
+/// 排名优势更陡（强命中优先展示），候选覆盖由另一路补充。v30 哲学：
+/// 算法细节硬编码，不设配置项。
+pub const SEARCH_RRF_K: f64 = 20.0;
 /// BFS 传播变更影响的最大深度
 pub const IMPACT_MAX_DEPTH: usize = 3;
 /// v30 硬编码常量：傻瓜式全自动（用户拍板「彻底硬编码删字段」）——
@@ -271,15 +274,13 @@ pub enum LlmProviderType {
     Mock,
 }
 
-/// 嵌入提供方：远程 API 或本地 ONNX 推理
+/// 嵌入提供方（纯远程 API 通道；本地 ONNX 路径已删除）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EmbedProvider {
     /// 远程 API（OpenAI 兼容 /v1/embeddings）
     #[default]
     Remote,
-    /// 本地 ONNX 推理（fastembed，免 API key、免网络）
-    Local,
     /// Mock 通道（测试用）：与 Remote 同路径——HTTP 请求指向本地 mock server
     /// 或失败降级；配置兼容 v50 前 `provider = "mock"` 的既有测试模板。
     Mock,
@@ -303,12 +304,9 @@ pub struct EmbedSection {
     /// embed_batch 分批发往 API 的并发信号量上限；None 时引擎用内置默认 4。
     #[serde(default)]
     pub max_concurrency: Option<u32>,
-    /// 嵌入提供方：remote（远程 API，默认）| local（fastembed 本地推理，免 API key）
+    /// 嵌入提供方：remote（远程 API，默认）| mock（测试）
     #[serde(default)]
     pub provider: EmbedProvider,
-    /// 本地嵌入模型名（provider=local 时生效）；默认 bge-small-zh-v1.5
-    #[serde(default = "default_embed_local_model")]
-    pub local_model: String,
 }
 
 fn default_embed_model() -> String {
@@ -321,10 +319,6 @@ fn default_embed_base_url() -> Option<String> {
 
 fn default_embed_api_key_env() -> String {
     "BAILIAN_API_KEY".to_string()
-}
-
-fn default_embed_local_model() -> String {
-    String::from("bge-small-zh-v1.5")
 }
 
 impl Default for EmbedSection {
@@ -341,7 +335,6 @@ impl Default for EmbedSection {
             api_key_env: "BAILIAN_API_KEY".to_string(),
             max_concurrency: None,
             provider: EmbedProvider::default(),
-            local_model: default_embed_local_model(),
         }
     }
 }

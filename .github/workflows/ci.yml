@@ -62,10 +62,7 @@ jobs:
           echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> "$GITHUB_ENV"
       - name: Test
         run: cargo test --locked --no-fail-fast
-      # P2-3 覆盖：local-embed 特性编译门禁（仅 ubuntu，避免三平台重复编译大依赖树）
-      - name: Check local-embed feature
-        if: runner.os == 'Linux'
-        run: cargo check --locked --features local-embed
+
 
   # workflow 本身校验（actionlint 惯例——语法/语义/注入检查）
   lint-workflow:

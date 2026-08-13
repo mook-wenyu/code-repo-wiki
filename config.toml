@@ -35,5 +35,4 @@ base_url = "https://llm-q0265e4he9m0qs23.cn-beijing.maas.aliyuncs.com/compatible
 #api_key = ""
 api_key_env = "BAILIAN_API_KEY"
 # 批量嵌入并发可配：embed.max_concurrency（缺省 4）；batch_size 已硬编码
-# provider = "remote"   # remote=远程 API（默认）| local=本地 ONNX 推理（免 API key）
-# local_model = "bge-small-zh-v1.5"  # 本地模型（bge-small-zh-v1.5 量化版约 30MB，首次使用自动下载）
+# provider = "remote"   # remote=远程 API（默认）| mock=测试 mock server；本地 ONNX 路径已删除（v0.7.2）

@@ -20,6 +20,8 @@ use anyhow::{Context, Result};
 
 use crate::analysis::feature::Embedder;
 use crate::model::CodeNode;
+use crate::search::block::Block;
+use crate::search::query_cache::QueryEmbedCache;
 use crate::search::vecdb::VecDb;
 
 /// 语义搜索抽象接口（SearchAgent 依赖抽象，可注入 mock）
@@ -29,10 +31,10 @@ use crate::search::vecdb::VecDb;
 /// （lib.rs execute_search 同步执行）；若未来需要跨线程共享语义引擎，
 /// 由调用方用 Mutex 包装（trait 不应为此牺牲可测试性）。
 pub trait SemanticSearch {
-    /// 索引单个实体（生成 embedding 并持久化）
-    fn index(&mut self, node: &CodeNode, source_code: &str) -> Result<()>;
+    /// 索引单个实体（v0.7.2 起输入块——嵌入 block.text，非裸源码片段）
+    fn index(&mut self, node: &CodeNode, block: &Block) -> Result<()>;
     /// 批量索引多个实体
-    fn index_batch(&mut self, items: &[(CodeNode, String)]) -> Result<()>;
+    fn index_batch(&mut self, items: &[(CodeNode, Block)]) -> Result<()>;
     /// 搜索最相似的 k 个实体（0.3 相似度阈值过滤）
     fn search(&self, query: &str, limit: usize) -> Result<Vec<(CodeNode, f32)>>;
     /// 删除指定文件路径关联的所有向量条目
@@ -50,15 +52,26 @@ pub trait SemanticSearch {
 pub struct SemanticEngine {
     db: VecDb,
     embedder: Arc<dyn Embedder>,
+    /// 查询 embedding LRU 缓存（重复 query 免二次 API 调用）
+    query_cache: Arc<QueryEmbedCache>,
 }
 
 impl SemanticEngine {
     /// 打开或创建语义搜索数据库
     ///
     /// vec0 虚表延迟到首次插入时创建（维度首次探测）。
-    pub fn open(path: impl AsRef<Path>, embedder: Arc<dyn Embedder>) -> Result<Self> {
+    /// `query_cache` 注入查询向量 LRU 缓存（进程级共享，见 query_cache.rs）。
+    pub fn open(
+        path: impl AsRef<Path>,
+        embedder: Arc<dyn Embedder>,
+        query_cache: Arc<QueryEmbedCache>,
+    ) -> Result<Self> {
         let db = VecDb::open(path)?;
-        Ok(Self { db, embedder })
+        Ok(Self {
+            db,
+            embedder,
+            query_cache,
+        })
     }
 
     // ============ 固有方法（薄封装，委托 trait 实现） ============
@@ -66,11 +79,11 @@ impl SemanticEngine {
     // 以具体类型调用，不走 trait object；这里直接转发到 trait impl，
     // 避免调用点改用 Box<dyn> 语法，同时保证两处行为一致。
 
-    pub fn index(&mut self, node: &CodeNode, source_code: &str) -> Result<()> {
-        SemanticSearch::index(self, node, source_code)
+    pub fn index(&mut self, node: &CodeNode, block: &Block) -> Result<()> {
+        SemanticSearch::index(self, node, block)
     }
 
-    pub fn index_batch(&mut self, items: &[(CodeNode, String)]) -> Result<()> {
+    pub fn index_batch(&mut self, items: &[(CodeNode, Block)]) -> Result<()> {
         SemanticSearch::index_batch(self, items)
     }
 
@@ -98,59 +111,56 @@ impl SemanticEngine {
     pub fn table_dimension(&self) -> Result<Option<usize>> {
         self.db.table_dimension()
     }
-
-    /// 组装实体索引文本（与旧实现一致，保持索引兼容性）
-    fn index_text(node: &CodeNode, source_code: &str) -> String {
-        format!(
-            "{} {:?} {} {}",
-            node.name,
-            node.kind,
-            node.signature.as_deref().unwrap_or(""),
-            source_code
-        )
-    }
 }
 
 impl SemanticSearch for SemanticEngine {
-    fn index(&mut self, node: &CodeNode, source_code: &str) -> Result<()> {
-        let text = Self::index_text(node, source_code);
-        let vector = self.embedder.embed(&text).context("生成 embedding 失败")?;
+    fn index(&mut self, node: &CodeNode, block: &Block) -> Result<()> {
+        // v0.7.2：嵌入块文本（作用域前缀 + 签名 + doc + body，见 block.rs），
+        // 不再用裸实体源码片段——块文本承载模块路径/作用域上下文，语义
+        // 检索不再退化为词袋
+        let vector = self
+            .embedder
+            .embed(&block.text)
+            .context("生成 embedding 失败")?;
         let node_json = serde_json::to_string(node).context("序列化 CodeNode 失败")?;
         let file = node.file_path.as_deref().unwrap_or("").to_string();
-        self.db.insert_batch(&[(file, node_json, vector)])
+        self.db
+            .insert_batch(&[(file, node_json, block.id.clone(), vector)])
     }
 
-    fn index_batch(&mut self, items: &[(CodeNode, String)]) -> Result<()> {
+    fn index_batch(&mut self, items: &[(CodeNode, Block)]) -> Result<()> {
         if items.is_empty() {
             return Ok(());
         }
         // 组装批量嵌入文本（一次 API 调用，避免逐条创建 tokio Runtime 开销）
-        let texts: Vec<String> = items
-            .iter()
-            .map(|(node, source)| Self::index_text(node, source))
-            .collect();
+        let texts: Vec<String> = items.iter().map(|(_, block)| block.text.clone()).collect();
         let vectors = self
             .embedder
             .embed_batch(&texts)
             .context("批量生成 embedding 失败")?;
 
-        // 组装 (file_path, node_json, vector) 三元组一次性入库
-        let rows: Vec<(String, String, Vec<f32>)> = items
+        // 组装 (file_path, node_json, block_id, vector) 四元组一次性入库
+        let rows: Vec<(String, String, String, Vec<f32>)> = items
             .iter()
             .zip(vectors)
-            .map(|((node, _), vector)| {
+            .map(|((node, block), vector)| {
                 // CodeNode 是纯数据模型（无自定义 serde 错误路径），
                 // 序列化失败在类型层面不可达；unwrap_or_default 只为
                 // 满足 map 闭包签名，空串行由搜索侧反序列化失败自然跳过
                 let node_json = serde_json::to_string(node).unwrap_or_default();
                 let file = node.file_path.as_deref().unwrap_or("").to_string();
-                (file, node_json, vector)
+                (file, node_json, block.id.clone(), vector)
             })
             .collect();
         self.db.insert_batch(&rows)
     }
 
     fn search(&self, query: &str, limit: usize) -> Result<Vec<(CodeNode, f32)>> {
+        // 空串/纯空白查询短路：无关键词可嵌入，直接空结果（与 text 引擎
+        // 空词表退化为空语义一致，也避免对空串发 embedding 请求）
+        if query.trim().is_empty() {
+            return Ok(Vec::new());
+        }
         // 空库路径无命中时直接返回空，免对空库发 embedding 请求
         //（embedding API 有成本与延迟，空库查询无意义）；实际实现
         // load_all_vectors 收集时语义与此一致。
@@ -158,7 +168,11 @@ impl SemanticSearch for SemanticEngine {
         if self.db.entry_count()? == 0 {
             return Ok(Vec::new());
         }
-        let q_vec = self.embedder.embed(query)?;
+        // v0.7.2：查询向量走 LRU 缓存——重复/近重复 query 免二次 API 调用
+        // （MCP server 常驻进程内语义检索命中率高，省网络 RTT 与计费）
+        let q_vec = self
+            .query_cache
+            .get_or_embed(query, |q| self.embedder.embed(q))?;
         let query_json = vec_to_json(&q_vec);
         // 阈值换算：相似度 0.3 ↔ 距离 0.7（vecdb 常量，见模块头）
         let rows = self.db.knn(
@@ -216,6 +230,7 @@ mod tests {
     use crate::config::schema::{EmbedProvider, EmbedSection};
     use crate::generate::embed::EmbeddingEngine;
     use crate::model::{NodeId, NodeKind};
+    use crate::search::block::EntityRef;
     use std::collections::HashMap;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
@@ -234,7 +249,6 @@ mod tests {
             base_url: Some("http://localhost:9999/v1".into()),
             max_concurrency: None,
             provider: EmbedProvider::Remote,
-            local_model: "bge-small-zh-v1.5".into(),
         };
         Arc::new(EmbeddingEngine::new(&config, test_runtime().handle().clone()).unwrap())
             as Arc<dyn Embedder>
@@ -249,7 +263,6 @@ mod tests {
             base_url: Some(format!("{}/v1", base_url)),
             max_concurrency: None,
             provider: EmbedProvider::Remote,
-            local_model: "bge-small-zh-v1.5".into(),
         };
         Arc::new(EmbeddingEngine::new(&config, rt.handle().clone()).unwrap()) as Arc<dyn Embedder>
     }
@@ -276,6 +289,42 @@ mod tests {
             visibility: None,
             module_path: vec![],
         }
+    }
+
+    /// 从 CodeNode 构造测试块：块文本以实体名开头——伪向量服务器按
+    /// 首 whitespace token 选向量，保证与旧 index_text 的首 token 同语义
+    fn make_block(node: &CodeNode, body: &str) -> Block {
+        let (start, end) = node.line_range.unwrap_or((1, 1));
+        let file = node.file_path.as_deref().unwrap_or("");
+        Block {
+            id: format!("{file}#{start}-{end}"),
+            file_path: file.to_string(),
+            language: "rust".into(),
+            module_path: node.module_path.clone(),
+            kind: node.kind.clone(),
+            name: node.name.clone(),
+            line_range: (start, end),
+            signature: node.signature.clone().unwrap_or_default(),
+            visibility: node.visibility.clone(),
+            scope: vec![],
+            doc_comment: node.doc_comment.clone(),
+            text: format!("{} {body}", node.name),
+            entity: EntityRef {
+                name: node.name.clone(),
+                file_path: file.to_string(),
+                line_range: (start, end),
+            },
+        }
+    }
+
+    /// 打开引擎：统一注入独立 query cache（测试间互不污染 LRU）
+    fn open_engine(path: std::path::PathBuf, embedder: Arc<dyn Embedder>) -> SemanticEngine {
+        SemanticEngine::open(path, embedder, Arc::new(QueryEmbedCache::new())).unwrap()
+    }
+
+    /// 构造 (CodeNode, Block) 索引项
+    fn make_item(node: &CodeNode, body: &str) -> (CodeNode, Block) {
+        (node.clone(), make_block(node, body))
     }
 
     // ============ 伪 Embedding mock server ============
@@ -321,30 +370,33 @@ mod tests {
     }
 
     /// 关键词 → 确定性伪向量（统一 3 维）：
-    /// - 已知关键词（alpha/beta/gamma/delta）：固定向量，相似度受控
-    ///   （alpha↔beta≈0.707、alpha↔gamma=-1.0、alpha↔delta≈0.707），
-    ///   用于验证排序正确性与 top_k 截断；
-    /// - 未知关键词：按首次出现顺序分配 3 维单位基向量（同词同向量、
-    ///   异词正交），用于确定性验证 0.3 阈值过滤。
-    fn pseudo_vector(keyword: &str, seen: &mut HashMap<String, usize>) -> Vec<f32> {
-        match keyword {
-            "alpha" => vec![1.0, 0.0, 0.0],
-            "beta" => vec![
+    /// - 已知关键词（alpha/beta/gamma/delta）：文本**任意位置**含该词即命中
+    ///   对应向量——块文本是「模块路径 + 签名 + 完整 body」拼接，独特 token
+    ///   可能出现在 body 中段，用 contains 模拟真实 embedding 对全文敏感；
+    /// - 未知文本：按首个单词分配 3 维单位基向量（同词同向量、异词正交），
+    ///   用于确定性验证 0.3 阈值过滤。
+    fn pseudo_vector(text: &str, seen: &mut HashMap<String, usize>) -> Vec<f32> {
+        if text.contains("alpha") {
+            vec![1.0, 0.0, 0.0]
+        } else if text.contains("beta") {
+            vec![
                 std::f32::consts::FRAC_1_SQRT_2,
                 std::f32::consts::FRAC_1_SQRT_2,
                 0.0,
-            ],
-            "gamma" => vec![-1.0, 0.0, 0.0],
+            ]
+        } else if text.contains("gamma") {
+            vec![-1.0, 0.0, 0.0]
+        } else if text.contains("delta") {
             // T03 弱锚点修复：delta 与 alpha 相似度 0.707（过 0.3 阈值）——
             // 供 top_k 截断测试构造「3 条候选全过阈值」场景
-            "delta" => vec![0.5, 0.5, 0.0],
-            _ => {
-                let next = seen.len();
-                let idx = *seen.entry(keyword.to_string()).or_insert(next);
-                let mut v = vec![0.0f32; 3];
-                v[idx % 3] = 1.0;
-                v
-            }
+            vec![0.5, 0.5, 0.0]
+        } else {
+            let word = text.split_whitespace().next().unwrap_or("");
+            let next = seen.len();
+            let idx = *seen.entry(word.to_string()).or_insert(next);
+            let mut v = vec![0.0f32; 3];
+            v[idx % 3] = 1.0;
+            v
         }
     }
 
@@ -374,9 +426,7 @@ mod tests {
                     let mut guard = seen.lock().unwrap();
                     let vectors: Vec<Vec<f32>> = inputs
                         .iter()
-                        .map(|t| {
-                            pseudo_vector(t.split_whitespace().next().unwrap_or(""), &mut guard)
-                        })
+                        .map(|t| pseudo_vector(t, &mut guard))
                         .collect();
                     drop(guard);
 
@@ -398,13 +448,13 @@ mod tests {
 
     #[test]
     fn test_semantic_new() {
-        let engine = SemanticEngine::open(tmp_path("new"), mock_embedder()).unwrap();
+        let engine = open_engine(tmp_path("new"), mock_embedder());
         assert_eq!(engine.entry_count(), 0);
     }
 
     #[test]
     fn test_search_empty() {
-        let engine = SemanticEngine::open(tmp_path("empty"), mock_embedder()).unwrap();
+        let engine = open_engine(tmp_path("empty"), mock_embedder());
         assert!(engine.search("test", 10).unwrap().is_empty());
     }
 
@@ -415,12 +465,12 @@ mod tests {
         let base_url = spawn_pseudo_embed_server();
         let rt = test_runtime();
         let embedder = embedder_with_server(&base_url, &rt);
-        let mut engine = SemanticEngine::open(tmp_path("rank"), embedder).unwrap();
+        let mut engine = open_engine(tmp_path("rank"), embedder);
 
         let items = vec![
-            (make_node("alpha", "src/a.rs"), "fn alpha()".to_string()),
-            (make_node("beta", "src/b.rs"), "fn beta()".to_string()),
-            (make_node("gamma", "src/c.rs"), "fn gamma()".to_string()),
+            make_item(&make_node("alpha", "src/a.rs"), "fn alpha()"),
+            make_item(&make_node("beta", "src/b.rs"), "fn beta()"),
+            make_item(&make_node("gamma", "src/c.rs"), "fn gamma()"),
         ];
         engine.index_batch(&items).unwrap();
 
@@ -439,11 +489,11 @@ mod tests {
         let base_url = spawn_pseudo_embed_server();
         let rt = test_runtime();
         let embedder = embedder_with_server(&base_url, &rt);
-        let mut engine = SemanticEngine::open(tmp_path("thr"), embedder).unwrap();
+        let mut engine = open_engine(tmp_path("thr"), embedder);
 
         let items = vec![
-            (make_node("x1", "src/x1.rs"), "x1 unrelated".to_string()),
-            (make_node("x2", "src/x2.rs"), "x2 unrelated".to_string()),
+            make_item(&make_node("x1", "src/x1.rs"), "x1 unrelated"),
+            make_item(&make_node("x2", "src/x2.rs"), "x2 unrelated"),
         ];
         engine.index_batch(&items).unwrap();
 
@@ -458,15 +508,15 @@ mod tests {
         let base_url = spawn_pseudo_embed_server();
         let rt = test_runtime();
         let embedder = embedder_with_server(&base_url, &rt);
-        let mut engine = SemanticEngine::open(tmp_path("topk"), embedder).unwrap();
+        let mut engine = open_engine(tmp_path("topk"), embedder);
 
         // 三个实体都与查询 "alpha" 相似度 ≥0.3（alpha 1.0、beta 0.707、
         // delta 0.707）——候选 3 条 > limit=2，truncate 必须真实截断；
         // 若删除 semantic.rs search 的 truncate(limit)，此处返回 3 条断言失败
         let items = vec![
-            (make_node("alpha", "src/a.rs"), "fn alpha()".to_string()),
-            (make_node("beta", "src/b.rs"), "fn beta()".to_string()),
-            (make_node("delta", "src/d.rs"), "fn delta()".to_string()),
+            make_item(&make_node("alpha", "src/a.rs"), "fn alpha()"),
+            make_item(&make_node("beta", "src/b.rs"), "fn beta()"),
+            make_item(&make_node("delta", "src/d.rs"), "fn delta()"),
         ];
         engine.index_batch(&items).unwrap();
 
@@ -479,11 +529,11 @@ mod tests {
         let base_url = spawn_pseudo_embed_server();
         let rt = test_runtime();
         let embedder = embedder_with_server(&base_url, &rt);
-        let mut engine = SemanticEngine::open(tmp_path("rm"), embedder).unwrap();
+        let mut engine = open_engine(tmp_path("rm"), embedder);
 
         let items = vec![
-            (make_node("a1", "src/a.rs"), "fn a1()".to_string()),
-            (make_node("b1", "src/b.rs"), "fn b1()".to_string()),
+            make_item(&make_node("a1", "src/a.rs"), "fn a1()"),
+            make_item(&make_node("b1", "src/b.rs"), "fn b1()"),
         ];
         engine.index_batch(&items).unwrap();
         assert_eq!(engine.entry_count(), 2);
@@ -498,9 +548,9 @@ mod tests {
         let base_url = spawn_pseudo_embed_server();
         let rt = test_runtime();
         let embedder = embedder_with_server(&base_url, &rt);
-        let mut engine = SemanticEngine::open(tmp_path("clr"), embedder).unwrap();
+        let mut engine = open_engine(tmp_path("clr"), embedder);
         engine
-            .index_batch(&[(make_node("a", "src/a.rs"), "fn a()".to_string())])
+            .index_batch(&[make_item(&make_node("a", "src/a.rs"), "fn a()")])
             .unwrap();
         assert_eq!(engine.entry_count(), 1);
 
@@ -514,7 +564,7 @@ mod tests {
         let base_url = spawn_pseudo_embed_server();
         let rt = test_runtime();
         let embedder = embedder_with_server(&base_url, &rt);
-        let mut engine = SemanticEngine::open(tmp_path("dim"), embedder).unwrap();
+        let mut engine = open_engine(tmp_path("dim"), embedder);
         assert_eq!(
             engine.table_dimension().unwrap(),
             None,
@@ -522,12 +572,83 @@ mod tests {
         );
 
         engine
-            .index_batch(&[(make_node("a1", "src/a.rs"), "fn a1()".to_string())])
+            .index_batch(&[make_item(&make_node("a1", "src/a.rs"), "fn a1()")])
             .unwrap();
         assert_eq!(
             engine.table_dimension().unwrap(),
             Some(3),
             "伪向量统一 3 维"
         );
+    }
+
+    /// 空串/纯空白查询短路：不触发 embedding 请求，直接空结果
+    ///（与 text 引擎空词表退化语义一致，v0.7.2 显式加短路）
+    #[test]
+    fn test_semantic_search_empty_query() {
+        let base_url = spawn_pseudo_embed_server();
+        let rt = test_runtime();
+        let embedder = embedder_with_server(&base_url, &rt);
+        let mut engine = open_engine(tmp_path("empty_q"), embedder);
+        engine
+            .index_batch(&[make_item(&make_node("alpha", "src/a.rs"), "fn alpha()")])
+            .unwrap();
+
+        assert!(engine.search("", 10).unwrap().is_empty(), "空串查询返回空");
+        assert!(
+            engine.search("   ", 10).unwrap().is_empty(),
+            "纯空白查询返回空"
+        );
+        // 非空查询不受影响
+        assert_eq!(engine.search("alpha", 10).unwrap().len(), 1);
+    }
+
+    /// 块级检索冒烟（v0.7.2）：长函数 body 中段 token 命中——
+    /// 块文本含完整 body（结构感知分块），中段独特 token 进入嵌入文本，
+    /// 查询该 token 能命中该块；旧实现裸签名索引（不含 body 中段）做不到
+    #[test]
+    fn test_block_level_middle_token_hit() {
+        let base_url = spawn_pseudo_embed_server();
+        let rt = test_runtime();
+        let embedder = embedder_with_server(&base_url, &rt);
+        let mut engine = open_engine(tmp_path("block_mid"), embedder);
+
+        // 长函数：body 首尾是填充行，独特 token "alpha" 埋在正中
+        let mut body = String::from("fn process() {\n");
+        for _ in 0..40 {
+            body.push_str("    let padding = 1;\n");
+        }
+        body.push_str("    alpha\n"); // 中段独特 token
+        for _ in 0..40 {
+            body.push_str("    let trailing = 2;\n");
+        }
+        body.push('}');
+
+        let mut node = make_node("process", "src/process.rs");
+        node.line_range = Some((1, 83));
+        let block = Block {
+            id: "src/process.rs#1-83".into(),
+            file_path: "src/process.rs".into(),
+            language: "rust".into(),
+            module_path: vec!["src".into(), "process".into()],
+            kind: NodeKind::Function,
+            name: "process".into(),
+            line_range: (1, 83),
+            signature: "fn process()".into(),
+            visibility: None,
+            scope: vec![],
+            doc_comment: None,
+            text: format!("src::process::process Function\n{body}"),
+            entity: EntityRef {
+                name: "process".into(),
+                file_path: "src/process.rs".into(),
+                line_range: (1, 83),
+            },
+        };
+        engine.index_batch(&[(node, block)]).unwrap();
+
+        // 查询中段 token：伪向量按全文 contains 命中 alpha 向量
+        let results = engine.search("alpha", 10).unwrap();
+        assert_eq!(results.len(), 1, "中段 token 查询应命中块: {:?}", results);
+        assert_eq!(results[0].0.name, "process");
     }
 }

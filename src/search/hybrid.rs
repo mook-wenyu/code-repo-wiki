@@ -319,6 +319,41 @@ mod tests {
         assert_eq!(f1[0].node.name, "b");
     }
 
+    /// P2-7：k 越小排名头部权重越陡（强命中更突出）——
+    /// rank0 与 rank1 的分数差在 k=20 时大于 k=60 时（SEARCH_RRF_K 取
+    /// 20 的依据，防回归到 60 的共识投票平滑化）
+    #[test]
+    fn test_rrf_merge_k_sensitivity() {
+        let make_list = || {
+            vec![
+                SearchHit {
+                    node: make_node("a"),
+                    score: 1.0,
+                    source: "text".into(),
+                    callers: vec![],
+                    callees: vec![],
+                },
+                SearchHit {
+                    node: make_node("b"),
+                    score: 0.9,
+                    source: "text".into(),
+                    callers: vec![],
+                    callees: vec![],
+                },
+            ]
+        };
+        let r20 = rrf_merge(&[make_list()], 5, 20.0);
+        let r60 = rrf_merge(&[make_list()], 5, 60.0);
+        assert_eq!(r20[0].node.name, "a");
+        assert_eq!(r60[0].node.name, "a");
+        let gap20 = r20[0].score - r20[1].score;
+        let gap60 = r60[0].score - r60[1].score;
+        assert!(
+            gap20 > gap60,
+            "k=20 头部权重应更陡: gap20={gap20}, gap60={gap60}"
+        );
+    }
+
     #[test]
     fn test_text_results_to_hits() {
         let r = vec![(make_node("x"), 2.0)];

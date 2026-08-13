@@ -266,106 +266,15 @@ impl Embedder for EmbeddingEngine {
 
 /// 按配置 provider 构造嵌入器（统一入口，替代调用点直接 new EmbeddingEngine）：
 /// - Remote/Mock：HTTP 通道（EmbeddingEngine；Mock 为测试模板兼容，请求指向 mock server）
-/// - Local：本地 fastembed 通道（LocalEmbedder，免 API key）
+///
+/// 本地 ONNX 推理路径已删除（v0.7.2，用户明确要求纯远程 API 嵌入）：
+/// 无论 provider 为何值，一律走远程 EmbeddingEngine。provider 枚举只保留
+/// Remote/Mock 两个变体，这里无需再按 provider 分支。
 pub fn build_embedder(
     config: &EmbedSection,
     rt: tokio::runtime::Handle,
 ) -> Result<std::sync::Arc<dyn crate::analysis::feature::Embedder>> {
-    match config.provider {
-        crate::config::schema::EmbedProvider::Local => {
-            #[cfg(feature = "local-embed")]
-            {
-                Ok(std::sync::Arc::new(LocalEmbedder::new(
-                    &config.local_model,
-                )?))
-            }
-            #[cfg(not(feature = "local-embed"))]
-            {
-                anyhow::bail!(
-                    "本地嵌入需要启用 local-embed 特性（构建：cargo build --features local-embed）"
-                )
-            }
-        }
-        _ => Ok(std::sync::Arc::new(EmbeddingEngine::new(config, rt)?)),
-    }
-}
-
-#[cfg(feature = "local-embed")]
-/// 本地嵌入器：基于 fastembed（ONNX Runtime）在本地生成向量，
-/// 免 API key、无网络依赖（模型文件由 fastembed 首次使用时下载并缓存）。
-/// 与 EmbeddingEngine（远程 API）共享 Embedder trait——调用方无感知切换。
-pub struct LocalEmbedder {
-    model: fastembed::EmbeddingModel,
-    /// 已初始化的 ONNX session 缓存：try_new 加载 tokenizer+模型（30-95MB
-    /// 磁盘读+session 初始化，数百 ms 级）只做一次；搜索热路径逐次查询
-    /// 复用实例。本地推理同步占用 CPU，互斥串行正确（reviewer T04-B）。
-    cached: std::sync::Mutex<Option<fastembed::TextEmbedding>>,
-}
-
-#[cfg(feature = "local-embed")]
-impl LocalEmbedder {
-    /// 按模型名构造本地嵌入器；未知模型名返回错误（不静默兜底）。
-    pub fn new(model: &str) -> Result<Self> {
-        let model = match model {
-            "bge-small-zh-v1.5" => fastembed::EmbeddingModel::BGESmallZHV15,
-            "bge-small-en-v1.5" => fastembed::EmbeddingModel::BGESmallENV15,
-            "bge-m3" => fastembed::EmbeddingModel::BGEM3,
-            "multilingual-e5-small" => fastembed::EmbeddingModel::MultilingualE5Small,
-            _ => anyhow::bail!(
-                "不支持的本地嵌入模型: {model}（可选：bge-small-zh-v1.5/bge-small-en-v1.5/bge-m3/multilingual-e5-small）"
-            ),
-        };
-        Ok(Self {
-            model,
-            cached: std::sync::Mutex::new(None),
-        })
-    }
-}
-
-#[cfg(feature = "local-embed")]
-impl LocalEmbedder {
-    /// 批次嵌入：fastembed 同步 API（无 tokio 依赖），维度不足 0 校验。
-    /// 与 EmbeddingEngine::embed_batch 同契约：返回同序 Vec<Vec<f32>>。
-    fn embed_batch_sync(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        if texts.is_empty() {
-            return Ok(vec![]);
-        }
-        // TextInitOptions::new 按模型名构造；cache_dir 用系统默认缓存目录
-        // （fastembed get_cache_dir：Linux/macOS ~/.cache/fastembed、Windows %LOCALAPPDATA%/fastembed）
-        let mut cached = self.cached.lock().unwrap_or_else(|e| e.into_inner());
-        if cached.is_none() {
-            let options = fastembed::TextInitOptions::new(self.model.clone());
-            *cached = Some(
-                fastembed::TextEmbedding::try_new(options)
-                    .with_context(|| "初始化本地嵌入模型失败（首次运行需联网下载模型）")?,
-            );
-        }
-        // embed 需要 &mut self（ONNX session 内部状态）；batch_size=None 全量嵌入
-        let embeddings = cached
-            .as_mut()
-            .expect("缓存已初始化（上一分支确保非 None）")
-            .embed(texts, None)
-            .with_context(|| "本地嵌入失败")?;
-        Ok(embeddings)
-    }
-}
-
-#[cfg(feature = "local-embed")]
-impl Embedder for LocalEmbedder {
-    fn embed(&self, text: &str) -> Result<Vec<f32>> {
-        self.embed_batch_sync(&[text.to_string()])?
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("本地嵌入返回空结果"))
-    }
-
-    fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        self.embed_batch_sync(texts)
-    }
-
-    fn cosine_similarity(&self, a: &[f32], b: &[f32]) -> f64 {
-        EmbeddingEngine::cosine_similarity(a, b) as f64
-    }
+    Ok(std::sync::Arc::new(EmbeddingEngine::new(config, rt)?))
 }
 
 #[cfg(test)]

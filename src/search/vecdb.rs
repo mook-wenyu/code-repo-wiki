@@ -97,13 +97,15 @@ pub struct VecDb {
     conn: Connection,
 }
 
-/// KNN 查询结果行：node_json + 余弦距离
+/// KNN 查询结果行：node_json + 余弦距离 + 块 ID
 #[derive(Clone)]
 pub struct KnnRow {
     /// CodeNode 的 JSON 序列化（调用方反序列化）
     pub node_json: String,
     /// 余弦距离（1 - similarity，升序 = 相似度降序）
     pub distance: f64,
+    /// 块 ID（块级检索的溯源键；语义搜索结果溯源用）
+    pub block_id: String,
 }
 
 impl VecDb {
@@ -156,13 +158,14 @@ impl VecDb {
             .with_context(|| format!("解析 vec0 维度失败: {}", &ddl[start..end]))
     }
 
-    /// 以指定维度创建 vec0 虚表
+    /// 以指定维度创建 vec0 虚表（含 block_id 元数据列，v0.7.2 结构感知分块）
     fn create_table(&self, dim: usize) -> Result<()> {
         let sql = format!(
             "CREATE VIRTUAL TABLE {VECTOR_TABLE} USING vec0(\
                 embedding float[{dim}] distance_metric=cosine,\
                 file_path TEXT,\
-                node_json TEXT\
+                node_json TEXT,\
+                block_id TEXT\
             )"
         );
         self.conn
@@ -170,7 +173,17 @@ impl VecDb {
             .with_context(|| format!("创建 vec0 虚表失败（dim={dim}）"))
     }
 
-    /// 丢弃并重建虚表（维度变化时调用，旧索引一并丢弃）
+    /// 当前虚表是否含 block_id 列（schema 迁移检测：旧库无此列需重建）
+    fn has_block_id_column(&self) -> Result<bool> {
+        let sql = "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1";
+        let ddl: String = self
+            .conn
+            .query_row(sql, [VECTOR_TABLE], |r| r.get(0))
+            .context("读取虚表定义失败")?;
+        Ok(ddl.contains("block_id"))
+    }
+
+    /// 丢弃并重建虚表（维度变化/schema 迁移时调用，旧索引一并丢弃）
     fn rebuild_table(&self, dim: usize) -> Result<()> {
         self.conn
             .execute_batch(&format!("DROP TABLE IF EXISTS {VECTOR_TABLE};"))
@@ -178,10 +191,11 @@ impl VecDb {
         self.create_table(dim)
     }
 
-    /// 确保虚表存在且维度匹配；不匹配时重建
+    /// 确保虚表存在且维度匹配；不匹配/缺列时重建
     ///
     /// `dim` 为本次插入向量的维度（EmbeddingEngine 首次产出后才知道）。
-    /// 表不存在 → 按 dim 建表；表存在但维度不同（换模型）→ 重建并告警。
+    /// 表不存在 → 按 dim 建表；表存在但维度不同（换模型）→ 重建并告警；
+    /// 维度相同但缺 block_id 列（v0.7.1 旧库）→ 重建（新 schema 含块级列）。
     fn ensure_table(&self, dim: usize) -> Result<()> {
         match self.table_dimension()? {
             None => self.create_table(dim),
@@ -193,19 +207,29 @@ impl VecDb {
                 );
                 self.rebuild_table(dim)
             }
-            Some(_) => Ok(()),
+            Some(_) => {
+                // 维度匹配但 schema 缺 block_id 列（v0.7.1 旧库）→ 重建迁移
+                if !self.has_block_id_column()? {
+                    tracing::warn!(
+                        "语义索引 schema 升级（新增 block_id 列，v0.7.2 结构感知分块），重建向量表"
+                    );
+                    self.rebuild_table(dim)?;
+                }
+                Ok(())
+            }
         }
     }
 
-    /// 批量插入向量（node_json 由调用方序列化）
+    /// 批量插入向量（node_json/block_id 由调用方传入）
     ///
     /// 首次插入时按首个向量维度建表。file_path 归一化与 FTS5 表同规则
-    /// （跨平台路径键统一，删除/过滤同基准）。
-    pub fn insert_batch(&self, items: &[(String, String, Vec<f32>)]) -> Result<()> {
+    /// （跨平台路径键统一，删除/过滤同基准）。block_id 为块级溯源键
+    /// （v0.7.2 起，见 src/search/block.rs）。
+    pub fn insert_batch(&self, items: &[(String, String, String, Vec<f32>)]) -> Result<()> {
         if items.is_empty() {
             return Ok(());
         }
-        let dim = items[0].2.len();
+        let dim = items[0].3.len();
         if dim == 0 {
             anyhow::bail!("空向量无法入库（维度为 0）");
         }
@@ -216,16 +240,17 @@ impl VecDb {
         // （按 enumerate 序号）撞车导致主键冲突；省略 rowid 后由虚表自增
         // 分配，消除冲突。
         let mut stmt = self.conn.prepare(&format!(
-            "INSERT INTO {VECTOR_TABLE}(embedding, file_path, node_json) \
-             VALUES (?1, ?2, ?3)"
+            "INSERT INTO {VECTOR_TABLE}(embedding, file_path, node_json, block_id) \
+             VALUES (?1, ?2, ?3, ?4)"
         ))?;
-        for (file_path, node_json, vector) in items.iter() {
+        for (file_path, node_json, block_id, vector) in items.iter() {
             // vec0 的 embedding 列接受 JSON 数组字符串（探针验证：'[1,0,0]' 直接可用）
             let json = vector_to_json(vector);
             stmt.execute(rusqlite::params![
                 json,
                 crate::incremental::norm_sep(file_path),
                 node_json,
+                block_id,
             ])
             .with_context(|| format!("插入向量失败: {file_path}"))?;
         }
@@ -258,7 +283,7 @@ impl VecDb {
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         loop {
             let sql = format!(
-                "SELECT node_json, distance FROM {VECTOR_TABLE} \
+                "SELECT node_json, distance, block_id FROM {VECTOR_TABLE} \
                  WHERE embedding MATCH ?1 \
                  ORDER BY distance \
                  LIMIT {sample}"
@@ -269,6 +294,7 @@ impl VecDb {
                     Ok(KnnRow {
                         node_json: r.get(0)?,
                         distance: r.get(1)?,
+                        block_id: r.get(2)?,
                     })
                 })
                 .context("执行 KNN 查询失败")?
@@ -364,21 +390,24 @@ mod tests {
         p
     }
 
-    fn make_items() -> Vec<(String, String, Vec<f32>)> {
+    fn make_items() -> Vec<(String, String, String, Vec<f32>)> {
         vec![
             (
                 "src/a.rs".into(),
                 r#"{"name":"alpha"}"#.into(),
+                "src/a.rs#1-3".into(),
                 vec![1.0, 0.0, 0.0],
             ),
             (
                 "src/b.rs".into(),
                 r#"{"name":"beta"}"#.into(),
+                "src/b.rs#1-3".into(),
                 vec![0.0, 1.0, 0.0],
             ),
             (
                 "src/c.rs".into(),
                 r#"{"name":"gamma"}"#.into(),
+                "src/c.rs#1-3".into(),
                 vec![-1.0, 0.0, 0.0],
             ),
         ]
@@ -422,11 +451,12 @@ mod tests {
         // 扩样正确性：插入 30 个与查询高度相似（distance ≤ 0.7）的向量，
         // limit=5。若不做扩样只取 5 条会漏掉；循环扩样必须返回全部 30 条。
         let db = VecDb::open(tmp_db("expand")).unwrap();
-        let items: Vec<(String, String, Vec<f32>)> = (0..30)
+        let items: Vec<(String, String, String, Vec<f32>)> = (0..30)
             .map(|i| {
                 (
                     format!("src/f{i}.rs"),
                     format!(r#"{{"name":"f{i}"}}"#),
+                    format!("src/f{i}.rs#1-3"),
                     vec![1.0, 0.0, 0.0],
                 )
             })
@@ -460,6 +490,7 @@ mod tests {
         db.insert_batch(&[(
             "src/d.rs".into(),
             r#"{"name":"delta"}"#.into(),
+            "src/d.rs#1-3".into(),
             vec![1.0, 0.0, 0.0, 0.0],
         )])
         .unwrap();
@@ -470,12 +501,42 @@ mod tests {
         assert!(rows[0].node_json.contains("delta"));
     }
 
+    /// v0.7.2 schema 迁移：旧库（无 block_id 列）插入时检测缺列并重建为
+    /// 含 block_id 的新表——块级索引需要块 ID 溯源，缺列旧库静默沿用会
+    /// 丢 block_id（INSERT 报错）或混用旧列布局
+    #[test]
+    fn test_legacy_schema_without_block_id_rebuilds() {
+        let db = VecDb::open(tmp_db("migrate")).unwrap();
+        // 手工构造 v0.7.1 旧 schema：3 维、无 block_id 列
+        db.conn
+            .execute_batch(
+                "CREATE VIRTUAL TABLE vectors USING vec0(\
+                     embedding float[3] distance_metric=cosine,\
+                     file_path TEXT,\
+                     node_json TEXT\
+                 )",
+            )
+            .unwrap();
+        // 首次插入触发 ensure_table → 检测缺 block_id → DROP 重建 + 插入
+        db.insert_batch(&[(
+            "src/a.rs".into(),
+            r#"{"name":"alpha"}"#.into(),
+            "src/a.rs#1-2".into(),
+            vec![1.0, 0.0, 0.0],
+        )])
+        .unwrap();
+        assert_eq!(db.entry_count().unwrap(), 1);
+        let rows = db.knn("[1,0,0]", 10, MAX_COSINE_DISTANCE).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].block_id, "src/a.rs#1-2", "重建后 block_id 列可用");
+    }
+
     #[test]
     fn test_empty_batch_and_zero_dim() {
         let db = VecDb::open(tmp_db("empty")).unwrap();
         db.insert_batch(&[]).unwrap(); // 空批次静默成功
         assert!(
-            db.insert_batch(&[("a".into(), "b".into(), vec![])])
+            db.insert_batch(&[("a".into(), "b".into(), "a#1-1".into(), vec![])])
                 .is_err(),
             "零维向量应报错"
         );
@@ -511,11 +572,13 @@ mod tests {
         items.push((
             "src/shared.rs".into(),
             r#"{"name":"delta"}"#.into(),
+            "src/shared.rs#1-3".into(),
             vec![0.0, 0.0, 1.0],
         ));
         items.push((
             "src/shared.rs".into(),
             r#"{"name":"epsilon"}"#.into(),
+            "src/shared.rs#4-6".into(),
             vec![0.5, 0.5, 0.0],
         ));
         db.insert_batch(&items).unwrap();
@@ -527,11 +590,12 @@ mod tests {
         assert_eq!(db.entry_count().unwrap(), 3);
 
         // 增量第二步：再次 insert_batch 3 条新路径（表非空 + rowid 残值）
-        let second: Vec<(String, String, Vec<f32>)> = (0..3)
+        let second: Vec<(String, String, String, Vec<f32>)> = (0..3)
             .map(|i| {
                 (
                     format!("src/next{i}.rs"),
                     format!(r#"{{"name":"next{i}"}}"#),
+                    format!("src/next{i}.rs#1-3"),
                     vec![0.2, 0.8, 0.0],
                 )
             })
