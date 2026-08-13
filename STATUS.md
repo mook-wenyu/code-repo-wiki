@@ -1,5 +1,23 @@
 # 项目状态简报 （AI自动维护，禁止贴代码）
 
+## 六十四、v0.7.0 Phase A7 全面审计与实现（2026-08-13）
+- 修改的功能（A7.3-A7.10 全部实现批，6 提交）：
+  - 路径安全单点守卫（A7.3）：三调用方收敛统一 detect_path_escape（`..` 越界段 / 根相对 `\foo` / 盘符相对 `C:foo` / 绝对路径越出源码根）；resolve_source_path 相对分支与兜底加 starts_with(root) 纵深防御；check_stale 新增 source-missing 告警（源文件缺失不再静默跳过，代码扩展名限定后非代码引用不参与）
+  - libgit2 flaky helper（A7.4）：src/test_git.rs 公共 git 提交 helper（add_all 等 4 次×200ms 有界重试），bench/incremental/tests 重复提交代码全部委托——test_incremental_git_diff_scenarios 由 5/5 失败转连续通过
+  - 配置校验与插件 configPath（A7.6）：plugin-template.ts configPath 死路径改 `--config {root}/config.toml`（缺省不传走 cwd 默认链），15 工具不再失效；validate_config 落地（wiki.language 字符白名单 / reasoning_effort 值域 low/high/max / max_concurrency>0 / model/base_url 非空）；fixture 去死段 + max_concurrent→max_concurrency typo 清理
+  - 密钥权限（A7.6）：fs.rs restrict_private_permissions（Unix 文件 0600/目录 0700，write_file_atomic rename 后重新收紧）；key --env 建议对齐默认阵营 OPENCODEGO2_API_KEY；项目级明文 api_key 加载显式警告
+  - 生成引擎清理（A7.5）：describe_modules 失败显式 warn + 记入 failed_modules；MockProvider 按消息类型分流占位 Markdown/JSON；双层信号量统一 llm_effective_concurrency（删除无效 128 常量）；ingest strip_prefix 失败显式 warn；index_guide 语言映射 zh→简体中文；卡片接线 complete_with_budget（8192 预算）；scanner 单文件 5MB 上限 + embed 单条 8000 字符预截断；删除 module_summary_prompt 与 card_test_regex.txt 死资源；desc_cache 落盘失败改显式 warn
+  - 降级 fail-fast（A7.7）：LLM 失败不再降级为确定性骨架页，改 fail-fast 缺页 + 记入 failed_modules（含快照回退路径）；Mermaid 坏块降级在产物中显式标注（annotate_mermaid_degraded），fallback_architecture_doc 仅保留作测试/参考
+  - 输出/MCP（A7.9）：check_citations/check_vctx_tokens 的 project_root.join 直连收敛统一解析器 resolve_output_relative_path（单点收敛）；check_orphan_pages 全局豁免表加 _log（note 知识日志不报孤儿）；LintIssue.kind 注释固化完整清单；primary_language 探测排序确定性；MCP 通知测试语义修正（无 id 通知 + 响应 id 对齐断言，-32601 实为测试伪造报文、服务端不改）；MCP 工具不置 isError 与 wiki_languages 改名列为已知边界注释（本批不动）
+  - CLI 修复（A7.10）：update 尾部复核用 --output（复用流水线注入配置，修复漏传静默假阴性）；ast-search --language 非法值显式报错（非 0 退出码）；card --root global=true；bench/bench-manifest --config 补 -c；StatusReport.config_path 死字段删除；update --dry-run 与 --force/--progress-json/--output 组合显式互斥；export --output 在 --skip-generate 下显式报错；sync 纳入运行锁（防与 generate/update/watch 并发覆盖状态）；进度渲染闭包抽共享辅助函数
+  - 搜索锁修复（A7.8）：索引重建删除旧 DB 不再 let _ 静默吞（remove_file 失败 warn + 降级标记 + integrity_check 自愈）；need_reindex 分支 clear()+index_batch(all) 消灭 vec0 双份；watch ./ 前缀先剥再相对化（删除场景回归）；锁句柄复用（--wait 轮询同一句柄不再逐次泄漏）；锁冲突判定改结构化错误类型（弃文案字符串匹配）；save_call_index_cache 原子写；SearchStore::open 加 PRAGMA integrity_check + need_reindex（损坏库不静默打开）；watch 监听根缺失 fail-fast
+- 摸到的文件：36 文件 +1989/-808（src/config/*、src/fs.rs、src/generate/*、src/ingest/*、src/key.rs、src/lib.rs、src/main.rs、src/mcp.rs、src/output/lint.rs、src/output/mod.rs、src/search/*、tests/*）
+- 是否改变了接口/契约：是——骨架降级 fail-fast + 缺页退出码 / Mermaid 耗尽 degraded 标注 / lint 新增 source-missing 类目 / 配置校验拒绝非法值 / sync 纳入运行锁 / 插件 configPath 修正 / 删除死代码死资源（module_summary_prompt、card_test_regex.txt、CallGraph::callee_of/caller_of、StatusReport.config_path）/ 双层信号量收敛单源 / 卡片预算与字节/token 上限
+- 验证：全量回归 cargo test --all --no-fail-fast（NO_PROXY=127.0.0.1,localhost,::1，独立 CARGO_TARGET_DIR=target-a711）37 个测试二进制 775 passed / 0 failed / 0 ignored——此前环境性 flaky test_incremental_git_diff_scenarios 由 A7.3/A7.4 helper 修复后通过；cargo clippy --all-targets -D warnings 0 告警；cargo build 通过
+- 提交：4b1e8a4（fix(config) A7.6）→ f517b45（fix(lint/mcp) A7.9）→ 53ac522（fix(generate) A7.5）→ 83f0a2f（fix(cli) A7.10）→ 6539d94（fix(generate) A7.7 降级 fail-fast）→ 55606c1（fix(search/lock) A7.8）
+- 已知风险：真实 LLM API 端到端未复验（DeepSeek 402 后缺）；C:foo 盘符相对在 citation 提取层被冒号截断已中和（检测函数为无害防御）；audit-gen-11 run_generation_filtered 拆分延后；--wait 每次 acquire 泄漏 1 个 Box 为已知取舍（audit-srch-04 收敛后句柄复用、不再逐次泄漏）；绝对路径越 root 已修但 schema 文档生成失败（audit-gen-12 确认仅 warn）与 desc_cache 落盘失败（audit-gen-13 改显式 warn）不阻断；audit-llm-research 协议回退移除改 doctor 探测未落地；MCP 工具不置 isError 与 wiki_languages 改名延后；version 保持 0.6.0（未升，发布决策见报告）
+- 下次最该做的事：真实 LLM API 端到端复验；audit-gen-11 run_generation_filtered 拆分；协议回退移除 + doctor 探测落地；target-a* 构建目录清理；发布 v0.7.0（version bump + Cargo.lock + CHANGELOG [0.7.0] + tag + push 需授权）
+
 ## 六十三、A7 路径安全与 libgit2 flaky 修复（2026-08-13）
 - 修改的功能：
   - KNOWN-04 根相对/盘符相对绕过：三调用方（check_stale/check_citations/check_vctx_tokens）收敛到统一 detect_path_escape（`..` 越界段 / Windows 根相对与盘符相对形态 / 绝对路径越出源码根，任一命中即拒绝解析）；新增组件级 is_root_relative_or_drive_relative（`\foo`/`/foo` 根相对、`C:foo` 盘符相对——is_absolute 对二者返回 false 可绕过 containment，join 可逃逸 root）；resolve_source_path 相对分支与兜底对 root.join 结果加 starts_with(root) 纵深防御；生成层 citation.rs check_citation_file_level 复用同一组件级判定（全局收敛）
