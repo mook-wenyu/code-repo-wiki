@@ -440,6 +440,7 @@ mod tests {
             coding_spec: None,
             tech_stack: vec![],
             architecture: None,
+            design_rationale: None,
             pending_manual_edits: vec![],
             features: Vec::new(),
         }

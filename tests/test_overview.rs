@@ -193,6 +193,7 @@ fn test_overview_module_refs_match_write_path() {
         coding_spec: None,
         tech_stack: vec![],
         architecture: None,
+        design_rationale: None,
         pending_manual_edits: vec![],
         features: Vec::new(),
     };
@@ -210,6 +211,7 @@ fn test_overview_module_refs_match_write_path() {
         coding_spec: None,
         tech_stack: vec![],
         architecture: None,
+        design_rationale: None,
         pending_manual_edits: vec![],
         features: Vec::new(),
     };

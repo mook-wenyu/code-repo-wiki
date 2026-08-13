@@ -93,10 +93,10 @@ fn wiki_pages_snapshot(repo: &Path) -> HashMap<String, String> {
     map
 }
 
-/// DEFECT-A 主场景：改 net 模块 2 文件（tcp.rs + udp.rs，函数体级变更，
-/// 签名不变 → 仅 net 受影响重生成）→ 增量 update → 未改动模块 http 必须
-/// 仍出现在 llms.txt/_toc.md/export_snapshot.json/generation_state 指纹，
-/// 且 http 磁盘页字节零改写。
+/// DEFECT-A 主场景：改 net 模块 udp.rs（函数体级变更，签名不变；http 与
+/// udp_process 无 Calls 关系 → 仅 net 受影响重生成）→ 增量 update →
+/// 未改动模块 http 必须仍出现在 llms.txt/_toc.md/export_snapshot.json/
+/// generation_state 指纹，且 http 磁盘页字节零改写。
 #[test]
 fn test_incremental_unchanged_module_stays_in_sitemap() {
     let repo = std::env::temp_dir().join(format!("code_repo_wiki_backfill_{}", std::process::id()));
@@ -130,18 +130,14 @@ fn test_incremental_unchanged_module_stays_in_sitemap() {
         "基线应有 http 模块页"
     );
 
-    // ---- 修改 net 模块 2 个文件（多行 body 使 line_end 变化 → BodyChanged） ----
-    std::fs::write(
-        repo.join("src").join("net").join("tcp.rs"),
-        "pub fn tcp_process(x: u32) -> u32 {\n    udp_process(x) + 42\n}\n",
-    )
-    .unwrap();
+    // ---- 修改 net 模块 udp.rs（多行 body 使 line_end 变化 → BodyChanged；
+    // http 不调用 udp_process，与变更函数无 Calls 关系 → http 保持未受影响） ----
     std::fs::write(
         repo.join("src").join("net").join("udp.rs"),
         "pub fn udp_process(x: u32) -> u32 {\n    x + 24\n}\n",
     )
     .unwrap();
-    git_commit_all(&repo, "modify net two files");
+    git_commit_all(&repo, "modify net udp");
     let inc = code_repo_wiki::run_pipeline(
         Some(&config_path),
         None,

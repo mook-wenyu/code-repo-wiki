@@ -589,6 +589,7 @@ mod tests {
             coding_spec: None,
             tech_stack: vec![],
             architecture: None,
+            design_rationale: None,
             pending_manual_edits: vec![
                 "人工修改待同步: wiki/zh/核心_模块.md 内容摘要: 手动改".into(),
             ],

@@ -6,7 +6,8 @@
 //! 历史，其"只重写受影响页"断言从未真正走增量路径。本文件用
 //! git init + 两次提交激活真实的增量更新：
 //!
-//! - 场景 A（实现级变化）：函数体修改 → 仅本模块文档重生成，依赖方不动
+//! - 场景 A（实现级变化）：函数体修改 → 本模块重生成，直接调用方页随行为
+//!   刷新（body 传播，修复"调用方页面漏更"），api.md 不动（签名级接缝）
 //! - 场景 B（接口级变化）：签名修改 → api.md 反映新签名
 //! - 场景 C（无变更）：增量跳过，documents 为空
 //! - 场景 D（T2 传播闭环）：签名变更 → 调用方模块文档重生成（依赖传播接线验证）
@@ -157,6 +158,8 @@ fn test_incremental_git_diff_scenarios() {
     // 多行 body 使实体的 line_end 变化 → 三元组不等 → BodyChanged → 重生成。
     // 单行同长的 body 修改（行号区间不变）会被三元组判定为「无实体变更」
     // 跳过重生成——A1 的已知边界（仅行号+签名参与判定，见 change.rs 注释）。
+    // body 传播：http_serve 是 tcp_process 的直接调用方，函数体行为变化 →
+    // http 页随行为刷新（修复"调用方页面漏更"，见 impact.rs body 传播分支）。
     std::fs::write(
         &tcp_mod,
         "pub fn tcp_process(x: u32) -> u32 {\n    udp_process(x) + 42\n}\n",
@@ -179,14 +182,17 @@ fn test_incremental_git_diff_scenarios() {
         titles_a.iter().any(|t| t.contains("net")),
         "实现级变化应重生成 net 社区文档，实际: {titles_a:?}"
     );
-    // DEFECT-A 修复后 documents = 完整当前文档集：未改动 http 模块从
-    // 导出快照回填保留（旧断言「http 不在 documents」固化了缺陷行为——
-    // llms/_toc 以部分集合为文档集，未重生成模块缺位）
+    // DEFECT-A 修复后 documents = 完整当前文档集：http 模块仍在文档集内
+    //（旧断言「http 不在 documents」固化了缺陷行为——llms/_toc 以部分集合
+    // 为文档集，未重生成模块缺位）
     assert!(
         titles_a.iter().any(|t| t.contains("http")),
-        "实现级变化后未改动 http 模块应从快照回填保留（完整文档集），实际: {titles_a:?}"
+        "实现级变化后 http 模块仍应在完整文档集中，实际: {titles_a:?}"
     );
-    // 回填语义：http 社区页磁盘字节零改写（回填=旧文档幂等重写，非重生成）
+    // body 传播断言：http_serve 是 tcp_process 直接调用方，函数体行为变化
+    // → http 页被重写（时间戳/基线提交变化）。这是修复"调用方页面漏更"的
+    // 设计行为——旧断言「http 必须零改写」固化了漏更缺陷，必须更新为断言
+    // 调用方页面被刷新。
     let pages_a = wiki_pages_snapshot(&repo);
     assert!(
         base_pages.keys().any(|k| k.contains("http")),
@@ -195,10 +201,10 @@ fn test_incremental_git_diff_scenarios() {
     );
     for (name, content) in &pages_a {
         if name.contains("http") {
-            assert_eq!(
+            assert_ne!(
                 Some(content),
                 base_pages.get(name),
-                "未受影响 http 页 {name} 必须零改写（回填非重生成）"
+                "body 传播后 http 页 {name} 应被重写（调用方页面随行为刷新，不得停留旧描述）"
             );
         }
     }

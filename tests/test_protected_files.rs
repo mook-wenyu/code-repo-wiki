@@ -264,6 +264,7 @@ fn test_render_all_protected_page_still_writes_card() {
         coding_spec: None,
         tech_stack: vec![],
         architecture: None,
+        design_rationale: None,
         pending_manual_edits: vec!["人工修改待同步: wiki/zh/foo.md 内容摘要: 用户改的".into()],
         features: Vec::new(),
     };
@@ -471,6 +472,7 @@ fn test_manual_edit_recorded_in_card() {
         coding_spec: None,
         tech_stack: vec![],
         architecture: None,
+        design_rationale: None,
         pending_manual_edits: vec![],
         features: Vec::new(),
     };

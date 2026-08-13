@@ -77,7 +77,14 @@ fn temp_config(tag: &str) -> (WikiConfig, std::path::PathBuf) {
 async fn all_empty_chunks_yield_empty_cards_and_no_failures() {
     let (config, dir) = temp_config("all_empty");
     let provider = MockProvider::new();
-    let generator = CardGenerator::new(&provider, config, 1, "zh".into());
+    let generator = CardGenerator::new(
+        &provider,
+        config,
+        1,
+        "zh".into(),
+        HashMap::new(),
+        HashMap::new(),
+    );
 
     let cards = generator
         .generate_all_cards(
@@ -114,7 +121,14 @@ async fn mixed_interleave_success_empty_failure_attributes_correctly() {
         fail_on: "模块路径: other",
     };
     let (config, dir) = temp_config("mixed");
-    let generator = CardGenerator::new(&selective, config, 1, "zh".into());
+    let generator = CardGenerator::new(
+        &selective,
+        config,
+        1,
+        "zh".into(),
+        HashMap::new(),
+        HashMap::new(),
+    );
 
     let cards = generator
         .generate_all_cards(
@@ -151,7 +165,14 @@ async fn empty_chunk_interleaved_with_failure_and_success() {
     // [空, 失败]：失败归因到真实模块 src，空模块不得记入
     let failing = FailingProvider;
     let (config1, dir1) = temp_config("empty_fail");
-    let gen1 = CardGenerator::new(&failing, config1, 1, "zh".into());
+    let gen1 = CardGenerator::new(
+        &failing,
+        config1,
+        1,
+        "zh".into(),
+        HashMap::new(),
+        HashMap::new(),
+    );
     let cards1 = gen1
         .generate_all_cards(
             &[make_empty_chunk("zzz"), make_test_chunk()],
@@ -175,7 +196,14 @@ async fn empty_chunk_interleaved_with_failure_and_success() {
     // [空, 成功]：成功卡片保留且归因正确（无错位截断）
     let provider = MockProvider::new();
     let (config2, dir2) = temp_config("empty_ok");
-    let gen2 = CardGenerator::new(&provider, config2, 1, "zh".into());
+    let gen2 = CardGenerator::new(
+        &provider,
+        config2,
+        1,
+        "zh".into(),
+        HashMap::new(),
+        HashMap::new(),
+    );
     let cards2 = gen2
         .generate_all_cards(
             &[make_empty_chunk("zzz"), make_test_chunk()],
