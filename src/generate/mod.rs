@@ -1,5 +1,6 @@
 pub mod card;
 pub mod chunk;
+pub mod context;
 pub mod embed;
 pub mod index;
 pub mod llm;
@@ -19,6 +20,7 @@ use crate::model::{KnowledgeCard, KnowledgeGraph, WikiDocument};
 
 use self::card::CardGenerator;
 use self::chunk::Chunk;
+use self::context::{CallerContext, DependencyContext};
 use self::llm::{AnthropicProvider, LlmProvider, OpenAiProvider, Provider};
 use self::wiki::WikiGenerator;
 
@@ -141,6 +143,36 @@ fn guide_prefix_match(module_path: &[String], pattern: &str) -> bool {
         .eq(pat.iter().copied())
 }
 
+/// 构建卡片阶段的模块级上下文（模块名 → 上下文）
+///
+/// 卡片并行生成，拿不到依赖方卡片摘要 → 摘要恒 None（只给模块名）；
+/// 调用方/被调用方上下文 = collect_caller_context（真实调用图推导，
+/// 卡片 design_rationale 的依据）。返回 (dep_contexts, caller_contexts)
+/// 两表，与 CardGenerator 新增字段一一对应。
+fn build_card_contexts(
+    chunks: &[Chunk],
+    graph: &KnowledgeGraph,
+) -> (
+    HashMap<String, Vec<DependencyContext>>,
+    HashMap<String, Vec<CallerContext>>,
+) {
+    let empty_cards: HashMap<String, &crate::model::KnowledgeCard> = HashMap::new();
+    let mut dep_contexts: HashMap<String, Vec<DependencyContext>> = HashMap::new();
+    let mut caller_contexts: HashMap<String, Vec<CallerContext>> = HashMap::new();
+    for chunk in chunks {
+        let module = chunk.module_path.join("::");
+        dep_contexts.insert(
+            module.clone(),
+            context::build_dependency_contexts(chunk, &empty_cards, &|_| None),
+        );
+        caller_contexts.insert(
+            module,
+            vec![context::collect_caller_context(chunk, graph, &|_| None)],
+        );
+    }
+    (dep_contexts, caller_contexts)
+}
+
 pub async fn run_generation(
     graph: &KnowledgeGraph,
     insights: &[FileInsight],
@@ -179,11 +211,15 @@ pub async fn run_generation(
 
     // 3. 并行生成 Knowledge Card
     let card_start = Instant::now();
+    // 项目级上下文：卡片阶段摘要恒 None（并行拿不到依赖方卡片）
+    let (card_dep_contexts, card_caller_contexts) = build_card_contexts(&chunks, graph);
     let card_gen = CardGenerator::new(
         &provider,
         config.clone(),
         crate::config::schema::llm_effective_concurrency(&config.llm),
         config.wiki.language.clone(),
+        card_dep_contexts,
+        card_caller_contexts,
     );
     let mut cards = card_gen
         .generate_all_cards(&chunks, extra_edits, on_progress)
@@ -203,6 +239,8 @@ pub async fn run_generation(
         &provider,
         crate::config::schema::llm_effective_concurrency(&config.llm),
     );
+    // 调用索引预计算一次（wiki 页循环按 chunk 查调用方，避免每页重扫全图）
+    let call_index = crate::search::callgraph::CallGraph::new(graph).build_call_index();
     let mut documents = generate_wiki_pages(
         &wiki_gen,
         &chunks,
@@ -210,6 +248,8 @@ pub async fn run_generation(
         config,
         crate::config::schema::llm_effective_concurrency(&config.llm),
         root,
+        graph,
+        &call_index,
         &build_entity_ranges(insights),
         on_progress,
     )
@@ -347,11 +387,14 @@ pub async fn run_generation_filtered(
 
     // 3. 并行生成 Knowledge Card（仅变更块）
     let card_start = Instant::now();
+    let (card_dep_contexts, card_caller_contexts) = build_card_contexts(&chunks, graph);
     let card_gen = CardGenerator::new(
         &provider,
         config.clone(),
         crate::config::schema::llm_effective_concurrency(&config.llm),
         config.wiki.language.clone(),
+        card_dep_contexts,
+        card_caller_contexts,
     );
     let mut cards = card_gen
         .generate_all_cards(&chunks, extra_edits, on_progress)
@@ -367,6 +410,7 @@ pub async fn run_generation_filtered(
         &provider,
         crate::config::schema::llm_effective_concurrency(&config.llm),
     );
+    let call_index = crate::search::callgraph::CallGraph::new(graph).build_call_index();
     let mut documents = generate_wiki_pages(
         &wiki_gen,
         &chunks,
@@ -374,6 +418,8 @@ pub async fn run_generation_filtered(
         config,
         crate::config::schema::llm_effective_concurrency(&config.llm),
         root,
+        graph,
+        &call_index,
         &build_entity_ranges(insights),
         on_progress,
     )
@@ -771,9 +817,9 @@ fn backfill_features(
 /// 卡片摘要按 chunk 索引一一对应；并发受 max_concurrent 信号量控制，
 /// join_all 保序收集——与串行版的产出顺序一致，页面集合不变。
 /// 失败页面跳过并告警（不中断整体生成）。
-// 例外说明（复杂度红线 5 参数规则）：8 个参数均为相互独立的上下文项
-// （生成器/输入/配置/并发/输出/进度回调），引入包装结构体反而降低调用点
-// 可读性；进度回调为显式注入契约（v46），不并入上下文结构。
+// 例外说明（复杂度红线 5 参数规则）：10 个参数均为相互独立的上下文项
+// （生成器/输入/配置/并发/图/调用索引/输出/进度回调），引入包装结构体反而
+// 降低调用点可读性；进度回调为显式注入契约（v46），不并入上下文结构。
 #[allow(clippy::too_many_arguments)]
 async fn generate_wiki_pages<P: LlmProvider>(
     wiki_gen: &WikiGenerator<'_, P>,
@@ -782,12 +828,21 @@ async fn generate_wiki_pages<P: LlmProvider>(
     config: &WikiConfig,
     max_concurrent: usize,
     root: &crate::project::ProjectRoot,
+    graph: &KnowledgeGraph,
+    call_index: &crate::search::callgraph::CallIndex,
     entity_ranges: &crate::output::citation::EntityRanges,
     on_progress: &dyn Fn(crate::ProgressEvent),
 ) -> Vec<WikiDocument> {
     // v51：多语言支持已删除，恒按主语言单值生成（原按语言循环结构移除，
     // 行为不变——旧 languages 恒为单元素 [config.wiki.language]）
     let language = crate::output::primary_language(config);
+    // 模块名 → 卡片表（wiki 阶段卡片已就绪：依赖方/调用方摘要可查）
+    let cards_map: HashMap<String, &KnowledgeCard> = cards
+        .iter()
+        .flatten()
+        .map(|c| (c.module_name.clone(), c))
+        .collect();
+    let summary_of = |m: &str| cards_map.get(m).map(|c| c.summary.clone());
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(max_concurrent.max(1)));
     let mut handles = Vec::with_capacity(chunks.len());
     // 记录每个任务的模块名（失败时写入 wiki_gen 的失败列表，T3.2）
@@ -805,6 +860,11 @@ async fn generate_wiki_pages<P: LlmProvider>(
             .and_then(|c| c.as_ref())
             .map(|c| c.summary.clone())
             .unwrap_or_default();
+        // 项目级上下文注入：依赖模块摘要（依赖方卡片摘要）+ 调用方上下文
+        // （真实调用图推导）。在循环内预计算为 owned 数据再移入 async 任务
+        // ——闭包 summary_of 借用 cards_map，不能跨 await 借用。
+        let dep_contexts = context::build_dependency_contexts(chunk, &cards_map, &summary_of);
+        let caller_contexts = context::build_caller_contexts(chunk, graph, call_index, &summary_of);
         let semaphore = semaphore.clone();
         let lang_cfg = lang_cfg.clone();
         let done = done.clone();
@@ -815,7 +875,15 @@ async fn generate_wiki_pages<P: LlmProvider>(
                 .await
                 .map_err(|_| anyhow::anyhow!("信号量已关闭"))?;
             let result = wiki_gen
-                .generate_wiki_page(chunk, &card_summary, &lang_cfg, root, Some(entity_ranges))
+                .generate_wiki_page(
+                    chunk,
+                    &card_summary,
+                    &lang_cfg,
+                    root,
+                    Some(entity_ranges),
+                    &dep_contexts,
+                    &caller_contexts,
+                )
                 .await;
             // 成败均计数并回报进度（失败项也算「已处理」——总数是任务数）
             // v46：wiki 项级区间 90..95（系数 5）——上限与 output 阶段点

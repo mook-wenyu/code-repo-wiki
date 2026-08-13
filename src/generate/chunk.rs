@@ -20,6 +20,11 @@ pub struct Chunk {
     pub imports: Vec<ImportStmt>,
     /// 依赖的其他模块名
     pub dependencies: Vec<String>,
+    /// 调用本模块的其他模块名（入边 Calls，BTreeSet 排序去重，跳过自身）。
+    /// 调用方/依赖方模块归属一律走 ModuleCluster.node_ids → 节点 → 模块名
+    /// （见 build_node_to_module_map），不得用 CodeNode.module_path——
+    /// 那只是目录+文件 stem 派生名，与社区命名（ModuleCluster.name）不同源。
+    pub caller_modules: Vec<String>,
     /// 关联的源文件路径
     pub file_paths: Vec<PathBuf>,
     /// 每个实体所属的源文件（与 entities 平行；空表示未记录，
@@ -55,6 +60,22 @@ pub fn build_node_to_file_map(graph: &KnowledgeGraph) -> HashMap<NodeIndex, Path
     map
 }
 
+/// 构建节点 → 模块名映射（模块归属唯一真源）
+///
+/// 命名坑：`CodeNode.module_path`（目录+文件 stem 派生名）≠
+/// `ModuleCluster.name`（社区名，如 `src::net`）。依赖方/调用方模块
+/// 归属必须走 `ModuleCluster.node_ids → 节点 → 模块名` 的映射，
+/// 不得用 `node.module_path`（否则同目录文件归错模块）。
+/// 同名节点多归属时先到先得（与 export_modules/index 同规则）。
+pub fn build_node_to_module_map(
+    modules: &[ModuleCluster],
+) -> std::collections::HashMap<NodeIndex, &str> {
+    modules
+        .iter()
+        .flat_map(|m| m.node_ids.iter().map(move |id| (*id, m.name.as_str())))
+        .collect()
+}
+
 /// 以模块为单位进行 AST 感知分块
 ///
 /// 将 FileInsight 按 ModuleCluster 分组，通过 node_id → file_path 映射精确匹配，
@@ -68,19 +89,12 @@ pub fn chunk_by_module(
     let node_to_file = build_node_to_file_map(graph);
     let mut chunks = Vec::with_capacity(modules.len());
 
-    // 预计算模块名 → 节点集合的映射，用于依赖分析
-    let module_node_ids: std::collections::HashMap<&str, HashSet<NodeIndex>> = modules
-        .iter()
-        .map(|m| (m.name.as_str(), m.node_ids.iter().copied().collect()))
-        .collect();
-
     // P2-20：节点 → 模块 反向索引（单遍构建 O(V)）——依赖分析不再对每个
     // 模块双层扫描（原 O(模块数 × 节点数 × 出边数)），改为每模块单遍扫出边、
     // 反向索引 O(1) 定位目标模块（总 O(V + E × 模块数)）。
-    let node_to_module: std::collections::HashMap<NodeIndex, &str> = module_node_ids
-        .iter()
-        .flat_map(|(name, ids)| ids.iter().map(move |id| (*id, *name)))
-        .collect();
+    // 复用独立函数 build_node_to_module_map（context.rs 也消费同一映射，
+    // 保证依赖/调用方归属两处口径一致）。
+    let node_to_module = build_node_to_module_map(modules);
 
     for module in modules {
         // 收集该模块中所有 File 节点的路径
@@ -129,13 +143,23 @@ pub fn chunk_by_module(
 
         let module_path: Vec<String> = module.name.split("::").map(|s| s.to_string()).collect();
 
-        // 计算实际依赖：从本模块节点出发，通过 Imports 边到达其他模块的节点。
+        // 计算实际依赖：从本模块节点出发，通过 Imports ∪ Calls 边到达其他模块的节点。
+        // Imports 表达文件级导入，Calls 表达函数级调用——只取 Imports 会漏掉
+        // 「无 use 但直接跨模块调用」的模块级耦合（模块页依赖/交叉引用缺失）。
         // BTreeSet 天然有序去重——取代原 deps.sort()，确定性契约不变（卡片
         // frontmatter 的 dependencies 顺序跨次稳定，评测不漂移）
         let mut deps: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        // caller_modules：调用本模块的其他模块名（入边 Calls 聚合到模块，
+        // BTreeSet 排序去重，跳过自身）——模块页「调用方」与卡片设计意图
+        // 的依据来自真实调用图，不从代码硬编（硬编=复述 how 而非 why）。
+        let mut caller_modules: std::collections::BTreeSet<&str> =
+            std::collections::BTreeSet::new();
         for nid in &module.node_ids {
             for e in graph.graph.edges(*nid) {
-                if graph.graph[e.id()].kind != EdgeKind::Imports {
+                if !matches!(
+                    graph.graph[e.id()].kind,
+                    EdgeKind::Imports | EdgeKind::Calls
+                ) {
                     continue;
                 }
                 if let Some(&target_mod) = node_to_module.get(&e.target())
@@ -144,14 +168,31 @@ pub fn chunk_by_module(
                     deps.insert(target_mod);
                 }
             }
+            // 入边 Calls：调用方模块（图是稳定有向图，edges_directed 按入方向扫）
+            for e in graph
+                .graph
+                .edges_directed(*nid, petgraph::Direction::Incoming)
+            {
+                if graph.graph[e.id()].kind != EdgeKind::Calls {
+                    continue;
+                }
+                if let Some(&src_mod) = node_to_module.get(&e.source())
+                    && src_mod != module.name.as_str()
+                {
+                    caller_modules.insert(src_mod);
+                }
+            }
         }
         let deps: Vec<String> = deps.into_iter().map(|s| s.to_string()).collect();
+        let caller_modules: Vec<String> =
+            caller_modules.into_iter().map(|s| s.to_string()).collect();
 
         chunks.push(Chunk {
             module_path,
             entities,
             imports,
             dependencies: deps,
+            caller_modules,
             file_paths,
             entity_sources,
         });
@@ -181,6 +222,8 @@ pub fn chunk_by_file(insight: &FileInsight) -> Chunk {
         entities: insight.entities.clone(),
         imports: insight.imports.clone(),
         dependencies: Vec::new(),
+        // Level 0（无模块聚类）拿不到模块归属，调用方恒空
+        caller_modules: Vec::new(),
         file_paths: vec![insight.path.clone()],
         entity_sources: insight
             .entities
@@ -242,6 +285,7 @@ mod tests {
             entities: vec![],
             imports: vec![],
             dependencies: vec![],
+            caller_modules: vec![],
             file_paths: vec![],
             entity_sources: vec![],
         };
@@ -435,5 +479,120 @@ mod tests {
             chunks[1].entity_sources,
             vec![std::path::PathBuf::from("src/b/file_b.rs")]
         );
+    }
+
+    /// 依赖边扩展（Imports ∪ Calls）：跨模块 Calls 边必须进入 dependencies——
+    /// 只取 Imports 会漏掉「无 use 但直接调用」的模块耦合（模块页依赖/交叉引用缺失）。
+    /// 同时验证 caller_modules（入边 Calls）的模块归属与排序去重。
+    #[test]
+    fn test_chunk_by_module_calls_edge_and_caller_modules() {
+        let mut graph = KnowledgeGraph::default();
+
+        let file_a = graph.graph.add_node(crate::model::CodeNode {
+            id: petgraph::stable_graph::NodeIndex::new(0),
+            kind: NodeKind::File,
+            name: "file_a.rs".into(),
+            file_path: Some("src/a/file_a.rs".into()),
+            line_range: None,
+            doc_comment: None,
+            signature: None,
+            visibility: None,
+            module_path: vec!["src".into(), "a".into()],
+        });
+        let caller_fn = graph.graph.add_node(crate::model::CodeNode {
+            id: petgraph::stable_graph::NodeIndex::new(1),
+            kind: NodeKind::Function,
+            name: "caller".into(),
+            file_path: Some("src/a/file_a.rs".into()),
+            line_range: Some((1, 5)),
+            doc_comment: None,
+            signature: Some("fn caller()".into()),
+            visibility: None,
+            module_path: vec!["src".into(), "a".into()],
+        });
+        let file_b = graph.graph.add_node(crate::model::CodeNode {
+            id: petgraph::stable_graph::NodeIndex::new(2),
+            kind: NodeKind::File,
+            name: "file_b.rs".into(),
+            file_path: Some("src/b/file_b.rs".into()),
+            line_range: None,
+            doc_comment: None,
+            signature: None,
+            visibility: None,
+            module_path: vec!["src".into(), "b".into()],
+        });
+        let callee_fn = graph.graph.add_node(crate::model::CodeNode {
+            id: petgraph::stable_graph::NodeIndex::new(3),
+            kind: NodeKind::Function,
+            name: "callee".into(),
+            file_path: Some("src/b/file_b.rs".into()),
+            line_range: Some((1, 5)),
+            doc_comment: None,
+            signature: Some("fn callee()".into()),
+            visibility: None,
+            module_path: vec!["src".into(), "b".into()],
+        });
+
+        for (s, t) in [
+            (file_a, caller_fn),
+            (file_b, callee_fn),
+            (caller_fn, callee_fn), // 跨模块 Calls 边（无 Imports 边）
+        ] {
+            graph.graph.add_edge(
+                s,
+                t,
+                crate::model::CodeEdge {
+                    id: petgraph::stable_graph::EdgeIndex::new(graph.graph.edge_count()),
+                    kind: if (s, t) == (caller_fn, callee_fn) {
+                        EdgeKind::Calls
+                    } else {
+                        EdgeKind::Contains
+                    },
+                    source: s,
+                    target: t,
+                    weight: 1.0,
+                    location: None,
+                },
+            );
+        }
+
+        let modules = vec![
+            ModuleCluster {
+                name: "src::a".into(),
+                node_ids: vec![file_a, caller_fn],
+                cohesion: 0.9,
+                coupling: 0.1,
+                description: None,
+            },
+            ModuleCluster {
+                name: "src::b".into(),
+                node_ids: vec![file_b, callee_fn],
+                cohesion: 0.9,
+                coupling: 0.1,
+                description: None,
+            },
+        ];
+        let insights = vec![
+            make_insight("src/a/file_a.rs", vec![make_entity("caller", "fn")]),
+            make_insight("src/b/file_b.rs", vec![make_entity("callee", "fn")]),
+        ];
+
+        let chunks = chunk_by_module(&insights, &modules, &graph);
+
+        // a 调用 b：Calls 边被依赖分析捕获（Imports ∪ Calls）
+        assert_eq!(
+            chunks[0].dependencies,
+            vec!["src::b".to_string()],
+            "Calls 边应进入 dependencies"
+        );
+        // b 的 caller_modules：被 a 调用（入边 Calls 聚合到模块）
+        assert_eq!(
+            chunks[1].caller_modules,
+            vec!["src::a".to_string()],
+            "调用方应通过 Calls 入边推导"
+        );
+        // a 的 caller_modules 为空（无人调用 a），b 的 dependencies 为空
+        assert!(chunks[0].caller_modules.is_empty());
+        assert!(chunks[1].dependencies.is_empty());
     }
 }

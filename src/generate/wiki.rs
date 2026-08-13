@@ -244,6 +244,8 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
     /// * `chunk` — 模块的代码数据块
     /// * `card_summary` — 之前生成的 Knowledge Card 摘要，作为上下文参考
     /// * `config` — Wiki 配置（用于获取语言设置等）
+    /// * `dep_contexts` — 依赖模块摘要（wiki 阶段卡片已就绪，带依赖方卡片摘要）
+    /// * `caller_contexts` — 调用方模块上下文（真实调用图推导）
     ///
     /// P0-1 引用契约：生成后校验源码引用（文件存在 + 行号有效），
     /// 引用无效时重试（最多 `CITATION_RETRY_MAX` 次，用户决策"总是重试"）。
@@ -252,6 +254,9 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
     /// G2 Mermaid 契约：正文中的 Mermaid 代码块同样校验（merman 权威解析），
     /// 坏块错误消息注入重试反馈；重试耗尽后**降级**而非失败——坏块替换为
     /// text fence + 标记注释（OpenWiki degrade-and-repair），页面照常产出。
+    /// 依赖防幻觉契约：正文「## 依赖关系」声称对照允许集校验（dependency_check），
+    /// 违反时注入反馈重试；重试耗尽后 fail-fast bail（不产出含虚构依赖的页面）。
+    #[allow(clippy::too_many_arguments)]
     pub async fn generate_wiki_page(
         &self,
         chunk: &Chunk,
@@ -259,6 +264,8 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
         config: &WikiConfig,
         root: &crate::project::ProjectRoot,
         entity_ranges: Option<&crate::output::citation::EntityRanges>,
+        dep_contexts: &[crate::generate::context::DependencyContext],
+        caller_contexts: &[crate::generate::context::CallerContext],
     ) -> Result<WikiDocument> {
         if chunk.is_empty() {
             anyhow::bail!("空块，跳过 Wiki 页面生成");
@@ -268,10 +275,18 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
         // T08b：concise 档位精简引导注记（每条截断至 160 字符 + 最多 3 条；
         // 不改变 pages/priority 语义，不丢模块与页面）
         let guide_notes = trim_guide_notes(config.wiki.guide.tier, &config.wiki.guide.notes);
-        let mut messages = prompt::wiki_page_prompt(chunk, card_summary, language, &guide_notes);
+        let mut messages = prompt::wiki_page_prompt(
+            chunk,
+            card_summary,
+            language,
+            &guide_notes,
+            dep_contexts,
+            caller_contexts,
+        );
         let mut content = String::new();
         let mut last_invalid = Vec::new();
         let mut last_mermaid = Vec::new();
+        let mut last_dep_violations = Vec::new();
 
         // 重试循环：首次调用 + 每次校验失败后追加反馈重试（共 RETRY_MAX + 1 次调用）。
         // 引用与 Mermaid 校验共享同一循环（上限取两者最大值——当前均为 2），
@@ -311,7 +326,14 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
             };
             last_mermaid = crate::output::mermaid_check::validate_mermaid_blocks(&content);
             last_residue = crate::output::residue_check::scan_template_residue(&content);
-            if last_invalid.is_empty() && last_mermaid.is_empty() && last_residue.is_empty() {
+            // 依赖防幻觉：正文「## 依赖关系」声称对照允许集校验（虚构依赖重试）
+            last_dep_violations =
+                crate::output::dependency_check::validate_dependencies(&content, chunk);
+            if last_invalid.is_empty()
+                && last_mermaid.is_empty()
+                && last_residue.is_empty()
+                && last_dep_violations.is_empty()
+            {
                 break;
             }
             if !last_invalid.is_empty() {
@@ -338,6 +360,14 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
                     chunk.module_path.join("::")
                 );
             }
+            if !last_dep_violations.is_empty() {
+                tracing::warn!(
+                    "Wiki 页面依赖校验失败（第 {} 次，虚构 {} 条）: {}",
+                    attempt + 1,
+                    last_dep_violations.len(),
+                    chunk.module_path.join("::")
+                );
+            }
             // 重试机会已用完：跳出循环走收尾路径
             if attempt == retry_max {
                 break;
@@ -357,6 +387,13 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
                     crate::output::residue_check::residue_retry_feedback(&last_residue),
                 ));
             }
+            if !last_dep_violations.is_empty() {
+                messages.push(Message::user(
+                    crate::output::dependency_check::dependency_retry_feedback(
+                        &last_dep_violations,
+                    ),
+                ));
+            }
         }
 
         // 引用校验：重试耗尽仍无效 → 失败（不产出无引用的页面）
@@ -365,6 +402,16 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
                 "Wiki 页面引用校验失败（重试 {} 次仍无效，共 {} 条无效引用）: {}",
                 retry_max,
                 last_invalid.len(),
+                chunk.module_path.join("::")
+            );
+        }
+        // 依赖校验：重试耗尽仍虚构 → 失败（fail-fast，不产出含虚构依赖的页面，
+        // 与引用校验同语义；依赖真实性可由图验证，无降级选项）
+        if !last_dep_violations.is_empty() {
+            anyhow::bail!(
+                "Wiki 页面依赖校验失败（重试 {} 次仍虚构，共 {} 条）: {}",
+                retry_max,
+                last_dep_violations.len(),
                 chunk.module_path.join("::")
             );
         }
@@ -1196,12 +1243,13 @@ mod tests {
             entities: vec![],
             imports: vec![],
             dependencies: vec![],
+            caller_modules: vec![],
             file_paths: vec![],
             entity_sources: vec![],
         };
 
         let result = generator
-            .generate_wiki_page(&empty_chunk, "", &config, &root, None)
+            .generate_wiki_page(&empty_chunk, "", &config, &root, None, &[], &[])
             .await;
         assert!(result.is_err());
     }
@@ -1230,7 +1278,7 @@ mod tests {
         let chunk = make_test_chunk();
 
         let doc = generator
-            .generate_wiki_page(&chunk, "摘要", &config, &root, None)
+            .generate_wiki_page(&chunk, "摘要", &config, &root, None, &[], &[])
             .await
             .unwrap();
         assert!(
@@ -1267,7 +1315,7 @@ mod tests {
         let chunk = make_test_chunk();
 
         let result = generator
-            .generate_wiki_page(&chunk, "摘要", &config, &root, None)
+            .generate_wiki_page(&chunk, "摘要", &config, &root, None, &[], &[])
             .await;
         assert!(result.is_err(), "重试耗尽后应报错");
         let err = result.unwrap_err().to_string();
@@ -1300,7 +1348,7 @@ mod tests {
         let chunk = make_test_chunk();
 
         let doc = generator
-            .generate_wiki_page(&chunk, "摘要", &config, &root, None)
+            .generate_wiki_page(&chunk, "摘要", &config, &root, None, &[], &[])
             .await
             .unwrap();
         assert_eq!(doc.content, "模块职责是管理连接。");
@@ -1333,7 +1381,7 @@ mod tests {
         let chunk = make_test_chunk();
 
         let doc = generator
-            .generate_wiki_page(&chunk, "摘要", &config, &root, None)
+            .generate_wiki_page(&chunk, "摘要", &config, &root, None, &[], &[])
             .await
             .unwrap();
         assert!(
@@ -1379,7 +1427,7 @@ mod tests {
         let chunk = make_test_chunk();
 
         let doc = generator
-            .generate_wiki_page(&chunk, "摘要", &config, &root, Some(&ranges))
+            .generate_wiki_page(&chunk, "摘要", &config, &root, Some(&ranges), &[], &[])
             .await
             .unwrap();
         assert!(
@@ -1425,7 +1473,7 @@ mod tests {
         let chunk = make_test_chunk();
 
         let result = generator
-            .generate_wiki_page(&chunk, "摘要", &config, &root, Some(&ranges))
+            .generate_wiki_page(&chunk, "摘要", &config, &root, Some(&ranges), &[], &[])
             .await;
         assert!(result.is_err(), "区间重叠校验重试耗尽应报错");
         let err = result.unwrap_err().to_string();
@@ -1459,7 +1507,7 @@ mod tests {
         let chunk = make_test_chunk();
 
         let doc = generator
-            .generate_wiki_page(&chunk, "摘要", &config, &root, Some(&ranges))
+            .generate_wiki_page(&chunk, "摘要", &config, &root, Some(&ranges), &[], &[])
             .await
             .unwrap();
         assert!(doc.content.contains("README.md:1"), "无实体文件引用应放行");
@@ -1494,7 +1542,7 @@ mod tests {
         let chunk = make_test_chunk();
 
         let doc = generator
-            .generate_wiki_page(&chunk, "摘要", &config, &root, None)
+            .generate_wiki_page(&chunk, "摘要", &config, &root, None, &[], &[])
             .await
             .unwrap();
         assert!(
@@ -1510,6 +1558,77 @@ mod tests {
             provider.calls.load(std::sync::atomic::Ordering::Relaxed),
             MERMAID_RETRY_MAX + 1,
             "应调用 MERMAID_RETRY_MAX+1 次后降级"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 依赖防幻觉契约重试：虚构依赖 → 注入反馈 → 第二次输出真实依赖则成功
+    #[tokio::test]
+    async fn test_wiki_page_retries_on_fabricated_dependency() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_dep_retry_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = crate::project::ProjectRoot::new(dir.clone());
+
+        // make_test_chunk 的 imports 含 tokio：允许集含 tokio，fake_crate 是编造
+        let provider = ScriptedProvider::new(vec![
+            "模块职责是处理网络。依赖 tokio。\n\n## 依赖关系\n- fake_crate — 编造\n".to_string(),
+            "模块职责是处理网络。依赖 tokio。\n\n## 依赖关系\n- tokio — 异步运行时\n".to_string(),
+        ]);
+        let generator = WikiGenerator::new(&provider, 0);
+        let config = WikiConfig::default();
+        let chunk = make_test_chunk();
+
+        let doc = generator
+            .generate_wiki_page(&chunk, "摘要", &config, &root, None, &[], &[])
+            .await
+            .unwrap();
+        assert!(doc.content.contains("tokio"), "重试后应使用真实依赖");
+        assert_eq!(
+            provider.calls.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "虚构依赖应触发一次重试"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 依赖防幻觉契约重试耗尽：超过重试上限仍虚构 → fail-fast bail
+    /// （不产出含虚构依赖的页面，与引用校验同语义）
+    #[tokio::test]
+    async fn test_wiki_page_bails_on_fabricated_dependency() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_dep_fail_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = crate::project::ProjectRoot::new(dir.clone());
+
+        let provider = ScriptedProvider::new(vec![
+            "## 依赖关系\n- fake_crate — 编造\n".to_string(),
+            "## 依赖关系\n- fake_crate — 编造\n".to_string(),
+            "## 依赖关系\n- fake_crate — 编造\n".to_string(),
+        ]);
+        let generator = WikiGenerator::new(&provider, 0);
+        let config = WikiConfig::default();
+        let chunk = make_test_chunk();
+
+        let result = generator
+            .generate_wiki_page(&chunk, "摘要", &config, &root, None, &[], &[])
+            .await;
+        assert!(result.is_err(), "依赖校验重试耗尽应报错");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("依赖校验失败"),
+            "错误信息应说明依赖校验失败: {err}"
+        );
+        assert_eq!(
+            provider.calls.load(std::sync::atomic::Ordering::Relaxed),
+            CITATION_RETRY_MAX + 1,
+            "应调用重试上限 + 1 次后放弃"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1559,6 +1678,7 @@ mod tests {
             entities: vec![],
             imports: vec![],
             dependencies: vec!["tokio".into(), "serde".into()],
+            caller_modules: vec![],
             file_paths: vec![],
             entity_sources: vec![],
         };
@@ -1579,6 +1699,7 @@ mod tests {
             entities: vec![],
             imports: vec![],
             dependencies: vec!["src::analysis".into(), "src::output".into()],
+            caller_modules: vec![],
             file_paths: vec![],
             entity_sources: vec![],
         };
@@ -2030,6 +2151,8 @@ mod tests {
             architecture: None,
             pending_manual_edits: vec![],
             features: Vec::new(),
+            // 跨域契约：design_rationale 字段由 model/document.rs 的 worker 添加
+            design_rationale: None,
         };
         let prompt = overview_user_prompt(&[], &[card], &graph, &config);
         assert!(prompt.contains("## 模块卡片摘要"), "应含卡片摘要节");

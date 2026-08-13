@@ -2,6 +2,7 @@
 //! 同一输出目录并发运行不被支持，见 README 限制项）
 pub mod citation;
 pub mod crossref;
+pub mod dependency_check;
 pub mod html;
 pub mod lint;
 pub mod llms_txt;
@@ -561,6 +562,7 @@ mod tests {
             coding_spec: None,
             tech_stack: vec![],
             architecture: None,
+            design_rationale: None,
             pending_manual_edits: vec![],
             features: Vec::new(),
         }

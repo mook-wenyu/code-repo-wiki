@@ -76,6 +76,15 @@ pub struct CardGenerator<'a, P: LlmProvider> {
     config: WikiConfig,
     /// 生成失败的模块名列表（演进计划 T3.2 失败隔离：失败只记录不中断）
     failed: std::sync::Mutex<Vec<String>>,
+    /// 依赖模块上下文（模块名 → DependencyContext 列表）。卡片阶段卡片
+    /// 尚未生成（并行拿不到依赖方摘要），摘要恒为 None——只给模块名；
+    /// 卡片 prompt 的「## 依赖模块」节据此渲染（被调用方上下文）。
+    dep_contexts:
+        std::collections::HashMap<String, Vec<crate::generate::context::DependencyContext>>,
+    /// 调用方/被调用方上下文（模块名 → 单元素列表，collect_caller_context 产物）。
+    /// 供 LLM 推断卡片 design_rationale（设计意图 WHY）。
+    caller_contexts:
+        std::collections::HashMap<String, Vec<crate::generate::context::CallerContext>>,
 }
 
 impl<'a, P: LlmProvider> CardGenerator<'a, P> {
@@ -84,11 +93,21 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
     /// max_concurrent 控制并行 LLM 调用的最大并发数（0 表示不限制）。
     /// language 指定生成内容的语言。
     /// config 提供产物路径定位（卡片文件读/写规则），供人工修改记录恢复。
+    /// dep_contexts / caller_contexts 为项目级上下文（模块名 → 上下文），
+    /// 由管线预计算（build_dependency_contexts / collect_caller_context）。
     pub fn new(
         provider: &'a P,
         config: WikiConfig,
         max_concurrent: usize,
         language: String,
+        dep_contexts: std::collections::HashMap<
+            String,
+            Vec<crate::generate::context::DependencyContext>,
+        >,
+        caller_contexts: std::collections::HashMap<
+            String,
+            Vec<crate::generate::context::CallerContext>,
+        >,
     ) -> Self {
         // tokio Semaphore 许可数有 MAX_PERMITS 上限（约 2^61），usize::MAX 会 panic；
         // "0=不限制" 用足够大的许可数表达（对真实并发规模永不构成瓶颈）
@@ -104,6 +123,8 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
             language,
             config,
             failed: std::sync::Mutex::new(Vec::new()),
+            dep_contexts,
+            caller_contexts,
         }
     }
 
@@ -143,8 +164,22 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
 
         // P2-10：卡片 JSON 解析失败时重试一次——LLM 输出可能带 Markdown 围栏
         // 或尾随散文（extract_json 只取首{尾}，切片内残留即解析失败）。失败后追加约束消息重调，最多 2 次。
-        let mut messages =
-            prompt::knowledge_card_prompt(chunk, &self.language, pending_manual_edits);
+        let module = chunk.module_path.join("::");
+        // 项目级上下文注入：依赖模块（被调用方）+ 调用方/被调用方（设计意图依据）。
+        // 查不到（Level 0 文件级分块）时传空——prompt 零破坏不生成节。
+        let dep_contexts = self.dep_contexts.get(&module).cloned().unwrap_or_default();
+        let caller_contexts = self
+            .caller_contexts
+            .get(&module)
+            .cloned()
+            .unwrap_or_default();
+        let mut messages = prompt::knowledge_card_prompt(
+            chunk,
+            &self.language,
+            pending_manual_edits,
+            &dep_contexts,
+            &caller_contexts,
+        );
         let mut response = self
             .provider
             .complete_with_budget(&messages, Some(CARD_MAX_OUTPUT_TOKENS))
@@ -390,7 +425,34 @@ pub async fn generate_module_card(
         .map(|content| extract_pending_manual_edits(&content))
         .unwrap_or_default();
 
-    let generator = CardGenerator::new(provider, config.clone(), 1, config.wiki.language.clone());
+    // 项目级上下文：依赖模块（卡片阶段摘要恒 None，只给模块名）+
+    // 调用方/被调用方（collect_caller_context，设计意图依据）
+    let module_name = chunk.module_path.join("::");
+    let empty_cards: std::collections::HashMap<String, &crate::model::KnowledgeCard> =
+        std::collections::HashMap::new();
+    let mut dep_contexts = std::collections::HashMap::new();
+    dep_contexts.insert(
+        module_name.clone(),
+        crate::generate::context::build_dependency_contexts(&chunk, &empty_cards, &|_| None),
+    );
+    let mut caller_contexts = std::collections::HashMap::new();
+    caller_contexts.insert(
+        module_name.clone(),
+        vec![crate::generate::context::collect_caller_context(
+            &chunk,
+            &graph,
+            &|_| None,
+        )],
+    );
+
+    let generator = CardGenerator::new(
+        provider,
+        config.clone(),
+        1,
+        config.wiki.language.clone(),
+        dep_contexts,
+        caller_contexts,
+    );
     let card = generator.generate_card(&chunk, &pending).await?;
     let content = crate::output::markdown::render_knowledge_card(&card);
 
@@ -504,6 +566,10 @@ fn parse_card_response(response: &str, chunk: &Chunk) -> Result<KnowledgeCard> {
         })
         .unwrap_or_default();
     let architecture = parsed["architecture"].as_str().map(|s| s.to_string());
+    // 设计意图（WHY）：LLM 从调用方/被调用方上下文推断的模块存在理由。
+    // 跨域契约：KnowledgeCard.design_rationale 字段由 model/document.rs 的
+    // 并行 worker 负责添加（本域只读取/回填），缺失（旧 JSON）时保持 None。
+    let design_rationale = parsed["design_rationale"].as_str().map(|s| s.to_string());
 
     Ok(KnowledgeCard {
         module_name: chunk.module_path.join("::"),
@@ -525,6 +591,7 @@ fn parse_card_response(response: &str, chunk: &Chunk) -> Result<KnowledgeCard> {
         architecture,
         pending_manual_edits: Vec::new(),
         features: Vec::new(),
+        design_rationale,
     })
 }
 
@@ -600,6 +667,17 @@ mod tests {
         chunk_by_file(&insight)
     }
 
+    /// 测试辅助：空项目级上下文（无依赖/无调用方）
+    fn empty_contexts()
+    -> std::collections::HashMap<String, Vec<crate::generate::context::DependencyContext>> {
+        std::collections::HashMap::new()
+    }
+
+    fn empty_caller_contexts()
+    -> std::collections::HashMap<String, Vec<crate::generate::context::CallerContext>> {
+        std::collections::HashMap::new()
+    }
+
     #[test]
     fn test_extract_json() {
         let input = "```json\n{\"summary\": \"test\"}\n```";
@@ -624,6 +702,21 @@ mod tests {
         assert_eq!(card.coding_spec.as_deref(), Some("遵循 rustfmt"));
         assert_eq!(card.tech_stack, vec!["serde".to_string()]);
         assert_eq!(card.architecture.as_deref(), Some("分层"));
+        // 设计意图（WHY）：JSON 无该字段时保持 None
+        assert!(card.design_rationale.is_none());
+    }
+
+    /// 设计意图（WHY）回填：卡片 JSON 含 design_rationale 时解析回填到
+    /// KnowledgeCard（跨域契约：字段由 model/document.rs 的 worker 添加）
+    #[test]
+    fn test_parse_card_response_design_rationale() {
+        let response = r#"{"summary": "配置模块", "key_entities": [], "design_rationale": "被运行时加载器调用，提供全局配置的单一入口"}"#;
+        let chunk = make_test_chunk();
+        let card = parse_card_response(response, &chunk).unwrap();
+        assert_eq!(
+            card.design_rationale.as_deref(),
+            Some("被运行时加载器调用，提供全局配置的单一入口")
+        );
     }
 
     #[test]
@@ -746,7 +839,14 @@ mod tests {
         let chunk = make_test_chunk();
         let provider = Provider::Mock(MockProvider::new());
         let (config, dir) = card_fixture("pending", "src", "旧卡片内容");
-        let generator = CardGenerator::new(&provider, config, 1, "zh".into());
+        let generator = CardGenerator::new(
+            &provider,
+            config,
+            1,
+            "zh".into(),
+            empty_contexts(),
+            empty_caller_contexts(),
+        );
         // 带记录：LLM 输入注入且生成后回填（渲染不丢）
         let pending = vec!["人工修改待同步: wiki/zh/src_config.md 内容摘要: 用户改的".into()];
         let card = generator.generate_card(&chunk, &pending).await.unwrap();
@@ -772,7 +872,14 @@ mod tests {
             "# src\n\n## 摘要\n旧内容\n\n## 人工修改待同步\n\n- 人工修改待同步: wiki/zh/src.md 内容摘要: 旧记录\n",
         );
 
-        let generator = CardGenerator::new(&provider, config, 1, "zh".into());
+        let generator = CardGenerator::new(
+            &provider,
+            config,
+            1,
+            "zh".into(),
+            empty_contexts(),
+            empty_caller_contexts(),
+        );
         // 本次新增记录（模块名 → 记录文本，lib.rs 组装）
         let mut extra = std::collections::HashMap::new();
         extra.insert(
@@ -835,7 +942,14 @@ mod tests {
         std::fs::remove_file(&card_file).unwrap();
         std::fs::create_dir_all(&card_file).unwrap();
 
-        let generator = CardGenerator::new(&provider, config, 1, "zh".into());
+        let generator = CardGenerator::new(
+            &provider,
+            config,
+            1,
+            "zh".into(),
+            empty_contexts(),
+            empty_caller_contexts(),
+        );
         let mut extra = std::collections::HashMap::new();
         extra.insert(
             "src".to_string(),
@@ -875,7 +989,14 @@ mod tests {
         // 失败也占 None 位，长度恒 = chunks 长度
         let failing = FailingProvider;
         let (config, dir) = card_fixture("interleave-fail", "src", "# src\n\n## 摘要\n旧内容");
-        let fail_gen = CardGenerator::new(&failing, config, 1, "zh".into());
+        let fail_gen = CardGenerator::new(
+            &failing,
+            config,
+            1,
+            "zh".into(),
+            empty_contexts(),
+            empty_caller_contexts(),
+        );
         let cards = fail_gen
             .generate_all_cards(
                 &[empty.clone(), make_test_chunk()],
@@ -899,7 +1020,14 @@ mod tests {
 
         // ② [空, 成功]：成功卡片保留在正确索引位（None 占位不压缩，P1-1 对齐语义）
         let (config2, dir2) = card_fixture("interleave-ok", "src", "# src\n\n## 摘要\n旧内容");
-        let gen2 = CardGenerator::new(&provider, config2, 1, "zh".into());
+        let gen2 = CardGenerator::new(
+            &provider,
+            config2,
+            1,
+            "zh".into(),
+            empty_contexts(),
+            empty_caller_contexts(),
+        );
         let cards2 = gen2
             .generate_all_cards(
                 &[empty, make_test_chunk()],
@@ -971,7 +1099,14 @@ mod tests {
         let provider = FlakyJsonProvider {
             calls: std::sync::atomic::AtomicUsize::new(0),
         };
-        let generator = CardGenerator::new(&provider, config, 1, "zh".into());
+        let generator = CardGenerator::new(
+            &provider,
+            config,
+            1,
+            "zh".into(),
+            empty_contexts(),
+            empty_caller_contexts(),
+        );
         let chunk = make_test_chunk();
         let card = generator.generate_card(&chunk, &[]).await.unwrap();
         assert_eq!(card.summary, "重试成功", "重试后应解析成功");

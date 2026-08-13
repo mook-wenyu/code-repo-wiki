@@ -1,36 +1,246 @@
 use crate::generate::chunk::Chunk;
+use crate::generate::context::{CallerContext, DependencyContext};
 use crate::generate::llm::Message;
 use crate::model::{KnowledgeGraph, ModuleCluster};
 
+// ========== 输入 token 预算常量 ==========
+// 启发式估算：1 个 token ≈ 3 个字符（CJK 与代码混合输入的平均经验值），
+// 不求精确（精确需分词器），只做「明显超长时的降级」闸门。
+/// 单条 user 消息的输入 token 预算上限
+const PROMPT_INPUT_TOKEN_BUDGET: usize = 20_000;
+/// 实体清单节的 token 预算（占总预算的大头但不得独占——实体降级后
+/// 其他节（依赖/导入/关联文件）仍有空间；120/80 条数上限是第二道防线）
+const PROMPT_ENTITY_SECTION_BUDGET: usize = 8_000;
+/// 依赖/调用方上下文的节级预算（多模块时逐条剥摘要，防止依赖节吞掉主输入）
+const PROMPT_DEP_CONTEXT_BUDGET: usize = 5_000;
+/// 依赖/调用方摘要单条最大字符数（超出截断加 …）
+const PROMPT_DEP_SUMMARY_MAX_CHARS: usize = 80;
+/// 调用方符号单模块最多列出条数
+const CALLER_SYMBOL_LIMIT: usize = 8;
+
+/// 估算文本的输入 token 数（字符数 ÷ 3 向上取整的启发式）
+fn estimate_input_tokens(s: &str) -> usize {
+    s.chars().count().div_ceil(3)
+}
+
+/// 按字符边界截断（CJK 等多字节安全），超出追加 …
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let t: String = s.chars().take(max).collect();
+        format!("{t}…")
+    }
+}
+
+/// 减行数：逐行累积估算 token，取不超预算的最大前缀
+///
+/// 首行无论多大都保留（至少给 LLM 一条信息），其余行在预算内尽量多留。
+fn shrink_lines_to_budget(lines: Vec<String>, budget: usize) -> Vec<String> {
+    let mut count = 0usize;
+    let mut tokens = 0usize;
+    for line in &lines {
+        let est = estimate_input_tokens(line);
+        if count > 0 && tokens + est > budget {
+            break;
+        }
+        tokens += est;
+        count += 1;
+    }
+    lines.into_iter().take(count).collect()
+}
+
+/// 在总输入预算内拼接节
+///
+/// 传入顺序即优先级：超出预算的后续节整节丢弃（各节自身渲染时已做节内
+/// 预算降级——实体剥签名/doc/减行数、依赖剥摘要，这里是总闸门）。
+fn join_under_budget(sections: Vec<String>, budget: usize) -> String {
+    let mut out = String::new();
+    let mut tokens = 0usize;
+    for section in sections {
+        if section.is_empty() {
+            continue;
+        }
+        let est = estimate_input_tokens(&section);
+        // 首个非空节必须保留（模块路径/标题等头信息）；其余节超预算则丢弃
+        if !out.is_empty() && tokens + est > budget {
+            break;
+        }
+        tokens += est;
+        out.push_str(&section);
+    }
+    out
+}
+
+/// 实体清单节（预算感知）：按降级形态逐档尝试，取首个估算不超预算的形态。
+///
+/// levels[0] 信息最全（带 doc/签名），后续逐档剥信息；全部超预算时对
+/// 最省形态减行数。total 用于「仅列出前 N 个」注记（条数上限是第二道防线）。
+fn entity_list_section(
+    title: &str,
+    levels: Vec<Vec<String>>,
+    budget: usize,
+    total: usize,
+) -> String {
+    let mut chosen: Option<Vec<String>> = None;
+    for lines in &levels {
+        if estimate_input_tokens(&lines.join("\n")) <= budget {
+            chosen = Some(lines.clone());
+            break;
+        }
+    }
+    let mut chosen = match chosen {
+        Some(l) => l,
+        None => shrink_lines_to_budget(levels.last().cloned().unwrap_or_default(), budget),
+    };
+    if chosen.is_empty() {
+        return String::new();
+    }
+    if total > chosen.len() {
+        chosen.push(format!(
+            "- …共 {total} 个实体，仅列出前 {} 个",
+            chosen.len()
+        ));
+    }
+    format!("\n## {title}\n{}", chosen.join("\n"))
+}
+
+/// 依赖模块节（预算感知）：行 `- 模块名 — 摘要`，摘要截断；
+/// 超预算先剥摘要再减行数。空列表 → 空串（沿用 guide_section 的零破坏模式）。
+fn dependency_context_section(
+    title: &str,
+    contexts: &[DependencyContext],
+    budget: usize,
+) -> String {
+    if contexts.is_empty() {
+        return String::new();
+    }
+    let full: Vec<String> = contexts
+        .iter()
+        .map(|c| {
+            let summary = c
+                .summary
+                .as_deref()
+                .map(|s| truncate_chars(s, PROMPT_DEP_SUMMARY_MAX_CHARS))
+                .unwrap_or_default();
+            if summary.is_empty() {
+                format!("- {}", c.module_name)
+            } else {
+                format!("- {} — {}", c.module_name, summary)
+            }
+        })
+        .collect();
+    let bare: Vec<String> = contexts
+        .iter()
+        .map(|c| format!("- {}", c.module_name))
+        .collect();
+    let lines = if estimate_input_tokens(&full.join("\n")) <= budget {
+        full
+    } else if estimate_input_tokens(&bare.join("\n")) <= budget {
+        bare
+    } else {
+        shrink_lines_to_budget(bare, budget)
+    };
+    if lines.is_empty() {
+        return String::new();
+    }
+    format!("\n## {title}\n{}", lines.join("\n"))
+}
+
+/// 调用方节（预算感知）：行 `- 模块名 — 符号: … — 摘要`，符号 ≤ CALLER_SYMBOL_LIMIT；
+/// 超预算先剥符号与摘要再减行数。空列表 → 空串（零破坏）。
+fn caller_context_section(title: &str, contexts: &[CallerContext], budget: usize) -> String {
+    if contexts.is_empty() {
+        return String::new();
+    }
+    let full: Vec<String> = contexts
+        .iter()
+        .map(|c| {
+            let symbols = c
+                .symbols
+                .iter()
+                .take(CALLER_SYMBOL_LIMIT)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ");
+            let summary = c
+                .summary
+                .as_deref()
+                .map(|s| truncate_chars(s, PROMPT_DEP_SUMMARY_MAX_CHARS))
+                .unwrap_or_default();
+            let symbol_part = if symbols.is_empty() {
+                String::new()
+            } else {
+                format!("（调用符号: {symbols}）")
+            };
+            if summary.is_empty() {
+                format!("- {}{}", c.module_name, symbol_part)
+            } else {
+                format!("- {} — {}{}", c.module_name, summary, symbol_part)
+            }
+        })
+        .collect();
+    let bare: Vec<String> = contexts
+        .iter()
+        .map(|c| format!("- {}", c.module_name))
+        .collect();
+    let lines = if estimate_input_tokens(&full.join("\n")) <= budget {
+        full
+    } else if estimate_input_tokens(&bare.join("\n")) <= budget {
+        bare
+    } else {
+        shrink_lines_to_budget(bare, budget)
+    };
+    if lines.is_empty() {
+        return String::new();
+    }
+    format!("\n## {title}\n{}", lines.join("\n"))
+}
+
 /// 生成模块摘要的 user prompt
-fn module_summary_user_prompt(chunk: &Chunk) -> String {
+fn module_summary_user_prompt(chunk: &Chunk, dep_contexts: &[DependencyContext]) -> String {
     let mut parts = Vec::new();
 
     parts.push(format!("模块路径: {}", chunk.module_path.join("::")));
 
     if !chunk.entities.is_empty() {
-        parts.push("\n## 实体列表".to_string());
         // P1-2：上下文预算——实体清单全量拼入会让大模块（数百实体）的
-        // prompt 超长（API 400 或输出截断），按预算截断并注记总数
+        // prompt 超长（API 400 或输出截断）。两级防线：条数上限
+        // ENTITY_LIST_LIMIT（120）+ token 预算降级（先剥 doc 首行再减行数）。
         const ENTITY_LIST_LIMIT: usize = 120;
-        for entity in chunk.entities.iter().take(ENTITY_LIST_LIMIT) {
-            let doc = entity
-                .doc_comment
-                .as_deref()
-                .map(|d| d.lines().next().unwrap_or(""))
-                .unwrap_or("");
-            parts.push(format!(
-                "- {} ({}): {} [行 {}..{}]",
-                entity.name, entity.kind, doc, entity.line_start, entity.line_end
-            ));
-        }
-        if chunk.entities.len() > ENTITY_LIST_LIMIT {
-            parts.push(format!(
-                "- …共 {} 个实体，仅列出前 {} 个",
-                chunk.entities.len(),
-                ENTITY_LIST_LIMIT
-            ));
-        }
+        let full: Vec<String> = chunk
+            .entities
+            .iter()
+            .take(ENTITY_LIST_LIMIT)
+            .map(|entity| {
+                let doc = entity
+                    .doc_comment
+                    .as_deref()
+                    .map(|d| d.lines().next().unwrap_or(""))
+                    .unwrap_or("");
+                format!(
+                    "- {} ({}): {} [行 {}..{}]",
+                    entity.name, entity.kind, doc, entity.line_start, entity.line_end
+                )
+            })
+            .collect();
+        let bare: Vec<String> = chunk
+            .entities
+            .iter()
+            .take(ENTITY_LIST_LIMIT)
+            .map(|entity| {
+                format!(
+                    "- {} ({}) [行 {}..{}]",
+                    entity.name, entity.kind, entity.line_start, entity.line_end
+                )
+            })
+            .collect();
+        parts.push(entity_list_section(
+            "实体列表",
+            vec![full, bare],
+            PROMPT_ENTITY_SECTION_BUDGET,
+            chunk.entities.len(),
+        ));
     }
 
     if !chunk.imports.is_empty() {
@@ -65,7 +275,15 @@ fn module_summary_user_prompt(chunk: &Chunk) -> String {
         }
     }
 
-    parts.join("\n")
+    // 项目级上下文注入：依赖模块名（卡片阶段无卡片摘要 → 只给模块名；
+    // 空列表不生成节，保持旧 prompt 形态——零破坏）
+    parts.push(dependency_context_section(
+        "依赖模块",
+        dep_contexts,
+        PROMPT_DEP_CONTEXT_BUDGET,
+    ));
+
+    join_under_budget(parts, PROMPT_INPUT_TOKEN_BUDGET)
 }
 
 /// 生成架构概览的 system prompt
@@ -213,7 +431,11 @@ Knowledge Card 是给 AI Agent 阅读的模块级结构化摘要。
 1. 归纳模块职责与边界，形成一句话总结；
 2. 识别关键实体及其对外契约（可见性、职责）；
 3. 推断设计模式、技术栈与编码规范；
-4. 若输入中含"人工修改待同步"记录，将其内容纳入描述（不要删除记录本身）。
+4. 基于「依赖模块」与「调用方」上下文（真实调用图推导）推断该模块的
+   存在理由（设计意图 WHY）：它被谁调用、调用谁、为何存在。WHY 必须来自
+   输入上下文，不得从代码硬编复述实现细节（硬编=复述 how 而非 why）。
+   输入中无调用方/被调用方依据时，design_rationale 写「（信息不足）」；
+5. 若输入中含"人工修改待同步"记录，将其内容纳入描述（不要删除记录本身）。
 
 ### 输出格式
 严格按以下 JSON 格式输出（字段缺失时省略可选字段，不输出 null 占位）：
@@ -228,7 +450,8 @@ Knowledge Card 是给 AI Agent 阅读的模块级结构化摘要。
   "todo_notes": ["待办事项或注意点"],
   "coding_spec": "该模块遵循的编码规范（无则省略该字段）",
   "tech_stack": ["该模块用到的技术栈，如 tokio/serde/petgraph"],
-  "architecture": "该模块的内部架构或关键设计说明（无则省略该字段）"
+  "architecture": "该模块的内部架构或关键设计说明（无则省略该字段）",
+  "design_rationale": "该模块存在的设计意图（WHY）——谁需要它、它解决什么问题（无依据时省略或写（信息不足））"
 }}
 ```
 
@@ -247,13 +470,26 @@ Knowledge Card 是给 AI Agent 阅读的模块级结构化摘要。
 ///
 /// pending_manual_edits 为旧卡片上"人工修改待同步"记录（非空时注入 user 消息，
 /// 要求 LLM 生成/更新卡片时考虑这些修改；记录本身由增量管道维护，不由 LLM 产出）。
+///
+/// dep_contexts：依赖模块上下文（卡片阶段摘要为 None，只给模块名）；
+/// caller_contexts：调用方/被调用方上下文（collect_caller_context 的产物，
+/// 卡片设计意图 WHY 的数据源）。均为空列表时不生成对应节（零破坏）。
 pub fn knowledge_card_prompt(
     chunk: &Chunk,
     language: &str,
     pending_manual_edits: &[String],
+    dep_contexts: &[DependencyContext],
+    caller_contexts: &[CallerContext],
 ) -> Vec<Message> {
     let system = knowledge_card_system_prompt(language);
-    let mut user = module_summary_user_prompt(chunk);
+    let mut user = module_summary_user_prompt(chunk, dep_contexts);
+    // 设计意图依据：调用方/被调用方上下文（真实调用图推导），供 LLM 推断
+    // 该模块存在理由。空上下文（Level 0 或无人调用）不生成节。
+    user.push_str(&caller_context_section(
+        "调用方与被调用方",
+        caller_contexts,
+        PROMPT_DEP_CONTEXT_BUDGET,
+    ));
     // 人工修改待同步：只在存在记录时注入，避免空节污染输入
     if !pending_manual_edits.is_empty() {
         user.push_str("\n\n## 人工修改待同步\n\n");
@@ -369,6 +605,10 @@ Wiki 页面是给人类开发者阅读的叙述性文档。
 ## 依赖关系
 - `模块A` — 依赖说明
 
+## 设计意图
+（可选小节）说明该模块存在的理由（WHY）：被谁调用、解决什么问题。
+无依据时写「（信息不足）」并省略该小节。
+
 ## 使用方式
 简要说明如何使用这个模块。
 
@@ -380,6 +620,13 @@ Wiki 页面是给人类开发者阅读的叙述性文档。
 - 引用必须真实存在：只引用输入实体列表/关联文件中给出的文件与行号，
   不得编造不存在的文件或行号。
 - 每个小节至少包含一条引用。
+
+**依赖关系约束（必须遵守）**：依赖关系小节只列出输入依赖模块节中给出的
+模块名，不得添加输入中不存在的模块。
+
+**断言分级（必须遵守）**：架构性断言（调用关系、依赖、性能安全）必须携带
+真实源码引用（见上）；推断性表述（如设计意图）可不带引用，但必须前缀
+「推断：」——区分「有据断言」与「合理推测」，防幻觉。
 
 **信息不足时的处理**：输入中没有依据的内容（如某实体用途不明、依赖不确定），
 在对应位置写「（信息不足）」并保持简洁，不要编造。
@@ -421,11 +668,25 @@ fn entity_signature_line(e: &crate::ingest::parser::Entity) -> String {
 /// 摘要不含行号，LLM 无法兑现契约只能编造（v29 实测 bad-citation 来源）。
 /// v32 7.1 起每条追加签名级片段（≤8 行/≤160 字符），供 LLM 精确引用签名
 /// 而无需猜测（FR-201）。实体过多时截断前 80 条并注明总数，避免输入超长。
-fn wiki_page_user_prompt(chunk: &Chunk, module_summary: &str, notes: &[String]) -> String {
-    let mut entity_lines: Vec<String> = chunk
+///
+/// dep_contexts：依赖模块摘要（wiki 阶段卡片已就绪，带依赖方卡片摘要）；
+/// caller_contexts：调用方模块上下文。均为空列表时不生成对应节（零破坏）。
+fn wiki_page_user_prompt(
+    chunk: &Chunk,
+    module_summary: &str,
+    notes: &[String],
+    dep_contexts: &[DependencyContext],
+    caller_contexts: &[CallerContext],
+) -> String {
+    // 实体引用清单预算化：实体过多时先剥签名（保留文件:行号真源），
+    // 再减行数（80 条上限是第二道防线）。签名是参考信息，行号才是
+    // 引用契约的可验证真源——降级顺序先剥签名正因如此。
+    const ENTITY_REF_LIMIT: usize = 80;
+    let with_sig: Vec<String> = chunk
         .entities
         .iter()
         .enumerate()
+        .take(ENTITY_REF_LIMIT)
         .map(|(i, e)| {
             let sig = entity_signature_line(e);
             match chunk.entity_sources.get(i) {
@@ -443,14 +704,32 @@ fn wiki_page_user_prompt(chunk: &Chunk, module_summary: &str, notes: &[String]) 
                 ),
             }
         })
-        .take(80)
         .collect();
-    if chunk.entities.len() > 80 {
-        entity_lines.push(format!(
-            "- …共 {} 个实体，仅列出前 80 个",
-            chunk.entities.len()
-        ));
-    }
+    let no_sig: Vec<String> = chunk
+        .entities
+        .iter()
+        .enumerate()
+        .take(ENTITY_REF_LIMIT)
+        .map(|(i, e)| match chunk.entity_sources.get(i) {
+            Some(path) => format!(
+                "- `{}` ({}) — {}:{}",
+                e.name,
+                e.kind,
+                path.display(),
+                e.line_start
+            ),
+            None => format!(
+                "- `{}` ({}) — 第 {}-{} 行（所属文件未记录）",
+                e.name, e.kind, e.line_start, e.line_end
+            ),
+        })
+        .collect();
+    let entity_section = entity_list_section(
+        "实体引用清单",
+        vec![with_sig, no_sig],
+        PROMPT_ENTITY_SECTION_BUDGET,
+        chunk.entities.len(),
+    );
     // v32 9.2：项目引导说明（[wiki.guide].notes）——逐条注入 user 消息，
     // 引导 LLM 按项目约定撰写页面（命名规范/必写小节/注意事项）。空列表
     // 时不生成该节，保持旧 prompt 形态（零破坏）。
@@ -466,14 +745,26 @@ fn wiki_page_user_prompt(chunk: &Chunk, module_summary: &str, notes: &[String]) 
                 .join("\n")
         )
     };
-    format!(
-        "模块路径: {}\n\n## 代码信息\n实体数: {}, 文件数: {}\n\n## 实体引用清单\n{}\n\n## 卡片摘要\n{}{}",
-        chunk.module_path.join("::"),
-        chunk.entity_count(),
-        chunk.file_paths.len(),
-        entity_lines.join("\n"),
-        module_summary,
-        guide_section
+    // 项目级上下文注入：依赖模块摘要（带依赖方卡片摘要）+ 调用方上下文
+    let dep_section =
+        dependency_context_section("依赖模块摘要", dep_contexts, PROMPT_DEP_CONTEXT_BUDGET);
+    let caller_section =
+        caller_context_section("调用方", caller_contexts, PROMPT_DEP_CONTEXT_BUDGET);
+    join_under_budget(
+        vec![
+            format!(
+                "模块路径: {}\n\n## 代码信息\n实体数: {}, 文件数: {}\n{}",
+                chunk.module_path.join("::"),
+                chunk.entity_count(),
+                chunk.file_paths.len(),
+                entity_section
+            ),
+            format!("\n## 卡片摘要\n{}", module_summary),
+            dep_section,
+            caller_section,
+            guide_section,
+        ],
+        PROMPT_INPUT_TOKEN_BUDGET,
     )
 }
 
@@ -483,9 +774,11 @@ pub fn wiki_page_prompt(
     module_summary: &str,
     language: &str,
     notes: &[String],
+    dep_contexts: &[DependencyContext],
+    caller_contexts: &[CallerContext],
 ) -> Vec<Message> {
     let system = wiki_page_system_prompt(language);
-    let user = wiki_page_user_prompt(chunk, module_summary, notes);
+    let user = wiki_page_user_prompt(chunk, module_summary, notes, dep_contexts, caller_contexts);
     vec![Message::system(system), Message::user(user)]
 }
 
@@ -550,6 +843,7 @@ mod tests {
             entities: vec![],
             imports: vec![],
             dependencies: vec![],
+            caller_modules: vec![],
             file_paths: vec![],
             entity_sources: vec![],
         }
@@ -560,12 +854,12 @@ mod tests {
         let chunk = make_test_chunk(&["src", "config"]);
         // 存在记录：user 消息包含"人工修改待同步"节与记录内容
         let pending = vec!["人工修改待同步: wiki/zh/src_config.md 内容摘要: 用户改的".into()];
-        let messages = knowledge_card_prompt(&chunk, "zh", &pending);
+        let messages = knowledge_card_prompt(&chunk, "zh", &pending, &[], &[]);
         let user = &messages[1].content;
         assert!(user.contains("## 人工修改待同步"));
         assert!(user.contains("wiki/zh/src_config.md"));
         // 无记录：不注入该节（避免空节）
-        let messages = knowledge_card_prompt(&chunk, "zh", &[]);
+        let messages = knowledge_card_prompt(&chunk, "zh", &[], &[], &[]);
         assert!(!messages[1].content.contains("人工修改待同步"));
     }
 
@@ -589,7 +883,7 @@ mod tests {
     #[test]
     fn test_anti_fabrication_constraints_in_card_and_architecture_prompts() {
         let chunk = make_test_chunk(&["src", "config"]);
-        let card_messages = knowledge_card_prompt(&chunk, "zh", &[]);
+        let card_messages = knowledge_card_prompt(&chunk, "zh", &[], &[], &[]);
         assert!(
             card_messages[0].content.contains("不得编造"),
             "卡片 prompt 必须含实体真实性约束: {}",
@@ -647,13 +941,13 @@ mod tests {
         let chunk = make_test_chunk(&["src", "alpha"]);
 
         // 分节结构：四个主要 system prompt 均含 ### 角色
-        let card = knowledge_card_prompt(&chunk, "zh", &[]);
+        let card = knowledge_card_prompt(&chunk, "zh", &[], &[], &[]);
         assert!(
             card[0].content.contains("### 角色"),
             "卡片 prompt 应分节: {}",
             card[0].content
         );
-        let wiki = wiki_page_prompt(&chunk, "摘要", "zh", &[]);
+        let wiki = wiki_page_prompt(&chunk, "摘要", "zh", &[], &[], &[]);
         assert!(
             wiki[0].content.contains("### 角色"),
             "wiki prompt 应分节: {}",
@@ -692,7 +986,7 @@ mod tests {
             card[0].content
         );
         // 非 zh 语言原样保留
-        let card_en = knowledge_card_prompt(&chunk, "en", &[]);
+        let card_en = knowledge_card_prompt(&chunk, "en", &[], &[], &[]);
         assert!(
             card_en[0].content.contains("请用 en 输出"),
             "非 zh 语言原样: {}",
@@ -769,7 +1063,7 @@ mod tests {
             visibility: None,
         }];
         chunk.entity_sources = vec![std::path::PathBuf::from("src/alpha.rs")];
-        let user = wiki_page_user_prompt(&chunk, "卡片摘要", &[]);
+        let user = wiki_page_user_prompt(&chunk, "卡片摘要", &[], &[], &[]);
         assert!(
             user.contains("src/alpha.rs:1"),
             "引用清单必须含文件:行号: {}",
@@ -778,7 +1072,7 @@ mod tests {
         assert!(user.contains("alpha_fn"));
         // 无文件记录时的诚实标注路径（不得编造文件）
         chunk.entity_sources = vec![];
-        let user = wiki_page_user_prompt(&chunk, "卡片摘要", &[]);
+        let user = wiki_page_user_prompt(&chunk, "卡片摘要", &[], &[], &[]);
         assert!(user.contains("所属文件未记录"));
     }
 
@@ -799,18 +1093,19 @@ mod tests {
             }],
             imports: vec![],
             dependencies: vec![],
+            caller_modules: vec![],
             entity_sources: vec![std::path::PathBuf::from("src/alpha.rs")],
             file_paths: vec![std::path::PathBuf::from("src/alpha.rs")],
         };
         // 空 notes：不含引导节
-        let user = wiki_page_user_prompt(&chunk, "卡片摘要", &[]);
+        let user = wiki_page_user_prompt(&chunk, "卡片摘要", &[], &[], &[]);
         assert!(!user.contains("项目引导说明"), "空 notes 不应生成引导节");
         // 非空 notes：含节标题与每条内容
         let notes = vec![
             "命名规范：公开函数必须写文档注释".to_string(),
             "必写小节：用法示例".to_string(),
         ];
-        let user = wiki_page_user_prompt(&chunk, "卡片摘要", &notes);
+        let user = wiki_page_user_prompt(&chunk, "卡片摘要", &notes, &[], &[]);
         assert!(
             user.contains("## 项目引导说明"),
             "notes 非空应生成引导节: {}",
@@ -972,11 +1267,183 @@ mod tests {
             visibility: None,
         }];
         chunk.entity_sources = vec![std::path::PathBuf::from("src/alpha.rs")];
-        let user = wiki_page_user_prompt(&chunk, "卡片摘要", &[]);
+        let user = wiki_page_user_prompt(&chunk, "卡片摘要", &[], &[], &[]);
         assert!(
             user.contains("src/alpha.rs:1，签名: pub fn alpha_fn()"),
             "引用清单行必须含签名: {}",
             user
+        );
+    }
+
+    /// 输入 token 预算启发式：estimate_input_tokens 按字符数 ÷3 向上取整
+    #[test]
+    fn test_estimate_input_tokens() {
+        assert_eq!(estimate_input_tokens(""), 0);
+        assert_eq!(estimate_input_tokens("abc"), 1);
+        assert_eq!(estimate_input_tokens("abcd"), 2);
+        assert_eq!(estimate_input_tokens("abcdef"), 2);
+        assert_eq!(estimate_input_tokens("abcdefg"), 3);
+        // CJK 多字节同样按字符计（chars().count()，非字节）
+        assert_eq!(estimate_input_tokens("中文"), 1);
+    }
+
+    /// join_under_budget：按序拼接，超出总预算时丢弃后续节；空节跳过
+    #[test]
+    fn test_join_under_budget_drops_excess() {
+        let sections = vec![
+            "模块路径: a".to_string(),
+            "\n## 实体列表\n- e1".to_string(),
+            "\n## 导入语句\n- use x".to_string(),
+        ];
+        let joined = join_under_budget(sections.clone(), usize::MAX);
+        assert_eq!(joined, sections.concat(), "预算无限时应全部拼接");
+
+        // 预算只容得下前两节：第三节被丢弃
+        let budget = estimate_input_tokens(&sections[0]) + estimate_input_tokens(&sections[1]);
+        let joined = join_under_budget(sections.clone(), budget);
+        assert!(joined.contains("## 实体列表"));
+        assert!(!joined.contains("## 导入语句"), "超预算节应被丢弃");
+        assert!(joined.starts_with("模块路径: a"), "首节必须保留");
+    }
+
+    /// 依赖模块节注入：knowledge_card_prompt 带 dep_contexts 时生成「## 依赖模块」节，
+    /// 空列表不生成（零破坏）；摘要截断至 PROMPT_DEP_SUMMARY_MAX_CHARS
+    #[test]
+    fn test_knowledge_card_prompt_injects_dependency_section() {
+        let chunk = make_test_chunk(&["src", "alpha"]);
+        // 空上下文：不生成节
+        let messages = knowledge_card_prompt(&chunk, "zh", &[], &[], &[]);
+        assert!(
+            !messages[1].content.contains("## 依赖模块"),
+            "空依赖上下文不应生成依赖节"
+        );
+        // 非空：生成节并列出模块名
+        let ctxs = vec![
+            DependencyContext {
+                module_name: "src::beta".into(),
+                summary: Some("负责网络层".into()),
+            },
+            DependencyContext {
+                module_name: "src::gamma".into(),
+                summary: None,
+            },
+        ];
+        let messages = knowledge_card_prompt(&chunk, "zh", &[], &ctxs, &[]);
+        let user = &messages[1].content;
+        assert!(user.contains("## 依赖模块"), "应生成依赖节: {user}");
+        assert!(user.contains("src::beta"), "应列出依赖模块");
+        assert!(user.contains("负责网络层"), "应带摘要");
+        assert!(user.contains("src::gamma"));
+    }
+
+    /// 调用方节注入：knowledge_card_prompt 带 caller_contexts 时生成
+    /// 「## 调用方与被调用方」节（卡片设计意图依据）；空列表不生成
+    #[test]
+    fn test_knowledge_card_prompt_injects_caller_section() {
+        let chunk = make_test_chunk(&["src", "alpha"]);
+        let callers = vec![CallerContext {
+            module_name: "src::alpha".into(),
+            symbols: vec!["调用方: src::front".into(), "被调用方: src::db".into()],
+            summary: Some("业务入口层".into()),
+        }];
+        let messages = knowledge_card_prompt(&chunk, "zh", &[], &[], &callers);
+        let user = &messages[1].content;
+        assert!(
+            user.contains("## 调用方与被调用方"),
+            "应生成调用方节: {user}"
+        );
+        assert!(user.contains("调用方: src::front"), "应列出调用方");
+        assert!(user.contains("被调用方: src::db"), "应列出被调用方");
+    }
+
+    /// wiki 页 prompt 注入：dep_contexts 与 caller_contexts 分别生成
+    /// 「## 依赖模块摘要」与「## 调用方」节；空列表不生成（零破坏）
+    #[test]
+    fn test_wiki_page_prompt_injects_contexts() {
+        let chunk = make_test_chunk(&["src", "alpha"]);
+        // 空上下文：无相关节
+        let messages = wiki_page_prompt(&chunk, "卡片摘要", "zh", &[], &[], &[]);
+        let user = &messages[1].content;
+        assert!(!user.contains("## 依赖模块摘要"));
+        assert!(!user.contains("## 调用方"));
+
+        let deps = vec![DependencyContext {
+            module_name: "src::db".into(),
+            summary: Some("持久层".into()),
+        }];
+        let callers = vec![CallerContext {
+            module_name: "src::svc".into(),
+            symbols: vec!["handle".into()],
+            summary: Some("服务层".into()),
+        }];
+        let messages = wiki_page_prompt(&chunk, "卡片摘要", "zh", &[], &deps, &callers);
+        let user = &messages[1].content;
+        assert!(
+            user.contains("## 依赖模块摘要"),
+            "应生成依赖模块摘要节: {user}"
+        );
+        assert!(user.contains("src::db") && user.contains("持久层"));
+        assert!(user.contains("## 调用方"), "应生成调用方节: {user}");
+        assert!(user.contains("src::svc"));
+        // 符号列表 ≤ CALLER_SYMBOL_LIMIT 且以「调用符号」标注
+        assert!(user.contains("调用符号: handle"));
+    }
+
+    /// 设计意图（WHY）契约：卡片 system 含推断步骤与 design_rationale JSON 字段；
+    /// wiki system 含「## 设计意图」输出格式、依赖关系约束与「推断：」前缀分级
+    #[test]
+    fn test_design_rationale_prompt_contract() {
+        let chunk = make_test_chunk(&["src", "alpha"]);
+        let card = knowledge_card_prompt(&chunk, "zh", &[], &[], &[]);
+        assert!(
+            card[0].content.contains("设计意图"),
+            "卡片 system 必须含设计意图分析步骤: {}",
+            card[0].content
+        );
+        assert!(
+            card[0].content.contains("design_rationale"),
+            "卡片 JSON 必须含 design_rationale 字段: {}",
+            card[0].content
+        );
+
+        let wiki = wiki_page_prompt(&chunk, "卡片摘要", "zh", &[], &[], &[]);
+        assert!(
+            wiki[0].content.contains("## 设计意图"),
+            "wiki system 必须含设计意图输出小节: {}",
+            wiki[0].content
+        );
+        assert!(
+            wiki[0].content.contains("不得添加输入中不存在的模块"),
+            "wiki system 必须含依赖关系防幻觉约束: {}",
+            wiki[0].content
+        );
+        assert!(
+            wiki[0].content.contains("推断："),
+            "wiki system 必须含推断前缀分级: {}",
+            wiki[0].content
+        );
+    }
+
+    /// 依赖摘要截断：超 PROMPT_DEP_SUMMARY_MAX_CHARS 的摘要截断加 …
+    #[test]
+    fn test_dependency_summary_truncated() {
+        let chunk = make_test_chunk(&["src", "alpha"]);
+        let long = "x".repeat(200);
+        let deps = vec![DependencyContext {
+            module_name: "src::beta".into(),
+            summary: Some(long),
+        }];
+        let messages = knowledge_card_prompt(&chunk, "zh", &[], &deps, &[]);
+        let user = &messages[1].content;
+        // 截断到 80 字符 + …
+        assert!(user.contains("…"), "超长摘要应截断加 …: {user}");
+        let line = user
+            .lines()
+            .find(|l| l.starts_with("- src::beta"))
+            .expect("依赖行应存在");
+        assert!(
+            line.chars().count() < 120,
+            "截断后依赖行应明显短于原文: {line}"
         );
     }
 }

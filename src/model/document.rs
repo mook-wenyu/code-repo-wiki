@@ -80,6 +80,13 @@ pub struct KnowledgeCard {
     /// 架构说明（LLM 生成的描述性字段）
     #[serde(default)]
     pub architecture: Option<String>,
+    /// 设计意图与关键权衡（LLM 生成的描述性字段，A8 幻觉缓解契约）
+    ///
+    /// 生成域（card.rs/prompt.rs）负责写入；渲染端（render_knowledge_card）
+    /// 非空时输出「设计意图」节；语义 lint 提取该节做调用/依赖声称的
+    /// 跨页交叉校验。serde default 兼容旧卡与旧快照（旧产物无此字段）。
+    #[serde(default)]
+    pub design_rationale: Option<String>,
     /// 人工修改反向同步记录：被人工编辑的文档路径 + 内容摘要，
     /// 下次生成时作为 LLM 输入提示（"有人工修改待同步"）
     #[serde(default)]
