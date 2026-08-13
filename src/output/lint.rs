@@ -196,43 +196,56 @@ fn check_stale(pages: &[PathBuf], cards_dir: &Path, source_roots: &[PathBuf], la
             .ok();
         let Some(page_time) = page_mtime else { continue };
         for src in extract_source_files(&content) {
-            // 路径越界段 `..` 拒绝（与 check_citations/check_vctx_tokens 同一
-            // 规则）：相关文件段是生成层写入的 root 相对路径，含 `..` 段说明
-            // 已逃逸 root——即使目标真实存在也拒绝解析，避免 metadata 探测
-            // root 外文件（P1 不对称消除）。此处无对应 issue 类别，沿用本
-            // 函数"读取失败跳过并 warn"的既有失败处理风格。
-            if src.split(['/', '\\']).any(|seg| seg == "..") {
+            // 统一路径逃逸过滤（与 check_citations/check_vctx_tokens 同一
+            // detect_path_escape）：`..` 越界段 / Windows 根相对与盘符相对
+            // 形态 / 绝对路径越出源码根——任一命中即跳过该源路径，不解析、
+            // 不 metadata 探测 root 外文件（P1 不对称消除）。此处无对应
+            // issue 类别，沿用本函数"读取失败跳过并 warn"的既有失败处理风格。
+            if let Some(reason) = detect_path_escape(&src, source_roots) {
                 tracing::warn!(
-                    "lint stale 跳过含越界段 .. 的相关文件路径: `{src}` (page: {})",
-                    page.display()
-                );
-                continue;
-            }
-            // 绝对路径 containment 拦截（与 `..` 过滤同位置、同语义）：root
-            // 外绝对路径即使真实存在且更新也不解析，避免 metadata 探测 root
-            // 外文件（P1 不对称消除）。resolve_source_path 内的 containment
-            // 是兜底，此处提前拦截使 warn 可观测。
-            if Path::new(&src).is_absolute()
-                && !absolute_path_within_roots(Path::new(&src), source_roots)
-            {
-                tracing::warn!(
-                    "lint stale 跳过越出源码根的绝对路径: `{src}` (page: {})",
+                    "lint stale 跳过源路径 `{src}` (page: {}): {reason}",
                     page.display()
                 );
                 continue;
             }
             let abs = resolve_source_path(source_roots, &src);
-            if let Ok(meta) = std::fs::metadata(&abs)
-                && let Ok(src_time) = meta.modified()
-                && src_time > page_time
-            {
-                issues.push(LintIssue {
-                    kind: "stale",
-                    path: format!("{dir}/{lang}/{file_name}"),
-                    message: format!(
-                        "过时: 源文件 {src} 的修改时间晚于页面生成时间(源码已变更,文档可能未更新)"
-                    ),
-                });
+            match std::fs::metadata(&abs) {
+                Ok(meta) => {
+                    if let Ok(src_time) = meta.modified()
+                        && src_time > page_time
+                    {
+                        issues.push(LintIssue {
+                            kind: "stale",
+                            path: format!("{dir}/{lang}/{file_name}"),
+                            message: format!(
+                                "过时: 源文件 {src} 的修改时间晚于页面生成时间(源码已变更,文档可能未更新)"
+                            ),
+                        });
+                    }
+                }
+                Err(_) => {
+                    // 源文件缺失（KNOWN-06）：产物引用的源文件在解析基准下
+                    // 不存在——修复前静默跳过，产物引用了已删除/未生成的源
+                    // 文件却无任何告警。空 abs（source_roots 为空/无可解析
+                    // 基准）不是"缺失"而是"无从解析"，跳过不报；root 内缺失
+                    // 与真越界的区分由 absolute_path_within_roots 保证
+                    // （KNOWN-07：root 内缺失按放行流到此处，越界在上游拒绝）。
+                    if abs.as_os_str().is_empty() {
+                        tracing::warn!(
+                            "lint stale 无法解析源路径（无源码根基准）: `{src}` (page: {})",
+                            page.display()
+                        );
+                        continue;
+                    }
+                    issues.push(LintIssue {
+                        kind: "source-missing",
+                        path: format!("{dir}/{lang}/{file_name}"),
+                        message: format!(
+                            "源文件缺失: 产物引用的源文件 `{src}` 不存在（{}）",
+                            abs.display()
+                        ),
+                    });
+                }
             }
         }
     }
@@ -264,32 +277,16 @@ fn check_citations(
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default();
         for citation in citation::extract_citations(&content) {
-            // 路径越界段 `..` 拒绝（与生成层 citation.rs validate_citations
-            // 同一规则，v16 C 组对齐）：`../src/x.rs` 可逃逸项目根、
-            // `src/../lib.rs` 可跳过目录层级——即使目标文件真实存在也按
-            // 无效处理。此前 lint 层未拒绝（不对称），手工/恶意页面可让
-            // lint 读取项目根外文件的元数据。
-            if citation.path.split(['/', '\\']).any(|seg| seg == "..") {
+            // 统一路径逃逸过滤（与 check_stale/check_vctx_tokens 同一
+            // detect_path_escape）：`..` 越界段 / Windows 根相对与盘符相对
+            // 形态 / 绝对路径越出源码根——任一命中即按无效引用拒绝，不 stat
+            // /读取 root 外文件（P1 不对称消除）。project_root.join(abs)=abs
+            // 会把 root 外绝对路径直接送进 fs，必须在 join 前拦截。
+            if let Some(reason) = detect_path_escape(&citation.path, source_roots) {
                 issues.push(LintIssue {
                     kind: "bad-citation",
                     path: format!("wiki/{lang}/{file_name}"),
-                    message: format!("路径含越界段 ..: `{}`", citation.path),
-                });
-                continue;
-            }
-            // 绝对路径 containment 拦截（与 `..` 过滤同位置、同语义）：
-            // project_root.join(abs)=abs 会把 root 外绝对路径直接送进 fs
-            // （绕过 resolve_source_path 的 containment 校验），必须在 join
-            // 前拦截，避免 stat/读取 root 外文件。citation 提取层已过滤
-            // 绝对路径，此处是纵深防御（与 vctx/stale 三检查行为一致）。
-            let citation_path = Path::new(&citation.path);
-            if citation_path.is_absolute()
-                && !absolute_path_within_roots(citation_path, source_roots)
-            {
-                issues.push(LintIssue {
-                    kind: "bad-citation",
-                    path: format!("wiki/{lang}/{file_name}"),
-                    message: format!("绝对路径越出源码根: `{}`", citation.path),
+                    message: format!("{reason}: `{}`", citation.path),
                 });
                 continue;
             }
@@ -464,27 +461,16 @@ fn check_vctx_tokens(
                     continue;
                 }
             };
-            // 路径越界段拒绝（与 check_citations 同一规则）：`..` 段可逃逸
-            // 项目根，即使目标真实存在也按无效处理
-            if token.path.split(['/', '\\']).any(|seg| seg == "..") {
+            // 统一路径逃逸过滤（与 check_stale/check_citations 同一
+            // detect_path_escape）：`..` 越界段 / Windows 根相对与盘符相对
+            // 形态 / 绝对路径越出源码根——任一命中即按无效标记拒绝，不读取
+            // root 外文件做哈希校验（project_root.join(abs)=abs 的绕过在
+            // join 前拦截，P1 不对称消除）。
+            if let Some(reason) = detect_path_escape(&token.path, source_roots) {
                 issues.push(LintIssue {
                     kind: "bad-vctx",
                     path: format!("wiki/{lang}/{file_name}"),
-                    message: format!("vctx 路径含越界段 ..: `{}`", token.path),
-                });
-                continue;
-            }
-            // 绝对路径 containment 拦截（与 check_citations 同一规则）：
-            // project_root.join(abs)=abs 会把 root 外绝对路径直接送进 fs，
-            // 必须在 join 前拦截——越出源码根按无效处理，不 stat root 外。
-            let token_path = Path::new(&token.path);
-            if token_path.is_absolute()
-                && !absolute_path_within_roots(token_path, source_roots)
-            {
-                issues.push(LintIssue {
-                    kind: "bad-vctx",
-                    path: format!("wiki/{lang}/{file_name}"),
-                    message: format!("vctx 绝对路径越出源码根: `{}`", token.path),
+                    message: format!("vctx {reason}: `{}`", token.path),
                 });
                 continue;
             }
@@ -535,14 +521,22 @@ fn check_vctx_tokens(
     issues
 }
 
-/// 相对路径绝对化（实体表键的统一形态：相对 cwd 的路径与项目根解析的
-/// 绝对路径在 Windows 下必须同基准比较，否则反斜杠/正斜杠混存不命中）
+/// 相对路径绝对化（实体表键与 containment 判定的统一基准形态）。
+///
+/// 核实结论（KNOWN-05）：调用方确会喂相对路径（相对 `--root ../foo` 派生的
+/// 源码根、root 下 walk 条目），且其语义即相对 cwd（CLI 参数帧内相对路径
+/// 就是相对 cwd，`--root ../foo` 按 cwd 解析）——不是产物相对路径（产物
+/// 相对路径由 resolve_source_path 按 root-first 解析，与 cwd 无关，P1 已修）。
+/// 因此 cwd 基准不是"兜底"，是相对路径的正当解析基准；current_dir 失败
+/// 时显式 panic——静默返回相对路径会把实体表键/containment 判定指向错误
+/// 基准（KNOWN-05）。
 fn absolutize(p: &Path) -> PathBuf {
     if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        std::env::current_dir().unwrap_or_default().join(p)
+        return p.to_path_buf();
     }
+    std::env::current_dir()
+        .unwrap_or_else(|e| panic!("获取当前工作目录失败（相对路径基准解析需要）: {e}"))
+        .join(p)
 }
 
 /// 实体表键的统一定型（v23 B 组）：绝对化 + 过滤 `./` 段 + norm_sep。
@@ -926,13 +920,17 @@ fn extract_md_links(content: &str) -> Vec<String> {
 }
 
 /// 从卡片/页面内容提取源文件路径（`- `code`` 相关文件段）
+///
+/// KNOWN-06：只提取代码文件（SUPPORTED_EXTENSIONS 限定）——相关文件段应只
+/// 列源码，非代码引用（README/配置/产物 .md/.json 等）不参与 stale 与
+/// source-missing 检查，否则删除的文档/配置引用会被误报"源文件缺失"。
 fn extract_source_files(content: &str) -> Vec<String> {
     let mut out = Vec::new();
     for line in content.lines() {
         let line = line.trim();
         if line.starts_with("- `") && line.ends_with('`') {
             let inner = &line[3..line.len() - 1];
-            if inner.contains('.') && !inner.contains("://") {
+            if has_code_extension(inner) {
                 out.push(inner.to_string());
             }
         }
@@ -940,28 +938,102 @@ fn extract_source_files(content: &str) -> Vec<String> {
     out
 }
 
+/// 代码扩展名判定（KNOWN-06）：对齐 ingest 扫描层 SUPPORTED_EXTENSIONS
+/// （管线只收可解析语言，"源文件"同理只认代码文件）。
+fn has_code_extension(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|ext| format!(".{ext}"))
+        .is_some_and(|ext| crate::ingest::parser::SUPPORTED_EXTENSIONS.contains(&ext.as_str()))
+}
+
+/// Windows 根相对（`\foo`、`/foo`）与盘符相对（`C:foo`）形态检测——
+/// `Path::is_absolute()` 对二者均返回 false（is_absolute = has_prefix &&
+/// has_root），可绕过绝对路径 containment 校验；join 语义还会把路径引向
+/// root 外（`C:\proj` join `\foo` = `C:\foo` 替换 prefix 后全部内容、
+/// join `C:foo` 整体替换 self）。KNOWN-04 对抗实证：三调用方由此可
+/// stat/读取 root 外文件。
+///
+/// Unix 不受影响：`\foo`/`C:foo` 是普通相对路径（反斜杠/冒号为普通字符，
+/// root.join 不逃逸）；`/foo` 是绝对路径（is_absolute=true），已被既有
+/// containment 分支拦截，不会走到根相对分支。
+///
+/// pub(crate)：生成层 citation.rs `check_citation_file_level` 复用同一组件级
+/// 判定（KNOWN-04 全局收敛——两处逐份复制正是此前不对称的根因）。
+pub(crate) fn is_root_relative_or_drive_relative(p: &Path) -> bool {
+    let mut comps = p.components();
+    let Some(first) = comps.next() else { return false };
+    // 根相对：仅根分隔符开头、无盘符前缀（`\foo`、`/foo`）
+    if matches!(first, std::path::Component::RootDir) && !p.is_absolute() {
+        return true;
+    }
+    // 盘符相对：有盘符前缀但无根（`C:foo`）
+    if matches!(first, std::path::Component::Prefix(_)) && !p.has_root() {
+        return true;
+    }
+    false
+}
+
+/// 统一路径逃逸判定（check_stale/check_citations/check_vctx_tokens 三调用方
+/// 共用——判定逻辑逐处复制正是此前 P1 不对称的根因，DRY 同时保证三处行为
+/// 一致）。返回第一个命中的拒绝原因；None 表示路径可安全解析。
+/// 判定顺序与既有过滤一致：`..` 越界段 → Windows 根相对/盘符相对 →
+/// 绝对路径越出源码根。
+fn detect_path_escape(src: &str, source_roots: &[PathBuf]) -> Option<&'static str> {
+    if src.split(['/', '\\']).any(|seg| seg == "..") {
+        return Some("路径含越界段 ..");
+    }
+    let p = Path::new(src);
+    if is_root_relative_or_drive_relative(p) {
+        return Some("路径为根相对或盘符相对形态（无法验证 containment）");
+    }
+    if p.is_absolute() && !absolute_path_within_roots(p, source_roots) {
+        return Some("绝对路径越出源码根");
+    }
+    None
+}
+
 /// 绝对路径 containment 校验：canonicalize 后必须落在任一源码根的
 /// canonicalize 结果内才允许解析（阻止 root 外 stat/读取——元数据 oracle
 /// 消除，与 `..` 越界段过滤同一语义）。
 ///
-/// canonicalize 依赖路径存在：目标文件不存在/不可解析时返回 false（视为
-/// 不可达，后续 fs 操作失败跳过，不 stat root 外）。root 可能是相对路径
-/// （--root ../foo）——先用 current_dir 绝对化再 canonicalize。Windows 上
-/// canonicalize 统一加 `\\?\` 前缀，两侧同源前缀、starts_with 直接可比
-/// （无需 dunce）；Windows 路径比较大小写不敏感（std Path 语义）。
+/// canonicalize 依赖路径存在：目标不存在/不可解析时不能判定为越界——root
+/// 内不存在的绝对路径同样失败。此时改按词法 containment（absolute_path_
+/// within_roots 的 `\\?\` 前缀比较被 canonicalize 破坏，词法侧用未加前缀的
+/// 绝对化路径）区分"在 root 内但缺失"（放行，后续 fs 操作报缺失）与"root
+/// 外"（拒绝，KNOWN-07：修复前 root 内不存在文件被误报"越出源码根"）。
+/// root 可能是相对路径（--root ../foo）——canonicalize 自身按 cwd 解析
+/// 相对路径，无需先 absolutize。Windows 上 canonicalize 统一加 `\\?\` 前缀，
+/// 两侧同源前缀、starts_with 直接可比（无需 dunce）；Windows 路径比较
+/// 大小写不敏感（std Path 语义）。
 ///
 /// 性能说明：lint 主导成本是源码扫描（walk_files + AST 解析），引用/文件
 /// 数量的 canonicalize 开销相对可忽略；跨调用缓存需共享全局态，与并行
 /// 测试的多 root 冲突，故不缓存。
 fn absolute_path_within_roots(p: &Path, source_roots: &[PathBuf]) -> bool {
-    let Ok(canon_p) = p.canonicalize() else {
-        return false;
+    let canon_p = match p.canonicalize() {
+        Ok(c) => c,
+        Err(_) => return path_lexically_within_roots(p, source_roots),
     };
     source_roots.iter().any(|root| {
-        let root_abs = absolutize(root);
-        root_abs
-            .canonicalize()
+        root.canonicalize()
             .is_ok_and(|canon_root| canon_p.starts_with(canon_root))
+    })
+}
+
+/// 词法 containment：路径绝对化后（不 canonicalize，容忍目标不存在）是否
+/// 落在任一源码根内。p 恒为绝对路径（调用方只对 is_absolute 的路径调用
+/// containment）；root 相对（--root ../foo）时按 cwd 基准绝对化——相对
+/// --root 的语义即相对 cwd。`..` 越界段已被调用方统一过滤
+/// （detect_path_escape），此处只做前缀比较；相对 root 含 `..` 时前缀比较
+/// 可能失配（该组合下把"缺失"误判为"越界"，仅影响消息措辞，不产生
+/// root 外探测——两个分支都不会解析该路径）。
+fn path_lexically_within_roots(p: &Path, source_roots: &[PathBuf]) -> bool {
+    let abs_p = absolutize(p);
+    source_roots.iter().any(|root| {
+        let root_abs = absolutize(root);
+        abs_p.starts_with(&root_abs)
     })
 }
 
@@ -976,9 +1048,10 @@ fn absolute_path_within_roots(p: &Path, source_roots: &[PathBuf]) -> bool {
 fn resolve_source_path(source_roots: &[PathBuf], src: &str) -> PathBuf {
     let p = Path::new(src);
     if p.is_absolute() {
-        // 绝对路径 containment 校验：canonicalize 后落在某个源码根内才
-        // 放行；超界/不存在返回空路径——后续 fs 操作失败跳过，不 stat
-        // root 外文件（元数据 oracle 消除）。
+        // 绝对路径 containment 校验：落在某个源码根内才放行（KNOWN-07：
+        // root 内不存在的文件按"存在但缺失"放行，由后续 fs 操作报缺失；
+        // root 外返回空路径，metadata 必失败，不 stat root 外文件——元数据
+        // oracle 消除）。
         if absolute_path_within_roots(p, source_roots) {
             return p.to_path_buf();
         }
@@ -986,16 +1059,31 @@ fn resolve_source_path(source_roots: &[PathBuf], src: &str) -> PathBuf {
     }
     for root in source_roots {
         let candidate = root.join(p);
-        if candidate.exists() {
+        // 纵深防御（KNOWN-04）：join 结果必须仍落在 root 内才放行——Windows
+        // 根相对（root.join(`\foo`) 替换 prefix）与盘符相对（root.join(`C:foo`)
+        // 整体替换 self）即使绕过调用方过滤（detect_path_escape），此处也不
+        // 会 exists() 探测 root 外路径。正常相对路径 join 后 starts_with 恒真，
+        // 不影响既有解析。
+        if candidate.starts_with(root) && candidate.exists() {
             return candidate;
         }
     }
     // 全部未命中：返回首个 root.join(p)（供 metadata 报错定位到 root 内；
     // 不再返回 cwd 相对路径，那会把 metadata/读取指向 cwd 同名对象）。
-    // source_roots 为空时返回空路径，使 metadata 必失败，杜绝任何 cwd 探测。
+    // 兜底同样校验 starts_with(root)（KNOWN-04 纵深防御）：根相对/盘符相对
+    // 形态即使走到兜底也不返回 root 外路径——逃逸时返回空路径，metadata 必
+    // 失败。source_roots 为空时返回空路径，使 metadata 必失败，杜绝任何
+    // cwd 探测。
     source_roots
         .first()
-        .map(|root| root.join(p))
+        .map(|root| {
+            let candidate = root.join(p);
+            if candidate.starts_with(root) {
+                candidate
+            } else {
+                PathBuf::new()
+            }
+        })
         .unwrap_or_default()
 }
 
@@ -1268,6 +1356,159 @@ mod tests {
         assert_eq!(empty, PathBuf::new());
         assert!(std::fs::metadata(&empty).is_err(), "空路径 metadata 必须失败");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// KNOWN-04 组件级判定：Windows 根相对（`\foo`、`/foo`）与盘符相对
+    /// （`C:foo`）形态必须识别为不可验证 containment（is_absolute 对二者
+    /// 返回 false，join 可逃逸 root）。正常相对/盘符绝对不受影响。
+    #[test]
+    fn test_is_root_relative_or_drive_relative_forms() {
+        #[cfg(windows)]
+        {
+            assert!(is_root_relative_or_drive_relative(Path::new(r"\foo")), "根相对 \\foo");
+            assert!(is_root_relative_or_drive_relative(Path::new(r"/foo")), "根相对 /foo");
+            assert!(is_root_relative_or_drive_relative(Path::new("C:foo")), "盘符相对 C:foo");
+            assert!(!is_root_relative_or_drive_relative(Path::new("src/foo.rs")), "正常相对");
+            assert!(!is_root_relative_or_drive_relative(Path::new(r"C:\foo")), "盘符绝对走 containment");
+            assert!(!is_root_relative_or_drive_relative(Path::new(r"C:/foo")), "盘符绝对走 containment");
+        }
+        #[cfg(not(windows))]
+        {
+            // Unix 上 `\foo`/`C:foo` 是普通相对路径（反斜杠/冒号为普通字符）
+            assert!(!is_root_relative_or_drive_relative(Path::new(r"\foo")));
+            assert!(!is_root_relative_or_drive_relative(Path::new("C:foo")));
+            // /foo 是绝对路径（is_absolute=true），不落入根相对分支
+            assert!(!is_root_relative_or_drive_relative(Path::new("/foo")));
+        }
+    }
+
+    /// KNOWN-04：detect_path_escape 必须拒绝根相对/盘符相对形态（Windows），
+    /// 正常相对路径与含 `..` 越界段路径行为不变。
+    #[test]
+    fn test_detect_path_escape_rejects_root_relative_and_drive_relative() {
+        #[cfg(windows)]
+        {
+            assert!(detect_path_escape(r"\foo.rs", &[]).is_some(), "\\foo.rs 应拒绝");
+            assert!(detect_path_escape(r"/foo.rs", &[]).is_some(), "/foo.rs 应拒绝");
+            assert!(detect_path_escape("C:foo.rs", &[]).is_some(), "C:foo.rs 应拒绝");
+        }
+        assert!(detect_path_escape("../foo.rs", &[]).is_some(), ".. 越界段应拒绝");
+        assert!(detect_path_escape("src/foo.rs", &[]).is_none(), "正常相对路径不应拒绝");
+    }
+
+    /// KNOWN-04 纵深防御：resolve_source_path 对根相对/盘符相对形态即使绕过
+    /// 调用方过滤也不得解析到 root 外（修复前 root.join 会把路径引向 root 外
+    /// 并返回该逃逸路径，metadata 探测 root 外文件）。修复后返回空路径
+    /// （不可达）；常规相对路径不受影响。
+    #[test]
+    #[cfg(windows)]
+    fn test_resolve_source_path_never_escapes_root() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_resolve_escape_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // 常规相对路径正常解析到 root 内
+        let normal = resolve_source_path(std::slice::from_ref(&dir), "src/ghost.rs");
+        assert!(normal.starts_with(&dir), "常规相对路径必须解析到 root 内: {:?}", normal);
+        // 根相对/盘符相对形态：必须返回空路径（不可达，不返回 root 外路径）
+        for bad in [r"\foo.rs", r"/foo.rs", "C:foo.rs"] {
+            let resolved = resolve_source_path(std::slice::from_ref(&dir), bad);
+            assert!(
+                resolved.as_os_str().is_empty() && std::fs::metadata(&resolved).is_err(),
+                "路径 {bad} 必须不可达（修复前会返回 root 外路径 {:?}，metadata 探测 root 外）",
+                resolved
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// KNOWN-04 集成（Windows）：相关文件段含根相对/盘符相对形态时不得报
+    /// stale 或 source-missing（join 会逃逸 root，必须在上游拒绝）。
+    #[test]
+    #[cfg(windows)]
+    fn test_lint_stale_rejects_root_relative_and_drive_relative_paths() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_rootrel_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        std::fs::write(
+            wiki.join("m.md"),
+            "# M\n\n## 相关文件\n\n- `\\foo.rs`\n- `/foo.rs`\n- `C:foo.rs`\n",
+        )
+        .unwrap();
+        // root 内真实代码文件（collect_source_entities 正常工作的前提）
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src").join("real.rs"), "pub fn real() {}\n").unwrap();
+
+        let issues = lint(&dir, std::slice::from_ref(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            !issues.iter().any(|i| i.kind == "stale" || i.kind == "source-missing"),
+            "根相对/盘符相对相关文件不得解析（不报 stale/source-missing）, 实际: {:?}",
+            issues
+        );
+    }
+
+    /// KNOWN-06：产物引用的代码源文件缺失 → source-missing（修复前静默跳过，
+    /// 产物引用已删除/未生成的源文件无任何告警）。
+    #[test]
+    fn test_lint_stale_reports_missing_source() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_missing_src_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        std::fs::write(
+            wiki.join("m.md"),
+            "# M\n\n## 相关文件\n\n- `src/ghost.rs`\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+
+        let issues = lint(&dir, std::slice::from_ref(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.kind == "source-missing" && i.message.contains("src/ghost.rs")),
+            "缺失的代码源文件应报 source-missing, 实际: {:?}",
+            issues
+        );
+    }
+
+    /// KNOWN-06 不误伤：非代码引用（README.md 等）缺失不得报 source-missing
+    /// （相关文件段只对代码扩展名做 stale/source-missing 检查）。
+    #[test]
+    fn test_lint_stale_ignores_non_code_missing_reference() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_noncode_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        std::fs::write(
+            wiki.join("m.md"),
+            "# M\n\n## 相关文件\n\n- `docs/README.md`\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src").join("real.rs"), "pub fn real() {}\n").unwrap();
+
+        let issues = lint(&dir, std::slice::from_ref(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            !issues.iter().any(|i| i.kind == "source-missing"),
+            "非代码引用不得报 source-missing, 实际: {:?}",
+            issues
+        );
     }
 
     /// P1 集成：cwd ≠ root 且 cwd 存在与产物路径同名文件时，stale 检查必须

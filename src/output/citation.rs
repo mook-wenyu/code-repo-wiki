@@ -189,6 +189,14 @@ fn check_citation_file_level(
     if citation.path.split(['/', '\\']).any(|seg| seg == "..") {
         return Some("路径含越界段 ..".to_string());
     }
+    // Windows 根相对（`\foo`、`/foo`）与盘符相对（`C:foo`）形态：Path::
+    // is_absolute() 对二者返回 false，root.join 会把路径引向 root 外（根相对
+    // 替换 prefix、盘符相对整体替换 self）——与 lint 层 detect_path_escape 同一
+    // 组件级判定（KNOWN-04：提取器已滤 `/` 开头与盘符绝对，但 `\foo`/`C:foo`
+    // 会漏出，此处收敛拒掉）。Unix 不受影响（`\foo`/`C:foo` 是普通相对路径）。
+    if crate::output::lint::is_root_relative_or_drive_relative(Path::new(&citation.path)) {
+        return Some("路径为根相对或盘符相对形态（无法验证 containment）".to_string());
+    }
     let abs = root.join(&citation.path);
     // P3-5：同一次校验中同一文件的多条引用只读一次——大文件+多条引用
     // 时避免逐条整文件 read_to_string（O(引用数×文件大小) → O(文件数×文件大小)）；
@@ -421,6 +429,41 @@ mod tests {
         for item in &invalid {
             assert!(item.reason.contains("越界段 .."), "原因应说明越界: {:?}", item);
         }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// KNOWN-04：Windows 根相对 `\foo` 引用必须被校验层拒绝——is_absolute 对
+    /// 其返回 false，root.join 会把路径引向 root 外（根相对替换 prefix）。
+    /// 修复前提取层只滤 `/` 开头与盘符绝对，`\foo` 会漏出并被 root.join 引向
+    /// root 外读取。盘符相对 `C:foo` 在提取层即被冒号截断（冒号非路径字符，
+    /// 截为普通相对路径 foo.rs），不会逃逸 root，此处仅文档化该行为。Unix 上
+    /// `\foo` 是普通相对路径，不适用。
+    #[test]
+    #[cfg(windows)]
+    fn test_validate_rejects_root_relative_and_drive_relative() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_rootrel_cite_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 根相对 `\foo`：提取层保留完整形态，校验层必须拒绝
+        let cites = extract_citations(r"见 \foo.rs:5 的实现");
+        assert_eq!(cites.len(), 1, "提取层应保留根相对形态: {:?}", cites);
+        assert_eq!(cites[0].path, r"\foo.rs");
+        let invalid = validate_citations(&dir, r"见 \foo.rs:5 的实现");
+        assert_eq!(invalid.len(), 1, "校验层应拒绝根相对: {:?}", invalid);
+        assert!(
+            invalid[0].reason.contains("根相对或盘符相对"),
+            "原因应说明形态不可验证 containment: {:?}",
+            invalid
+        );
+
+        // 盘符相对 `C:foo`：提取层在冒号处截断为普通相对路径，不会逃逸 root
+        let cites = extract_citations("见 C:foo.rs:3 的实现");
+        assert_eq!(cites[0].path, "foo.rs", "冒号截断为普通相对路径: {:?}", cites);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
