@@ -887,11 +887,12 @@ fn main() -> anyhow::Result<()> {
                 } else {
                     println!("LLM: 正常");
                 }
-                // lint 产物健康检查结果（与 lint 命令同格式，问题退出码非 0）
+                // lint 产物健康检查结果（与 lint 命令同格式，error 级问题退出码非 0；
+                // 告警级仅展示不阻断——与 lint 命令退出码语义一致）
                 for issue in &report.issues {
                     println!("- [{}] {}: {}", issue.kind, issue.path, issue.message);
                 }
-                if !report.issues.is_empty() {
+                if report.issues.iter().any(|i| !i.is_warning()) {
                     anyhow::bail!("status: 发现 {} 个问题", report.issues.len());
                 }
             } else {
@@ -924,6 +925,12 @@ fn main() -> anyhow::Result<()> {
             let issues = code_repo_wiki::output::lint::lint(output_dir, &source_roots);
             if issues.is_empty() {
                 println!("lint: 通过，无孤儿页/断链/过时问题");
+            } else if issues.iter().all(|i| i.is_warning()) {
+                // 仅告警级（entity-ownership 规则 4：仅命中目录/文件 stem 的
+                // 归属未确认提示）：展示但不阻断退出码（CI 门禁语义）
+                for issue in &issues {
+                    println!("lint [{}] {}: {}", issue.kind, issue.path, issue.message);
+                }
             } else {
                 for issue in &issues {
                     println!("lint [{}] {}: {}", issue.kind, issue.path, issue.message);

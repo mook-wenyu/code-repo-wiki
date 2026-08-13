@@ -206,6 +206,13 @@ pub fn render_knowledge_card(card: &KnowledgeCard) -> String {
         output.push_str(&format!("## 架构说明\n\n{}\n\n", arch));
     }
 
+    // 设计意图（A8：LLM 生成的意图字段，仅 Some 时渲染——无意图不输出空节；
+    // 供 AI 代理理解模块设计取舍，也供语义 lint 提取「设计意图」段做跨页
+    // 调用/依赖声称的权威清单交叉校验）
+    if let Some(rationale) = &card.design_rationale {
+        output.push_str(&format!("## 设计意图\n\n{}\n\n", rationale));
+    }
+
     // 待办事项
     if !card.todo_notes.is_empty() {
         output.push_str("## 待办事项\n\n");
@@ -408,6 +415,7 @@ mod tests {
             coding_spec: Some("遵循 rustfmt".into()),
             tech_stack: vec!["serde".into()],
             architecture: Some("分层".into()),
+            design_rationale: Some("依赖注入解耦配置加载，便于单测替换".into()),
             pending_manual_edits: vec![
                 "人工修改待同步: wiki/zh/src_config.md 内容摘要: 手动改".into(),
             ],
@@ -430,6 +438,8 @@ mod tests {
         assert!(output.contains("遵循 rustfmt"));
         assert!(output.contains("## 架构说明"));
         assert!(output.contains("分层"));
+        assert!(output.contains("## 设计意图"));
+        assert!(output.contains("依赖注入解耦配置加载"));
         assert!(output.contains("## 人工修改待同步"));
         assert!(output.contains("内容摘要: 手动改"));
     }
@@ -449,12 +459,14 @@ mod tests {
             coding_spec: None,
             tech_stack: vec![],
             architecture: None,
+            design_rationale: None,
             pending_manual_edits: vec![],
             features: Vec::new(),
         };
 
         let output = render_knowledge_card(&card);
         assert!(!output.contains("人工修改待同步"), "无记录时不应渲染空节");
+        assert!(!output.contains("设计意图"), "无意图时不应渲染空节");
     }
 
     #[test]

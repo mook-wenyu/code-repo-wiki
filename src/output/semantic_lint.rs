@@ -45,19 +45,29 @@ pub fn check_semantic_consistency(
     let provider = crate::generate::create_provider(config)?;
 
     // 2. 证据组装：受影响页内容（截断）+ api.md 实体清单（权威基准）
+    // A8：受影响页的「设计意图」段必须进入证据——意图段常位于页尾，
+    // 单页 4000 字符截断可能把它切掉，导致 LLM 裁判看不到意图声明、
+    // 无法校验其中的调用/依赖声称与 api.md 权威清单是否冲突。
+    // 截断内容已含意图段时不再重复追加（token 预算内避免双份）。
     let mut evidence = String::new();
     for doc in docs {
         if evidence.len() >= TOTAL_EVIDENCE_LIMIT {
             break;
         }
-        evidence.push_str(&format!(
-            "### 页面 {}\n{}\n",
-            doc.title,
-            doc.content
-                .chars()
-                .take(PAGE_EVIDENCE_LIMIT)
-                .collect::<String>()
-        ));
+        let content_slice = doc
+            .content
+            .chars()
+            .take(PAGE_EVIDENCE_LIMIT)
+            .collect::<String>();
+        evidence.push_str(&format!("### 页面 {}\n{}\n", doc.title, content_slice));
+        if !content_slice.contains("## 设计意图")
+            && let Some(intent) = extract_design_intent(&doc.content)
+        {
+            evidence.push_str(&format!(
+                "### 页面 {} 的设计意图段\n{}\n",
+                doc.title, intent
+            ));
+        }
     }
     let api_path = crate::output::api_doc_path(config.output_dir(), &config.wiki.language);
     if let Ok(api_content) = std::fs::read_to_string(&api_path) {
@@ -82,6 +92,28 @@ pub fn check_semantic_consistency(
     Ok(parse_conflicts(&content))
 }
 
+/// 提取页面中的「设计意图」段（`## 设计意图` 标题起、到下一个 `## ` 节
+/// 标题或文末止）。渲染端（markdown.rs render_knowledge_card）与生成域
+/// 写该节，语义 lint 借此核对意图段内的调用/依赖声称。无该节返回 None。
+fn extract_design_intent(content: &str) -> Option<String> {
+    let mut capture = false;
+    let mut out = String::new();
+    for line in content.lines() {
+        if line.trim_start().starts_with("## 设计意图") {
+            capture = true;
+            continue;
+        }
+        if capture {
+            if line.trim_start().starts_with("## ") {
+                break;
+            }
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    (!out.trim().is_empty()).then(|| out.trim_end().to_string())
+}
+
 /// 语义矛盾检查 prompt：受影响页 + api 权威清单 → 矛盾 JSON 清单
 fn semantic_conflict_prompt(lang: &str, evidence: &str) -> Vec<Message> {
     let system = format!(
@@ -89,6 +121,7 @@ fn semantic_conflict_prompt(lang: &str, evidence: &str) -> Vec<Message> {
 1. 页面之间的矛盾（同一实体/概念两页描述不一致）
 2. 页面声明与 api.md 权威清单冲突（如声称已废弃/不存在，但 api.md 仍列为核心实体）
 3. 页面内部的过期语义（声称的功能与实体清单矛盾）
+4. 设计意图段中的调用/依赖声称与 api.md 权威清单或实体清单冲突（如声称模块依赖某实体而清单中不存在）；注意：设计意图若为纯推断、无任何引用佐证，不报错——只兜架构断言引用（明确声称的调用/依赖关系）
 
 只报告明确矛盾，不做猜测。输出 JSON（语言：{lang}）：
 {{"conflicts": [{{"page": "页面标题", "claim": "矛盾声明原文", "conflict": "与什么矛盾"}}]}}
@@ -167,6 +200,26 @@ mod tests {
         let config = WikiConfig::default();
         let issues = check_semantic_consistency(&config, &[]).unwrap();
         assert!(issues.is_empty());
+    }
+
+    /// A8：设计意图段提取——命中标题到下一节标题之间的正文；无该节返回 None；
+    /// 只识别 `## 设计意图` 精确标题（`## 架构说明` 等不误捕）
+    #[test]
+    fn test_extract_design_intent() {
+        let content = "# 模块\n\n## 概述\n\n正文。\n\n## 设计意图\n\n本模块依赖 A 的调用声称。\n\n## 关键实体\n\n- `Foo`\n";
+        let intent = extract_design_intent(content).unwrap();
+        assert!(intent.contains("依赖 A"), "应提取意图正文: {intent}");
+        assert!(!intent.contains("关键实体"), "不应吞入后续节: {intent}");
+
+        assert!(
+            extract_design_intent("# 模块\n\n## 概述\n\n无意图段。\n").is_none(),
+            "无意图段应返回 None"
+        );
+        let empty_intent = "# 模块\n\n## 设计意图\n\n## 关键实体\n\n- `Foo`\n";
+        assert!(
+            extract_design_intent(empty_intent).is_none(),
+            "意图段为空应返回 None"
+        );
     }
 
     /// C-008（Phase 16.4）：semantic_conflict_prompt few-shot——含「示例：」

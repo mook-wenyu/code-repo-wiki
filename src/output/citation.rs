@@ -321,6 +321,112 @@ pub fn retry_feedback(invalid: &[InvalidCitation]) -> String {
     lines
 }
 
+/// 引用密度问题（A8 幻觉缓解：LLM 输出"通篇无引用"式幻觉的密度闸）
+///
+/// 生成侧重试循环（wiki.rs）接线消费本判定；lint 产物健康检查同样可用。
+/// 此处只定义纯函数判定与输出形态，具体接线由生成侧负责。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DensityIssue {
+    /// 所属小节（`## ` 标题；`## ` 前的文档首段为 None）
+    pub section: Option<String>,
+    /// 缺失引用数（200 字符窗下限与节级下限两者的缺口取较大者）
+    pub miss: usize,
+}
+
+/// 引用密度检查：每 200 字符（围栏外正文）至少 1 条引用，且每个
+/// `## ` 小节至少 1 条；代码围栏内不计入（复用 fence_ranges）；空页与
+/// 纯代码围栏页跳过（无正文可核对，不算密度缺陷）。
+///
+/// 判定口径：以字节偏移切分小节与围栏（与 fence_ranges 同基准），非围栏
+/// 部分按 Unicode 字符数计 200 字符窗；围栏内引用不参与计数（示例代码里的
+/// path:line 是代码不是引用，与 extract_citations 的 fence 感知同一哲学）。
+/// 纯函数、无 I/O，测试直接构造内容。
+pub fn citation_density(content: &str) -> Vec<DensityIssue> {
+    if content.trim().is_empty() {
+        return Vec::new();
+    }
+    let fences = fence_ranges(content);
+
+    // 按 `## ` 节标题切分：preamble（首节之前）的 section=None，
+    // 其余节带标题名。`### ` 三级标题不是小节边界（"## " 的第三个
+    // 字符必须是空格，"###" 第三字符是 #，天然排除）。
+    let mut sections: Vec<(Option<String>, usize, usize)> = Vec::new();
+    let mut heading: Option<String> = None;
+    let mut section_start = 0usize;
+    let mut offset = 0usize;
+    for line in content.split('\n') {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("## ") {
+            sections.push((heading.take(), section_start, offset));
+            heading = Some(rest.trim().to_string());
+            // 节体从标题行之后开始：标题是结构非正文，不参与密度/跳过判定
+            //（纯代码节「标题+围栏」因此正确判为无正文而跳过）
+            section_start = (offset + line.len() + 1).min(content.len());
+        }
+        offset += line.len() + 1;
+    }
+    // 末节 end 取 content.len()：split('\n') 末段会多计一个换行偏移
+    //（内容无尾 '\n' 时末行 +1、有尾 '\n' 时尾空段 +1），超界切片会 panic
+    sections.push((heading, section_start, content.len()));
+
+    let mut issues = Vec::new();
+    for (section, start, end) in sections {
+        let text = &content[start..end];
+        // 纯代码围栏节/空节跳过：无正文可核对密度（如示例代码块独立成节）
+        let non_fence_chars = non_fence_char_count(content, start, end, &fences);
+        if non_fence_chars == 0 {
+            continue;
+        }
+        let cites = extract_citations(text).len();
+        // 200 字符至少 1 条：非围栏字符数按 200 向上取整为所需下限
+        let needed = non_fence_chars.div_ceil(200);
+        let char_deficit = needed.saturating_sub(cites);
+        // 节级下限：整节无引用即使很短也算 1 条缺失
+        let section_deficit = if cites == 0 { 1 } else { 0 };
+        let miss = char_deficit.max(section_deficit);
+        if miss > 0 {
+            issues.push(DensityIssue { section, miss });
+        }
+    }
+    issues
+}
+
+/// 计算 [start, end) 区间内非围栏的 Unicode 非空白字符数（fence 区间按
+/// 字节偏移与内容同基准，切片点恒在字符边界——围栏行按行切分，不会劈开
+/// 多字节字符）。空白不计入：纯代码节/空节（仅标题+围栏+空白）无正文可
+/// 核对密度，跳过判定据此成立。
+fn non_fence_char_count(
+    content: &str,
+    section_start: usize,
+    section_end: usize,
+    fences: &[(usize, usize)],
+) -> usize {
+    let mut chars = 0usize;
+    let mut pos = section_start;
+    for &(fs, fe) in fences {
+        if fe <= section_start {
+            continue;
+        }
+        if fs >= section_end {
+            break;
+        }
+        if fs > pos {
+            chars += content[pos..fs]
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .count();
+        }
+        pos = fe.max(pos);
+    }
+    if pos < section_end {
+        chars += content[pos..section_end]
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .count();
+    }
+    chars
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -536,6 +642,70 @@ mod tests {
         assert!(feedback.contains("src/a.rs:99"));
         assert!(feedback.contains("行号越界"));
         assert!(feedback.contains("重新输出完整文档"));
+    }
+
+    /// A8 密度闸：每节都有引用且 200 字符密度足够 → 不报缺
+    #[test]
+    fn test_citation_density_ok_when_citations_present() {
+        let text = "## 概述\n\n说明见 src/a.rs:1。\n\n## 核心\n\n核心见 src/b.rs:2。\n";
+        let issues = citation_density(text);
+        assert!(issues.is_empty(), "各节有引用不应报缺: {issues:?}");
+    }
+
+    /// A8 密度闸：小节无任何引用 → 报缺（section 名精确命中）
+    #[test]
+    fn test_citation_density_reports_missing_section() {
+        let text = "## 概述\n\n没有引用的章节。\n";
+        let issues = citation_density(text);
+        assert_eq!(issues.len(), 1, "无引用节应报缺: {issues:?}");
+        assert_eq!(issues[0].section.as_deref(), Some("概述"));
+        assert!(issues[0].miss >= 1);
+    }
+
+    /// A8 密度闸：围栏内代码引用不计入——纯代码节跳过、正文节只按正文引用判定
+    #[test]
+    fn test_citation_density_fence_code_not_counted() {
+        let text = "## 概述\n\n正文见 src/a.rs:1。\n\n```rust\nsrc/x.rs:2\n```\n\n## 无引用\n\n这里没有引用。\n";
+        let issues = citation_density(text);
+        assert_eq!(issues.len(), 1, "只应报无引用的节: {issues:?}");
+        assert_eq!(issues[0].section.as_deref(), Some("无引用"));
+    }
+
+    /// A8 密度闸：空页与纯代码围栏页跳过（无正文可核对，不算密度缺陷）
+    #[test]
+    fn test_citation_density_skips_empty_and_pure_code() {
+        assert!(citation_density("").is_empty());
+        assert!(citation_density("   \n\n").is_empty());
+        assert!(
+            citation_density("```rust\nlet x = 1;\n```\n").is_empty(),
+            "纯代码围栏页应跳过"
+        );
+        assert!(
+            citation_density("## 示例\n\n```rust\nlet y = 2;\n```\n").is_empty(),
+            "纯代码节应跳过"
+        );
+    }
+
+    /// A8 密度闸：400 字符正文只给 1 条引用 → 密度不足报缺；
+    /// 给足 2 条（每 200 至少 1）→ 通过
+    #[test]
+    fn test_citation_density_window_threshold() {
+        // 约 300 字符（ASCII）正文只 1 条引用：需 ceil(300/200)=2，缺 1
+        let mut sparse = String::from("## 长节\n\n");
+        sparse.push_str(&"a".repeat(300));
+        sparse.push_str(" 见 src/a.rs:1。");
+        let issues = citation_density(&sparse);
+        assert_eq!(issues.len(), 1, "密度不足应报缺: {issues:?}");
+        assert_eq!(issues[0].section.as_deref(), Some("长节"));
+        assert!(issues[0].miss >= 1);
+
+        // 约 300 字符给 2 条引用（分处两端，各自 200 窗内命中）→ 通过
+        let mut dense = String::from("## 长节\n\n");
+        dense.push_str("见 src/a.rs:1。");
+        dense.push_str(&"a".repeat(200));
+        dense.push_str("见 src/b.rs:2。");
+        let issues = citation_density(&dense);
+        assert!(issues.is_empty(), "密度足够应通过: {issues:?}");
     }
 }
 

@@ -13,8 +13,9 @@
 //! 4b. **bad-vctx**：正文 `[[vctx:path#L-a-L-b@hash8]]` 手工标记做 5 步哈希只读校验（vericontext 协议，人工文档护栏：t05 决议不引入生成契约，只识别并校验已有标记）
 //!
 //! 5. **entity-coverage**：页面声称的实体不在 api.md 权威清单（LLM 编造的第二道闸；api.md 的模块名（## 节标题）属已知名——合成页按模块名引用不是实体声称；v0.7.1 DEFECT-B 起加源码现实校验——真实目录段名/文件 stem/AST 解析实体同样放行，路径引用（`src/main.rs`）由声称侧剔除，不产生派生 token）
+//!    5a. **entity-ownership**（A8 幻觉缓解，收紧要害）：entity-coverage 只管「名字是否存在于代码库」——编造名恰好撞上真实目录段名/文件 stem（如编造 `Authenticator` 恰有 authenticator.rs）会漏网。归属校验收紧：模块页声称的实体必须归属正确——api 权威实体归属模块 == 页面模块放行；归属其他模块的 api 实体须在页面内有真实 file:line 引用（bad-citation 级），无引用报 entity-ownership（error）；源码 AST 实体须所属文件 ∈ 页面关联文件；仅命中目录段名/文件 stem 的放行但降为告警级（保留 DEFECT-B 宽容）；合成页（无模块归属）只做存在性校验
 //! 6. **bad-mermaid**：产物中的 mermaid fence 无法被 merman 解析（历史产物/人工编辑/增量遗留）
-//! 7. **stale-entity**：api.md 权威清单的实体在当前源码中不存在（文档引用了已删除/重命名的符号）
+//! 7. **stale-entity**：api.md 权威清单的实体在当前源码中不存在（文档引用了已删除/重命名的符号）；A8 起做反向定位——扫描模块页声称实体，对每个 stale 实体报出「页面引用了已删除实体 X」（无人引用的仍挂在 api.md 兜底）
 //!
 //! 检查对象是**磁盘上的产物文件**（真实用户看到的东西），而非内存中的文档对象。
 
@@ -29,12 +30,22 @@ pub struct LintIssue {
     /// 问题类别（字符串化清单，audit-out-06 固化；新增类别须同步更新此处与
     /// 模块头文档，含完整枚举）:
     /// orphan / broken / stale / source-missing / bad-citation / bad-citation-overlap /
-    /// bad-vctx / entity-coverage / bad-mermaid / stale-entity
+    /// bad-vctx / entity-coverage / entity-ownership / bad-mermaid / stale-entity
     pub kind: &'static str,
     /// 问题文件相对路径（相对 output_dir）
     pub path: String,
     /// 问题描述
     pub message: String,
+}
+
+impl LintIssue {
+    /// 是否告警级问题：message 带"（告警）"标记（entity-ownership 规则 4，
+    /// 声称实体仅命中目录/文件 stem 的归属未确认提示——保留 DEFECT-B 宽容
+    /// 但不再静默）。告警级不阻断 lint/status 的退出码（CI 门禁语义：
+    /// 仅 error 级导致失败）。
+    pub fn is_warning(&self) -> bool {
+        self.message.contains("告警")
+    }
 }
 
 /// 执行 lint 检查，返回所有发现的问题（无问题返回空列表）
@@ -49,9 +60,17 @@ pub fn lint(output_dir: &Path, source_roots: &[PathBuf]) -> Vec<LintIssue> {
     let mut issues = Vec::new();
     let wiki_root = output_dir.join("wiki");
 
-    // 源码实体表：stale-entity（实体名集合）与 bad-citation-overlap（行区间表）
-    // 共用一次扫描（两检查的输入同源，各自消费不同投影）
-    let (source_entity_ranges, source_entity_names, source_path_names) =
+    // A8 stale 指纹化：加载生成状态（{output_dir}/.state/generation_state.json）。
+    // 状态不可读（无状态文件/非 git 无状态/损坏）→ None，check_stale 走 mtime
+    // 退化路径（保留现状兜底）。项目根 = output_dir 的父目录，作为把产物
+    // 源路径与指纹表键（相对项目根）对齐的基准。
+    let state = crate::incremental::state::GenerationState::load(&output_dir.join(".state")).ok();
+    let project_root = output_dir.parent().unwrap_or_else(|| Path::new("."));
+
+    // 源码实体表：stale-entity（实体名集合）、bad-citation-overlap（行区间表）
+    // 与 entity-ownership（实体→源文件归属表）共用一次扫描（三检查的输入
+    // 同源，各自消费不同投影）
+    let (source_entity_ranges, source_entity_names, source_path_names, entity_name_files) =
         collect_source_entities(source_roots);
 
     // 收集主语言目录下的全部 .md 产物（wiki 页 + 全局文档）
@@ -75,6 +94,8 @@ pub fn lint(output_dir: &Path, source_roots: &[PathBuf]) -> Vec<LintIssue> {
             &output_dir.join("cards").join(lang),
             source_roots,
             lang,
+            state.as_ref(),
+            project_root,
         ));
         issues.extend(check_citations(
             &pages,
@@ -84,17 +105,38 @@ pub fn lint(output_dir: &Path, source_roots: &[PathBuf]) -> Vec<LintIssue> {
             &source_entity_ranges,
         ));
         issues.extend(check_vctx_tokens(&pages, output_dir, source_roots, lang));
+        // A8 归属校验收紧：合成页（api/overview/architecture/_toc 等无模块
+        // 归属）走存在性检查（check_entity_coverage，现状）；模块页走归属
+        // 校验（check_entity_ownership，新判定）。两检查都内置主语言守卫。
+        let api_path = output_dir.join("wiki").join(lang).join("api.md");
+        let (synthetic_pages, module_pages): (Vec<PathBuf>, Vec<PathBuf>) =
+            pages.iter().cloned().partition(|p| {
+                p.file_name()
+                    .and_then(|s| s.to_str())
+                    .map(|n| is_global_page(n.trim_end_matches(".md")))
+                    .unwrap_or(false)
+            });
         issues.extend(check_entity_coverage(
-            &pages,
-            &output_dir.join("wiki").join(lang).join("api.md"),
+            &synthetic_pages,
+            &api_path,
             lang,
             output_dir,
             &source_entity_names,
             &source_path_names,
         ));
+        issues.extend(check_entity_ownership(
+            &module_pages,
+            &api_path,
+            output_dir,
+            lang,
+            &source_entity_names,
+            &source_path_names,
+            &entity_name_files,
+        ));
         issues.extend(check_mermaid(&pages, lang));
         issues.extend(check_stale_entities(
-            &output_dir.join("wiki").join(lang).join("api.md"),
+            &pages,
+            &api_path,
             lang,
             output_dir,
             &source_entity_names,
@@ -102,6 +144,16 @@ pub fn lint(output_dir: &Path, source_roots: &[PathBuf]) -> Vec<LintIssue> {
     }
 
     issues
+}
+
+/// 全局/合成页判定（stem 命中受管文件名）：这些页面无模块归属，entity
+/// 归属校验对它们只做存在性（复用 is_global，与 check_orphan_pages 的
+/// 全局豁免同口径——api/overview/architecture/_toc/index/_log）。
+fn is_global_page(stem: &str) -> bool {
+    matches!(
+        stem,
+        "api" | "overview" | "architecture" | "_toc" | "index" | "_log"
+    )
 }
 
 /// 1. 孤儿页检查：收集所有页面内链接（含目录页 _toc），统计入链，
@@ -138,10 +190,7 @@ fn check_orphan_pages(pages: &[PathBuf], link_sources: &[PathBuf], lang: &str) -
         let stem = file_name.trim_end_matches(".md").to_string();
         // 全局文档(api/overview/architecture/_toc/index)由 TOC/概览引用,不算孤儿；
         // _log（note 命令追加的知识日志，P1-2）无任何入链但属受管文件,同样豁免
-        let is_global = matches!(
-            stem.as_str(),
-            "api" | "overview" | "architecture" | "_toc" | "index" | "_log"
-        );
+        let is_global = is_global_page(&stem);
         if !is_global && incoming.get(&stem).copied().unwrap_or(0) == 0 {
             issues.push(LintIssue {
                 kind: "orphan",
@@ -195,14 +244,27 @@ fn check_broken_links(pages: &[PathBuf], lang: &str) -> Vec<LintIssue> {
     issues
 }
 
-/// 3. 过时检查：模块页/卡片生成时间 < 其源文件 mtime
-///    （从产物内容提取源文件路径——相关文件段，与源码根下对应文件的 mtime 对比；
+/// 3. 过时检查：模块页/卡片与其源文件的新鲜度对比
+///    （从产物内容提取源文件路径——相关文件段，与源码根下对应文件对比；
 ///    相关文件段含 `..` 越界段时跳过该源路径，防 root 外 metadata 探测）
+///
+/// A8 指纹化：生成状态可用（state 非 None）且源文件在指纹表时，用内容
+/// SHA256 对比替代 mtime——touch 不改内容不再误报 stale（CI checkout
+/// 假 stale / touch 假 stale 的根因：mtime 变了但内容没变，文档不需要
+/// 重生成）。判定矩阵（fp = 指纹表值，exists = 磁盘文件存在）：
+///   (Some(fp), true) 且 fp≠当前 → stale（内容已变更）
+///   (Some(fp), true) 且 fp==当前 → 通过（touch 不触发）
+///   (_, false) → source-missing（保留现状）
+/// 退化路径（保守，设计明确要求）：状态不可读/文件不在指纹表 → 回退
+/// mtime 对比（保留现状逻辑兜底）——无指纹数据时宁可用旧信号也不静默
+/// 放行或误报。
 fn check_stale(
     pages: &[PathBuf],
     cards_dir: &Path,
     source_roots: &[PathBuf],
     lang: &str,
+    state: Option<&crate::incremental::state::GenerationState>,
+    project_root: &Path,
 ) -> Vec<LintIssue> {
     // 同时检查 wiki 页与 cards 卡片；逐项携带来源目录名（"wiki"/"cards"）,
     // 否则 path 恒标 wiki/ 会把卡片误标成 wiki 路径（真实卡片在 cards/{lang}/ 下）
@@ -213,6 +275,18 @@ fn check_stale(
             .into_iter()
             .map(|p| (p, "cards")),
     );
+
+    // 指纹表键归一化（norm_sep 正斜杠）：from_insights 的键是相对项目根的
+    // insight.path，Windows 上是反斜杠——与页面相关文件（正斜杠相对路径）
+    // 归一后同基准才能命中。一次构建供全部源文件查询。
+    let norm_fps: std::collections::HashMap<String, &str> = state
+        .map(|s| {
+            s.file_fingerprints
+                .iter()
+                .map(|(k, v)| (crate::incremental::norm_sep(k), v.as_str()))
+                .collect()
+        })
+        .unwrap_or_default();
 
     let mut issues = Vec::new();
     for (page, dir) in &stale_targets {
@@ -244,47 +318,147 @@ fn check_stale(
                 continue;
             }
             let abs = resolve_source_path(source_roots, &src);
-            match std::fs::metadata(&abs) {
-                Ok(meta) => {
-                    if let Ok(src_time) = meta.modified()
-                        && src_time > page_time
-                    {
+
+            // 指纹路径：状态可用且源文件在指纹表 → 内容对比
+            if let Some(fp) = lookup_generation_fingerprint(&norm_fps, &src, &abs, project_root) {
+                match std::fs::metadata(&abs) {
+                    Ok(_) => {
+                        match crate::incremental::state::GenerationState::compute_file_fingerprint(
+                            &abs,
+                        ) {
+                            Ok(current) => {
+                                // (Some(fp), true) 且 fp==当前 → 通过（touch 不改
+                                // 内容的核心回归）；fp≠当前 → 内容已变更 → stale
+                                if current != *fp {
+                                    issues.push(LintIssue {
+                                        kind: "stale",
+                                        path: format!("{dir}/{lang}/{file_name}"),
+                                        message: format!(
+                                            "过时: 源文件 {src} 内容与生成时指纹不一致(源码已变更,文档可能未更新)"
+                                        ),
+                                    });
+                                }
+                            }
+                            // 当前指纹读取失败（权限/IO 竞态）：无法确认内容，
+                            // 保守回退 mtime（不因读取失败静默放行）
+                            Err(_) => {
+                                if let Some(issue) = stale_issue_by_mtime(
+                                    &src, &abs, page_time, dir, lang, &file_name, page,
+                                ) {
+                                    issues.push(issue);
+                                }
+                            }
+                        }
+                    }
+                    // (_, false) → source-missing（保留现状）：指纹表记录过该
+                    // 文件但磁盘已删除，与 mtime 路径的缺失判定一致
+                    Err(_) => {
+                        if abs.as_os_str().is_empty() {
+                            tracing::warn!(
+                                "lint stale 无法解析源路径（无源码根基准）: `{src}` (page: {})",
+                                page.display()
+                            );
+                            continue;
+                        }
                         issues.push(LintIssue {
-                            kind: "stale",
+                            kind: "source-missing",
                             path: format!("{dir}/{lang}/{file_name}"),
                             message: format!(
-                                "过时: 源文件 {src} 的修改时间晚于页面生成时间(源码已变更,文档可能未更新)"
+                                "源文件缺失: 产物引用的源文件 `{src}` 不存在（{}）",
+                                abs.display()
                             ),
                         });
                     }
                 }
-                Err(_) => {
-                    // 源文件缺失（KNOWN-06）：产物引用的源文件在解析基准下
-                    // 不存在——修复前静默跳过，产物引用了已删除/未生成的源
-                    // 文件却无任何告警。空 abs（source_roots 为空/无可解析
-                    // 基准）不是"缺失"而是"无从解析"，跳过不报；root 内缺失
-                    // 与真越界的区分由 absolute_path_within_roots 保证
-                    // （KNOWN-07：root 内缺失按放行流到此处，越界在上游拒绝）。
-                    if abs.as_os_str().is_empty() {
-                        tracing::warn!(
-                            "lint stale 无法解析源路径（无源码根基准）: `{src}` (page: {})",
-                            page.display()
-                        );
-                        continue;
-                    }
-                    issues.push(LintIssue {
-                        kind: "source-missing",
-                        path: format!("{dir}/{lang}/{file_name}"),
-                        message: format!(
-                            "源文件缺失: 产物引用的源文件 `{src}` 不存在（{}）",
-                            abs.display()
-                        ),
-                    });
-                }
+                continue;
+            }
+
+            // mtime 退化路径（状态不可读 / 文件不在指纹表）：保留现状逻辑
+            if let Some(issue) =
+                stale_issue_by_mtime(&src, &abs, page_time, dir, lang, &file_name, page)
+            {
+                issues.push(issue);
             }
         }
     }
     issues
+}
+
+/// 在归一化的指纹表中查找源文件的生成时指纹（返回指纹值）。
+///
+/// 候选键按命中率排序：① 页面相关文件原文归一化（最常见——生成层写
+/// `src/lib.rs` 相对项目根，与 from_insights 的键同基准）；② 解析出的
+/// 绝对路径相对项目根归一化（页面写绝对路径时）③ 绝对路径归一化兜底。
+/// 不在表内返回 None → 调用方走 mtime 退化路径（保守，不误报）。
+fn lookup_generation_fingerprint<'a>(
+    norm_fps: &'a std::collections::HashMap<String, &'a str>,
+    src: &str,
+    abs: &Path,
+    project_root: &Path,
+) -> Option<&'a str> {
+    let src_norm = crate::incremental::norm_sep(src);
+    if let Some(fp) = norm_fps.get(&src_norm) {
+        return Some(*fp);
+    }
+    if let Ok(rel) = abs.strip_prefix(project_root) {
+        let rel_norm = crate::incremental::norm_sep(&rel.to_string_lossy());
+        if let Some(fp) = norm_fps.get(&rel_norm) {
+            return Some(*fp);
+        }
+    }
+    let abs_norm = crate::incremental::norm_sep(&abs.to_string_lossy());
+    norm_fps.get(&abs_norm).copied()
+}
+
+/// mtime 对比兜底（退化路径）：源文件 mtime 晚于页面生成时间 → stale；
+/// 源文件缺失 → source-missing；无法解析基准（空 abs）→ 跳过并 warn。
+/// 与 A8 前 check_stale 的逻辑逐条一致（保留现状语义）。
+fn stale_issue_by_mtime(
+    src: &str,
+    abs: &Path,
+    page_time: std::time::SystemTime,
+    dir: &'static str,
+    lang: &str,
+    file_name: &str,
+    page: &Path,
+) -> Option<LintIssue> {
+    match std::fs::metadata(abs) {
+        Ok(meta) => {
+            if let Ok(src_time) = meta.modified()
+                && src_time > page_time
+            {
+                Some(LintIssue {
+                    kind: "stale",
+                    path: format!("{dir}/{lang}/{file_name}"),
+                    message: format!(
+                        "过时: 源文件 {src} 的修改时间晚于页面生成时间(源码已变更,文档可能未更新)"
+                    ),
+                })
+            } else {
+                None
+            }
+        }
+        Err(_) => {
+            // 空 abs（source_roots 为空/无可解析基准）不是"缺失"而是"无从
+            // 解析"，跳过不报（KNOWN-07 语义，与既有行为一致）
+            if abs.as_os_str().is_empty() {
+                tracing::warn!(
+                    "lint stale 无法解析源路径（无源码根基准）: `{src}` (page: {})",
+                    page.display()
+                );
+                None
+            } else {
+                Some(LintIssue {
+                    kind: "source-missing",
+                    path: format!("{dir}/{lang}/{file_name}"),
+                    message: format!(
+                        "源文件缺失: 产物引用的源文件 `{src}` 不存在（{}）",
+                        abs.display()
+                    ),
+                })
+            }
+        }
+    }
 }
 
 /// 4. 引用存在性检查（P1-4 零成本评测）：正文中的 `path:line` 引用必须可验证
@@ -587,14 +761,20 @@ fn citation_key(p: &Path) -> String {
 fn api_known_entities(api_content: &str) -> std::collections::HashSet<String> {
     api_content
         .lines()
-        .filter(|l| l.trim_start().starts_with("- `"))
-        .filter_map(|l| {
-            // 签名如 `pub fn authenticate(username: &str) -> Option<User>`：
-            // 取第一个 '(' 前的最后标识符（跳过 pub/fn 等关键字前缀）
-            let inner = &l[l.find('`').unwrap() + 1..];
-            inner.split('`').next().and_then(entity_name_from_signature)
-        })
+        .filter_map(api_claim_entity_name)
         .collect()
+}
+
+/// 从 api.md 实体声称行提取实体名（`- \`...\`` 行 + entity_name_from_signature）。
+/// 签名如 `pub fn authenticate(username: &str) -> Option<User>`：取第一个 '('
+/// 前的最后标识符（跳过 pub/fn 等关键字前缀）。api_known_entities 与
+/// api_entity_module_map 共用，保证"实体名"口径唯一。
+fn api_claim_entity_name(line: &str) -> Option<String> {
+    if !line.trim_start().starts_with("- `") {
+        return None;
+    }
+    let inner = &line[line.find('`').unwrap() + 1..];
+    inner.split('`').next().and_then(entity_name_from_signature)
 }
 
 /// 从 api.md 提取模块名集合（`## ` 节标题 = 模块名，容器名而非叶子实体）。
@@ -609,6 +789,47 @@ fn api_module_names(api_content: &str) -> std::collections::HashSet<String> {
             (!name.is_empty()).then(|| name.to_string())
         })
         .collect()
+}
+
+/// 实体名 → 归属模块名 映射（api.md `## ` 节标题为模块归属，A8 归属校验用）。
+///
+/// 提取口径复用 api_claim_entity_name（与 api_known_entities 同函数），保证
+/// 权威侧实体名唯一口径；`## ` 节标题即实体所属模块（api.md 由 render_api_
+/// reference 按 ModuleCluster.name 分组渲染，节标题 = 模块名）。preamble
+/// 实体（首个 `## ` 前，正常不会出现）归属为空串。
+fn api_entity_module_map(api_content: &str) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    let mut current_module = String::new();
+    for line in api_content.lines() {
+        if let Some(rest) = line.strip_prefix("## ") {
+            current_module = rest.trim().to_string();
+        } else if let Some(name) = api_claim_entity_name(line) {
+            map.insert(name, current_module.clone());
+        }
+    }
+    map
+}
+
+/// 实体名 → api.md 声称行的 file:line 引用（A8 归属校验的"bad-citation 级
+/// 引用"证据：跨模块声称需页面内存在该实体的真实 file:line）。
+///
+/// 从 api.md 的 `- \`...\`` 行提取（render_api_reference 输出行尾带
+/// ` — 文件:起始行` 定位），extract_citations 复用引用契约的提取器——
+/// 与 lint 的 bad-citation 判定同一 parser，避免另造解析。
+fn api_entity_citations(
+    api_content: &str,
+) -> std::collections::HashMap<String, Vec<crate::output::citation::Citation>> {
+    let mut map: std::collections::HashMap<String, Vec<crate::output::citation::Citation>> =
+        std::collections::HashMap::new();
+    for line in api_content.lines() {
+        if let Some(name) = api_claim_entity_name(line) {
+            let cites = crate::output::citation::extract_citations(line);
+            if !cites.is_empty() {
+                map.entry(name).or_default().extend(cites);
+            }
+        }
+    }
+    map
 }
 
 /// 5. 实体覆盖率检查（P1-4 零成本评测）：模块页核心实体须存在于 api.md
@@ -678,15 +899,162 @@ fn check_entity_coverage(
     issues
 }
 
-/// 扫描源码根并解析全部实体（stale-entity 与 bad-citation-overlap 共用一次
-/// 扫描，避免 lint 对源码做两遍 AST 解析）
+/// 5a. 实体归属校验收紧（A8 幻觉缓解核心）：模块页声称的实体必须归属正确。
+///
+/// 调用方（lint）已把合成页（无模块归属）分流到 check_entity_coverage，
+/// 本函数只处理模块页。判定矩阵（依次）：
+///   1. e ∈ api 权威实体集合且归属模块 == 页面模块 → 放行（归属正确）
+///   2. e ∈ api 权威实体集合且归属模块 != 页面模块 → 需 bad-citation 级引用
+///      （api.md 中 e 的 file:line 存在于页面）；有引用 → 放行，无引用 → 报
+///      entity-ownership（error）——拦截"跨模块声称无证据"的幻觉
+///   3. e ∈ source_entity_names 且所属文件 ∈ 页面关联文件 → 放行（文件级归属正确）
+///   4. e 仅命中 source_path_names（目录段名/文件 stem）→ 放行但降为告警级
+///      （保留 DEFECT-B 宽容，但不再完全静默）
+///   5. 全不满足 → 保持 entity-coverage（error，防编造）
+///
+/// 页面模块 = 文件 stem（模块页文件名 = module_path.join("_") 的落盘命名）；
+/// api 模块名以 `::` 连接目录段（ModuleCluster.name），归一 `::`→`_` 后与
+/// 页面 stem 同基准比较（src::config ↔ src_config）。此命名一致性由生成层
+/// 保证（页面 title = module_path.join("::")，api.md 节标题 = 模块名），
+/// 归一后两侧同源。
+///
+/// 拦截效果：编造名与真实文件名同名（如编造 `Authenticator` 恰有
+/// authenticator.rs）不在 api 权威集、不在源码 AST → 只命中 stem 落规则 4
+/// 告警（不再完全静默）；若编造名恰是其他模块的 api 实体 → 规则 2 要求
+/// 页面内有真实 file:line 引用，无引用被 entity-ownership 兜底。
+fn check_entity_ownership(
+    pages: &[PathBuf],
+    api_path: &Path,
+    output_dir: &Path,
+    lang: &str,
+    source_entity_names: &std::collections::HashSet<String>,
+    source_path_names: &std::collections::HashSet<String>,
+    entity_name_files: &std::collections::HashMap<String, Vec<std::path::PathBuf>>,
+) -> Vec<LintIssue> {
+    if primary_language(output_dir) != *lang {
+        return Vec::new();
+    }
+    let Ok(api_content) = std::fs::read_to_string(api_path) else {
+        return Vec::new();
+    };
+    let known = api_known_entities(&api_content);
+    let modules = api_module_names(&api_content);
+    let entity_module = api_entity_module_map(&api_content);
+    let entity_citations = api_entity_citations(&api_content);
+
+    let mut issues = Vec::new();
+    for page in pages {
+        // 页面读取失败（损坏/权限/竞态删除）时显式告警并跳过该页——
+        // 静默当作空内容会把页误报为孤儿/断链（失败必须可观测）
+        let Ok(content) = std::fs::read_to_string(page) else {
+            tracing::warn!("lint 读取页面失败（跳过检查）: {}", page.display());
+            continue;
+        };
+        let file_name = page
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let page_module = file_name.trim_end_matches(".md").to_string();
+        let related_files = extract_source_files(&content);
+        let page_citations = crate::output::citation::extract_citations(&content);
+
+        for entity in extract_entity_names(&content, &modules) {
+            // 规则 1-2：api 权威实体（归属校验）
+            if known.contains(&entity) {
+                let owned_module = entity_module.get(&entity).map(String::as_str).unwrap_or("");
+                if owned_module.replace("::", "_") == page_module {
+                    // 规则 1：归属正确（实体属于页面自己的模块）
+                    continue;
+                }
+                // 规则 2：跨模块声称需 bad-citation 级引用（api.md 中 e 的
+                // file:line 与页面引用区间重叠）；有 → 放行，无 → 报错
+                let has_citation = entity_citations.get(&entity).is_some_and(|api_cites| {
+                    page_citations.iter().any(|pc| {
+                        api_cites.iter().any(|ac| {
+                            crate::output::citation::citation_overlaps_entity(
+                                pc,
+                                &[(ac.start, ac.end)],
+                            )
+                        })
+                    })
+                });
+                if has_citation {
+                    continue;
+                }
+                issues.push(LintIssue {
+                    kind: "entity-ownership",
+                    path: format!("wiki/{lang}/{file_name}"),
+                    message: format!(
+                        "实体归属: 页面声称的实体 `{entity}` 属于模块 `{owned_module}`（非本页面模块 `{page_module}`），且页面无该实体的 file:line 引用"
+                    ),
+                });
+                continue;
+            }
+            // 规则 3：源码 AST 实体且所属文件 ∈ 页面关联文件 → 文件级归属正确
+            if source_entity_names.contains(&entity)
+                && entity_name_files.get(&entity).is_some_and(|files| {
+                    files
+                        .iter()
+                        .any(|f| related_files.iter().any(|r| file_matches_related(f, r)))
+                })
+            {
+                continue;
+            }
+            // 规则 4：仅命中目录段名/文件 stem → 告警级放行（保留 DEFECT-B
+            // 宽容但不再静默——目录/文件引用归 source-missing/bad-citation 管，
+            // 这里只降级提示未确认归属）
+            if source_path_names.contains(&entity) {
+                issues.push(LintIssue {
+                    kind: "entity-ownership",
+                    path: format!("wiki/{lang}/{file_name}"),
+                    message: format!(
+                        "实体归属（告警）: 声称的实体 `{entity}` 仅命中目录/文件 stem（非 api 权威实体），归属未确认"
+                    ),
+                });
+                continue;
+            }
+            // 规则 5：全不满足 → 保持 entity-coverage（防编造）
+            issues.push(LintIssue {
+                kind: "entity-coverage",
+                path: format!("wiki/{lang}/{file_name}"),
+                message: format!(
+                    "实体覆盖率: 页面声称的实体 `{entity}` 不在 api.md 清单中（可能是编造或已删除）"
+                ),
+            });
+        }
+    }
+    issues
+}
+
+/// 源文件路径是否与页面关联文件引用匹配（A8 规则 3 的文件级归属判定）。
+///
+/// 匹配口径：归一化路径全等 / 实体文件绝对路径以「/关联路径」结尾（页面
+/// 写相对项目根的路径、实体文件是绝对路径）/ 文件 basename 相等（兜底，
+/// 容忍页面用缩写路径）。宽松 basename 匹配是刻意取舍：文件级归属是
+/// "名字确实在页面自己的源码里"的宽松证据，宁松勿误报（规则 3 只放行
+/// 不报错，收紧靠规则 2 的跨模块引用要求）。
+fn file_matches_related(entity_file: &Path, related: &str) -> bool {
+    let ef = crate::incremental::norm_sep(&entity_file.to_string_lossy());
+    let r = crate::incremental::norm_sep(related);
+    ef == r || (!r.is_empty() && ef.ends_with(&format!("/{r}"))) || {
+        Path::new(related)
+            .file_name()
+            .is_some_and(|n| n == entity_file.file_name().unwrap_or_default())
+    }
+}
+
+/// 扫描源码根并解析全部实体（stale-entity / bad-citation-overlap /
+/// entity-ownership 共用一次扫描，避免 lint 对源码做多遍 AST 解析）
 ///
 /// 返回 (norm_sep 绝对路径 → 实体行区间列表, 全部实体名集合, 目录段名+文件
-/// stem 集合)。第三项为 entity-coverage 的「源码现实校验」输入（DEFECT-B）：
-/// 真实子目录名/文件 stem 是目录/文件引用而非叶子实体，parser 不会产出，
-/// 但它们在代码库中真实存在——与 AST 解析出的实体名互补，共同构成「名字
-/// 是否存在于源码」的判定面。目录段名/文件 stem 相对 source_root 收集，
-/// 避免把临时目录/绝对路径段（如 temp 目录名）算作合法名。
+/// stem 集合, 实体名 → 源文件路径列表)。第三项为 entity-coverage 的「源码现实
+/// 校验」输入（DEFECT-B）：真实子目录名/文件 stem 是目录/文件引用而非叶子
+/// 实体，parser 不会产出，但它们在代码库中真实存在——与 AST 解析出的实体名
+/// 互补，共同构成「名字是否存在于源码」的判定面。第四项为 entity-ownership
+/// 的「文件级归属」输入（A8）：实体声称须与页面关联文件对上才放行，需要
+/// 实体名反查到其所属源文件（同一实体名可能出现在多个文件，用 Vec）。
+/// 目录段名/文件 stem 相对 source_root 收集，避免把临时目录/绝对路径段
+/// （如 temp 目录名）算作合法名。
 /// 解析失败的文件跳过（文件级损坏不是文档问题）；源码根不存在/为空时
 /// 返回空表——调用方据此跳过对应检查（扫描失败 ≠ 文档过期/引用错误，
 /// 两种错误信号不能混淆）。
@@ -696,10 +1064,13 @@ fn collect_source_entities(
     crate::output::citation::EntityRanges,
     std::collections::HashSet<String>,
     std::collections::HashSet<String>,
+    std::collections::HashMap<String, Vec<std::path::PathBuf>>,
 ) {
     let mut ranges: crate::output::citation::EntityRanges = std::collections::HashMap::new();
     let mut names: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut path_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut entity_files: std::collections::HashMap<String, Vec<std::path::PathBuf>> =
+        std::collections::HashMap::new();
     let registry = crate::ingest::parser::ParserRegistry::new();
     for root in source_roots {
         if !root.is_dir() {
@@ -725,11 +1096,15 @@ fn collect_source_entities(
                 );
                 for entity in &insight.entities {
                     names.insert(entity.name.clone());
+                    entity_files
+                        .entry(entity.name.clone())
+                        .or_default()
+                        .push(entry.clone());
                 }
             }
         }
     }
-    (ranges, names, path_names)
+    (ranges, names, path_names, entity_files)
 }
 
 /// 把 entry 相对 root 的路径分解为「目录段名 + 文件 stem」收集进 out
@@ -759,11 +1134,19 @@ fn collect_path_names(entry: &Path, root: &Path, out: &mut std::collections::Has
     }
 }
 
-/// 7. 符号漂移检查（v13 D1，N1）：api.md 权威清单中的实体在当前源码中不存在
-///    → "文档引用了已删除实体"（entity-coverage 的反向：前者防 LLM 编造，
-///    本检查防文档过期——增量更新未覆盖、模块重构改名、人工删改产物）。
-///    零 LLM，源码侧直接 AST 解析（与生成侧同一 parser，口径一致）。
+/// 7. 符号漂移检查（v13 D1，N1 + A8 反向定位）：api.md 权威清单中的实体
+///    在当前源码中不存在 → "文档引用了已删除实体"（entity-coverage 的反向：
+///    前者防 LLM 编造，本检查防文档过期——增量更新未覆盖、模块重构改名、
+///    人工删改产物）。零 LLM，源码侧直接 AST 解析（与生成侧同一 parser，
+///    口径一致）。
+///
+/// A8 反向定位：先求 stale 实体（api 已知 ∩ 不在 source_entity_names），
+/// 再扫描全部模块页提取声称实体构建「实体 → [引用页面]」反向图——对每个
+/// stale 实体，引用它的页面报 stale-entity（message 带"页面引用了已删除
+/// 实体 X"，path 指向引用页面，定位到具体文档）；无任何页面引用的 stale
+/// 实体仍在 api.md 上报一条（保留原信号，避免丢失孤儿 stale 实体）。
 fn check_stale_entities(
+    pages: &[PathBuf],
     api_path: &Path,
     lang: &str,
     output_dir: &Path,
@@ -785,18 +1168,72 @@ fn check_stale_entities(
         return Vec::new();
     }
 
-    let mut issues = Vec::new();
-    let mut stale: Vec<&String> = known
+    // stale 实体集合（api 已知 ∩ 不在源码）
+    let stale_set: std::collections::HashSet<&str> = known
         .iter()
         .filter(|e| !source_entity_names.contains(*e))
+        .map(|e| e.as_str())
         .collect();
-    stale.sort();
-    for entity in stale {
-        issues.push(LintIssue {
-            kind: "stale-entity",
-            path: format!("wiki/{lang}/api.md"),
-            message: format!("符号漂移: api.md 中的实体 `{entity}` 在当前源码中不存在（已删除或重命名，文档过期）"),
-        });
+    if stale_set.is_empty() {
+        return Vec::new();
+    }
+    let modules = api_module_names(&api_content);
+
+    // 构建「实体 → [引用页面]」反向图：扫描全部**模块页**声称实体
+    // （api.md 自身是权威清单不是引用页面，合成页/受管页一并跳过——
+    // 否则 api.md 列的 stale 实体恒被自己"引用"，反向定位失去意义）
+    let mut refs: std::collections::HashMap<&str, Vec<PathBuf>> = std::collections::HashMap::new();
+    for page in pages {
+        let file_name = page
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if is_global_page(file_name.trim_end_matches(".md")) {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(page) else {
+            continue;
+        };
+        for entity in extract_entity_names(&content, &modules) {
+            if let Some(&stale) = stale_set.get(entity.as_str()) {
+                refs.entry(stale).or_default().push(page.clone());
+            }
+        }
+    }
+
+    let mut issues = Vec::new();
+    for stale in stale_set.into_iter().collect::<Vec<_>>() {
+        match refs.remove(stale) {
+            // 有页面引用：逐个引用页面报错，定位到具体文档
+            Some(pages) => {
+                let mut pages = pages;
+                pages.sort();
+                pages.dedup();
+                for page in pages {
+                    let file_name = page
+                        .file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    issues.push(LintIssue {
+                        kind: "stale-entity",
+                        path: format!("wiki/{lang}/{file_name}"),
+                        message: format!(
+                            "符号漂移: 页面引用了已删除实体 `{stale}`（api.md 权威清单有但当前源码不存在，已删除或重命名）"
+                        ),
+                    });
+                }
+            }
+            // 无页面引用：在 api.md 上兜底报一条（保留原信号）
+            None => {
+                issues.push(LintIssue {
+                    kind: "stale-entity",
+                    path: format!("wiki/{lang}/api.md"),
+                    message: format!(
+                        "符号漂移: api.md 中的实体 `{stale}` 在当前源码中不存在（已删除或重命名，文档过期）"
+                    ),
+                });
+            }
+        }
     }
     issues
 }
@@ -2185,6 +2622,25 @@ mod tests {
             "真实子目录名与路径引用不应误报, 实际: {:?}",
             issues
         );
+        // A8 新 kind 分支：子目录名仅命中 stem → 降为告警级 entity-ownership
+        // （保留 DEFECT-B 宽容但不再完全静默），不再是全放行
+        let warn: Vec<_> = issues
+            .iter()
+            .filter(|i| i.kind == "entity-ownership" && i.message.contains("告警"))
+            .collect();
+        assert_eq!(
+            warn.len(),
+            3,
+            "core/net/service 三个 stem 命中应各报一条告警, 实际: {:?}",
+            issues
+        );
+        assert!(
+            warn.iter().any(|i| i.message.contains("core"))
+                && warn.iter().any(|i| i.message.contains("net"))
+                && warn.iter().any(|i| i.message.contains("service")),
+            "告警应覆盖三个子目录名: {:?}",
+            warn
+        );
         // 路径扩展名防回归：`## 相关文件` 的 `src/main.rs` 不产生 `rs` 声称
         assert!(
             !issues
@@ -2210,6 +2666,446 @@ mod tests {
             cov[0].message
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A8 归属校验：本模块实体 → 放行；跨模块实体带真实 file:line 引用 → 放行；
+    /// 跨模块实体无引用 → entity-ownership（error，核心新判定）。
+    #[test]
+    fn test_lint_entity_ownership_cross_module() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_own_cross_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        // api.md：模块 m_a 属 Shared、模块 m_b 属 Local（带 file:line 定位）
+        std::fs::write(
+            wiki.join("api.md"),
+            "# API 参考\n\n## m_a\n\n- `Shared` — 描述 — src/shared.rs:1\n\n## m_b\n\n- `Local` — 描述 — src/local.rs:1\n",
+        )
+        .unwrap();
+        // m_a.md：Shared（本模块）+ Local（跨模块，带引用）
+        std::fs::write(
+            wiki.join("m_a.md"),
+            "# M_A\n\n- `Shared` — 本模块实体\n- `Local` — 跨模块实体 src/local.rs:1\n",
+        )
+        .unwrap();
+        // m_b.md：Local（本模块）+ Shared（跨模块，无引用）
+        std::fs::write(
+            wiki.join("m_b.md"),
+            "# M_B\n\n- `Local` — 本模块实体\n- `Shared` — 跨模块实体无引用\n",
+        )
+        .unwrap();
+
+        let issues = lint(&dir, &[]);
+        // m_a.md：Shared 本模块放行；Local 跨模块有引用放行 → 无归属问题
+        assert!(
+            !issues
+                .iter()
+                .any(|i| i.kind == "entity-ownership" && i.path.ends_with("m_a.md")),
+            "跨模块带引用应放行, 实际: {:?}",
+            issues
+        );
+        // m_b.md：Local 本模块放行；Shared 跨模块无引用 → 报 entity-ownership
+        let own: Vec<_> = issues
+            .iter()
+            .filter(|i| i.kind == "entity-ownership" && i.path.ends_with("m_b.md"))
+            .collect();
+        assert_eq!(own.len(), 1, "跨模块无引用应报归属错误, 实际: {:?}", issues);
+        assert!(
+            own[0].message.contains("Shared") && own[0].message.contains("m_a"),
+            "应指向 Shared 与其归属模块 m_a: {}",
+            own[0].message
+        );
+        // Shared/Local 都是 api 权威实体 → 不得误报 entity-coverage
+        assert!(
+            !issues.iter().any(|i| i.kind == "entity-coverage"),
+            "api 权威实体不应误报覆盖率: {:?}",
+            issues
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A8 归属校验：合成页（architecture.md）只做存在性——编造实体报
+    /// entity-coverage，模块名引用放行，不触发归属校验（无模块归属）。
+    #[test]
+    fn test_lint_entity_ownership_synthetic_page_exists_only() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_own_synth_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        std::fs::write(
+            wiki.join("api.md"),
+            "# API 参考\n\n## src\n\n- `Foo` — src/main.rs:1\n",
+        )
+        .unwrap();
+        // 合成页：模块名 src 引用 + 编造实体 GhostThing
+        std::fs::write(
+            wiki.join("architecture.md"),
+            "# 架构\n\n## 模块\n\n- `src` — 核心模块\n- `GhostThing` — 编造的实体\n",
+        )
+        .unwrap();
+
+        let issues = lint(&dir, &[]);
+        let cov: Vec<_> = issues
+            .iter()
+            .filter(|i| i.kind == "entity-coverage")
+            .collect();
+        assert_eq!(cov.len(), 1, "合成页只做存在性检查, 实际: {:?}", issues);
+        assert!(
+            cov[0].message.contains("GhostThing"),
+            "应指向编造实体: {}",
+            cov[0].message
+        );
+        assert!(
+            !issues.iter().any(|i| i.kind == "entity-ownership"),
+            "合成页不应触发归属校验: {:?}",
+            issues
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A8 归属校验：编造名与真实文件 stem 同名（DEFECT-B 宽容收窄）——
+    /// 仅命中 source_path_names → 降为告警级 entity-ownership（不再完全
+    /// 静默）；完全编造（无任何命中）→ 保持 entity-coverage。
+    #[test]
+    fn test_lint_entity_ownership_stem_collision_warns() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_own_stem_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        let src = dir.join("src");
+        std::fs::create_dir_all(&wiki).unwrap();
+        std::fs::create_dir_all(&src).unwrap();
+        // 源码：authenticator.rs（真实文件，内含真实实体 RealAuth）
+        std::fs::write(src.join("authenticator.rs"), "pub fn RealAuth() {}\n").unwrap();
+        std::fs::write(
+            wiki.join("api.md"),
+            "# API 参考\n\n## m\n\n- `Foo` — m.rs:1\n",
+        )
+        .unwrap();
+        // 模块页 m.md：声称 authenticator（撞 stem）+ GhostNope（纯编造）
+        std::fs::write(
+            wiki.join("m.md"),
+            "# M\n\n- `authenticator` — 目录/文件引用\n- `GhostNope` — 编造的实体\n",
+        )
+        .unwrap();
+
+        let issues = lint(&dir, &[src]);
+        let warn: Vec<_> = issues
+            .iter()
+            .filter(|i| i.kind == "entity-ownership" && i.message.contains("告警"))
+            .collect();
+        assert_eq!(warn.len(), 1, "stem 撞名应降为告警, 实际: {:?}", issues);
+        assert!(
+            warn[0].message.contains("authenticator"),
+            "告警应指向撞 stem 的名字: {}",
+            warn[0].message
+        );
+        let cov: Vec<_> = issues
+            .iter()
+            .filter(|i| i.kind == "entity-coverage")
+            .collect();
+        assert_eq!(cov.len(), 1, "纯编造仍应报覆盖率, 实际: {:?}", issues);
+        assert!(
+            cov[0].message.contains("GhostNope"),
+            "应指向 GhostNope: {}",
+            cov[0].message
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A8 stale 指纹化核心回归：状态指纹表含源文件时，touch（改 mtime 不改
+    /// 内容）→ **不** stale。修复前 mtime 对比会把 CI checkout / touch 的
+    /// 假 stale 误报为文档过期。
+    #[test]
+    fn test_lint_stale_fingerprint_touch_not_stale() {
+        use crate::incremental::state::GenerationState;
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_fp_touch_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        let src = dir.join("src");
+        std::fs::create_dir_all(&wiki).unwrap();
+        std::fs::create_dir_all(&src).unwrap();
+        let src_file = src.join("lib.rs");
+        let content = "pub fn f() {}\n";
+        std::fs::write(&src_file, content).unwrap();
+        // 页面先写（mtime 早于后续 touch）
+        std::fs::write(
+            wiki.join("lib.md"),
+            "# Lib\n\n## 相关文件\n\n- `src/lib.rs`\n",
+        )
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        // 保存生成状态（指纹表记录当前内容；键 = 相对项目根路径 src/lib.rs）
+        let state = GenerationState {
+            last_commit_hash: None,
+            file_fingerprints: std::collections::HashMap::from([(
+                "src/lib.rs".to_string(),
+                GenerationState::compute_file_fingerprint(&src_file).unwrap(),
+            )]),
+            doc_fingerprints: std::collections::HashMap::new(),
+            doc_modules: std::collections::HashMap::new(),
+            protected_docs: Vec::new(),
+            generated_at: String::new(),
+            tool_version: None,
+            failed_modules: Vec::new(),
+        };
+        state.save(&dir.join(".state")).unwrap();
+        // touch：重写完全相同内容（mtime 更新、内容不变）——mtime 兜底会误报
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(&src_file, content).unwrap();
+
+        let issues = lint(&dir, std::slice::from_ref(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            !issues.iter().any(|i| i.kind == "stale"),
+            "touch 不改内容不应报 stale（指纹一致）, 实际: {:?}",
+            issues
+        );
+    }
+
+    /// A8 stale 指纹化：内容变更（指纹不一致）→ stale
+    #[test]
+    fn test_lint_stale_fingerprint_content_change_stale() {
+        use crate::incremental::state::GenerationState;
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_fp_change_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        let src = dir.join("src");
+        std::fs::create_dir_all(&wiki).unwrap();
+        std::fs::create_dir_all(&src).unwrap();
+        let src_file = src.join("lib.rs");
+        std::fs::write(&src_file, "pub fn f() {}\n").unwrap();
+        std::fs::write(
+            wiki.join("lib.md"),
+            "# Lib\n\n## 相关文件\n\n- `src/lib.rs`\n",
+        )
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let state = GenerationState {
+            last_commit_hash: None,
+            file_fingerprints: std::collections::HashMap::from([(
+                "src/lib.rs".to_string(),
+                GenerationState::compute_file_fingerprint(&src_file).unwrap(),
+            )]),
+            doc_fingerprints: std::collections::HashMap::new(),
+            doc_modules: std::collections::HashMap::new(),
+            protected_docs: Vec::new(),
+            generated_at: String::new(),
+            tool_version: None,
+            failed_modules: Vec::new(),
+        };
+        state.save(&dir.join(".state")).unwrap();
+        // 改写内容（指纹必变）
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(&src_file, "pub fn updated() {}\n").unwrap();
+
+        let issues = lint(&dir, std::slice::from_ref(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.kind == "stale" && i.path.ends_with("lib.md")),
+            "内容变更应报 stale, 实际: {:?}",
+            issues
+        );
+    }
+
+    /// A8 stale 指纹化退化路径：状态不可读（无状态文件）→ 回退 mtime 对比，
+    /// 源文件更新仍报 stale（现状逻辑兜底，不因状态缺失静默放行）。
+    #[test]
+    fn test_lint_stale_fingerprint_state_missing_mtime_fallback() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_fp_nostate_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        let src = dir.join("src");
+        std::fs::create_dir_all(&wiki).unwrap();
+        std::fs::create_dir_all(&src).unwrap();
+        let src_file = src.join("lib.rs");
+        std::fs::write(&src_file, "pub fn f() {}\n").unwrap();
+        std::fs::write(
+            wiki.join("lib.md"),
+            "# Lib\n\n## 相关文件\n\n- `src/lib.rs`\n",
+        )
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        // 不写 .state 状态文件；源文件更新（mtime 更新 + 内容变更）
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(&src_file, "pub fn updated() {}\n").unwrap();
+
+        let issues = lint(&dir, std::slice::from_ref(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            issues.iter().any(|i| i.kind == "stale"),
+            "状态缺失走 mtime 兜底仍应报 stale, 实际: {:?}",
+            issues
+        );
+    }
+
+    /// A8 stale 指纹化退化路径：状态可用但源文件不在指纹表（新文件）→
+    /// 保守回退 mtime 对比（不误报也不静默）：新文件 mtime 晚于页面 → stale
+    #[test]
+    fn test_lint_stale_fingerprint_new_file_mtime_fallback() {
+        use crate::incremental::state::GenerationState;
+        let dir =
+            std::env::temp_dir().join(format!("code_repo_wiki_lint_fp_new_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        // 页面先写
+        std::fs::write(
+            wiki.join("lib.md"),
+            "# Lib\n\n## 相关文件\n\n- `src/lib.rs`\n",
+        )
+        .unwrap();
+        // 状态指纹表为空（该源文件从未在生成时扫描）
+        let state = GenerationState {
+            last_commit_hash: None,
+            file_fingerprints: std::collections::HashMap::new(),
+            doc_fingerprints: std::collections::HashMap::new(),
+            doc_modules: std::collections::HashMap::new(),
+            protected_docs: Vec::new(),
+            generated_at: String::new(),
+            tool_version: None,
+            failed_modules: Vec::new(),
+        };
+        state.save(&dir.join(".state")).unwrap();
+        // 新文件在状态保存后才创建（mtime 晚于页面）→ 不在指纹表 → mtime 兜底 stale
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src").join("lib.rs"), "pub fn f() {}\n").unwrap();
+
+        let issues = lint(&dir, std::slice::from_ref(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.kind == "stale" && i.path.ends_with("lib.md")),
+            "新文件（不在指纹表）走 mtime 兜底应报 stale, 实际: {:?}",
+            issues
+        );
+    }
+
+    /// A8 stale-entity 反向定位：模块页声称已删除实体 → 在该引用页上报
+    /// stale-entity（而非 api.md），message 带"页面引用了已删除实体"。
+    #[test]
+    fn test_lint_stale_entity_reverse_located_on_page() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_stale_rev_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        let src = dir.join("src");
+        std::fs::create_dir_all(&wiki).unwrap();
+        std::fs::create_dir_all(&src).unwrap();
+        // 源码只有 alpha（beta 已删除）
+        std::fs::write(src.join("lib.rs"), "pub fn alpha() {}\n").unwrap();
+        std::fs::write(
+            wiki.join("api.md"),
+            "# API 参考\n\n## m\n\n- `alpha` — m.rs:1\n- `beta` — m.rs:2\n",
+        )
+        .unwrap();
+        // 模块页 m.md 声称 beta（stale 实体）
+        std::fs::write(wiki.join("m.md"), "# M\n\n- `beta` — 声称已删除实体\n").unwrap();
+
+        let issues = lint(&dir, std::slice::from_ref(&src));
+        let stale: Vec<_> = issues.iter().filter(|i| i.kind == "stale-entity").collect();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(stale.len(), 1, "只应报 beta, 实际: {:?}", issues);
+        assert!(
+            stale[0].path.ends_with("m.md"),
+            "反向定位应指向引用页, 实际: {}",
+            stale[0].path
+        );
+        assert!(
+            stale[0].message.contains("beta") && stale[0].message.contains("页面引用了已删除实体"),
+            "message 应带反向定位描述: {}",
+            stale[0].message
+        );
+    }
+
+    /// A8 stale-entity 反向定位：stale 实体无人引用 → 仍在 api.md 兜底报
+    /// （保留原信号，不丢失孤儿 stale 实体）。
+    #[test]
+    fn test_lint_stale_entity_unreferenced_falls_back_to_api() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_stale_api_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        let src = dir.join("src");
+        std::fs::create_dir_all(&wiki).unwrap();
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("lib.rs"), "pub fn alpha() {}\n").unwrap();
+        std::fs::write(
+            wiki.join("api.md"),
+            "# API 参考\n\n## m\n\n- `alpha` — m.rs:1\n- `beta` — m.rs:2\n",
+        )
+        .unwrap();
+        // 无模块页声称 beta
+
+        let issues = lint(&dir, std::slice::from_ref(&src));
+        let stale: Vec<_> = issues.iter().filter(|i| i.kind == "stale-entity").collect();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            stale.len(),
+            1,
+            "无人引用的 stale 实体应兜底报, 实际: {:?}",
+            issues
+        );
+        assert!(
+            stale[0].path.ends_with("api.md"),
+            "兜底应挂在 api.md: {}",
+            stale[0].path
+        );
+        assert!(stale[0].message.contains("beta"));
+    }
+
+    /// A8 stale-entity 反向定位：源码存在且被页面引用的实体 → 不报 stale-entity
+    #[test]
+    fn test_lint_stale_entity_fresh_not_reported() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_stale_fresh_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        let src = dir.join("src");
+        std::fs::create_dir_all(&wiki).unwrap();
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("lib.rs"), "pub fn alpha() {}\n").unwrap();
+        std::fs::write(
+            wiki.join("api.md"),
+            "# API 参考\n\n## m\n\n- `alpha` — m.rs:1\n",
+        )
+        .unwrap();
+        std::fs::write(wiki.join("m.md"), "# M\n\n- `alpha` — 源码存在的实体\n").unwrap();
+
+        let issues = lint(&dir, std::slice::from_ref(&src));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            !issues.iter().any(|i| i.kind == "stale-entity"),
+            "源码存在的实体不应报 stale-entity, 实际: {:?}",
+            issues
+        );
     }
 
     #[test]
