@@ -16,6 +16,7 @@
 //!    5a. **entity-ownership**（A8 幻觉缓解，收紧要害）：entity-coverage 只管「名字是否存在于代码库」——编造名恰好撞上真实目录段名/文件 stem（如编造 `Authenticator` 恰有 authenticator.rs）会漏网。归属校验收紧：模块页声称的实体必须归属正确——api 权威实体归属模块 == 页面模块放行；归属其他模块的 api 实体须在页面内有真实 file:line 引用（bad-citation 级），无引用报 entity-ownership（error，R2 起「声称行自带引用」或「实体名过短」两类归属不可靠情况降为告警级）；源码 AST 实体须文件级归属正确——所属文件 ∈ 页面关联文件，模块页无「相关文件」节时退化按「实体文件 stem == 模块短名」判定（R2 修结构性死代码）；仅命中目录段名/文件 stem 的放行但降为告警级（保留 DEFECT-B 宽容）；合成页（无模块归属）只做存在性校验
 //! 6. **bad-mermaid**：产物中的 mermaid fence 无法被 merman 解析（历史产物/人工编辑/增量遗留）
 //! 7. **stale-entity**：api.md 权威清单的实体在当前源码中不存在（文档引用了已删除/重命名的符号）；A8 起做反向定位——扫描模块页声称实体，对每个 stale 实体报出「页面引用了已删除实体 X」（无人引用的仍挂在 api.md 兜底）
+//! 8. **dependency-fabricated**：模块页「## 依赖关系」节的模块声称对照权威集校验（生成期 validate_dependencies 的磁盘级复用，防人工/增量篡改引入虚构依赖）；权威集 = export_snapshot 的模块依赖名 + 模块文件 imports 顶级 crate + std/core——声称的外部 crate 未被导入或声称的模块不在依赖列表即报错（权威集不完整时降为告警，避免误报阻断 CI）
 //!
 //! 检查对象是**磁盘上的产物文件**（真实用户看到的东西），而非内存中的文档对象。
 
@@ -40,7 +41,8 @@ pub struct LintIssue {
     /// 问题类别（字符串化清单，audit-out-06 固化；新增类别须同步更新此处与
     /// 模块头文档，含完整枚举）:
     /// orphan / broken / stale / source-missing / bad-citation / bad-citation-overlap /
-    /// bad-vctx / entity-coverage / entity-ownership / bad-mermaid / stale-entity
+    /// bad-vctx / entity-coverage / entity-ownership / bad-mermaid / stale-entity /
+    /// dependency-fabricated
     pub kind: &'static str,
     /// 问题文件相对路径（相对 output_dir）
     pub path: String,
@@ -80,8 +82,13 @@ pub fn lint(output_dir: &Path, source_roots: &[PathBuf]) -> Vec<LintIssue> {
     // 源码实体表：stale-entity（实体名集合）、bad-citation-overlap（行区间表）
     // 与 entity-ownership（实体→源文件归属表）共用一次扫描（三检查的输入
     // 同源，各自消费不同投影）
-    let (source_entity_ranges, source_entity_names, source_path_names, entity_name_files) =
-        collect_source_entities(source_roots);
+    let (
+        source_entity_ranges,
+        source_entity_names,
+        source_path_names,
+        entity_name_files,
+        file_imports,
+    ) = collect_source_entities(source_roots);
 
     // 收集主语言目录下的全部 .md 产物（wiki 页 + 全局文档）
     let languages = collect_language_dirs(&wiki_root);
@@ -150,6 +157,13 @@ pub fn lint(output_dir: &Path, source_roots: &[PathBuf]) -> Vec<LintIssue> {
             lang,
             output_dir,
             &source_entity_names,
+        ));
+        issues.extend(check_dependency_fabricated(
+            &module_pages,
+            output_dir,
+            lang,
+            source_roots,
+            &file_imports,
         ));
     }
 
@@ -661,6 +675,20 @@ fn check_vctx_tokens(
 ) -> Vec<LintIssue> {
     let mut issues = Vec::new();
     for page in pages {
+        // 跳过机器生成页（api/overview/architecture/_toc/index）：生成页正文
+        // 可能内嵌 lint 自身文档注释里的 vctx 协议示例文本（render_api_reference
+        // 渲染 doc 注释时把 `[[vctx:path#L-<start>-L-<end>@<hash8>]]` 原样带出），
+        // naive 扫描 fail-closed 把示例当格式错 → 每次 regen 都是持久误报。
+        // vctx 是人工/工具手写护栏，不覆盖生成页；_log 例外——note 命令追加的
+        // 手写知识日志中 vctx 是真实标记，保留检查。
+        let stem = page
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|n| n.trim_end_matches(".md"))
+            .unwrap_or("");
+        if stem != "_log" && is_global_page(stem) {
+            continue;
+        }
         // 页面读取失败（损坏/权限/竞态删除）时显式告警并跳过该页——
         // 静默当作空内容会把页误报为孤儿/断链（失败必须可观测）
         let Ok(content) = std::fs::read_to_string(page) else {
@@ -1222,17 +1250,25 @@ fn file_matches_related(entity_file: &Path, related: &str) -> bool {
 /// entity-ownership 共用一次扫描，避免 lint 对源码做多遍 AST 解析）
 ///
 /// 返回 (norm_sep 绝对路径 → 实体行区间列表, 全部实体名集合, 目录段名+文件
-/// stem 集合, 实体名 → 源文件路径列表)。第三项为 entity-coverage 的「源码现实
+/// stem 集合, 实体名 → 源文件路径列表, 文件 → imports 顶级 crate 集合)。
+/// 第三项为 entity-coverage 的「源码现实
 /// 校验」输入（DEFECT-B）：真实子目录名/文件 stem 是目录/文件引用而非叶子
 /// 实体，parser 不会产出，但它们在代码库中真实存在——与 AST 解析出的实体名
 /// 互补，共同构成「名字是否存在于源码」的判定面。第四项为 entity-ownership
 /// 的「文件级归属」输入（A8）：实体声称须与页面关联文件对上才放行，需要
 /// 实体名反查到其所属源文件（同一实体名可能出现在多个文件，用 Vec）。
+/// 第五项为 dependency-fabricated 的「每文件 imports 顶级 crate」输入（v0.7.2
+/// P0-3）：与实体同一次 parse 顺带收集，零额外解析成本——即使文件无 imports
+/// 也插入空表，让调用方能区分「已解析」与「未解析」。
 /// 目录段名/文件 stem 相对 source_root 收集，避免把临时目录/绝对路径段
 /// （如 temp 目录名）算作合法名。
 /// 解析失败的文件跳过（文件级损坏不是文档问题）；源码根不存在/为空时
 /// 返回空表——调用方据此跳过对应检查（扫描失败 ≠ 文档过期/引用错误，
 /// 两种错误信号不能混淆）。
+// 五个返回投影的元组型已超 clippy type_complexity 阈值；每项都是独立的
+// 检查输入（各自消费不同投影），拆结构体会让五处调用点都失真，按项目
+// 惯例 allow（与 known_entity_issue 的 too_many_arguments 同理）。
+#[allow(clippy::type_complexity)]
 fn collect_source_entities(
     source_roots: &[PathBuf],
 ) -> (
@@ -1240,11 +1276,14 @@ fn collect_source_entities(
     std::collections::HashSet<String>,
     std::collections::HashSet<String>,
     std::collections::HashMap<String, Vec<std::path::PathBuf>>,
+    std::collections::HashMap<String, Vec<String>>,
 ) {
     let mut ranges: crate::output::citation::EntityRanges = std::collections::HashMap::new();
     let mut names: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut path_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut entity_files: std::collections::HashMap<String, Vec<std::path::PathBuf>> =
+        std::collections::HashMap::new();
+    let mut file_imports: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
     let registry = crate::ingest::parser::ParserRegistry::new();
     for root in source_roots {
@@ -1262,7 +1301,7 @@ fn collect_source_entities(
             if let Ok(insight) = processor.parse(&source, &entry) {
                 let key = citation_key(&entry);
                 ranges.insert(
-                    key,
+                    key.clone(),
                     insight
                         .entities
                         .iter()
@@ -1276,10 +1315,21 @@ fn collect_source_entities(
                         .or_default()
                         .push(entry.clone());
                 }
+                // 每文件 imports 顶级 crate（dependency-fabricated 权威集；
+                // 排序去重保证确定性，无 imports 也插空表区分「已解析」）
+                let mut crates: Vec<String> = insight
+                    .imports
+                    .iter()
+                    .filter_map(|i| i.source.split("::").next())
+                    .map(|s| s.to_string())
+                    .collect();
+                crates.sort();
+                crates.dedup();
+                file_imports.insert(key, crates);
             }
         }
     }
-    (ranges, names, path_names, entity_files)
+    (ranges, names, path_names, entity_files, file_imports)
 }
 
 /// 把 entry 相对 root 的路径分解为「目录段名 + 文件 stem」收集进 out
@@ -1415,6 +1465,167 @@ fn check_stale_entities(
     issues
 }
 
+/// 8. dependency-fabricated：模块页「## 依赖关系」节的模块声称对照权威集校验
+///    （生成期 validate_dependencies 的磁盘级复用——产物页被人工/增量遗留
+///    篡改时兜底，防虚构依赖）。
+///
+/// 权威集（允许集）= export_snapshot 的模块依赖名 ∪ 模块文件 imports 顶级
+/// crate ∪ std/core。声称侧直接复用 dependency_check 的
+/// extract_dependency_claims + validate_claims（fence 感知 + 诚实标记跳过，
+/// 与生成期同口径）。页面→模块映射：module.name.replace("::","_") == 页面
+/// stem（与 entity-ownership 同规则，生成层保证模块页文件名 =
+/// module_path.join("_")）。
+///
+/// 严重级别：权威集完整（模块文件全部解析到 imports 来源）→ Error；权威集
+/// 不完整（模块有文件但源码根缺失/未解析，外部 crate 判定会全部误报）→
+/// 降级 Warning（探索 B 建议，避免高误报阻断 CI）。快照不可读（未 generate
+/// 过）→ 无权威集，跳过检查。
+fn check_dependency_fabricated(
+    pages: &[PathBuf],
+    output_dir: &Path,
+    lang: &str,
+    source_roots: &[PathBuf],
+    file_imports: &HashMap<String, Vec<String>>,
+) -> Vec<LintIssue> {
+    if primary_language(output_dir) != *lang {
+        return Vec::new();
+    }
+    // 快照不可读（未 generate 过 / 快照损坏）→ 无权威无从校验，跳过
+    let Ok(snapshot_json) =
+        std::fs::read_to_string(crate::output::export_snapshot_path(output_dir))
+    else {
+        return Vec::new();
+    };
+    let Ok(snapshot): Result<crate::output::ExportSnapshot, _> =
+        serde_json::from_str(&snapshot_json)
+    else {
+        return Vec::new();
+    };
+    // 生成期解析缓存（insights_cache.json，键=相对项目根路径）优先；缺失
+    // （全量 generate 无缓存）时回退到 lint 同次 parse 的 file_imports
+    // （键=绝对路径 citation_key，经 source_roots 定位）
+    let cache_imports = load_insights_cache_imports(output_dir);
+
+    let mut issues = Vec::new();
+    for module in &snapshot.modules {
+        let page_stem = module.name.replace("::", "_");
+        let Some(page) = pages.iter().find(|p| {
+            p.file_name()
+                .and_then(|s| s.to_str())
+                .map(|n| n.trim_end_matches(".md") == page_stem)
+                .unwrap_or(false)
+        }) else {
+            continue;
+        };
+        // 模块 imports 顶级 crate 权威集 + 完整性判定：每个文件都解析到
+        // imports 来源才算完整（files 为空时无 imports 可言，恒完整）
+        let mut imports_allowed: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
+        let mut unresolved_files = 0usize;
+        for file in &module.files {
+            match resolve_file_crate_imports(file, &cache_imports, file_imports, source_roots) {
+                Some(crates) => imports_allowed.extend(crates),
+                None => unresolved_files += 1,
+            }
+        }
+        let severity = if unresolved_files == 0 {
+            Severity::Error
+        } else {
+            Severity::Warning
+        };
+        let mut allowed: std::collections::BTreeSet<String> =
+            module.dependencies.iter().cloned().collect();
+        allowed.extend(imports_allowed);
+        // std/core 前缀（Rust 标准库）硬编码进权威集（is_allowed 内建同一
+        // 判定，显式写入让权威集自文档化）
+        allowed.insert("std".to_string());
+        allowed.insert("core".to_string());
+
+        // 页面读取失败（损坏/权限/竞态删除）时显式告警并跳过该页——
+        // 静默当作空内容会把页误报为孤儿/断链（失败必须可观测）
+        let Ok(content) = std::fs::read_to_string(page) else {
+            tracing::warn!("lint 读取页面失败（跳过检查）: {}", page.display());
+            continue;
+        };
+        let file_name = page
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let claims = crate::output::dependency_check::extract_dependency_claims(&content);
+        let violations = crate::output::dependency_check::validate_claims(
+            claims.iter().map(|s| s.as_str()),
+            &allowed,
+        );
+        for v in violations {
+            let reason = match v.reason {
+                crate::output::dependency_check::DependencyViolationReason::NotADependency => {
+                    "该模块存在但不在本模块的依赖列表中"
+                }
+                crate::output::dependency_check::DependencyViolationReason::UnknownExternal => {
+                    "该模块既不在项目模块中、也未被本模块导入，疑似编造"
+                }
+            };
+            issues.push(LintIssue {
+                kind: "dependency-fabricated",
+                path: format!("wiki/{lang}/{file_name}"),
+                message: format!("依赖声称: `{}` 不在权威集中（{reason}）", v.claimed),
+                severity,
+            });
+        }
+    }
+    issues
+}
+
+/// 解析单文件（相对项目根的路径）的 imports 顶级 crate：优先 insights_cache
+/// （生成期解析结果，键=相对路径直接命中）；缓存无此文件时回退 file_imports
+/// （lint 同次 parse，键=绝对路径 citation_key，逐 source_root 定位）。
+fn resolve_file_crate_imports(
+    rel: &str,
+    cache_imports: &HashMap<String, Vec<String>>,
+    file_imports: &HashMap<String, Vec<String>>,
+    source_roots: &[PathBuf],
+) -> Option<Vec<String>> {
+    if let Some(crates) = cache_imports.get(rel) {
+        return Some(crates.clone());
+    }
+    for root in source_roots {
+        let abs = root.join(rel);
+        if let Some(crates) = file_imports.get(&citation_key(&abs)) {
+            return Some(crates.clone());
+        }
+    }
+    None
+}
+
+/// 读生成期解析缓存（insights_cache.json）为 文件→imports 顶级 crate 表。
+/// 缓存是增量模式的辅助产物：缺失/损坏时返回空表（调用方回退到 lint 同次
+/// parse 的 file_imports）。
+fn load_insights_cache_imports(output_dir: &Path) -> HashMap<String, Vec<String>> {
+    let path = output_dir.join(".state").join("insights_cache.json");
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return HashMap::new();
+    };
+    let Ok(cache): Result<Vec<crate::ingest::CachedInsight>, _> = serde_json::from_str(&content)
+    else {
+        return HashMap::new();
+    };
+    cache
+        .into_iter()
+        .map(|c| {
+            let mut crates: Vec<String> = c
+                .insight
+                .imports
+                .iter()
+                .filter_map(|i| i.source.split("::").next())
+                .map(|s| s.to_string())
+                .collect();
+            crates.sort();
+            crates.dedup();
+            (c.path, crates)
+        })
+        .collect()
+}
+
 /// 递归收集目录下全部文件（跟随子目录，忽略隐藏目录与符号链接循环——
 /// 生产仓库正常布局下深度有限，不引入额外依赖）
 fn walk_files(dir: &Path) -> Vec<PathBuf> {
@@ -1523,6 +1734,33 @@ pub fn entity_name_from_signature(sig: &str) -> Option<String> {
     //    名取成 `pub`（crate 在括号内被丢弃）——api 权威集与 stale-entity
     //    两侧都取到污染名（R2 实测 `pub` 被当实体报 stale-entity）。
     let stripped = strip_modifier_prefix(after_attr);
+    // 声明关键字分支（v0.7.2 P0-1）：impl 块 / type 别名 / 解构模式用通用
+    // 「最后标识符」提取会得到污染名（`impl`/`From`/`EdgeIndex`），且三者的
+    // 语义都不是「可命名叶子实体」——在找 '(' 之前提前分支处理。
+    // impl 块（`impl<'a> X<'a>` / `impl From<..> for E`）：不是可命名叶子
+    // 实体，返回 None。其涉及的 Type 名已由 struct/enum/trait 声明行单独
+    // 进权威集（Rust parser 对 impl_item 记 kind="impl"，name=被 impl 的
+    // 类型），这里不得把 `impl`/`From`/`Iterator` 当实体名。
+    if stripped.starts_with("impl ") || stripped.starts_with("impl<") {
+        return None;
+    }
+    // type 别名（`type EdgeId = EdgeIndex<u32>` / Go `type Foo struct`）：
+    // 真名 = `type` 后紧跟的标识符（EdgeId/Foo）；等号右侧被别名类型
+    // （EdgeIndex）或 struct 关键字是旧提取的污染名（regen 后新误报）。
+    if let Some(rest) = stripped.strip_prefix("type ") {
+        let ident = rest
+            .split(['=', ';', '{', '<', '(', ',', ' ', '\t'])
+            .next()
+            .unwrap_or("")
+            .trim();
+        // 与通用分支同口径：过滤单字符/纯数字
+        return (ident.len() > 1 && !ident.chars().all(|c| c.is_ascii_digit()))
+            .then(|| ident.to_string());
+    }
+    // 解构模式（`{ stdout, stderr, exitCode }`）：无实体名，返回 None
+    if stripped.starts_with('{') {
+        return None;
+    }
     let mut head = match stripped.find('(') {
         Some(open) => &stripped[..open],
         None => stripped,
@@ -3736,10 +3974,49 @@ mod tests {
             Some("pubkey".into()),
             "以 pub 开头的标识符不是修饰符，不得剥离"
         );
-        // impl 块签名（无 '('，`impl<'a> X<'a>`）保持既有提取行为不回归
+        // impl 块签名（无 '('，`impl<'a> X<'a>`）：impl 块不是可命名叶子
+        // 实体，返回 None（其类型名经 struct/enum/trait 声明行进权威集，
+        // 不再把 `impl` 当实体名——旧行为是错误提取）
         assert_eq!(
             entity_name_from_signature("impl<'a> ModuleDetector<'a> {"),
-            Some("impl".into())
+            None
+        );
+    }
+
+    /// v0.7.2 P0-1：声明关键字分支——impl 块 / type 别名 / 解构模式的语义与
+    /// 函数/裸名不同，通用「最后标识符」提取会得到污染名。impl 块返回 None
+    ///（其类型名已由 struct/enum/trait 行单独进权威集）；type 别名取别名本身
+    ///（等号右侧被别名类型是污染名）；解构模式无实体名返回 None。
+    #[test]
+    fn test_entity_name_declaration_keyword_branches() {
+        // impl 块（含泛型/无泛型/带 trait bound）→ None
+        assert_eq!(entity_name_from_signature("impl<'a> X<'a> {"), None);
+        assert_eq!(
+            entity_name_from_signature("impl From<&EntitySummary> for EntityEntry {"),
+            None
+        );
+        assert_eq!(
+            entity_name_from_signature("impl Iterator for MyIter {"),
+            None
+        );
+        assert_eq!(
+            entity_name_from_signature("impl Default for Foo {"),
+            None,
+            "impl 块不是可命名叶子实体"
+        );
+        // type 别名 → 别名本身（不是等号右侧被别名类型 / struct 关键字）
+        assert_eq!(
+            entity_name_from_signature("type EdgeId = EdgeIndex<u32>"),
+            Some("EdgeId".into())
+        );
+        assert_eq!(
+            entity_name_from_signature("pub type Foo<T> = Bar<T>"),
+            Some("Foo".into())
+        );
+        // 解构模式 → None
+        assert_eq!(
+            entity_name_from_signature("{ stdout, stderr, exitCode }"),
+            None
         );
     }
 
@@ -4107,6 +4384,170 @@ mod tests {
             !issues.iter().any(|i| i.kind == "bad-vctx"),
             "root 内绝对路径 vctx 不应报错, 实际: {:?}",
             issues
+        );
+    }
+
+    /// v0.7.2 P0-2：api.md 是机器生成页——render_api_reference 会把 lint.rs
+    /// 自身文档注释里的 vctx 协议示例文本（`[[vctx:path#L-<start>-L-<end>@<hash8>]]`）
+    /// 渲染进 api.md，naive 扫描 fail-closed 报格式错 → 每次 regen 都是持久
+    /// 误报。跳过生成页后 0 bad-vctx（模块页人工标记仍由既有 test_lint_vctx_*
+    /// 校验，_log 手写日志保留检查）。
+    #[test]
+    fn test_lint_vctx_skips_generated_pages() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_vctx_apimd_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let out = dir.join(".code-repo-wiki");
+        let wiki = out.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        // api.md 内嵌协议示例文本（doc 注释渲染产物，`<start>` 非数字必然
+        // 解析失败——修复前每次 regen 都报 bad-vctx）
+        std::fs::write(
+            wiki.join("api.md"),
+            "# API 参考\n\n[[vctx:path#L-<start>-L-<end>@<hash8>]]\n",
+        )
+        .unwrap();
+        let issues = lint(&out, &[]);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            !issues.iter().any(|i| i.kind == "bad-vctx"),
+            "api.md 内嵌示例不应报 bad-vctx, 实际: {:?}",
+            issues
+        );
+    }
+
+    /// v0.7.2 P0-3：dependency-fabricated 磁盘级接线——模块页「## 依赖关系」
+    /// 节声称对照权威集（export_snapshot 模块依赖 + 模块文件 imports 顶级
+    /// crate + std/core）校验。本用例覆盖：外部 crate 声称放行（tokio 被
+    /// 导入）、编造外部名报 UnknownExternal、模块存在但非本模块依赖报
+    /// NotADependency、诚实标记 + 围栏内声称跳过。权威集完整（源码根可
+    /// 解析模块文件 imports）→ Error 级。
+    #[test]
+    fn test_lint_dependency_fabricated_detects_and_allows() {
+        let dir =
+            std::env::temp_dir().join(format!("code_repo_wiki_lint_depfab_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::create_dir_all(dir.join(".state")).unwrap();
+        // 权威集快照：src::m 无依赖（src::db 是真实模块但非其依赖）；
+        // files 供文件→模块映射（src::m 关联 src/m.rs）
+        std::fs::write(
+            dir.join(".state").join("export_snapshot.json"),
+            r#"{
+              "version": 1,
+              "documents": [],
+              "cards": [],
+              "modules": [
+                {"name": "src::m", "files": ["src/m.rs"], "cohesion": 1.0, "coupling": 0.0, "features": [], "dependencies": []},
+                {"name": "src::db", "files": [], "cohesion": 1.0, "coupling": 0.0, "features": [], "dependencies": []}
+              ]
+            }"#,
+        )
+        .unwrap();
+        // 源文件先写（页面后写，避免页面被误判过时）：src::m 导入 tokio
+        std::fs::write(
+            dir.join("src").join("m.rs"),
+            "use tokio::time;\n\npub fn helper() {}\n",
+        )
+        .unwrap();
+        // api.md 让 primary_language 判定主语言（无实体行，不产 issues）
+        std::fs::write(wiki.join("api.md"), "# API 参考\n").unwrap();
+        // 模块页：真实依赖、真实导入 crate、编造外部名、诚实标记、围栏示例
+        std::fs::write(
+            wiki.join("src_m.md"),
+            "# M\n\n## 依赖关系\n\n- src::db — 持久层\n- tokio — 异步运行时\n- totally_made_up_crate — 编造\n- 某外部服务 — （信息不足）\n\n```rust\n- fake_crate_in_fence\n```\n\n## 使用方式\n用法\n",
+        )
+        .unwrap();
+
+        let issues = lint(&dir, std::slice::from_ref(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+        let dep: Vec<_> = issues
+            .iter()
+            .filter(|i| i.kind == "dependency-fabricated")
+            .collect();
+        assert_eq!(dep.len(), 2, "应捕获 2 条虚构依赖, 实际: {:?}", issues);
+        // 外部 crate 声称放行（tokio 被 src::m 导入）
+        assert!(
+            !issues.iter().any(|i| i.message.contains("tokio")),
+            "被导入 crate 不应判违反: {:?}",
+            issues
+        );
+        // 诚实标记 + 围栏内声称跳过（不产生违反）
+        assert!(
+            !issues
+                .iter()
+                .any(|i| i.message.contains("fake_crate_in_fence")),
+            "围栏内声称不应判违反: {:?}",
+            issues
+        );
+        // 编造外部名 → UnknownExternal（Error，权威集完整）
+        let fabricated = dep
+            .iter()
+            .find(|i| i.message.contains("totally_made_up_crate"))
+            .expect("编造外部名应报 UnknownExternal");
+        assert!(
+            fabricated.message.contains("疑似编造"),
+            "{}",
+            fabricated.message
+        );
+        assert_eq!(fabricated.severity, Severity::Error);
+        // 模块存在但非本模块依赖 → NotADependency（Error）
+        let not_dep = dep
+            .iter()
+            .find(|i| i.message.contains("src::db"))
+            .expect("非本模块依赖应报 NotADependency");
+        assert!(
+            not_dep.message.contains("不在本模块的依赖列表中"),
+            "{}",
+            not_dep.message
+        );
+        assert_eq!(not_dep.severity, Severity::Error);
+    }
+
+    /// v0.7.2 P0-3 降级路径：权威集不完整（模块有文件但源码根缺失/未解析，
+    /// 本用例 source_roots 为空）→ 外部 crate 判定全部不可信 → 降级 Warning
+    ///（避免高误报阻断 CI；快照缺失/不可读则完全跳过）
+    #[test]
+    fn test_lint_dependency_fabricated_warns_when_authority_incomplete() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_depfab_warn_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        std::fs::create_dir_all(dir.join(".state")).unwrap();
+        std::fs::write(
+            dir.join(".state").join("export_snapshot.json"),
+            r#"{"version":1,"documents":[],"cards":[],"modules":[
+                {"name":"src::m","files":["src/m.rs"],"cohesion":1.0,"coupling":0.0,"features":[],"dependencies":[]}
+            ]}"#,
+        )
+        .unwrap();
+        std::fs::write(wiki.join("api.md"), "# API 参考\n").unwrap();
+        std::fs::write(
+            wiki.join("src_m.md"),
+            "# M\n\n## 依赖关系\n\n- totally_made_up_crate\n",
+        )
+        .unwrap();
+
+        // 无源码根：模块文件 src/m.rs 无法解析到 imports 来源 → 权威集不完整
+        let issues = lint(&dir, &[]);
+        let _ = std::fs::remove_dir_all(&dir);
+        let dep: Vec<_> = issues
+            .iter()
+            .filter(|i| i.kind == "dependency-fabricated")
+            .collect();
+        assert_eq!(dep.len(), 1, "应报 1 条, 实际: {:?}", issues);
+        assert_eq!(
+            dep[0].severity,
+            Severity::Warning,
+            "权威集不完整应降级 Warning: {:?}",
+            dep[0]
         );
     }
 }
