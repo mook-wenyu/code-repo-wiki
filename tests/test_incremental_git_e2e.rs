@@ -82,7 +82,26 @@ fn read_api(repo: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// 增量后的文档标题集合（结构级差分接缝：增量 documents 只含重生成的模块）
+/// wiki/zh 目录全部 .md 页：文件名 → 内容（未受影响模块回填零改写断言的数据源）
+fn wiki_pages_snapshot(repo: &Path) -> std::collections::HashMap<String, String> {
+    let wiki_dir = repo.join(".code-repo-wiki").join("wiki").join("zh");
+    let mut map = std::collections::HashMap::new();
+    if let Ok(es) = std::fs::read_dir(&wiki_dir) {
+        for e in es.flatten() {
+            let p = e.path();
+            if p.extension().is_some_and(|x| x == "md")
+                && let (Some(name), Ok(content)) =
+                    (p.file_name().map(|s| s.to_string_lossy().into_owned()), std::fs::read_to_string(&p))
+            {
+                map.insert(name, content);
+            }
+        }
+    }
+    map
+}
+
+/// 增量后的文档标题集合（结构级差分接缝：DEFECT-A 修复后 documents =
+/// 完整当前文档集 = 受影响重生成模块 + 快照回填的未受影响模块 + 全局文档）
 fn doc_titles(result: &code_repo_wiki::AnalysisResult) -> Vec<String> {
     let mut titles: Vec<String> = result.documents.iter().map(|d| d.title.clone()).collect();
     titles.sort();
@@ -108,6 +127,8 @@ fn test_incremental_git_diff_scenarios() {
     let base = code_repo_wiki::run_pipeline(Some(&config_path), None, false, &root, &code_repo_wiki::GenerationMode::Full).expect("全量生成失败");
     let base_api = read_api(&repo);
     assert!(base_api.contains("tcp_process"), "基线 api.md 应含 tcp_process 签名");
+    // 基线磁盘页快照（未受影响模块回填零改写断言的数据源）
+    let base_pages = wiki_pages_snapshot(&repo);
     // 社区划分护栏：net 与 http 应检出为独立模块（依赖传播断言的前提）
     let module_names: Vec<&str> = base.graph.modules.iter().map(|m| m.name.as_str()).collect();
     assert!(
@@ -128,10 +149,29 @@ fn test_incremental_git_diff_scenarios() {
         titles_a.iter().any(|t| t.contains("net")),
         "实现级变化应重生成 net 社区文档，实际: {titles_a:?}"
     );
+    // DEFECT-A 修复后 documents = 完整当前文档集：未改动 http 模块从
+    // 导出快照回填保留（旧断言「http 不在 documents」固化了缺陷行为——
+    // llms/_toc 以部分集合为文档集，未重生成模块缺位）
     assert!(
-        !titles_a.iter().any(|t| t.contains("http")),
-        "实现级变化不应重生成依赖方 http 社区文档，实际: {titles_a:?}"
+        titles_a.iter().any(|t| t.contains("http")),
+        "实现级变化后未改动 http 模块应从快照回填保留（完整文档集），实际: {titles_a:?}"
     );
+    // 回填语义：http 社区页磁盘字节零改写（回填=旧文档幂等重写，非重生成）
+    let pages_a = wiki_pages_snapshot(&repo);
+    assert!(
+        base_pages.keys().any(|k| k.contains("http")),
+        "基线应有 http 社区页: {:?}",
+        base_pages.keys().collect::<Vec<_>>()
+    );
+    for (name, content) in &pages_a {
+        if name.contains("http") {
+            assert_eq!(
+                Some(content),
+                base_pages.get(name),
+                "未受影响 http 页 {name} 必须零改写（回填非重生成）"
+            );
+        }
+    }
     assert_eq!(
         read_api(&repo),
         base_api,

@@ -162,7 +162,10 @@ fn test_large_fixture_incremental_impact() {
     )
     .expect("增量生成失败");
 
-    // ---- 断言 1：组 B（m05-m09）全部重生成（双向 BFS 3 层覆盖链长 5），组 A/C 不重生成 ----
+    // ---- 断言 1：组 B（m05-m09）全部重生成（双向 BFS 3 层覆盖链长 5）；
+    // 组 A/C 与变更点无边连通，未受影响 → 从导出快照回填保留进完整文档集
+    //（DEFECT-A 修复：旧断言「A/C 不在 titles」固化了「增量后未重生成模块
+    // 从 llms/_toc 缺位」的缺陷行为） ----
     let titles: Vec<String> = inc.documents.iter().map(|d| d.title.clone()).collect();
     assert!(
         titles_in_group(&titles, 5, 9),
@@ -170,8 +173,8 @@ fn test_large_fixture_incremental_impact() {
     );
     for (lo, hi, label) in [(0, 4, "组 A"), (10, 14, "组 C")] {
         assert!(
-            !titles_in_group(&titles, lo, hi),
-            "{label} 与变更点无边连通，不应被重生成，实际: {titles:?}"
+            titles_in_group(&titles, lo, hi),
+            "{label} 与变更点无边连通，未受影响应从快照回填保留（完整文档集），实际: {titles:?}"
         );
     }
 
@@ -328,11 +331,13 @@ fn build_pair_module_repo(repo: &Path) -> anyhow::Result<()> {
 /// v21 验证轮（删除场景缺陷修复）：多文件模块删一文件 → 存活文件并入
 /// 变更集走 LLM 重生成（页面残留被删实体 = 缺陷；修复后不残留）。
 ///
-/// 判别信号（不依赖社区划分细节，回填路径与修复路径可区分）：
-/// - 修复路径：documents 只含 m20 模块 + 3 个全局文档（架构/概览/index，
-///   删除属接口级变化且 has_deleted_files 放行重生成）→ 数量 ≤ 5；
-/// - 回填路径（缺陷行为）：documents = 快照全部文档（数量级差异），
-///   solo 模块页也会被原样回填。
+/// 判别信号（不依赖社区划分细节）：
+/// - 受影响模块（m20）被重生成（documents 含 src::m20 标题）；
+/// - 未受影响模块（solo）回填保留（DEFECT-A 修复后 documents = 完整当前
+///   文档集——旧断言「solo 不在 documents、documents ≤ 5」固化了「增量后
+///   未重生成模块缺位」的缺陷行为，改造为完整文档集 + 磁盘零改写）；
+/// - 全局文档（架构/概览/index）因删除（接口级变化且 has_deleted_files
+///   放行）而重生成，不列出已删模块。
 #[test]
 fn test_delete_one_file_in_pair_module_regenerates_module() {
     let repo = std::env::temp_dir().join(format!("code_repo_wiki_pair_del_{}", std::process::id()));
@@ -371,17 +376,19 @@ fn test_delete_one_file_in_pair_module_regenerates_module() {
         titles.iter().any(|t| t.starts_with("src::m20")),
         "部分删除模块必须重生成（清除被删实体残留），实际: {titles:?}"
     );
-    // 2. 未受影响模块（solo）不在本次文档集——修复后只生成受影响模块；
-    //    缺陷行为（快照回填）会把 solo 模块页原样回填进 documents
+    // 2. 未受影响模块（solo）回填保留：DEFECT-A 修复后 documents = 完整
+    //    当前文档集，solo 模块页从导出快照回填（solo.rs 位于 src/ 根目录，
+    //    其社区/模块路径为 src → 文档 title 恰为 "src"；旧断言「title 含
+    //    solo」是恒假的空断言，且「solo 不在 documents」固化了缺陷行为）
     assert!(
-        !titles.iter().any(|t| t.contains("solo")),
-        "未受影响模块不得被重生成或回填，实际: {titles:?}"
+        titles.iter().any(|t| t == "src"),
+        "未受影响模块应从快照回填进完整文档集，实际: {titles:?}"
     );
-    // 3. 数量级约束：修复后 = m20 模块页 + 架构概览 + 项目概览 + index（≤5）；
-    //    回填路径 = 快照全量文档（数量级差异）
+    // 3. 数量级约束改为完整文档集：m20（重生成）+ solo（回填）+ 3 全局
+    //    ≥5；旧断言 ≤5 固化了「solo 缺失」的缺陷集合
     assert!(
-        titles.len() <= 5,
-        "documents 数量应 ≤5（模块 + 3 全局），实际 {}: {titles:?}",
+        titles.len() >= 5,
+        "documents 应为完整文档集（m20 + solo + 全局文档），实际 {}: {titles:?}",
         titles.len()
     );
     // 4. 全局文档（架构/概览/index）因删除（接口级变化）而重生成：

@@ -377,8 +377,18 @@ pub async fn run_generation_filtered(
         ..Default::default()
     };
 
+    // DEFECT-A 修复：增量非空路径未受影响模块回填。
+    // 旧实现只把「受影响模块 + 全局文档」放进输出，未受影响仍存在的
+    // 模块没有从导出快照回填 → llms.txt/_toc.md/export_snapshot.json/
+    // generation_state 全以部分集合为文档集（llms.txt 是全站地图，
+    // 任何一次生成含增量都必须是全模块集合）。回填后 documents/cards
+    // 语义 =「当前完整文档集」，下游 render_all/cleanup/save_generation_state
+    // 自动恢复正确。快照缺失/损坏时跳过合并，本次集合照常返回。
+    let mut cards: Vec<KnowledgeCard> = cards.iter().flatten().cloned().collect();
+    backfill_unchanged_modules(config, root, &mut cards, &mut documents, &stats.failed_modules);
+
     Ok(GenerationOutput {
-        cards: cards.iter().flatten().cloned().collect(),
+        cards,
         documents,
         generation_stats: stats,
         timings: crate::GenerationTimings {
@@ -506,6 +516,123 @@ fn snapshot_backfill(
     } else {
         tracing::warn!("增量生成: 纯删除场景但导出快照缺失，回退全量生成防止产物误清");
         Ok(None)
+    }
+}
+
+/// DEFECT-A 修复：增量非空路径的未受影响模块回填
+///
+/// 根因：`run_generation_filtered` 增量非空路径只把「受影响模块 + 全局
+/// 文档」放进 GenerationOutput，未受影响仍存在的模块没有从导出快照回填
+/// → llms.txt/_toc.md/export_snapshot.json/generation_state 全以部分集合
+/// 为文档集。llms.txt 是全站地图（llmstxt.org v2）——任何一次生成（含
+/// 增量）都必须是全模块集合。
+///
+/// 本函数在返回 GenerationOutput 前调用，把「未受影响且仍存在」的模块
+/// 文档/卡片从导出快照合并进文档集，使增量路径返回「完整当前文档集」，
+/// 下游 render_all/cleanup/save_generation_state 自动恢复正确。
+///
+/// 规则（对齐审计定位的缺陷固化测试改造方案）：
+/// 1. `deleted_modules` = 快照 cards 中 `related_files` **全部不存在于磁盘**
+///    的模块（复用 snapshot_backfill 的 deleted_modules 判据）。`related_files`
+///    为空（由 chunk 直接填充，缺失即模块归属信息不可靠）的卡片**保守处理：
+///    不并入也不判删**——判删可能误删仍在使用的模块页（审计自曝风险点）。
+/// 2. 卡片：快照 cards 中 `module_name ∉ deleted_modules` 且不在本次生成
+///    cards → 并入（去重锚点 `module_name`）。
+/// 3. 文档：快照 documents 中 `kind == WikiPage`、`title ∉ deleted_modules`、
+///    `title` 不在本次生成 documents、`language == config.wiki.language`
+///    → 并入（锚点 title+language）。
+/// 4. 排除 `failed_modules` 中模块（失败即缺失信号，不回填旧文档防掩盖失败）。
+/// 5. 全局文档不动（已由 backfill_global_docs/index 覆盖）。
+/// 6. 快照缺失/损坏时跳过合并（本次集合照常返回，不阻断）。
+///
+/// 放 generate 层（与空集场景 snapshot_backfill 同层内聚），使增量路径
+/// 返回「完整当前文档集」，下游 render_all/cleanup/save_generation_state
+/// 自动恢复正确。
+fn backfill_unchanged_modules(
+    config: &WikiConfig,
+    root: &crate::project::ProjectRoot,
+    cards: &mut Vec<KnowledgeCard>,
+    documents: &mut Vec<WikiDocument>,
+    failed_modules: &[String],
+) {
+    let snapshot_path = crate::output::export_snapshot_path(config.output_dir());
+    let Ok(content) = std::fs::read_to_string(&snapshot_path) else {
+        return;
+    };
+    let Ok(snapshot) = serde_json::from_str::<crate::output::ExportSnapshot>(&content) else {
+        tracing::warn!(
+            "导出快照解析失败（未受影响模块回填跳过，本次集合照常返回）: {}",
+            snapshot_path.display()
+        );
+        return;
+    };
+
+    let failed: std::collections::HashSet<&str> =
+        failed_modules.iter().map(String::as_str).collect();
+    // 预构建「本次生成集合」的锚点集（owned 克隆——集合引用要跨 mutate
+    // 存活，借引用会导致 push 阶段 E0502）：
+    // - 卡片锚点 module_name；
+    // - 文档锚点 (title, language)。
+    let current_card_modules: std::collections::HashSet<String> =
+        cards.iter().map(|c| c.module_name.clone()).collect();
+    let current_doc_titles: std::collections::HashSet<(String, String)> = documents
+        .iter()
+        .map(|d| (d.title.clone(), d.language.clone()))
+        .collect();
+
+    // 已删模块：快照 cards 中 related_files 全部不存在于磁盘的模块。
+    // related_files.is_empty() 保守处理（不并入也不判删）——related_files
+    // 由 chunk 直接填充，为空是模块归属信息缺失信号，判删可能误删仍在
+    // 使用的模块页（审计自曝风险点）。
+    let deleted_modules: std::collections::HashSet<String> = snapshot
+        .cards
+        .iter()
+        .filter(|c| {
+            !c.related_files.is_empty()
+                && c.related_files.iter().all(|f| !root.path().join(f).exists())
+        })
+        .map(|c| c.module_name.clone())
+        .collect();
+
+    let cards_before = cards.len();
+    let docs_before = documents.len();
+    let mut merged_cards = 0usize;
+    let mut merged_docs = 0usize;
+
+    for card in &snapshot.cards {
+        if card.related_files.is_empty()
+            || deleted_modules.contains(&card.module_name)
+            || failed.contains(card.module_name.as_str())
+            || current_card_modules.contains(&card.module_name)
+        {
+            continue;
+        }
+        cards.push(card.clone());
+        merged_cards += 1;
+    }
+    for doc in &snapshot.documents {
+        if doc.kind != crate::model::DocumentKind::WikiPage
+            || deleted_modules.contains(&doc.title)
+            || failed.contains(doc.title.as_str())
+            || doc.language != config.wiki.language
+            || current_doc_titles.contains(&(doc.title.clone(), doc.language.clone()))
+        {
+            continue;
+        }
+        documents.push(doc.clone());
+        merged_docs += 1;
+    }
+
+    if merged_cards > 0 || merged_docs > 0 {
+        tracing::info!(
+            "增量生成: 未受影响模块回填 {} 卡片 {} 文档（本次生成 {} 卡片 {} 文档，已删模块 {} 个，失败模块 {} 个）",
+            merged_cards,
+            merged_docs,
+            cards_before,
+            docs_before,
+            deleted_modules.len(),
+            failed.len()
+        );
     }
 }
 
