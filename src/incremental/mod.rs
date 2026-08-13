@@ -23,6 +23,16 @@ use self::state::GenerationState;
 /// 被当作 git SHA 解析报 "unable to parse OID" 并回退全量（v47 实测）。
 pub(crate) const FILE_WATCH_SENTINEL: &str = "file-watch";
 
+/// 变更面过大回退全量的三阈值（v0.7.x 文档漂移/增量传播优化）
+///
+/// 增量重生成收益随变更面扩大趋零（重生成页数 ≈ 全量），且逐文件
+/// 过滤/传播/实体分类的开销白付——变更面超阈值时直接回退全量生成，
+/// 与既有损坏状态回退全量的"宁可多生成不丢数据"哲学一致。
+/// 判据语义见 should_fallback_full。
+const FULL_REGEN_MIN_FILES: usize = 200;
+const FULL_REGEN_FILE_RATIO: f64 = 0.5;
+const FULL_REGEN_EST_TOKENS: usize = 200_000;
+
 /// no-op 快速跳过判定（v19 t06，OpenWiki git-head 模式）
 ///
 /// 定时 CI / watch 常驻场景下，无变更时 update 仍会全量扫描 + 分析
@@ -126,6 +136,41 @@ fn status_has_source_changes(
 /// HashSet 精确匹配都按字节比较）。
 pub(crate) fn norm_sep(p: &str) -> String {
     p.replace('\\', "/")
+}
+
+/// 变更面过大回退全量判定（增量收益趋零时避免白付逐文件过滤/传播开销）
+///
+/// 三判据取或：
+/// 1. 变更文件数 < FULL_REGEN_MIN_FILES → 小变更直接不触发（false）；
+/// 2. 变更文件数 / 总文件数 > FULL_REGEN_FILE_RATIO → 变更覆盖大半个仓库，
+///    重生成页数已 ≈ 全量，增量没有任何节省；
+/// 3. 变更文件估算 token 数（Σ source.len()/3）> FULL_REGEN_EST_TOKENS →
+///    绝对量逼近全量成本（即使占比不高，单个大文件或海量变更也白付开销）。
+///
+/// 边界：total_files == 0 时跳过比例判据（除零防护，此时也不可能有
+/// 大变更面）；删除文件不在 insights 中，自然不参与 token 估算。
+pub fn should_fallback_full(
+    changed: &[PathBuf],
+    total_files: usize,
+    insights: &[FileInsight],
+) -> bool {
+    if changed.len() < FULL_REGEN_MIN_FILES {
+        return false;
+    }
+    if total_files > 0 && changed.len() as f64 / total_files as f64 > FULL_REGEN_FILE_RATIO {
+        return true;
+    }
+    // 删除文件（不在 insights）被 find 过滤掉，不计入估算
+    let est_tokens: usize = changed
+        .iter()
+        .filter_map(|p| {
+            insights
+                .iter()
+                .find(|i| norm_sep(&i.path.to_string_lossy()) == norm_sep(&p.to_string_lossy()))
+                .map(|i| i.source.len() / 3)
+        })
+        .sum();
+    est_tokens > FULL_REGEN_EST_TOKENS
 }
 
 /// 增量更新结果
@@ -292,6 +337,27 @@ fn run_file_watch_incremental(
         return Ok((Vec::new(), Vec::new(), EntityChangeSet::default(), false));
     }
 
+    // v0.7.x 变更面过大回退全量：增量收益随变更面扩大趋零（重生成页数
+    // ≈全量），逐文件过滤/传播/分类开销白付。命中时 changed_files =
+    // 全部现存文件，宁多生成不丢数据（与状态损坏回退全量同哲学）。
+    // 删除路径保留在变更集中：删除清理（compensate_deleted_files）与
+    // has_deleted 判定依赖 changed_files 含已删路径——全量覆盖现存文件
+    // 后，删除信息仍须上报给下游，否则被删实体的页面残留无法清除。
+    if should_fallback_full(&changed_files, insights.len(), insights) {
+        tracing::warn!(
+            "变更面过大（{} 文件 / 共 {} 文件），回退全量重生成",
+            changed_files.len(),
+            insights.len()
+        );
+        let mut full: Vec<PathBuf> = insights.iter().map(|i| i.path.clone()).collect();
+        for p in &changed_files {
+            if !full.contains(p) && !root.path().join(p).exists() {
+                full.push(p.clone());
+            }
+        }
+        changed_files = full;
+    }
+
     // 实体级变化分类（修复：FileWatch 路径原为空集，接口级变化无法驱动
     // 语义传播与实体级摘要过滤，README 声称与实现差距）。FileWatch 无
     // Git diff，但 classify_entity_changes_at 需要旧内容做对比——用状态里
@@ -405,10 +471,77 @@ mod tests {
         }
     }
 
+    /// 带指定 source 的 insight（token 估算测试需要可控的 source.len()）
+    fn make_insight_with_source(path: &str, source: &str) -> FileInsight {
+        FileInsight {
+            path: std::path::PathBuf::from(path),
+            language: "rust".into(),
+            entities: Vec::new(),
+            imports: Vec::new(),
+            doc_comments: Vec::new(),
+            source: source.into(),
+        }
+    }
+
     fn make_config() -> WikiConfig {
         WikiConfig {
             ..Default::default()
         }
+    }
+
+    // ==================== v0.7.x 变更面过大回退全量 ====================
+
+    /// 变更文件数低于 MIN_FILES → 不触发回退
+    #[test]
+    fn test_fallback_full_below_min_files() {
+        let insights: Vec<FileInsight> = (0..100)
+            .map(|i| make_insight_with_source(&format!("src/{i}.rs"), "fn f() {}"))
+            .collect();
+        let changed: Vec<PathBuf> = insights.iter().take(50).map(|i| i.path.clone()).collect();
+        assert!(
+            !should_fallback_full(&changed, insights.len(), &insights),
+            "50 文件变更（< 200）不得触发回退"
+        );
+    }
+
+    /// 变更文件数 / 总文件数 超 RATIO → 触发回退
+    #[test]
+    fn test_fallback_full_ratio_exceeded() {
+        let insights: Vec<FileInsight> = (0..500)
+            .map(|i| make_insight_with_source(&format!("src/{i}.rs"), "fn f() {}"))
+            .collect();
+        let changed: Vec<PathBuf> = insights.iter().take(300).map(|i| i.path.clone()).collect();
+        // 300 >= MIN_FILES 且 300/500 = 0.6 > 0.5
+        assert!(
+            should_fallback_full(&changed, insights.len(), &insights),
+            "变更覆盖 60% 仓库应触发回退"
+        );
+    }
+
+    /// 占比不超 RATIO，但变更文件估算 token 超阈值 → 触发回退
+    #[test]
+    fn test_fallback_full_token_threshold() {
+        // 大 source：4000 字符/文件 → 4000/3 ≈ 1333 token/文件
+        let source = "x".repeat(4000);
+        let insights: Vec<FileInsight> = (0..500)
+            .map(|i| make_insight_with_source(&format!("src/{i}.rs"), &source))
+            .collect();
+        let changed: Vec<PathBuf> = insights.iter().take(200).map(|i| i.path.clone()).collect();
+        // 200/500 = 0.4 < 0.5（占比不触发）；200 × 1333 = 266k > 200k（token 触发）
+        assert!(
+            should_fallback_full(&changed, insights.len(), &insights),
+            "估算 token 超阈值应触发回退"
+        );
+    }
+
+    /// total_files == 0 除零防护：不 panic，返回 false（无文件可回退）
+    #[test]
+    fn test_fallback_full_zero_total_files() {
+        let changed = vec![PathBuf::from("src/a.rs")];
+        assert!(
+            !should_fallback_full(&changed, 0, &[]),
+            "total_files == 0 不得触发回退（比例判据跳过，估算为 0）"
+        );
     }
 
     /// 非 Git 目录：GitDiff 增量回退全量（changed_files = 所有 insights 路径）
@@ -959,6 +1092,7 @@ mod tests {
                 coding_spec: None,
                 tech_stack: vec![],
                 architecture: None,
+                design_rationale: None,
                 pending_manual_edits: vec![],
                 features: vec![],
             }],

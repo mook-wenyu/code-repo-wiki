@@ -17,10 +17,6 @@ pub struct GitDiffResult {
     pub from_commit: String,
     /// 目标 commit hash
     pub to_commit: String,
-    /// 新增行数
-    pub added_lines: usize,
-    /// 删除行数
-    pub deleted_lines: usize,
 }
 
 /// 在指定项目根下获取当前 HEAD commit hash

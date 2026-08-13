@@ -7,6 +7,15 @@ use crate::model::{EdgeKind, KnowledgeGraph, NodeId};
 
 use super::change::{EntityChangeKind, EntityChangeSet};
 
+/// body 传播（函数体变化）沿 Incoming Calls 边的最大深度：仅 1 层。
+///
+/// 函数体行为变化不改变调用约定（签名未变），调用方的调用方式不受影响，
+/// 但调用方页面若描述被调函数的行为则需随行为刷新——深度 1 已覆盖
+/// "直接调用方"这一层；再深（调用方的调用方）与函数体变化的关系已
+/// 无关，继续传播只会造成过度重生成。仅沿 Calls 边：Imports 边是
+/// 模块引用关系，不因函数体变化而变。
+const BODY_CALLER_DEPTH: usize = 1;
+
 /// 在知识图谱上传播变更影响，返回所有受影响的模块名称
 ///
 /// 从变更文件节点出发，沿 Imports/Calls 边双向 BFS 遍历 3 层，
@@ -109,6 +118,15 @@ pub fn propagate_impact_semantic(
         })
         .map(|c| c.file.to_string_lossy().to_string())
         .collect();
+    // 实现级变化（BodyChanged）的文件集合：函数体行为变化虽不改变调用约定，
+    // 但调用方页面若描述被调函数行为则需随行为刷新（下方 body 传播分支，
+    // 修复"body 只影响本模块"导致的调用方页面漏更）。
+    let body_files: HashSet<String> = entity_changes
+        .changes
+        .iter()
+        .filter(|c| c.kind == EntityChangeKind::BodyChanged)
+        .map(|c| c.file.to_string_lossy().to_string())
+        .collect();
 
     let mut affected: HashSet<String> = HashSet::new();
     for file in changed_files {
@@ -118,22 +136,81 @@ pub fn propagate_impact_semantic(
             continue;
         }
         if interface_files.contains(&fp) {
-            // 接口级：双向传播
-            affected.extend(propagate_from(start_nodes, graph, max_depth));
+            // 接口级：双向传播（clone：start_nodes 随后还要供 body 分支用）
+            affected.extend(propagate_from(start_nodes.clone(), graph, max_depth));
         } else {
             // 实现级：仅起点所在模块
-            for nid in start_nodes {
-                let module = graph.graph[nid].module_path.join("::");
+            for nid in &start_nodes {
+                let module = graph.graph[*nid].module_path.join("::");
                 if !module.is_empty() {
                     affected.insert(module);
                 }
             }
+        }
+        // body 传播分支：函数体行为变化时，直接调用方页面也应刷新（否则
+        // 调用方文档停留在旧行为描述，构成文档漂移漏更）。与接口级分支
+        // 可共存（同文件既签名变又改体）：body 分支只补深度 1 的 Calls 边
+        // 调用方，不沿 Imports、不加深层级、不做局部更新（整页重写）。
+        if body_files.contains(&fp) {
+            affected.extend(propagate_body_callers(
+                start_nodes,
+                graph,
+                BODY_CALLER_DEPTH,
+            ));
         }
     }
 
     let mut result: Vec<String> = affected.into_iter().collect();
     result.sort();
     result
+}
+
+/// body 传播：沿 Incoming Calls 边向上传播 N 层（实现级变化的调用方刷新）
+///
+/// 与接口级传播（propagate_from）的区别：
+/// - 只沿 Incoming 方向（调用方 ← 被调方），不沿 outgoing 边（被调方的
+///   页面不因调用方函数体变化而变）；
+/// - 只认 Calls 边，不认 Imports（导入关系不因函数体变化而变）；
+/// - 深度受限（调用方传 BODY_CALLER_DEPTH=1），不做无界传播。
+fn propagate_body_callers(
+    start_nodes: Vec<NodeId>,
+    graph: &KnowledgeGraph,
+    max_depth: usize,
+) -> HashSet<String> {
+    let mut affected: HashSet<String> = HashSet::new();
+
+    for &start in &start_nodes {
+        let mut visited: HashSet<NodeId> = HashSet::new();
+        let mut queue: VecDeque<(NodeId, usize)> = VecDeque::new();
+        queue.push_back((start, 0));
+        visited.insert(start);
+
+        while let Some((current, depth)) = queue.pop_front() {
+            if depth >= max_depth {
+                continue;
+            }
+            for edge in graph
+                .graph
+                .edges_directed(current, petgraph::Direction::Incoming)
+            {
+                if graph.graph[edge.id()].kind != EdgeKind::Calls {
+                    continue;
+                }
+                let neighbor = edge.source();
+                if visited.contains(&neighbor) {
+                    continue;
+                }
+                let module = graph.graph[neighbor].module_path.join("::");
+                if !module.is_empty() {
+                    affected.insert(module);
+                }
+                visited.insert(neighbor);
+                queue.push_back((neighbor, depth + 1));
+            }
+        }
+    }
+
+    affected
 }
 
 /// 按文件路径（精确匹配）找到图中的起点节点
@@ -376,6 +453,136 @@ mod tests {
         let affected = propagate_impact_semantic(&changed, &changes, &graph, 3);
         // 仅 db 自身（net 导入 db、core 依赖 net 都不应受影响）
         assert_eq!(affected, vec!["db".to_string()]);
+    }
+
+    /// 构造带 Calls/Imports 混合边的图，验证 body 传播只沿 Incoming Calls 边一层：
+    /// - Calls 边：x→a→b→c（x 调用 a，a 调用 b，b 调用 c）
+    /// - Imports 边：d→b（d 导入 b，但并非调用）
+    fn make_calls_graph() -> KnowledgeGraph {
+        let mut g = StableDiGraph::<CodeNode, CodeEdge>::new();
+        let mut mk = |id: usize, name: &str, path: &str| {
+            g.add_node(CodeNode {
+                id: NodeId::new(id),
+                kind: NodeKind::Module,
+                name: name.into(),
+                file_path: Some(path.into()),
+                line_range: None,
+                doc_comment: None,
+                signature: None,
+                visibility: None,
+                module_path: vec![name.into()],
+            })
+        };
+        let x = mk(0, "x", "src/x.rs");
+        let a = mk(1, "a", "src/a.rs");
+        let b = mk(2, "b", "src/b.rs");
+        let c = mk(3, "c", "src/c.rs");
+        let d = mk(4, "d", "src/d.rs");
+        let mut edge_id = 0usize;
+        for (src, dst) in [(x, a), (a, b), (b, c)] {
+            g.add_edge(
+                src,
+                dst,
+                CodeEdge {
+                    id: petgraph::stable_graph::EdgeIndex::new(edge_id),
+                    kind: EdgeKind::Calls,
+                    source: src,
+                    target: dst,
+                    weight: 1.0,
+                    location: None,
+                },
+            );
+            edge_id += 1;
+        }
+        g.add_edge(
+            d,
+            b,
+            CodeEdge {
+                id: petgraph::stable_graph::EdgeIndex::new(edge_id),
+                kind: EdgeKind::Imports,
+                source: d,
+                target: b,
+                weight: 1.0,
+                location: None,
+            },
+        );
+        KnowledgeGraph {
+            graph: g,
+            modules: vec![],
+            features: Vec::new(),
+        }
+    }
+
+    /// body 传播：BodyChanged + Calls 边 → 直接调用方入受影响集；
+    /// 深度 2+ 的调用方（x）与仅 Imports 边的导入方（d）不入集；
+    /// 被调用方（c，outgoing Calls）不入集。
+    #[test]
+    fn test_semantic_body_change_calls_propagates_direct_callers() {
+        let graph = make_calls_graph();
+        let changed = vec![PathBuf::from("src/b.rs")];
+        let changes = EntityChangeSet {
+            changes: vec![crate::incremental::change::EntityChange {
+                file: PathBuf::from("src/b.rs"),
+                entity_name: "f".into(),
+                kind: crate::incremental::change::EntityChangeKind::BodyChanged,
+                old_range: Some((1, 3)),
+                new_range: Some((1, 5)),
+            }],
+        };
+        let affected = propagate_impact_semantic(&changed, &changes, &graph, 3);
+        assert!(
+            affected.contains(&"b".to_string()),
+            "起点模块必须受影响: {:?}",
+            affected
+        );
+        assert!(
+            affected.contains(&"a".to_string()),
+            "直接调用方（Incoming Calls 深度 1）必须受影响: {:?}",
+            affected
+        );
+        assert!(
+            !affected.contains(&"x".to_string()),
+            "深度 2+ 的调用方不得受影响（body 传播仅 1 层）: {:?}",
+            affected
+        );
+        assert!(
+            !affected.contains(&"d".to_string()),
+            "仅 Imports 边的导入方不得因函数体变化受影响: {:?}",
+            affected
+        );
+        assert!(
+            !affected.contains(&"c".to_string()),
+            "被调用方（outgoing 方向）不得受影响: {:?}",
+            affected
+        );
+        assert_eq!(
+            affected.len(),
+            2,
+            "应只含起点模块与直接调用方: {:?}",
+            affected
+        );
+    }
+
+    /// body 传播：仅 Imports 边的图（无 Calls 边）→ 不向任何导入方传播
+    #[test]
+    fn test_semantic_body_change_imports_only_not_propagated() {
+        let graph = make_simple_graph(); // 仅 Imports 边：core→net→db
+        let changed = vec![PathBuf::from("src/db.rs")];
+        let changes = EntityChangeSet {
+            changes: vec![crate::incremental::change::EntityChange {
+                file: PathBuf::from("src/db.rs"),
+                entity_name: "load".into(),
+                kind: crate::incremental::change::EntityChangeKind::BodyChanged,
+                old_range: Some((1, 5)),
+                new_range: Some((1, 8)),
+            }],
+        };
+        let affected = propagate_impact_semantic(&changed, &changes, &graph, 3);
+        assert_eq!(
+            affected,
+            vec!["db".to_string()],
+            "无 Calls 边时 body 变化只影响本模块"
+        );
     }
 
     /// 语义传播：签名变化（接口级）→ 向依赖方传播
