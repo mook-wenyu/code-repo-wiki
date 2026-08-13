@@ -7,6 +7,16 @@
 
 （暂无待发布变更）
 
+## [0.7.1] - 2026-08-13
+
+### Fixed
+- **增量 update 回填未改动模块文档集**：增量生成路径对未重生成模块执行文档回填（`backfill_unchanged_modules`），`llms/_toc` / `export_snapshot` 不再丢失未重生成模块
+- **entity-coverage 用源码现实校验**：lint 改用真实子目录名与路径引用做实体覆盖校验——真实子目录名/路径引用不误报，真编造仍报
+
+### Changed
+- **CI 加固**：ci.yml 加权限最小化 / fmt 门禁 / NO_PROXY / local-embed；release.yml 修 release-id 死配置、权限按 job 最小化、NO_PROXY、publish-dry-run 前置；actions SHA pin
+- **chore(fmt)**：cargo fmt 全仓格式化（CI fmt 门禁前置）
+
 ## [0.7.0] - 2026-08-13
 
 ### Changed
