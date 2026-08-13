@@ -628,7 +628,8 @@ fn test_lint_three_state_exit_codes() {
         String::from_utf8_lossy(&out.stdout)
     );
 
-    // 态 2：写入孤儿页 → 发现问题 → 1
+    // 态 2：写入孤儿页 → warning 级问题（v0.7.2 有意行为变化：orphan/
+    // bad-mermaid 归 severity==Warning，error 级才使退出码非 0）→ 0
     let orphan = work_dir
         .join(".code-repo-wiki")
         .join("wiki")
@@ -639,8 +640,8 @@ fn test_lint_three_state_exit_codes() {
     let out = run_bin(&work_dir, &["lint", "-c", "config.toml"]);
     assert_eq!(
         out.status.code(),
-        Some(1),
-        "孤儿页应报问题（1），stdout: {}",
+        Some(0),
+        "orphan 已降级为 warning，展示但不阻断退出码（0），stdout: {}",
         String::from_utf8_lossy(&out.stdout)
     );
     assert!(
@@ -649,7 +650,22 @@ fn test_lint_three_state_exit_codes() {
         String::from_utf8_lossy(&out.stdout)
     );
 
-    // 态 3：配置加载失败 → 工具问题 → 2（不掩盖绿构建）
+    // 态 3：error 级问题（断链）→ 发现问题 → 1
+    let broken = work_dir
+        .join(".code-repo-wiki")
+        .join("wiki")
+        .join("zh")
+        .join("broken.md");
+    std::fs::write(&broken, "[缺失目标](no-such.md)\n").unwrap();
+    let out = run_bin(&work_dir, &["lint", "-c", "config.toml"]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "断链是 error 级应报问题（1），stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    // 态 4：配置加载失败 → 工具问题 → 2（不掩盖绿构建）
     let out = run_bin(&work_dir, &["lint", "-c", "missing-config.toml"]);
     assert_eq!(
         out.status.code(),
