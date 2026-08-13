@@ -76,9 +76,12 @@ pub fn run_watch_loop(
     // 目录结构因项目而异，路径模式无法通用，语言才是能力边界）
     let watch_roots = vec![root.to_path_buf()];
     for watch_root in &watch_roots {
+        // audit-srch2-05：监听根缺失是配置/环境错误，此前仅告警后静默空转
+        // ——watch 在错误根上监听不到任何事件（用户以为在监听实际没生效），
+        // 且调用方（main.rs watch 自愈循环）会将其当普通错误指数退避重启。
+        // 改为 fail-fast：缺根直接报错退出，用户可见、可修。
         if !watch_root.exists() {
-            tracing::warn!("监听根不存在，跳过: {}", watch_root.display());
-            continue;
+            anyhow::bail!("监听根不存在: {}", watch_root.display());
         }
         // notify-debouncer-full 0.4：Debouncer 自身实现了 Watcher trait，
         // 可以直接调用 .watch()，无需 .watcher()
@@ -662,7 +665,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("code_repo_wiki_watch_stop_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        // 标记预置：循环第一次检查即退出（监听根不存在只告警不阻塞）
+        // 标记预置：循环第一次检查即退出（监听根存在，监听器建立后立即退出）
         let stop_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let start = std::time::Instant::now();
         let result = run_watch_loop(&dir, &dir, stop_flag, |_| panic!("不应触发回调"));

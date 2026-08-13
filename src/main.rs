@@ -1025,8 +1025,9 @@ fn main() -> anyhow::Result<()> {
                 match code_repo_wiki::run_watch(config.as_deref(), &root) {
                     Ok(()) => break,
                     Err(e) => {
-                        let msg = format!("{e:#}");
-                        if msg.contains("实例正在运行") || msg.contains("运行锁") {
+                        // audit-srch2-04：锁冲突判定用类型匹配（LockError）而非
+                        // 文案 contains——报错措辞调整会静默破坏 watch 自愈判定
+                        if code_repo_wiki::fs::is_lock_conflict(&e) {
                             eprintln!("code-repo-wiki: 运行锁冲突（另一实例或保守报错），watch 退出: {e}");
                             std::process::exit(1);
                         }

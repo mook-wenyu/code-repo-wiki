@@ -18,6 +18,10 @@ impl<'a> CallGraph<'a> {
     }
 
     /// 返回指定符号调用的所有符号（被调用者）
+    ///
+    /// audit-srch-08：生产路径只用 `build_call_index`（预计算表），本方法
+    /// 仅测试覆盖图遍历语义，标注测试专用避免死代码告警。
+    #[cfg(test)]
     pub fn callee_of(&self, name: &str) -> Vec<NodeId> {
         let mut callees = Vec::new();
         for n in self.graph.graph.node_indices() {
@@ -33,6 +37,9 @@ impl<'a> CallGraph<'a> {
     }
 
     /// 返回调用指定符号的所有符号（调用者）
+    ///
+    /// audit-srch-08：同 `callee_of`，仅测试专用。
+    #[cfg(test)]
     pub fn caller_of(&self, name: &str) -> Vec<NodeId> {
         let mut callers = Vec::new();
         for n in self.graph.graph.node_indices() {

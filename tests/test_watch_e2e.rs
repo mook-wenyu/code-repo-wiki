@@ -5,8 +5,10 @@
 //!    （tests::watch_e2e_file_change_triggers_incremental）
 //! 2. insights 缓存占用实测：10 文件规模输出缓存字节数
 //!    （tests::insights_cache_size_reports）
-//! 3. watch 事件 ./ 前缀路径边界：记录当前行为（未相对化 + 传播不命中），
-//!    不修 src，只写测试固化行为（tests::watch_path_dot_slash_prefix_boundary）
+//! 3. watch 事件 ./ 前缀路径边界：audit-srch2-02 修复后——lib.rs 先剥
+//!    CurDir 再相对化，`./src/foo.rs` → `src/foo.rs`；直连
+//!    run_incremental_update_at 的透传行为不变（该路径只经 lib.rs 流水线
+//!    相对化，见 tests::watch_path_dot_slash_prefix_boundary）
 //!
 //! 临时仓库构造参考（只读）tests/test_incremental_git_e2e.rs 的 build_git_repo
 //! 模式：临时目录 + src 文件 + config.toml。本文件按需简化（见各测试注释）。
@@ -202,25 +204,23 @@ fn insights_cache_size_reports() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 验证 3：watch 事件 ./ 前缀路径边界（固化当前行为，不修 src）
+/// 验证 3：watch 事件 ./ 前缀路径边界（audit-srch2-02 修复后的行为）
 ///
-/// 已查证（src/lib.rs:201-204，写作时行为）：
+/// 已修复（src/lib.rs relativize_watch_path）：
 /// ```text
-/// watch_list.iter().map(|p| p.strip_prefix(root.path())
-///     .map(|r| r.to_path_buf()).unwrap_or_else(|_| p.clone()))
+/// watch_list.iter().map(|p| 剥离全部 CurDir 组件后 strip_prefix(root))
 /// ```
 /// strip_prefix 按路径组件比较：`./src/foo.rs` 的首组件是 CurDir，与 root
-///（绝对路径）的组件不相等 → strip_prefix 失败 → unwrap_or_else 原样保留
-/// `./src/foo.rs`，即「./ 前缀路径未被相对化」。绝对路径 strip_prefix 成功
-/// → 相对化（候选修复方向：相对化前剥离 ./ 前缀或过滤 CurDir 组件，
-/// 本文件只记录行为，不改 src）。
+///（绝对路径）的组件不相等 → 直接 strip_prefix 会失败、原样保留
+/// `./src/foo.rs`。修复后先剥 CurDir 再相对化 → `src/foo.rs`，与索引键
+///（norm_sep 相对路径）一致，删除/回填才能命中（此前 ./ 残留导致
+/// delete_entities_by_file 不命中 → 源文件已删而 FTS5/向量库残留陈旧条目）。
 ///
-    /// 场景：FileWatch 增量传入 `./` 前缀路径（watch_paths 透传未相对化）。
-    /// T02（cb56f6c）起 find_start_nodes 是精确路径匹配（norm_sep 后按路径段
-    /// 比较：fp==cfp || fp.starts_with(cfp/))，`./src/foo.rs` 作为 changed_path
-    /// 对 `src/foo.rs` 节点恒不命中 → 该路径不参与传播。功能上由指纹比对兜底
-    /// （指纹命中的 insight.path 是相对形态，传播不受损），即当前行为无功能
-    /// 损失，但存在路径形态隐患（本测试记录该行为）。
+/// 场景：FileWatch 增量传入 `./` 前缀路径（watch_paths 透传）。
+/// T02（cb56f6c）起 find_start_nodes 是精确路径匹配（norm_sep 后按路径段
+/// 比较：fp==cfp || fp.starts_with(cfp/))。直连 run_incremental_update_at
+/// 不经 lib.rs 相对化（透传行为不变）；生产链路 watch 事件一定经 lib.rs
+/// 流水线，相对化后与 insight.path 形态一致、传播/删除命中。
 #[test]
 fn watch_path_dot_slash_prefix_boundary() {
     let repo = std::env::temp_dir().join(format!("code_repo_wiki_dot_prefix_{}", std::process::id()));
@@ -229,17 +229,21 @@ fn watch_path_dot_slash_prefix_boundary() {
     let src_file = repo.join("src").join("foo.rs");
     std::fs::write(&src_file, "pub fn foo_fn(x: u32) -> u32 { x + 1 }\n").expect("写入 foo.rs 失败");
 
-    // ---- 1) 复现 lib.rs:201-204 的相对化表达式，确认当前行为 ----
+    // ---- 1) 复现 relativize_watch_path（剥离 CurDir + 相对化），确认修复行为 ----
     let root_path = repo.clone();
     let dot_slash = PathBuf::from("./src/foo.rs");
-    let relativized = dot_slash
+    let cleaned: PathBuf = dot_slash
+        .components()
+        .filter(|c| !matches!(c, std::path::Component::CurDir))
+        .collect();
+    let relativized = cleaned
         .strip_prefix(&root_path)
         .map(|r| r.to_path_buf())
-        .unwrap_or_else(|_| dot_slash.clone());
+        .unwrap_or_else(|_| cleaned.clone());
     assert_eq!(
         relativized,
-        PathBuf::from("./src/foo.rs"),
-        "当前行为确认：./ 前缀路径未被相对化（strip_prefix 组件比较失败，原样保留）"
+        PathBuf::from("src/foo.rs"),
+        "audit-srch2-02：./ 前缀应先剥离再相对化（残留 ./ 会导致索引删除键不命中）"
     );
 
     let abs = src_file.clone();
@@ -291,7 +295,9 @@ fn watch_path_dot_slash_prefix_boundary() {
 
     let root = code_repo_wiki::project::ProjectRoot::new(repo.clone());
 
-    // 实验组：./ 前缀路径 → 原样透传 + 传播不命中（当前行为记录）
+    // 实验组：直连 run_incremental_update_at 传入 ./ 前缀路径 → 原样透传
+    //（相对化只在 lib.rs 流水线边界，本直连调用不经 lib.rs；生产 watch
+    // 链路一定经 lib.rs 相对化，见上方 1）→ 形态不一致传播不命中
     let dot_result = code_repo_wiki::incremental::run_incremental_update_at(
         &root,
         std::slice::from_ref(&insight),
@@ -303,11 +309,11 @@ fn watch_path_dot_slash_prefix_boundary() {
     assert_eq!(
         dot_result.changed_files,
         vec![PathBuf::from("./src/foo.rs")],
-        "当前行为：./ 前缀路径未相对化、未归一化，原样透传到 changed_files"
+        "直连路径不经 lib.rs 相对化，./ 前缀原样透传（边界记录）"
     );
     assert!(
         dot_result.affected_modules.is_empty(),
-        "当前行为：未相对化路径在 find_start_nodes 子串匹配中不命中 → 不参与影响传播: {:?}",
+        "直连 ./ 前缀路径形态与 insight.path 不一致 → 不参与影响传播: {:?}",
         dot_result.affected_modules
     );
 
@@ -328,6 +334,43 @@ fn watch_path_dot_slash_prefix_boundary() {
         !ok_result.affected_modules.is_empty(),
         "形态一致（绝对路径）应命中影响传播（对照，证明 ./ 前缀与形态不一致是传播不命中的原因）"
     );
+
+    // ---- 3) 删除场景回归（audit-srch2-02）：相对化后的删除路径必须命中
+    // 索引删除键——源文件删除时若事件路径残留 `./` 前缀，
+    // delete_entities_by_file 按字节不匹配 → FTS5/向量库残留陈旧条目 ----
+    {
+        use code_repo_wiki::model::{CodeNode, NodeId, NodeKind};
+        use code_repo_wiki::search::store::SearchStore;
+        let store_path = std::env::temp_dir()
+            .join(format!("code_repo_wiki_dot_del_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&store_path);
+        let (store, _) = SearchStore::open(&store_path).expect("打开测试索引失败");
+        let node = CodeNode {
+            id: NodeId::new(0),
+            kind: NodeKind::Function,
+            name: "foo_fn".into(),
+            file_path: Some("src/foo.rs".into()),
+            line_range: Some((1, 1)),
+            doc_comment: None,
+            signature: Some("fn foo_fn()".into()),
+            visibility: None,
+            module_path: vec![],
+        };
+        store
+            .insert_entities_batch(&[(node, "foo code".into())])
+            .expect("插入测试条目失败");
+        assert_eq!(store.entity_count().unwrap(), 1);
+        // 删除键 = 相对化后的相对路径形态（与入库 file_path 同基准）
+        let removed = store
+            .delete_entities_by_file(&relativized.to_string_lossy())
+            .expect("删除失败");
+        assert_eq!(
+            removed, 1,
+            "相对化后的删除路径必须命中索引键（残留 ./ 前缀则 miss）"
+        );
+        assert_eq!(store.entity_count().unwrap(), 0);
+        let _ = std::fs::remove_file(&store_path);
+    }
 
     let _ = std::fs::remove_dir_all(&repo);
 }

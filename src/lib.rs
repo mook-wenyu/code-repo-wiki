@@ -408,7 +408,7 @@ pub fn run_pipeline_with_config(
     // （缓存判定/变更集判定）对绝对路径恒不命中。
     let watch_paths: Vec<std::path::PathBuf> = watch_list
         .iter()
-        .map(|p| p.strip_prefix(root.path()).map(|r| r.to_path_buf()).unwrap_or_else(|_| p.clone()))
+        .map(|p| relativize_watch_path(p, root.path()))
         .collect();
     let watch_set: std::collections::HashSet<std::path::PathBuf> =
         watch_paths.iter().cloned().collect();
@@ -906,6 +906,24 @@ pub fn sync_manual_edits_to_cards(
     Ok(synced)
 }
 
+/// 归一化 watch 事件路径为相对仓库根的形态
+///
+/// audit-srch2-02：watch 事件路径可能带 `./` 前缀（CurDir 组件，notify 在
+/// 相对监听根下的事件形态）。`strip_prefix` 按路径组件比较，CurDir 与绝对
+/// 根不相等会失败并原样保留 `./src/a.rs`；增量删除/回填用该相对形态与
+/// 索引键（norm_sep 后的 `src/a.rs`）精确比较，`./` 残留会导致删除不命中
+/// ——源文件已删而 FTS5/向量库残留陈旧条目（索引残留）。先剥离所有
+/// CurDir 组件再相对化。
+fn relativize_watch_path(path: &Path, root: &Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let cleaned: std::path::PathBuf = path
+        .components()
+        .filter(|c| !matches!(c, Component::CurDir))
+        .collect();
+    let p = if cleaned.as_os_str().is_empty() { path } else { cleaned.as_path() };
+    p.strip_prefix(root).map(|r| r.to_path_buf()).unwrap_or_else(|_| p.to_path_buf())
+}
+
 /// 启动文件监听模式
 ///
 /// `root` 为注入的项目根：首次全量生成与监听根均以它为基准
@@ -1036,11 +1054,14 @@ fn save_call_index_cache(config: &config::schema::WikiConfig, index: &search::ca
     }
     match serde_json::to_string(index) {
         Ok(json) => {
-            if let Err(e) = std::fs::write(state_dir.join("call_index.json"), json) {
+            // audit-srch-05：改原子写（同目录临时文件 + rename）——旧实现
+            // std::fs::write 直写，崩溃/断电可留下截断的 call_index.json
+            // 与完整指纹不匹配（下次搜索走重建路径自愈，但期间静默无缓存）
+            if let Err(e) = crate::fs::write_file_atomic(&state_dir.join("call_index.json"), &json) {
                 tracing::warn!("调用索引缓存写入失败: {}", e);
                 return;
             }
-            if let Err(e) = std::fs::write(state_dir.join("call_index.fingerprint"), fp) {
+            if let Err(e) = crate::fs::write_file_atomic(&state_dir.join("call_index.fingerprint"), &fp) {
                 tracing::warn!("调用索引指纹写入失败: {}", e);
             }
         }
@@ -1182,10 +1203,15 @@ fn build_search_index(
     // 过滤规则单一来源）
     let items = collect_index_items(graph, &source_map);
 
-    // 全量重建 TextEngine
+    // 全量重建 TextEngine：优先删除旧库（干净起点）；删除失败（Windows
+    // 句柄占用/只读）不再静默吞错——显式告警并降级为「打开 + 清空」，
+    // 否则新条目会追加进旧索引造成陈旧残留（audit-srch-01）。
     let text_path = index_dir.join("text_index.db");
-    let _ = std::fs::remove_file(&text_path); // 清除旧索引
+    if let Err(e) = std::fs::remove_file(&text_path) {
+        tracing::warn!("删除旧文本索引失败，改用清空重建: {} ({})", text_path.display(), e);
+    }
     let (mut text_engine, _) = search::text::TextEngine::open(&text_path)?;
+    text_engine.clear()?;
     text_engine.index_batch(&items)?;
 
     // 如果 embed 已启用，构建语义索引
@@ -1196,7 +1222,12 @@ fn build_search_index(
     // 失败时保留旧索引（可回退旧语义结果），并在引导中区分两种失败。
     match generate::embed::build_embedder(&config.embed, get_global_runtime().handle().clone()) {
         Ok(embedder) => {
-            let _ = std::fs::remove_file(&semantic_path);
+            // audit-srch-01：删旧库失败显式告警 + clear 兜底清空（避免旧
+            // 向量与新向量混存）；clear 失败按附加能力降级处理（与下方
+            // index_batch 失败同语义，不中断主流程）。
+            if let Err(e) = std::fs::remove_file(&semantic_path) {
+                tracing::warn!("删除旧语义索引失败，改用清空重建: {} ({})", semantic_path.display(), e);
+            }
             // 运行期失败（key 缺失/网络不可达）同样降级保留旧索引，不得
             // `?` 中断主流程——与上方初始化失败的降级语义一致（v30 前
             // embed.enabled=false 时整段跳过，无此失败路径；恒启用后
@@ -1204,19 +1235,32 @@ fn build_search_index(
             // v32 10.1：降级同时写标记（search/status 显式提示），
             // 成功则清标记。
             match search::semantic::SemanticEngine::open(&semantic_path, embedder) {
-                Ok(mut semantic_engine) => match semantic_engine.index_batch(&items) {
-                    Ok(()) => {
-                        tracing::info!("语义索引构建完成: {} 个实体已向量化", items.len());
-                        clear_semantic_degraded(config);
-                        // v33：记录构建时的 embedding 模型名（模型升级检测基准）
-                        write_embed_model(config);
-                    }
-                    Err(e) => {
-                        tracing::warn!("语义索引构建失败（保留旧索引，搜索回退纯文本）: {}", e);
-                        let _ = std::fs::remove_file(&semantic_path);
+                Ok(mut semantic_engine) => {
+                    // 删除失败时清空旧库（新库上 clear 为无操作，见
+                    // VecDb::clear 表不存在短路）
+                    if let Err(e) = semantic_engine.clear() {
+                        tracing::warn!("清空旧语义索引失败（保留旧索引，搜索回退纯文本）: {}", e);
                         mark_semantic_degraded(config, &e);
+                    } else {
+                        match semantic_engine.index_batch(&items) {
+                            Ok(()) => {
+                                tracing::info!("语义索引构建完成: {} 个实体已向量化", items.len());
+                                clear_semantic_degraded(config);
+                                // v33：记录构建时的 embedding 模型名（模型升级检测基准）
+                                write_embed_model(config);
+                            }
+                            Err(e) => {
+                                tracing::warn!("语义索引构建失败（保留旧索引，搜索回退纯文本）: {}", e);
+                                // audit-srch-01：清理部分写入的索引失败也显式告警
+                                //（残留半成品会让搜索读到部分向量）
+                                if let Err(rm_err) = std::fs::remove_file(&semantic_path) {
+                                    tracing::warn!("删除部分写入的语义索引失败: {} ({})", semantic_path.display(), rm_err);
+                                }
+                                mark_semantic_degraded(config, &e);
+                            }
+                        }
                     }
-                },
+                }
                 Err(e) => {
                     tracing::warn!("语义索引构建失败（保留旧索引，搜索回退纯文本）: {}", e);
                     mark_semantic_degraded(config, &e);
@@ -1263,13 +1307,16 @@ fn update_search_index_incremental(
     let items: Vec<(model::CodeNode, String)>;
 
     if need_reindex {
-        // v36 schema 迁移：旧版 text 索引（无 CJK tokens 列）被 open 时
-        // 重建为空表，增量补 changed_files 会丢失全部旧实体——回退
-        // 全量文本重索引（纯文本、无 LLM，成本低；语义索引不受影响，
-        // 继续走下方增量路径）
+        // v36 schema 迁移 / audit-srch-09 损坏重建：旧版 text 索引（无 CJK
+        // tokens 列）或损坏库被 open 时重建为空表，增量补 changed_files
+        // 会丢失全部旧实体——回退全量文本重索引（纯文本、无 LLM，成本低；
+        // 语义索引不受影响，继续走下方增量路径）。
+        // audit-srch2-01：与全量重建同语义（clear + index_batch(all)），
+        // clear 兜底防「表非空」残留（损坏重建路径可能留有部分数据）。
         tracing::warn!("文本索引 schema 已升级（CJK tokens 列），重建全量文本索引");
         items = collect_index_items(graph, &source_map);
         indexed_count = items.len();
+        text_engine.clear()?;
         text_engine.index_batch(&items)?;
     } else {
         // 删除变更文件的旧索引
@@ -1713,6 +1760,33 @@ mod tests {
         assert_eq!(effective_embed_model(&cfg), "bge-small-zh-v1.5");
         cfg.embed.provider = config::schema::EmbedProvider::Remote;
         assert_eq!(effective_embed_model(&cfg), "qwen3-text");
+    }
+
+    /// audit-srch2-02：watch 事件 `./` 前缀路径先剥 CurDir 再相对化——
+    /// 残留 `./src/a.rs` 与索引删除键 `src/a.rs` 不匹配会留下陈旧索引条目
+    #[test]
+    fn test_relativize_watch_path() {
+        let root = Path::new("/repo");
+        assert_eq!(
+            relativize_watch_path(Path::new("./src/foo.rs"), root),
+            std::path::PathBuf::from("src/foo.rs"),
+            "./ 前缀应先剥离再相对化"
+        );
+        assert_eq!(
+            relativize_watch_path(Path::new("/repo/src/foo.rs"), root),
+            std::path::PathBuf::from("src/foo.rs"),
+            "绝对路径应相对化"
+        );
+        assert_eq!(
+            relativize_watch_path(Path::new("src/foo.rs"), root),
+            std::path::PathBuf::from("src/foo.rs"),
+            "已是相对路径应原样保留"
+        );
+        assert_eq!(
+            relativize_watch_path(Path::new("./other/x.rs"), root),
+            std::path::PathBuf::from("other/x.rs"),
+            "非根内 ./ 路径剥前缀后原样保留"
+        );
     }
 
     /// v32 8.1：分段计时序列化往返与写盘/读取（缺省字段补零、损坏文件不 panic）

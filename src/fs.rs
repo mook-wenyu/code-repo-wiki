@@ -101,16 +101,13 @@ pub struct RunLock {
     path: std::path::PathBuf,
 }
 
-/// 获取运行锁：打开（必要时创建）常驻锁文件 → 获取内核写锁 →
-/// 写持锁者身份。锁被占用时报错并给出持锁者身份。
-pub fn acquire_run_lock(config: &crate::config::schema::WikiConfig) -> Result<RunLock> {
+/// 打开（必要时创建）运行锁文件：不 truncate、不删除——文件常驻，
+/// 锁状态由内核管理。返回 (锁路径, 打开的文件句柄)。
+fn open_lock_file(config: &crate::config::schema::WikiConfig) -> Result<(std::path::PathBuf, std::fs::File)> {
     let state_dir = config.output_dir().join(".state");
     std::fs::create_dir_all(&state_dir)
         .with_context(|| format!("创建状态目录失败: {}", state_dir.display()))?;
     let path = state_dir.join("run.lock");
-
-    // 打开锁文件：create(true) 首次创建，read/write 供写身份与读冲突
-    // 诊断；不 truncate、不删除——文件常驻，锁状态由内核管理。
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -118,12 +115,22 @@ pub fn acquire_run_lock(config: &crate::config::schema::WikiConfig) -> Result<Ru
         .truncate(false)
         .open(&path)
         .with_context(|| format!("获取运行锁失败: {}", path.display()))?;
+    Ok((path, file))
+}
 
-    // guard 借用 RwLock 本身（自引用），故 RwLock 需要 'static：
-    // 进程级单例锁在此泄漏一个 Box（Windows 上仅含 File 句柄，
-    // 约 16 字节），进程退出由 OS 回收，可接受。
-    let lock: &'static mut fd_lock::RwLock<std::fs::File> =
-        Box::leak(Box::new(fd_lock::RwLock::new(file)));
+/// 构造进程级 RwLock：guard 借用 RwLock 本身（自引用），故 RwLock 需要
+/// 'static——此处泄漏一个 Box（Windows 上仅含 File 句柄，约 16 字节），
+/// 进程退出由 OS 回收，可接受（audit-srch-04 的取舍：泄漏频次见
+/// acquire_run_lock_with_options 注释，--wait 轮询已复用同一句柄）。
+fn leaked_rwlock(file: std::fs::File) -> &'static mut fd_lock::RwLock<std::fs::File> {
+    Box::leak(Box::new(fd_lock::RwLock::new(file)))
+}
+
+/// 获取运行锁：打开（必要时创建）常驻锁文件 → 获取内核写锁 →
+/// 写持锁者身份。锁被占用时报错并给出持锁者身份。
+pub fn acquire_run_lock(config: &crate::config::schema::WikiConfig) -> Result<RunLock> {
+    let (path, file) = open_lock_file(config)?;
+    let lock = leaked_rwlock(file);
 
     match lock.try_write() {
         Ok(mut guard) => {
@@ -154,11 +161,60 @@ pub enum LockAcquire {
     Skipped,
 }
 
+/// 运行锁冲突的结构化错误：携带持锁者 PID（锁文件可解析时）
+///
+/// audit-srch2-04：冲突判定改用类型匹配（downcast_ref）而非字符串 contains
+/// ——报错文案调整会静默破坏 --wait/--skip-if-locked/watch 自愈判定；
+/// 结构化类型把「是否是冲突」变成可编译期保证的契约。Display 文案保留
+/// 「正在运行」字样（既有单测与 CLI 集成测试断言语义不变）。
+#[derive(Debug)]
+pub struct LockError {
+    /// 持锁者 PID（锁文件缺失/内容损坏时无法解析为 None）
+    pub pid: Option<u32>,
+    message: String,
+}
+
+impl std::fmt::Display for LockError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for LockError {}
+
 /// 判断错误是否为「运行锁被占用」冲突（供 --wait/--skip-if-locked 轮询与
-/// 跳过判定；其他错误直接传播）。锚定 lock_conflict_error 的「正在运行」
-/// 消息标记（fs.rs 单测与 CLI 集成测试均依赖该文案）。
+/// 跳过判定；其他错误直接传播）。按 `LockError` 类型匹配，不依赖报错文案。
 pub fn is_lock_conflict(err: &anyhow::Error) -> bool {
-    err.to_string().contains("正在运行")
+    err.downcast_ref::<LockError>().is_some()
+}
+
+/// 单次尝试获取运行锁（--wait 轮询复用同一句柄时的内部分解）
+///
+/// 返回 `Ok(Some(RunLock))` 获锁、`Ok(None)` 冲突（WouldBlock）、`Err` 其他
+/// 错误。守卫借用 RwLock 需 'static（RunLock 字段约束），故 RwLock 必须
+/// 以裸指针传入：裸指针指向 leaked_rwlock 泄漏的堆对象，进程生命周期内
+/// 有效；每次调用从指针重建 `&mut`，前一调用的守卫在返回前已 drop
+/// （Ok 分支返回后不再重建，WouldBlock/Err 分支不产生守卫），无别名冲突。
+fn try_acquire_once(
+    rwlock: *mut fd_lock::RwLock<std::fs::File>,
+    path: &std::path::Path,
+) -> Result<Option<RunLock>> {
+    let rwlock = unsafe { &mut *rwlock };
+    match rwlock.try_write() {
+        Ok(mut guard) => {
+            // 先获锁再写身份：避免未获锁时截断覆盖持锁者的诊断内容
+            // （否则冲突分支读到的会是「自己刚写的」而非持锁者的）
+            write_lock_info(&mut guard)
+                .with_context(|| format!("获取运行锁失败: {}", path.display()))?;
+            Ok(Some(RunLock {
+                _lock: guard,
+                path: path.to_path_buf(),
+            }))
+        }
+        // 锁被占用（WouldBlock）：返回 None 由调用方决定轮询/跳过/报错
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("获取运行锁失败: {}", path.display())),
+    }
 }
 
 /// 带选项获取运行锁：冲突轮询等待/超时后跳过或报错（见 `LockAcquire`）
@@ -166,11 +222,19 @@ pub fn acquire_run_lock_with_options(
     config: &crate::config::schema::WikiConfig,
     lock: &crate::LockOptions,
 ) -> Result<LockAcquire> {
+    // audit-srch-04：锁句柄在进入轮询前只打开一次，冲突重试复用同一句柄
+    // （try_acquire_once 内反复 try_write）——旧实现每次尝试都 Box::leak
+    // 一个新句柄，--wait 长轮询（150ms 一次）会随尝试次数线性泄漏句柄/
+    // 内存（Windows 进程句柄上限约 16K，长 wait 可能耗尽）。每次进入本
+    // 函数仍泄漏一个 16 字节 Box + 一个句柄（进程级一次性开销，见
+    // leaked_rwlock 注释；watch 每轮增量获取一次，频率远低于冲突轮询）。
+    let (path, file) = open_lock_file(config)?;
+    let rwlock: *mut fd_lock::RwLock<std::fs::File> = leaked_rwlock(file);
     let start = std::time::Instant::now();
     loop {
-        match acquire_run_lock(config) {
-            Ok(run_lock) => return Ok(LockAcquire::Acquired(run_lock)),
-            Err(e) if is_lock_conflict(&e) => {
+        match try_acquire_once(rwlock, &path)? {
+            Some(run_lock) => return Ok(LockAcquire::Acquired(run_lock)),
+            None => {
                 // 冲突：有 wait 且未超时 → 轮询重试；否则按 skip 或报错
                 let timed_out = match lock.wait {
                     Some(d) => start.elapsed() >= d,
@@ -180,11 +244,10 @@ pub fn acquire_run_lock_with_options(
                     if lock.skip_if_locked {
                         return Ok(LockAcquire::Skipped);
                     }
-                    return Err(e);
+                    return Err(lock_conflict_error(&path));
                 }
                 std::thread::sleep(std::time::Duration::from_millis(150));
             }
-            Err(e) => return Err(e),
         }
     }
 }
@@ -217,19 +280,20 @@ fn process_name() -> String {
 /// 锁被占用时的报错：读取锁文件解析持锁者身份；内容缺失/损坏退化为 PID 未知
 fn lock_conflict_error(path: &std::path::Path) -> anyhow::Error {
     let content = std::fs::read_to_string(path).unwrap_or_default();
-    let pid = lock_field(&content, "pid");
+    let pid = lock_field(&content, "pid").and_then(|s| s.parse().ok());
     let process = lock_field(&content, "process");
     let started = lock_field(&content, "started");
-    match (pid, process, started) {
-        (Some(pid), Some(process), Some(started)) => anyhow::anyhow!(
+    let message = match (pid, process, started) {
+        (Some(pid), Some(process), Some(started)) => format!(
             "获取运行锁失败: 另一 code-repo-wiki 实例正在运行（PID {pid}，进程 {process}，启动于 {started}，锁文件: {}）。该进程结束后可重试",
             path.display()
         ),
-        _ => anyhow::anyhow!(
+        _ => format!(
             "获取运行锁失败: 另一 code-repo-wiki 实例正在运行（PID 未知，锁文件: {}）。该进程结束后可重试",
             path.display()
         ),
-    }
+    };
+    anyhow::Error::new(LockError { pid, message })
 }
 
 /// 提取锁文件诊断行 `key=value` 的 value；行不存在/值为空返回 None

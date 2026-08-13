@@ -53,15 +53,41 @@ impl SearchStore {
     /// 迁移重建（表为空），调用方必须全量重索引文本（增量路径不能只
     /// 补 changed_files，否则旧实体索引丢失）。
     pub fn open(path: impl AsRef<Path>) -> Result<(Self, bool)> {
-        let conn = Connection::open(path.as_ref())
+        let db_path = path.as_ref();
+        let conn = Connection::open(db_path)
             .context("打开 SQLite 数据库失败")?;
+        Self::configure_connection(&conn)?;
 
-        // WAL 模式：允许并发读，写操作排队
-        conn.pragma_update(None, "journal_mode", "WAL")
-            .context("设置 WAL 模式失败")?;
-        // 写锁等待 5 秒
-        conn.busy_timeout(std::time::Duration::from_secs(5))
-            .context("设置 busy_timeout 失败")?;
+        // audit-srch-09：打开时做完整性校验——损坏的索引库若静默打开，
+        // FTS5 写入/查询可能返回部分结果或随机错误（陈旧/错乱搜索且无
+        // 提示）。integrity_check 不通过 → 显式告警 + 删库重建空表并返回
+        // need_reindex（调用方走全量重索引自愈，与旧 schema 迁移同一条
+        // 恢复路径）。
+        let integrity_corrupt = conn
+            .query_row("PRAGMA integrity_check", [], |row| -> rusqlite::Result<String> {
+                row.get(0)
+            })
+            // integrity_check 本身报错也是损坏的强信号：FTS5 虚拟表结构
+            // 损坏时校验过程会直接抛错（如 "invalid fts5 file format"）
+            // 而非返回错误行
+            .map(|text| text != "ok")
+            .unwrap_or(true);
+        if integrity_corrupt {
+            tracing::warn!("文本索引数据库完整性校验失败，重建空索引并触发全量重索引");
+            // FTS5 结构损坏时 DROP TABLE 也可能失败（"invalid fts5 file
+            // format"），因此删库文件重建（连带 WAL/SHM 附属文件，防
+            // 脏页残留）。主库删除失败（权限/占用）则传播错误，不静默。
+            drop(conn);
+            Self::remove_index_files(db_path)?;
+            let conn = Connection::open(db_path)
+                .context("重建 SQLite 数据库失败")?;
+            Self::configure_connection(&conn)?;
+            conn.execute_batch(CREATE_ENTITIES_V2)
+                .context("重建 FTS5 表失败")?;
+            conn.pragma_update(None, "user_version", 2)
+                .context("写入 user_version 失败")?;
+            return Ok((Self { conn }, true));
+        }
 
         // schema 版本检测（user_version 是 SQLite 内建持久化版本槽位）
         let version: i64 = conn
@@ -98,6 +124,41 @@ impl SearchStore {
         }
 
         Ok((Self { conn }, false))
+    }
+
+    /// 连接级基础配置：WAL 模式 + busy_timeout（open 正常路径与损坏重建
+    /// 路径共用）
+    fn configure_connection(conn: &Connection) -> Result<()> {
+        // WAL 模式：允许并发读，写操作排队
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .context("设置 WAL 模式失败")?;
+        // 写锁等待 5 秒
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .context("设置 busy_timeout 失败")?;
+        Ok(())
+    }
+
+    /// 删除索引库主文件及 WAL/SHM 附属文件（损坏重建路径用；文件不存在
+    /// 视为成功，其他失败传播）
+    fn remove_index_files(db_path: &Path) -> Result<()> {
+        let mut candidates = vec![db_path.to_path_buf()];
+        for suffix in ["-wal", "-shm"] {
+            let mut name = db_path.as_os_str().to_os_string();
+            name.push(suffix);
+            candidates.push(std::path::PathBuf::from(name));
+        }
+        for candidate in candidates {
+            match std::fs::remove_file(&candidate) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(e).with_context(|| {
+                        format!("删除损坏索引库失败: {}", candidate.display())
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 
     // ==================== FTS5 全文搜索 ====================
@@ -389,6 +450,30 @@ mod tests {
         // 第二次 open：已是 v2，幂等无重建
         let (_, need_reindex2) = SearchStore::open(&path).unwrap();
         assert!(!need_reindex2, "二次 open 不应再触发重建");
+    }
+
+    /// audit-srch-09：损坏的索引库打开时 integrity_check 检出 → 重建空表并
+    /// 返回 need_reindex（调用方走全量重索引），不静默打开损坏库
+    #[test]
+    fn test_fts_corrupt_db_detected_and_reindexed() {
+        let path = tmp_db_path("fts_corrupt");
+        let _ = std::fs::remove_file(&path);
+        {
+            // 先建一个有效库并写入数据（关闭连接后 checkpoint，数据在主文件）
+            let (store, _) = SearchStore::open(&path).unwrap();
+            let items = vec![(make_node("alpha", "src/a.rs"), "alpha code".to_string())];
+            store.insert_entities_batch(&items).unwrap();
+            assert_eq!(store.entity_count().unwrap(), 1);
+        }
+        // 截断文件制造损坏：保留 SQLite 文件头（open 成功），删掉尾部数据页
+        let data = std::fs::read(&path).expect("读取测试 DB 失败");
+        let truncated = &data[..data.len() - 64];
+        std::fs::write(&path, truncated).expect("截断测试 DB 失败");
+
+        let (store, need_reindex) = SearchStore::open(&path).unwrap();
+        assert!(need_reindex, "损坏库必须返回 need_reindex");
+        assert_eq!(store.entity_count().unwrap(), 0, "损坏库应重建为空表");
+        let _ = std::fs::remove_file(&path);
     }
 
     /// 空串/纯标点查询：返回空结果而非 FTS5 语法错误（三引擎一致）
