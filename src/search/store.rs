@@ -14,6 +14,10 @@
 //! 展开即可恢复中文命中。旧库（无 tokens 列）用 PRAGMA user_version
 //! 检测并在 open 时 DROP 重建（返回 need_reindex 由调用方回退全量
 //! 文本重索引——见 lib.rs update_search_index_incremental）。
+//!
+//! v3 schema：`file_path`/`node_json` 列 UNINDEXED（仍存储、可 WHERE 过滤，
+//! 但不再进全文索引——缩小索引体积；P2 审计）+ bm25 列权重（name/signature
+//! 高权，凸显 identifier 命中）。旧库（user_version<3）open 时 DROP 重建。
 
 use std::path::Path;
 
@@ -23,17 +27,18 @@ use rusqlite::Connection;
 use crate::model::CodeNode;
 use crate::search::tokenize::extract_keywords;
 
-/// FTS5 建表 SQL（schema v2：末列 tokens 存 CJK 2-gram）
+/// FTS5 建表 SQL（schema v3：末列 tokens 存 CJK 2-gram；file_path/node_json
+/// UNINDEXED 只存不全文索引）
 ///
-/// user_version 约定：0/1 = 旧 schema（无 tokens 列，需重建）；
-/// 2 = 当前 schema。
-const CREATE_ENTITIES_V2: &str = "CREATE VIRTUAL TABLE IF NOT EXISTS entities USING fts5(
+/// user_version 约定：0/1 = 旧 schema（无 tokens 列）；2 = v2（有 tokens 列，
+/// 全列索引）；3 = 当前 schema（tokens 列 + UNINDEXED 列）。<3 均需重建。
+const CREATE_ENTITIES_V3: &str = "CREATE VIRTUAL TABLE IF NOT EXISTS entities USING fts5(
     name,
     kind,
     signature,
     source,
-    file_path,
-    node_json,
+    file_path UNINDEXED,
+    node_json UNINDEXED,
     tokens
 );";
 
@@ -82,9 +87,9 @@ impl SearchStore {
             Self::remove_index_files(db_path)?;
             let conn = Connection::open(db_path).context("重建 SQLite 数据库失败")?;
             Self::configure_connection(&conn)?;
-            conn.execute_batch(CREATE_ENTITIES_V2)
+            conn.execute_batch(CREATE_ENTITIES_V3)
                 .context("重建 FTS5 表失败")?;
-            conn.pragma_update(None, "user_version", 2)
+            conn.pragma_update(None, "user_version", 3)
                 .context("写入 user_version 失败")?;
             return Ok((Self { conn }, true));
         }
@@ -102,23 +107,23 @@ impl SearchStore {
             .context("查询 entities 表存在性失败")?;
 
         if !table_exists {
-            // 全新数据库：直接建 v2 表
-            conn.execute_batch(CREATE_ENTITIES_V2)
+            // 全新数据库：直接建 v3 表
+            conn.execute_batch(CREATE_ENTITIES_V3)
                 .context("创建 FTS5 表失败")?;
-            conn.pragma_update(None, "user_version", 2)
+            conn.pragma_update(None, "user_version", 3)
                 .context("写入 user_version 失败")?;
             return Ok((Self { conn }, false));
         }
 
-        if version < 2 {
-            // 旧 schema（v1 无 tokens 列）：FTS5 虚拟表无法 ALTER 加列，
-            // DROP 重建为 v2。旧索引数据随之清空，返回 need_reindex 由
-            // 调用方决定全量重索引时机。
+        if version < 3 {
+            // 旧 schema（v1 无 tokens 列 / v2 全列索引无 UNINDEXED）：FTS5
+            // 虚拟表无法 ALTER 加列/改列配置，DROP 重建为 v3。旧索引数据随之
+            // 清空，返回 need_reindex 由调用方决定全量重索引时机。
             conn.execute_batch("DROP TABLE IF EXISTS entities;")
                 .context("删除旧 FTS5 表失败")?;
-            conn.execute_batch(CREATE_ENTITIES_V2)
+            conn.execute_batch(CREATE_ENTITIES_V3)
                 .context("重建 FTS5 表失败")?;
-            conn.pragma_update(None, "user_version", 2)
+            conn.pragma_update(None, "user_version", 3)
                 .context("写入 user_version 失败")?;
             return Ok((Self { conn }, true));
         }
@@ -245,9 +250,15 @@ impl SearchStore {
             quoted.join(" OR ")
         );
 
-        // FTS5 MATCH 查询，bm25() 返回负数（越小越相关）
+        // FTS5 MATCH 查询，bm25() 返回负数（越小越相关）。
+        // bm25 权重按列位置映射（sqlite3.c fts5Bm25Function：w = (nVal > ic)
+        // ? apVal[ic] : 1.0，未给权重的列默认 1.0）。建表列序：
+        // name(0) kind(1) signature(2) source(3) file_path(4) node_json(5)
+        // tokens(6)。name/signature 高权凸显 identifier 命中（P2 审计）；
+        // UNINDEXED 列（file_path/node_json）不进索引，权重不生效仍显式给 1.0
+        // 保持全列权重自文档化。
         let sql = format!(
-            "SELECT node_json, bm25(entities) as rank
+            "SELECT node_json, bm25(entities, 5.0, 1.0, 3.0, 1.0, 1.0, 1.0, 1.0) as rank
              FROM entities
              WHERE entities MATCH ?1
              ORDER BY rank
@@ -433,7 +444,7 @@ mod tests {
         assert_eq!(mixed.len(), 2, "混合查询应同时命中中文与英文实体");
     }
 
-    /// 旧 schema 迁移：v1 表（无 tokens 列）open 后重建为 v2 并返回
+    /// 旧 schema 迁移：v1 表（无 tokens 列）open 后重建为 v3 并返回
     /// need_reindex，二次 open 幂等（不再触发重建）
     #[test]
     fn test_fts_legacy_schema_migration() {
@@ -457,22 +468,55 @@ mod tests {
             .unwrap();
         }
 
-        // 第一次 open：检测旧 schema，重建为 v2，返回 need_reindex
+        // 第一次 open：检测旧 schema，重建为 v3，返回 need_reindex
         let (store, need_reindex) = SearchStore::open(&path).unwrap();
         assert!(need_reindex, "旧 schema 必须触发重建标记");
         assert_eq!(store.entity_count().unwrap(), 0, "旧索引数据已清空");
 
-        // 新数据写入后中文检索可用（v2 tokens 列生效）
+        // 新数据写入后中文检索可用（v3 tokens 列生效）
         let items = vec![(
             make_node("验证迁移", "src/new.rs"),
             "fn 验证迁移()".to_string(),
         )];
         store.insert_entities_batch(&items).unwrap();
         let results = store.search_fts("迁移", 5).unwrap();
-        assert_eq!(results.len(), 1, "迁移后 v2 检索正常");
+        assert_eq!(results.len(), 1, "迁移后 v3 检索正常");
         assert_eq!(results[0].0.name, "验证迁移");
 
-        // 第二次 open：已是 v2，幂等无重建
+        // 第二次 open：已是 v3，幂等无重建
+        let (_, need_reindex2) = SearchStore::open(&path).unwrap();
+        assert!(!need_reindex2, "二次 open 不应再触发重建");
+    }
+
+    /// P2：v2 表（全列索引、user_version=2）升级到 v3（UNINDEXED 列）——
+    /// FTS5 无法 ALTER 列配置，open 时必须 DROP 重建并返回 need_reindex
+    #[test]
+    fn test_fts_v2_to_v3_migration_unindexed() {
+        let path = tmp_db_path("fts_v2v3");
+        let _ = std::fs::remove_file(&path);
+        {
+            // 手工构造 v2 旧库：含 tokens 列但全列索引（无 UNINDEXED）
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE VIRTUAL TABLE entities USING fts5(
+                    name, kind, signature, source, file_path, node_json, tokens
+                );",
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 2).unwrap();
+        }
+
+        let (store, need_reindex) = SearchStore::open(&path).unwrap();
+        assert!(need_reindex, "v2 表必须触发重建标记（列配置不可 ALTER）");
+        assert_eq!(store.entity_count().unwrap(), 0, "旧索引数据已清空");
+
+        // 重建后检索正常，且 file_path 仍可 WHERE 过滤（UNINDEXED 不丢过滤能力）
+        store
+            .insert_entities_batch(&[(make_node("alpha", "src/a.rs"), "alpha code".to_string())])
+            .unwrap();
+        assert_eq!(store.search_fts("alpha", 5).unwrap().len(), 1);
+        assert_eq!(store.delete_entities_by_file("src/a.rs").unwrap(), 1);
+
         let (_, need_reindex2) = SearchStore::open(&path).unwrap();
         assert!(!need_reindex2, "二次 open 不应再触发重建");
     }

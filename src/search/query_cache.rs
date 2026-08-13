@@ -10,13 +10,12 @@
 //! 命中路径先取 map 再释放、再取 order 刷新；未命中路径先取 order 淘汰、
 //! 释放后再取 map 插入。避免两锁逆序获取的经典死锁。
 //!
-//! ## 一致性风险（显式标注）
+//! ## 缓存键命名空间（P1）
 //!
-//! 向量与模型强相关：同一进程内更换 embedding 模型（config 变化）后，
-//! 缓存里旧模型的 query 向量会与新索引维度/语义不匹配。搜索主路径在
-//! 单进程单模型假设下运行（config 每次进程启动固定），且缓存上限 256
-//! 条有界、不跨进程——接受此风险；如需严格一致可在 open 时按 model
-//! 分片，当前 KISS 不做。
+//! 向量与模型强相关。调用方（semantic.rs）在缓存键中并入 embedding 模型名
+//! （`{model}\u{0}{query}`）作为命名空间：MCP 长驻进程 + config.toml 热改
+//! `[embed].model` 后，旧模型的 query 向量不会命中（维度变化报错、同维静默
+//! 劣化两条路径都被消除）；本结构自身不感知模型，只按键存取。
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};

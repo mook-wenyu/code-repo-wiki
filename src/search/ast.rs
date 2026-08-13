@@ -89,6 +89,14 @@ impl AstQuery {
                 "delegate_declaration",
                 "property_declaration",
             ][..],
+            "java" => &[
+                "class_declaration",
+                "interface_declaration",
+                "enum_declaration",
+                "record_declaration",
+                "method_declaration",
+                "constructor_declaration",
+            ][..],
             _ => return Ok(None),
         };
 
@@ -165,6 +173,13 @@ impl AstQuery {
                 "struct_declaration",
                 "interface_declaration",
             ][..],
+            "java" => &[
+                "class_declaration",
+                "interface_declaration",
+                "enum_declaration",
+                "record_declaration",
+                "method_declaration",
+            ][..],
             _ => return Ok(defs),
         };
 
@@ -206,6 +221,9 @@ pub fn get_language(name: &str) -> Result<Language> {
         "typescript" | "tsx" => Ok(tree_sitter_typescript::LANGUAGE_TSX.into()),
         "go" => Ok(tree_sitter_go::LANGUAGE.into()),
         "csharp" => Ok(tree_sitter_c_sharp::LANGUAGE.into()),
+        // Java：P2 补全唯一缺的受支持语言（tree-sitter-java 0.23 在
+        // Cargo.toml 已声明；LANGUAGE 常量与其他语言同为 LanguageFn）
+        "java" => Ok(tree_sitter_java::LANGUAGE.into()),
         _ => anyhow::bail!("不支持的语言: {}", name),
     }
 }
@@ -257,6 +275,20 @@ mod tests {
         let source = "function add(a, b) { return a + b; }";
         let found = q.find_definition(source, "add").unwrap();
         assert!(found.is_some());
+    }
+
+    /// P2：Java 符号定位——类与方法均可定位（get_language 已支持 java）
+    #[test]
+    fn test_java_definition() {
+        let mut q = AstQuery::new("java").unwrap();
+        let source = "public class Point {\n    public int getX() { return x; }\n}\n";
+        let class_found = q.find_definition(source, "Point").unwrap();
+        assert!(class_found.is_some());
+        let method_found = q.find_definition(source, "getX").unwrap();
+        assert!(method_found.is_some());
+        let defs = q.list_definitions(source).unwrap();
+        assert!(defs.contains(&"Point".to_string()));
+        assert!(defs.contains(&"getX".to_string()));
     }
 
     #[test]

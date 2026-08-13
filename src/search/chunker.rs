@@ -159,6 +159,17 @@ fn top_level_defs(language: &str) -> &'static [&'static str] {
             "record_declaration",
             "delegate_declaration",
         ][..],
+        // Java（P2 补全唯一缺的受支持语言）：节点名经 tree-sitter-java
+        // node-types.json 核证（class/interface/enum/record/annotation_type
+        // 为顶层声明；method 嵌套在类内，含入列表不匹配根级子节点，无害）
+        "java" => &[
+            "class_declaration",
+            "interface_declaration",
+            "enum_declaration",
+            "record_declaration",
+            "method_declaration",
+            "annotation_type_declaration",
+        ][..],
         _ => &[][..],
     }
 }
@@ -246,7 +257,8 @@ fn kind_from_ts(kind: &str) -> Option<NodeKind> {
         "const_item" | "const_declaration" | "static_item" => Some(NodeKind::Constant),
         "impl_item" => Some(NodeKind::Impl),
         "class_definition" | "class_declaration" => Some(NodeKind::Class),
-        "interface_declaration" => Some(NodeKind::Interface),
+        // Java annotation_type_declaration 语义即「注解接口」，归 Interface
+        "interface_declaration" | "annotation_type_declaration" => Some(NodeKind::Interface),
         "var_declaration" => Some(NodeKind::Variable),
         "record_declaration" => Some(NodeKind::Struct),
         "delegate_declaration" => Some(NodeKind::Function),
@@ -479,6 +491,34 @@ enum Shape { Circle }
         assert_eq!(blocks[0].line_range, (1, 1));
         assert_eq!(blocks[0].language, "text");
         assert!(blocks[0].text.contains("some plain text"));
+    }
+
+    /// P2：Java 结构感知分块——类/接口/枚举/record 各成块，类内方法与
+    /// 字段并入类块不拆（与 Rust impl 同语义：防向量爆炸）
+    #[test]
+    fn test_java_top_level_blocks() {
+        let source = r#"public class Point {
+    private int x;
+    public int getX() { return x; }
+}
+interface Shape {}
+enum Color { RED, GREEN }
+record Pair(int a, int b) {}
+"#;
+        let mut chunker = AstChunker::new("java").unwrap();
+        let blocks = chunker.chunk(source, "src/Point.java", "java").unwrap();
+        let names: Vec<&str> = blocks.iter().map(|b| b.name.as_str()).collect();
+        // 类内方法 getX 并入类块，不产生独立块
+        assert_eq!(names, vec!["Point", "Shape", "Color", "Pair"]);
+        let class_block = blocks.iter().find(|b| b.kind == NodeKind::Class).unwrap();
+        assert!(
+            class_block.text.contains("getX"),
+            "类块 body 应含方法: {}",
+            class_block.text
+        );
+        assert_eq!(class_block.language, "java");
+        let shape = blocks.iter().find(|b| b.name == "Shape").unwrap();
+        assert_eq!(shape.kind, NodeKind::Interface);
     }
 
     #[test]

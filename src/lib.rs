@@ -1271,7 +1271,10 @@ fn embed_model_marker(config: &config::schema::WikiConfig) -> std::path::PathBuf
 /// - 1 = 混合检索改造（index_text 加作用域/签名/文件路径前置）
 /// - 2 = 结构感知分块（块文本 = 模块路径 + 作用域链 + 文件行 + 可见性 +
 ///   签名 + doc 首段 + body，见 src/search/chunker.rs）
-const SEARCH_INDEX_TEMPLATE_VERSION: u32 = 2;
+/// - 3 = 块级去重（P0-A：每个唯一块只嵌入一次，不再按实体重复；旧索引
+///   含同一块 N+1 份重复向量/文本，必须全量重建清除——FTS5 schema v3
+///   同步 bump，见 store.rs user_version 约定）
+const SEARCH_INDEX_TEMPLATE_VERSION: u32 = 3;
 
 /// 读取索引构建时的 embedding 模型标记（model 名 + index_template 版本）
 ///
@@ -1425,6 +1428,7 @@ fn build_search_index(
                 &semantic_path,
                 embedder,
                 search::query_cache::QueryEmbedCache::shared(),
+                effective_embed_model(config),
             ) {
                 Ok(mut semantic_engine) => {
                     // 删除失败时清空旧库（新库上 clear 为无操作，见
@@ -1546,6 +1550,7 @@ fn update_search_index_incremental(
                     &semantic_path,
                     embedder.clone(),
                     search::query_cache::QueryEmbedCache::shared(),
+                    effective_embed_model(config),
                 ) {
                     Ok(mut semantic_engine) => {
                         // v33：embedding 模型版本化——同维度模型升级强制全量重建。
@@ -1654,6 +1659,11 @@ fn update_search_index_incremental(
 /// 块（嵌套方法并入父块，不产生独立块）。映射失败（const 组等无 name 节点
 /// 被 chunker 跳过 / 文件不在 insights）用合成块兜底，保证实体覆盖不缩水。
 ///
+/// P0-A：输出按块 ID 去重——图谱中一个 impl 块 = 1 个 Impl 实体 + N 个
+/// 方法实体，N+1 个节点都命中同一块；若按节点逐条输出，同一块文本会被
+/// 嵌入/索引 N+1 份（API 成本×N、vec0/FTS5 体积×N、KNN/RRF 结果被单块
+/// 刷屏）。去重后每个唯一块只产生一个 (CodeNode, Block)，块文本只嵌入一次。
+///
 /// U04/D2 提取：增量路径的"变更文件过滤"是 collect 之后的选择，
 /// 维度变化回退全量重建直接复用本函数，保证过滤规则单一来源。
 fn collect_index_blocks(
@@ -1673,29 +1683,65 @@ fn collect_index_blocks(
         blocks_by_file.insert(key, blocks);
     }
 
-    graph
-        .graph
-        .node_indices()
-        .filter_map(|idx| {
-            let node = graph.graph.node_weight(idx)?;
-            // 跳过项目/模块/文件级别的节点，只索引具体实体
-            if matches!(
-                node.kind,
-                model::NodeKind::Project | model::NodeKind::Module | model::NodeKind::File
-            ) {
-                return None;
-            }
-            let file_path = node.file_path.as_deref().unwrap_or("");
-            let block = match blocks_by_file
-                .get(file_path)
-                .and_then(|blocks| find_containing_block(blocks, node.line_range.unwrap_or((0, 0))))
-            {
-                Some(b) => b.clone(),
-                // 无匹配块（chunker 跳过无 name 节点 / 文件不在 insights）→
-                // 用 CodeNode 自身合成块，不丢实体覆盖（语义对齐旧实现）
-                None => synthetic_block(node, source_by_file.get(file_path).map(String::as_str)),
-            };
-            Some((node.clone(), block))
+    dedupe_by_block(
+        graph
+            .graph
+            .node_indices()
+            .filter_map(|idx| {
+                let node = graph.graph.node_weight(idx)?;
+                // 跳过项目/模块/文件级别的节点，只索引具体实体
+                if matches!(
+                    node.kind,
+                    model::NodeKind::Project | model::NodeKind::Module | model::NodeKind::File
+                ) {
+                    return None;
+                }
+                let file_path = node.file_path.as_deref().unwrap_or("");
+                let block = match blocks_by_file.get(file_path).and_then(|blocks| {
+                    find_containing_block(blocks, node.line_range.unwrap_or((0, 0)))
+                }) {
+                    Some(b) => b.clone(),
+                    // 无匹配块（chunker 跳过无 name 节点 / 文件不在 insights）→
+                    // 用 CodeNode 自身合成块，不丢实体覆盖（语义对齐旧实现）
+                    None => {
+                        synthetic_block(node, source_by_file.get(file_path).map(String::as_str))
+                    }
+                };
+                Some((node.clone(), block))
+            })
+            .collect(),
+    )
+}
+
+/// 按块 ID 去重：每个唯一块只保留一个代表实体（P0-A 正确性）
+///
+/// 图谱中一个 impl 块对应 1 个 Impl 实体 + N 个方法实体，所有实体都命中
+/// 同一块（find_containing_block 按行范围匹配，方法行落在 impl 行范围内）。
+/// 若不去重，同一块文本会被重复嵌入/索引（成本与体积放大、检索被单块刷屏）。
+///
+/// 确定性契约：BTreeMap 按键排序输出，同输入必同输出（bench/测试依赖）；
+/// 代表实体优先取「行起点与块起点一致」的节点（即块自身，如 impl 块 →
+/// Impl 实体），无匹配取组内首个（图节点序稳定）。
+fn dedupe_by_block(
+    items: Vec<(model::CodeNode, search::block::Block)>,
+) -> Vec<(model::CodeNode, search::block::Block)> {
+    let mut groups: std::collections::BTreeMap<
+        String,
+        Vec<(model::CodeNode, search::block::Block)>,
+    > = std::collections::BTreeMap::new();
+    for item in items {
+        groups.entry(item.1.id.clone()).or_default().push(item);
+    }
+    groups
+        .into_values()
+        .map(|mut group| {
+            let pos = group
+                .iter()
+                .position(|(node, block)| {
+                    node.line_range.map(|(start, _)| start) == Some(block.line_range.0)
+                })
+                .unwrap_or(0);
+            group.swap_remove(pos)
         })
         .collect()
 }
@@ -1777,7 +1823,7 @@ fn synthetic_block(node: &model::CodeNode, source: Option<&str>) -> search::bloc
 }
 
 /// 解析器语言名 → 分块器语言名（chunker_for/get_language 用小写名：
-/// "rust"/"python"/"javascript"/"typescript"/"go"/"csharp"）
+/// "rust"/"python"/"javascript"/"typescript"/"go"/"csharp"/"java"）
 fn chunk_language(language: &str) -> String {
     match language.to_ascii_lowercase().as_str() {
         "c#" => "csharp".to_string(),
@@ -1786,19 +1832,23 @@ fn chunk_language(language: &str) -> String {
         "go" => "go".to_string(),
         "python" => "python".to_string(),
         "rust" => "rust".to_string(),
-        // 其余（Java 等 tree-sitter 未接入）原样传入 → FileChunker 兜底
+        "java" => "java".to_string(),
+        // 其余（未接入 tree-sitter 的语言）原样传入 → FileChunker 兜底
         other => other.to_string(),
     }
 }
 
 /// 块 → 文本索引项：FTS5 source 列写入块文本（模块路径/作用域/签名/body
-/// 一并可检索，text 检索从「裸签名片段」升级为「结构感知全文」）
+/// 一并可检索，text 检索从「裸签名片段」升级为「结构感知全文」）。
+/// P0-A：与 collect_index_blocks 同基准按块去重——即使输入混入同块重复项
+///（历史/异常调用方），FTS5 也不重复存同一 source（索引体积与 BM25 排名
+/// 都受益）。
 fn block_items_to_text_items(
     items: &[(model::CodeNode, search::block::Block)],
 ) -> Vec<(model::CodeNode, String)> {
-    items
-        .iter()
-        .map(|(node, block)| (node.clone(), block.text.clone()))
+    dedupe_by_block(items.to_vec())
+        .into_iter()
+        .map(|(node, block)| (node, block.text.clone()))
         .collect()
 }
 
@@ -1881,6 +1931,7 @@ pub fn execute_search(
                 &semantic_path,
                 embedder,
                 search::query_cache::QueryEmbedCache::shared(),
+                effective_embed_model(&config),
             )?;
             let results = semantic_engine.search(query, top_k)?;
             Ok(search::hybrid::semantic_results_to_hits(results))
@@ -1908,6 +1959,7 @@ pub fn execute_search(
                             &semantic_path,
                             e,
                             search::query_cache::QueryEmbedCache::shared(),
+                            effective_embed_model(&config),
                         ) {
                             Ok(engine) => {
                                 Some(Box::new(engine) as Box<dyn search::semantic::SemanticSearch>)
@@ -2112,6 +2164,121 @@ mod tests {
         // Mock 提供方同样用 model（纯远程通道无独立模型来源）
         cfg.embed.provider = config::schema::EmbedProvider::Mock;
         assert_eq!(effective_embed_model(&cfg), "qwen3-text");
+    }
+
+    /// P0-A：collect_index_blocks 按块去重——impl 块含 N 个方法实体（都命中
+    /// 同一块），输出唯一块数 = 实际块数（非实体数），且 impl 块代表实体
+    /// 为 Impl 实体本身（行起点与块起点一致）
+    #[test]
+    fn test_collect_index_blocks_dedupes_by_block() {
+        let source = "pub struct Point { x: i32 }\nimpl Point {\n    pub fn new(x: i32) -> Self { Self { x } }\n    fn get(&self) -> i32 { self.x }\n}\npub fn area(p: &Point) -> i32 { p.x * p.x }\n";
+        let insight = ingest::parser::FileInsight {
+            path: std::path::PathBuf::from("src/app.rs"),
+            language: "rust".to_string(),
+            entities: Vec::new(),
+            imports: Vec::new(),
+            doc_comments: Vec::new(),
+            source: source.to_string(),
+        };
+
+        // 图节点：struct Point(1)、impl Point(2-5)、方法 new(3)、get(4)、
+        // 顶层函数 area(6)——5 个实体，但只应产出 3 个唯一块
+        let mut graph = model::KnowledgeGraph::default();
+        let mk = |kind: model::NodeKind, name: &str, range: (usize, usize)| model::CodeNode {
+            id: model::NodeId::new(0),
+            kind,
+            name: name.to_string(),
+            file_path: Some("src/app.rs".to_string()),
+            line_range: Some(range),
+            doc_comment: None,
+            signature: None,
+            visibility: None,
+            module_path: vec![],
+        };
+        graph
+            .graph
+            .add_node(mk(model::NodeKind::Struct, "Point", (1, 1)));
+        graph
+            .graph
+            .add_node(mk(model::NodeKind::Impl, "Point", (2, 5)));
+        graph
+            .graph
+            .add_node(mk(model::NodeKind::Function, "new", (3, 3)));
+        graph
+            .graph
+            .add_node(mk(model::NodeKind::Function, "get", (4, 4)));
+        graph
+            .graph
+            .add_node(mk(model::NodeKind::Function, "area", (6, 6)));
+
+        let items = collect_index_blocks(&graph, &[insight]);
+        // 5 个实体 → 去重后唯一块数 = 3（Point struct / Point impl / area fn）
+        let unique_blocks: std::collections::HashSet<&str> =
+            items.iter().map(|(_, b)| b.id.as_str()).collect();
+        assert_eq!(
+            unique_blocks.len(),
+            3,
+            "唯一块数应等于实际块数: {:?}",
+            unique_blocks
+        );
+        assert_eq!(items.len(), 3, "输出项数应与唯一块数一致: {:?}", items);
+        // impl 块只出现一次，且代表实体是 Impl（行起点与块起点一致）
+        let impl_items: Vec<_> = items
+            .iter()
+            .filter(|(_, b)| b.id == "src/app.rs#2-5")
+            .collect();
+        assert_eq!(impl_items.len(), 1, "impl 块只应保留一条");
+        assert_eq!(
+            impl_items[0].0.kind,
+            model::NodeKind::Impl,
+            "代表实体应为 Impl"
+        );
+        assert_eq!(impl_items[0].0.name, "Point");
+        // 块文本仍含方法（块级语义完整）
+        assert!(
+            impl_items[0].1.text.contains("fn get"),
+            "impl 块 body 应含方法"
+        );
+    }
+
+    /// P0-A：block_items_to_text_items 同基准去重——混入同块重复项时
+    /// FTS5 不重复存同一 source
+    #[test]
+    fn test_block_items_to_text_items_dedupes() {
+        let block = search::block::Block {
+            id: "src/app.rs#2-6".to_string(),
+            file_path: "src/app.rs".to_string(),
+            language: "rust".to_string(),
+            module_path: vec![],
+            kind: model::NodeKind::Impl,
+            name: "Point".to_string(),
+            line_range: (2, 6),
+            signature: String::new(),
+            visibility: None,
+            scope: vec![],
+            doc_comment: None,
+            text: "impl Point body".to_string(),
+            entity: search::block::EntityRef {
+                name: "Point".to_string(),
+                file_path: "src/app.rs".to_string(),
+                line_range: (2, 6),
+            },
+        };
+        let mk = |name: &str| model::CodeNode {
+            id: model::NodeId::new(0),
+            kind: model::NodeKind::Impl,
+            name: name.to_string(),
+            file_path: Some("src/app.rs".to_string()),
+            line_range: Some((2, 6)),
+            doc_comment: None,
+            signature: None,
+            visibility: None,
+            module_path: vec![],
+        };
+        let items = vec![(mk("Point"), block.clone()), (mk("new"), block)];
+        let text_items = block_items_to_text_items(&items);
+        assert_eq!(text_items.len(), 1, "同块重复项应去重");
+        assert_eq!(text_items[0].1, "impl Point body");
     }
 
     /// audit-srch2-02：watch 事件 `./` 前缀路径先剥 CurDir 再相对化——

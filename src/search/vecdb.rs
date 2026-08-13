@@ -87,6 +87,13 @@ fn ensure_extension_registered() {
 /// 虚表名（与 FTS5 entities 表同库共存的向量存储）
 const VECTOR_TABLE: &str = "vectors";
 
+/// vec0 schema 版本（PRAGMA user_version 记录，与 FTS5 同模式——不用
+/// 解析 DDL 字符串判断迁移）
+///
+/// - 0/1 = 旧 schema（无 block_id 列 / user_version 未记录，需重建）
+/// - 2 = 当前 schema（含 block_id 列，v0.7.2 结构感知分块）
+const VEC_SCHEMA_VERSION: i64 = 2;
+
 /// vec0 虚表封装：向量持久化 + 带阈值过滤的 KNN 查询
 ///
 /// 职责边界：只做 vec0 虚表的建表/增删查，不含 embedding 生成
@@ -158,7 +165,8 @@ impl VecDb {
             .with_context(|| format!("解析 vec0 维度失败: {}", &ddl[start..end]))
     }
 
-    /// 以指定维度创建 vec0 虚表（含 block_id 元数据列，v0.7.2 结构感知分块）
+    /// 以指定维度创建 vec0 虚表（含 block_id 元数据列，v0.7.2 结构感知分块），
+    /// 并记录 schema 版本（ensure_table 按 user_version 判断迁移）
     fn create_table(&self, dim: usize) -> Result<()> {
         let sql = format!(
             "CREATE VIRTUAL TABLE {VECTOR_TABLE} USING vec0(\
@@ -170,17 +178,17 @@ impl VecDb {
         );
         self.conn
             .execute_batch(&sql)
-            .with_context(|| format!("创建 vec0 虚表失败（dim={dim}）"))
+            .with_context(|| format!("创建 vec0 虚表失败（dim={dim}）"))?;
+        self.conn
+            .pragma_update(None, "user_version", VEC_SCHEMA_VERSION)
+            .context("写入 vec0 schema 版本失败")
     }
 
-    /// 当前虚表是否含 block_id 列（schema 迁移检测：旧库无此列需重建）
-    fn has_block_id_column(&self) -> Result<bool> {
-        let sql = "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1";
-        let ddl: String = self
-            .conn
-            .query_row(sql, [VECTOR_TABLE], |r| r.get(0))
-            .context("读取虚表定义失败")?;
-        Ok(ddl.contains("block_id"))
+    /// 当前 vec0 schema 版本（PRAGMA user_version；旧库未记录返回 0）
+    fn schema_version(&self) -> Result<i64> {
+        self.conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .context("读取 vec0 schema 版本失败")
     }
 
     /// 丢弃并重建虚表（维度变化/schema 迁移时调用，旧索引一并丢弃）
@@ -195,7 +203,8 @@ impl VecDb {
     ///
     /// `dim` 为本次插入向量的维度（EmbeddingEngine 首次产出后才知道）。
     /// 表不存在 → 按 dim 建表；表存在但维度不同（换模型）→ 重建并告警；
-    /// 维度相同但缺 block_id 列（v0.7.1 旧库）→ 重建（新 schema 含块级列）。
+    /// 维度相同但 schema 版本过旧（v0.7.1 无 block_id 列 / 旧库 user_version
+    /// 未记录）→ 重建（新 schema 含块级列）。
     fn ensure_table(&self, dim: usize) -> Result<()> {
         match self.table_dimension()? {
             None => self.create_table(dim),
@@ -208,8 +217,10 @@ impl VecDb {
                 self.rebuild_table(dim)
             }
             Some(_) => {
-                // 维度匹配但 schema 缺 block_id 列（v0.7.1 旧库）→ 重建迁移
-                if !self.has_block_id_column()? {
+                // 维度匹配但 schema 版本过旧（v0.7.1 无 block_id 列 / 旧库未
+                // 记录 user_version）→ 重建迁移；版本判断替代 DDL 字符串解析
+                //（P2：解析 DDL 判断迁移脆弱——列名重构/注释变化都会误判）
+                if self.schema_version()? < VEC_SCHEMA_VERSION {
                     tracing::warn!(
                         "语义索引 schema 升级（新增 block_id 列，v0.7.2 结构感知分块），重建向量表"
                     );
@@ -294,7 +305,11 @@ impl VecDb {
                     Ok(KnnRow {
                         node_json: r.get(0)?,
                         distance: r.get(1)?,
-                        block_id: r.get(2)?,
+                        // P1 修复：block_id 列容 NULL（旧行/外部工具插入）——
+                        // 此前 r.get::<String> 遇 NULL 直接报错，让整次搜索炸掉
+                        //（存了但不读却因 NULL 炸搜）。NULL → 空串，由语义层
+                        // 按 node_json 退化去重/溯源，搜索不中断。
+                        block_id: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
                     })
                 })
                 .context("执行 KNN 查询失败")?

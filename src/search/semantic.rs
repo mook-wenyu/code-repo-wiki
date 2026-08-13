@@ -54,6 +54,10 @@ pub struct SemanticEngine {
     embedder: Arc<dyn Embedder>,
     /// 查询 embedding LRU 缓存（重复 query 免二次 API 调用）
     query_cache: Arc<QueryEmbedCache>,
+    /// 缓存键命名空间：embedding 模型名（P1 缓存键并入模型名——MCP 长驻
+    /// 进程 + config.toml 热改 [embed].model 后，旧模型的 query 向量若仍
+    /// 命中会与新索引维度/语义不匹配；见 query_cache.rs 模块头一致性说明）
+    model: String,
 }
 
 impl SemanticEngine {
@@ -61,16 +65,20 @@ impl SemanticEngine {
     ///
     /// vec0 虚表延迟到首次插入时创建（维度首次探测）。
     /// `query_cache` 注入查询向量 LRU 缓存（进程级共享，见 query_cache.rs）。
+    /// `model` 为当前 embedding 模型名，并入查询缓存键（模型变更后旧缓存
+    /// 自然失效，见模块头 P1 说明）。
     pub fn open(
         path: impl AsRef<Path>,
         embedder: Arc<dyn Embedder>,
         query_cache: Arc<QueryEmbedCache>,
+        model: &str,
     ) -> Result<Self> {
         let db = VecDb::open(path)?;
         Ok(Self {
             db,
             embedder,
             query_cache,
+            model: model.to_string(),
         })
     }
 
@@ -169,10 +177,15 @@ impl SemanticSearch for SemanticEngine {
             return Ok(Vec::new());
         }
         // v0.7.2：查询向量走 LRU 缓存——重复/近重复 query 免二次 API 调用
-        // （MCP server 常驻进程内语义检索命中率高，省网络 RTT 与计费）
-        let q_vec = self
-            .query_cache
-            .get_or_embed(query, |q| self.embedder.embed(q))?;
+        // （MCP server 常驻进程内语义检索命中率高，省网络 RTT 与计费）。
+        // P1：缓存键并入模型名（NUL 分隔，query 为用户文本不含 NUL 无碰撞）——
+        // 长驻进程热改 [embed].model 后旧模型向量不再被误命中。
+        let cache_key = format!("{}\u{0}{}", self.model, query);
+        let q_vec = self.query_cache.get_or_embed(&cache_key, |key| {
+            // 剥离模型名前缀取回原始查询文本
+            let original = key.split_once('\u{0}').map(|(_, q)| q).unwrap_or(key);
+            self.embedder.embed(original)
+        })?;
         let query_json = vec_to_json(&q_vec);
         // 阈值换算：相似度 0.3 ↔ 距离 0.7（vecdb 常量，见模块头）
         let rows = self.db.knn(
@@ -181,7 +194,22 @@ impl SemanticSearch for SemanticEngine {
             crate::search::vecdb::MAX_COSINE_DISTANCE,
         )?;
         let mut results = Vec::with_capacity(rows.len());
+        // P0-A：检索侧按块去重——旧索引（去重修复前构建）可能存同一块的
+        // 多行重复向量（impl 块 N+1 份）；每块只返回一条代表，语义检索
+        // 真正「块级返回」，不被单块方法刷屏。knn 按距离升序稳定返回，
+        // 首条命中即该块的代表节点。
+        let mut seen_blocks: std::collections::HashSet<String> = std::collections::HashSet::new();
         for row in rows {
+            // 空 block_id（旧行/外部工具插入，P1 修复后为 ""）退化用 node_json
+            // 作键——node_json 是行唯一键（knn 已按它去重），不会误合并不同行
+            let dedupe_key = if row.block_id.is_empty() {
+                row.node_json.clone()
+            } else {
+                row.block_id.clone()
+            };
+            if !seen_blocks.insert(dedupe_key) {
+                continue;
+            }
             // 反序列化失败 = 索引数据损坏（外部篡改/旧版本写入的异构格式），
             // 单条跳过不中断整个搜索（坏行对结果质量影响有限，搜索是
             // 只读尽力而为路径）；索引重建由维度探测/全量重建机制覆盖
@@ -267,6 +295,39 @@ mod tests {
         Arc::new(EmbeddingEngine::new(&config, rt.handle().clone()).unwrap()) as Arc<dyn Embedder>
     }
 
+    /// 确定性伪嵌入器（无网络）：按文本 contains 关键词分配 3 维向量，
+    /// 与伪向量服务同规则（alpha/beta/gamma 映射见 pseudo_vec）。注入
+    /// `SemanticEngine::open` 即可（open 接受 `Arc<dyn Embedder>`），
+    /// 供不依赖本地 HTTP 的测试使用。
+    struct FakeEmbedder;
+
+    impl Embedder for FakeEmbedder {
+        fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+            Ok(pseudo_vec(text))
+        }
+        fn embed_batch(&self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
+            Ok(texts.iter().map(|t| pseudo_vec(t)).collect())
+        }
+        fn cosine_similarity(&self, a: &[f32], b: &[f32]) -> f64 {
+            crate::generate::embed::EmbeddingEngine::cosine_similarity(a, b) as f64
+        }
+    }
+
+    /// 文本 → 3 维确定性伪向量（与 HTTP 伪向量服务同一映射规则）
+    fn pseudo_vec(text: &str) -> Vec<f32> {
+        if text.contains("alpha") {
+            vec![1.0, 0.0, 0.0]
+        } else if text.contains("beta") {
+            vec![
+                std::f32::consts::FRAC_1_SQRT_2,
+                std::f32::consts::FRAC_1_SQRT_2,
+                0.0,
+            ]
+        } else {
+            vec![-1.0, 0.0, 0.0]
+        }
+    }
+
     fn tmp_path(label: &str) -> std::path::PathBuf {
         use std::sync::atomic::{AtomicU64, Ordering};
         static SEM_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -317,9 +378,15 @@ mod tests {
         }
     }
 
-    /// 打开引擎：统一注入独立 query cache（测试间互不污染 LRU）
+    /// 打开引擎：统一注入独立 query cache（测试间互不污染 LRU）+ 模型标记
     fn open_engine(path: std::path::PathBuf, embedder: Arc<dyn Embedder>) -> SemanticEngine {
-        SemanticEngine::open(path, embedder, Arc::new(QueryEmbedCache::new())).unwrap()
+        SemanticEngine::open(
+            path,
+            embedder,
+            Arc::new(QueryEmbedCache::new()),
+            "test-model",
+        )
+        .unwrap()
     }
 
     /// 构造 (CodeNode, Block) 索引项
@@ -650,5 +717,100 @@ mod tests {
         let results = engine.search("alpha", 10).unwrap();
         assert_eq!(results.len(), 1, "中段 token 查询应命中块: {:?}", results);
         assert_eq!(results[0].0.name, "process");
+    }
+
+    /// P0-A：检索侧按块去重——同一块（block_id 相同）被重复索引（旧版按
+    /// 实体重复嵌入，impl 块 N+1 份）时，搜索只返回一条代表，不刷屏
+    #[test]
+    fn test_semantic_search_dedupes_by_block() {
+        let embedder = Arc::new(FakeEmbedder) as Arc<dyn Embedder>;
+        let mut engine = open_engine(tmp_path("dedup"), embedder);
+
+        // 同一 impl 块的「实体重复」场景：Impl 实体 + 两个方法实体都映射到
+        // 同一块（block.id 相同、块文本相同），3 行向量入库
+        let mut impl_node = make_node("Point", "src/impl.rs");
+        impl_node.kind = NodeKind::Impl;
+        impl_node.line_range = Some((1, 10));
+        let block = make_block(&impl_node, "alpha shared body");
+        let method1 = make_node("new", "src/impl.rs");
+        let method2 = make_node("get", "src/impl.rs");
+
+        engine
+            .index_batch(&[
+                (impl_node, block.clone()),
+                (method1, block.clone()),
+                (method2, block),
+            ])
+            .unwrap();
+        assert_eq!(engine.entry_count(), 3, "向量库仍存 3 行（模拟旧索引）");
+
+        let results = engine.search("alpha", 10).unwrap();
+        assert_eq!(results.len(), 1, "同一块只返回一条代表: {:?}", results);
+    }
+
+    /// P0-A：空 block_id（P1 把 NULL 降级为空串）行的去重退化——不同实体
+    /// 的 node_json 不同，按 node_json 作键不误合并（否则两条不同结果会被
+    /// 错误折叠成一条）
+    #[test]
+    fn test_semantic_search_dedupes_falls_back_on_empty_block_id() {
+        let embedder = Arc::new(FakeEmbedder) as Arc<dyn Embedder>;
+        let mut engine = open_engine(tmp_path("dedup_empty"), embedder);
+
+        let mut node1 = make_node("alpha", "src/a.rs");
+        let mut block1 = make_block(&node1, "alpha body");
+        block1.id = String::new(); // 模拟 NULL → 空串
+        node1.line_range = Some((1, 5));
+        block1.line_range = (1, 5);
+
+        let mut node2 = make_node("beta", "src/b.rs");
+        let mut block2 = make_block(&node2, "alpha body");
+        block2.id = String::new();
+        node2.line_range = Some((1, 5));
+        block2.line_range = (1, 5);
+
+        engine
+            .index_batch(&[(node1, block1), (node2, block2)])
+            .unwrap();
+
+        let results = engine.search("alpha", 10).unwrap();
+        // 两条不同实体（node_json 不同），空 block_id 不合并
+        assert_eq!(
+            results.len(),
+            2,
+            "空 block_id 按 node_json 去重不误合并: {:?}",
+            results
+        );
+    }
+
+    /// P1：查询缓存键并入模型名——同 query 在不同模型引擎下各嵌一次、
+    /// 互不命中（MCP 长驻进程热改 [embed].model 后旧模型向量不污染新查询）
+    #[test]
+    fn test_query_cache_namespaced_by_model() {
+        let cache = Arc::new(QueryEmbedCache::new());
+        let mut engine_a = SemanticEngine::open(
+            tmp_path("ns_a"),
+            Arc::new(FakeEmbedder) as Arc<dyn Embedder>,
+            cache.clone(),
+            "model-a",
+        )
+        .unwrap();
+        let mut engine_b = SemanticEngine::open(
+            tmp_path("ns_b"),
+            Arc::new(FakeEmbedder) as Arc<dyn Embedder>,
+            cache.clone(),
+            "model-b",
+        )
+        .unwrap();
+        engine_a
+            .index_batch(&[make_item(&make_node("alpha", "src/a.rs"), "fn alpha()")])
+            .unwrap();
+        engine_b
+            .index_batch(&[make_item(&make_node("beta", "src/b.rs"), "fn beta()")])
+            .unwrap();
+
+        engine_a.search("alpha", 10).unwrap();
+        engine_b.search("alpha", 10).unwrap();
+        // 两模型各自缓存一条 alpha 查询向量（缓存键含模型名，互不命中）
+        assert_eq!(cache.len(), 2, "同 query 不同模型应各缓存一条");
     }
 }
