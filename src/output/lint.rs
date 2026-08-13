@@ -4146,6 +4146,9 @@ mod tests {
     /// extract_citations 会提取，Path::is_absolute 为 true）越出源码根 →
     /// bad-citation（project_root.join(abs)=abs 的绕过在调用方被拦截）。
     /// 修复前会直接对 root 外路径做 exists/read，本测试可检出。
+    /// 仅 Windows 语义成立：Unix 下反斜杠是合法文件名符，`\\server\share`
+    /// 非绝对路径，is_absolute 为 false → 不走 containment 分支。
+    #[cfg(windows)]
     #[test]
     fn test_lint_bad_citation_rejects_out_of_root_absolute_path() {
         let dir = std::env::temp_dir().join(format!(

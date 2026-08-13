@@ -241,6 +241,15 @@ fn test_sync_merges_manual_edit_into_state() {
         .filter(|p| p.extension().is_some_and(|x| x == "md"))
         .min()
         .expect("generate 后 wiki/zh 下应有页面文件");
+    // macOS 临时目录 /var/folders 是指向 /private/var/folders 的符号链接：
+    // 二进制内 getcwd（current_dir）返回物理路径，状态 doc_fingerprints 键为
+    // 规范化物理路径；read_dir 拿到的是未解析符号链接路径，须 canonicalize
+    // 对齐（否则键不匹配，以下全部断言失效）。仅 macOS 需要：Windows 的
+    // canonicalize 会加 `\\?\` 前缀反而破坏键匹配，Linux /tmp 非符号链接。
+    #[cfg(target_os = "macos")]
+    let page = page
+        .canonicalize()
+        .unwrap_or_else(|e| panic!("页面路径应可 canonicalize {}: {}", page.display(), e));
     let state_path = work_dir
         .join(".code-repo-wiki")
         .join(".state")
