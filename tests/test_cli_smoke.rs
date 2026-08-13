@@ -585,6 +585,40 @@ fn test_update_dry_run_lists_changes_without_generating() {
 
     let _ = std::fs::remove_dir_all(&work_dir);
 }
+
+/// audit-cli-07：update --dry-run 与 --force/--progress-json 组合此前静默忽略
+/// （dry-run 早退分支不读这两个 flag）——改为 clap 解析期冲突拒绝（退出码非 0，
+/// 消息说明不能同时使用），不再静默吞掉用户意图。
+#[test]
+fn test_update_dry_run_rejects_conflicting_flags() {
+    let work_dir = prepare_repo("dry_run_conflict");
+
+    let out = run_bin(&work_dir, &["update", "-c", "config.toml", "--dry-run", "--force"]);
+    assert!(
+        !out.status.success(),
+        "--dry-run --force 应被拒绝，实际 status: {:?}\nstderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        combined.contains("cannot be used with"),
+        "冲突提示应说明不能同时使用，实际: {combined}"
+    );
+
+    let out = run_bin(&work_dir, &["update", "-c", "config.toml", "--dry-run", "--progress-json"]);
+    assert!(
+        !out.status.success(),
+        "--dry-run --progress-json 应被拒绝，实际 status: {:?}",
+        out.status
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
 // ==================== T5.2/T5.3：update 与 watch CLI 冒烟 ====================
 
 /// update：generate 后修改源文件，update 命令应成功退出并只重建受影响模块
@@ -978,7 +1012,8 @@ fn test_bench_manifest_smoke() {
             "bench-manifest",
             "--manifest",
             manifest_path.to_str().unwrap(),
-            "--config",
+            // audit-cli-10：-c 短旗标（此前仅 --config 可解析）
+            "-c",
             config_path.to_str().unwrap(),
         ],
     );
@@ -993,6 +1028,36 @@ fn test_bench_manifest_smoke() {
     assert!(stdout.contains("**失败**"), "缺失路径应标注失败: {stdout}");
 
     let _ = std::fs::remove_dir_all(&base);
+}
+
+/// audit-cli-10：bench --config 支持 -c 短旗标（此前仅 --config）——
+/// bench 实际运行成本高（整仓评测），解析面用 --help 校验短旗标已注册。
+/// bench-manifest 的 -c 真实调用已由 test_bench_manifest_smoke 端到端覆盖。
+#[test]
+fn test_bench_config_short_flag_registered() {
+    let work_dir = unique_dir("bench_short");
+    let _ = std::fs::create_dir_all(&work_dir);
+
+    let out = run_bin(&work_dir, &["bench", "--help"]);
+    assert!(
+        out.status.success(),
+        "bench --help 应成功，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("-c, --config"),
+        "bench help 应列出 -c 短旗标，实际: {stdout}"
+    );
+
+    let out = run_bin(&work_dir, &["bench-manifest", "--help"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("-c, --config"),
+        "bench-manifest help 应列出 -c 短旗标，实际: {stdout}"
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
 }
 
 // ==================== Phase 16.3：help 分组 / search ValueEnum / card -c ====================

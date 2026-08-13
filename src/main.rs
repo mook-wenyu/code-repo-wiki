@@ -95,7 +95,9 @@ enum Commands {
         #[arg(long)]
         progress_json: bool,
         /// 只分析并预览将更新的页面清单，不执行生成（无副作用）
-        #[arg(long)]
+        /// 与 --force/--progress-json 互斥：dry-run 不走流水线，两者在
+        /// 预览模式下无意义（audit-cli-07：此前静默忽略）
+        #[arg(long, conflicts_with_all = ["force", "progress_json"])]
         dry_run: bool,
         /// 项目根目录（扫描根/git 定位基准，默认当前目录）
         #[arg(long)]
@@ -176,7 +178,8 @@ enum Commands {
         /// 配置文件路径
         #[arg(short, long)]
         config: Option<PathBuf>,
-        /// 输出目录（覆盖配置文件中的 output.dir，仅 skip_generate=false 时生效）
+        /// 输出目录（覆盖配置文件中的 output.dir；--skip-generate 时给出会显式报错——
+        /// 快照绑定配置文件 output.dir，--output 无落点）
         #[arg(short, long)]
         output: Option<PathBuf>,
         /// 跳过生成，直接从导出快照导出（需先运行过 generate/update 落盘快照）
@@ -262,7 +265,11 @@ enum Commands {
         #[command(subcommand)]
         action: CardAction,
         /// 项目根目录（扫描根/git 定位基准，默认当前目录）
-        #[arg(long)]
+        /// global=true（audit-cli-04）：允许 `card generate <module> --root X`
+        /// 在动作子命令后传参（与 --wait/--skip-if-locked 同构）——
+        /// 此前仅卡级可解析，跨 cwd 运行 `card generate ... --root` 报
+        /// unexpected argument 静默失败。
+        #[arg(long, global = true)]
         root: Option<PathBuf>,
         /// 锁被占用时等待的秒数（超时仍报错）
         #[arg(long, global = true)]
@@ -306,7 +313,7 @@ enum Commands {
         #[arg(long)]
         repo_name: Option<String>,
         /// 配置文件路径（缺省 root/config.toml，见 load_default_config）
-        #[arg(long)]
+        #[arg(short, long)]
         config: Option<PathBuf>,
         /// 以 JSON 格式输出报告
         #[arg(long)]
@@ -346,7 +353,7 @@ enum Commands {
         #[arg(long)]
         manifest: PathBuf,
         /// 模板配置文件路径（scope/llm/provider 等；缺省走默认配置链）
-        #[arg(long)]
+        #[arg(short, long)]
         config: Option<PathBuf>,
         /// 以 JSON 格式输出矩阵
         #[arg(long)]
@@ -502,6 +509,48 @@ fn render_progress(
     None
 }
 
+/// --progress-json 共享的 JSONL 事件输出闭包（generate/update 同构，
+/// audit-cli-12 收敛两处近 30 行重复闭包）
+fn progress_json_cb() -> impl Fn(code_repo_wiki::ProgressEvent) {
+    |evt| {
+        let cur = evt.current.map(|c| c.to_string()).unwrap_or_else(|| "null".into());
+        let tot = evt.total.map(|c| c.to_string()).unwrap_or_else(|| "null".into());
+        println!(r#"{{"stage":"{}","progress":{},"current":{},"total":{}}}"#, evt.stage, evt.percent, cur, tot);
+    }
+}
+
+/// 文本模式共享的进度渲染闭包（TTY 行内刷新 / 非 TTY 节流；
+/// generate/update 同构，audit-cli-12 收敛）。每调用一次创建独立
+/// 节流状态（与旧内联 `Mutex::new(ProgressRenderState::default())` 等价）。
+fn text_progress_cb() -> impl Fn(code_repo_wiki::ProgressEvent) {
+    let tty = std::io::stderr().is_terminal();
+    let render_state = std::sync::Mutex::new(ProgressRenderState::default());
+    move |evt| {
+        let mut st = render_state.lock().expect("进度渲染锁中毒");
+        if let Some(s) = render_progress(&evt, tty, &mut st) {
+            eprint!("{s}");
+        }
+    }
+}
+
+/// 加载配置并按 --output 覆盖 output_dir（与流水线内部
+/// load_config_with_output 同规则：output 相对 root 解析，缺省 root/.code-repo-wiki）
+///
+/// audit-cli-01：update 尾部复核此前用 load_config_rooted（漏传 --output），
+/// 复核扫默认目录而非流水线实际写盘目录——--output 下产物有 lint 问题时
+/// 静默假阴性。此 helper 保证复核目录与流水线注入的 output 一致。
+fn load_config_with_cli_output(
+    config: Option<&Path>,
+    output: Option<&Path>,
+    root: &code_repo_wiki::project::ProjectRoot,
+) -> anyhow::Result<code_repo_wiki::config::schema::WikiConfig> {
+    let mut cfg = code_repo_wiki::load_config_rooted(config, root)?;
+    if let Some(out) = output {
+        cfg.output_dir = Some(root.path().join(out));
+    }
+    Ok(cfg)
+}
+
 fn main() -> anyhow::Result<()> {
     // t03 契约（v21 实证发现）：tracing_subscriber::fmt() 默认 writer 是
     // stdout——所有日志会混入业务 stdout，破坏外部 AI Coding Agent 的
@@ -540,28 +589,17 @@ fn main() -> anyhow::Result<()> {
                     config.as_deref(), output.as_deref(), force, &root,
                     &code_repo_wiki::GenerationMode::Full,
                     lock,
-                    &|evt| {
-                        let cur = evt.current.map(|c| c.to_string()).unwrap_or_else(|| "null".into());
-                        let tot = evt.total.map(|c| c.to_string()).unwrap_or_else(|| "null".into());
-                        println!(r#"{{"stage":"{}","progress":{},"current":{},"total":{}}}"#, evt.stage, evt.percent, cur, tot);
-                    },
+                    &progress_json_cb(),
                 )?
             } else {
                 // v46：文本模式 TTY 感知渲染——终端下行内刷新（\r 原地更新），
                 // 非终端（管道/CI/后台）节流输出普通文本行；均走 stderr
                 //（clig.dev 约定），不污染 stdout 业务输出
-                let tty = std::io::stderr().is_terminal();
-                let render_state = std::sync::Mutex::new(ProgressRenderState::default());
                 code_repo_wiki::run_pipeline_with_progress(
                     config.as_deref(), output.as_deref(), force, &root,
                     &code_repo_wiki::GenerationMode::Full,
                     lock,
-                    &|evt| {
-                        let mut st = render_state.lock().expect("进度渲染锁中毒");
-                        if let Some(s) = render_progress(&evt, tty, &mut st) {
-                            eprint!("{s}");
-                        }
-                    },
+                    &text_progress_cb(),
                 )?
             };
             // Phase 15.2：--skip-if-locked 命中（锁冲突且未等到）→ 退出码 0
@@ -641,15 +679,9 @@ fn main() -> anyhow::Result<()> {
                         change_kind: None,
                     },
                     lock,
-                    &|evt| {
-                        let cur = evt.current.map(|c| c.to_string()).unwrap_or_else(|| "null".into());
-                        let tot = evt.total.map(|c| c.to_string()).unwrap_or_else(|| "null".into());
-                        println!(r#"{{"stage":"{}","progress":{},"current":{},"total":{}}}"#, evt.stage, evt.percent, cur, tot);
-                    },
+                    &progress_json_cb(),
                 )?
             } else {
-                let tty = std::io::stderr().is_terminal();
-                let render_state = std::sync::Mutex::new(ProgressRenderState::default());
                 code_repo_wiki::run_pipeline_with_progress(
                     config.as_deref(), output.as_deref(), force, &root,
                     &code_repo_wiki::GenerationMode::Incremental {
@@ -657,12 +689,7 @@ fn main() -> anyhow::Result<()> {
                         change_kind: None,
                     },
                     lock,
-                    &|evt| {
-                        let mut st = render_state.lock().expect("进度渲染锁中毒");
-                        if let Some(s) = render_progress(&evt, tty, &mut st) {
-                            eprint!("{s}");
-                        }
-                    },
+                    &text_progress_cb(),
                 )?
             };
             // Phase 15.2：--skip-if-locked 命中（锁冲突且未等到）→ 退出码 0
@@ -711,7 +738,9 @@ fn main() -> anyhow::Result<()> {
             // 跨页一致性问题（断链/引用漂移/符号漂移等）可能残留，此处让
             // 用户立即可见；只告警不改变退出码（"失败只告警"策略——产物
             // 缺陷由 lint 门禁兜底拦截，update 主流程语义不受影响）。
-            let cfg = code_repo_wiki::load_config_rooted(config.as_deref(), &root)?;
+            // audit-cli-01：复核目录必须与流水线注入的 --output 一致——此前
+            // load_config_rooted 漏传 output，--output 下扫默认目录静默假阴性。
+            let cfg = load_config_with_cli_output(config.as_deref(), output.as_deref(), &root)?;
             let output_dir = cfg.output_dir();
             let source_roots = code_repo_wiki::commands::source_roots(&root);
             let issues = code_repo_wiki::output::lint::lint(output_dir, &source_roots);
@@ -748,6 +777,20 @@ fn main() -> anyhow::Result<()> {
             // 人工修改保护检测失效（旧实现 sync 相对 cwd 解析，root 化后错位）。
             let root = resolve_root(root.as_deref())?;
             let cfg = code_repo_wiki::load_config_rooted(config.as_deref(), &root)?;
+            // audit-cli-09：sync 写 generation_state.json（指纹库），与 generate/
+            // update/watch 并发会互相覆盖状态（最后写入者胜）——与 card 同构
+            // 纳入运行锁（Phase 15.4 语义）。sync 无 --wait/--skip-if-locked
+            // 选项，用 default()（冲突立即失败，非 0 退出码）。Skipped 仅在
+            // skip_if_locked=true 时出现，default() 下不可达，防御性 bail。
+            let _run_lock = match code_repo_wiki::fs::acquire_run_lock_with_options(
+                &cfg,
+                &code_repo_wiki::LockOptions::default(),
+            )? {
+                code_repo_wiki::fs::LockAcquire::Acquired(run_lock) => run_lock,
+                code_repo_wiki::fs::LockAcquire::Skipped => {
+                    anyhow::bail!("运行锁被另一实例占用，本次同步跳过")
+                }
+            };
             code_repo_wiki::commands::sync_from_git(cfg.output_dir())?;
             tracing::info!("同步完成 (--config {})", config.as_deref().map(|p| p.display().to_string()).unwrap_or_else(|| "默认链".into()));
         }
@@ -853,6 +896,13 @@ fn main() -> anyhow::Result<()> {
         Commands::AstSearch { symbol, language, config, json, root } => {
             // AST 精确符号查找：不依赖搜索索引，直接扫描源文件解析 AST 定位定义
             let root = resolve_root(root.as_deref())?;
+            // audit-cli-02：--language 非法值此前被静默吞掉——execute_ast_search
+            // 内 AstQuery::new 失败走 continue，退出码 0 且误报「未找到符号」
+            // （假阴性）。显式校验非法语言 → 非 0 退出码；get_language 与
+            // AST 扫描解析同源（同一支持语言集）。
+            if let Some(lang) = &language {
+                code_repo_wiki::search::ast::get_language(lang)?;
+            }
             let results = code_repo_wiki::execute_ast_search(config.as_deref(), &root, &symbol, language.as_deref())?;
             if json {
                 let json_results: Vec<serde_json::Value> = results.iter().map(|hit| {
@@ -883,6 +933,12 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Export { config, output, skip_generate, root } => {
             let root = resolve_root(root.as_deref())?;
+            // audit-cli-08：--skip-generate 下 --output 此前静默忽略——快照与
+            // 产物目录绑定（快照写在 cfg.output_dir()），--output 无落点，
+            // 静默吞掉会误导用户以为导出到了指定目录，显式报错防误用。
+            if skip_generate && output.is_some() {
+                anyhow::bail!("--skip-generate 从导出快照恢复导出，--output 不生效（快照绑定配置文件 output.dir）；请移除 --output 或去掉 --skip-generate");
+            }
             let cfg = code_repo_wiki::load_config_rooted(config.as_deref(), &root)?;
             if skip_generate {
                 // 从导出快照恢复导出（票 06）：不重跑生成流水线。

@@ -874,3 +874,168 @@ fn test_ast_search_finds_definition() {
 
     let _ = std::fs::remove_dir_all(&work_dir);
 }
+
+// ==================== A7.10 audit-cli 系列（CLI 层修复回归防线） ====================
+
+/// audit-cli-02：ast-search --language 非法值必须显式报错（非 0 退出码）——
+/// 修复前 execute_ast_search 内 AstQuery::new 失败被 continue 静默跳过，
+/// 退出码 0 且误报「未找到符号」（假阴性）。get_language 与 AST 扫描同源。
+#[test]
+fn test_ast_search_invalid_language_errors() {
+    let work_dir = prepare_repo("ast_search_invalid_lang");
+
+    let out = run_bin_with_envs(
+        &work_dir,
+        &["ast-search", "authenticate", "--language", "bogus", "--config", "mock-server.toml"],
+        &[],
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !out.status.success(),
+        "非法 language 应非 0 退出码，实际 status: {:?}\n输出: {combined}",
+        out.status
+    );
+    assert!(
+        combined.contains("不支持的语言"),
+        "应报不支持的语言，实际: {combined}"
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
+
+/// audit-cli-01：update --output 尾部复核必须扫流水线实际写盘的输出目录——
+/// 修复前 load_config_rooted 漏传 --output，复核扫默认 .code-repo-wiki，
+/// --output 下产物有 lint 问题时静默假阴性。制造孤儿页证明复核目录正确。
+#[test]
+fn test_update_output_tail_lint_scans_output_dir() {
+    let work_dir = prepare_repo("update_output_tail");
+
+    // 1. generate --output 自定义目录（产物落在 work_dir/custom-out）
+    let out = run_bin_with_envs(
+        &work_dir,
+        &["generate", "--config", "mock-server.toml", "--output", "custom-out"],
+        &[],
+    );
+    assert!(
+        out.status.success(),
+        "generate --output 应成功，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out_dir = work_dir.join("custom-out");
+    assert!(
+        out_dir.join("wiki").join("zh").is_dir(),
+        "产物应落在 --output 目录"
+    );
+
+    // 2. 在 --output 目录制造孤儿页（lint 必报问题；若复核扫默认目录则静默漏检）
+    std::fs::write(out_dir.join("wiki").join("zh").join("orphan.md"), "# 孤儿页\n").unwrap();
+
+    // 3. 修改源文件触发真实增量更新（非 git 仓库回退全量语义，仍会执行）
+    let src = work_dir.join("src").join("main.rs");
+    let mut content = std::fs::read_to_string(&src).unwrap();
+    content.push_str("\n// update --output 尾部复核触发\n");
+    std::fs::write(&src, content).unwrap();
+
+    // 4. update --output：尾部复核应扫 custom-out 并发现孤儿页（RUST_LOG=warn 捕获）
+    let out = run_bin_with_envs(
+        &work_dir,
+        &["update", "--config", "mock-server.toml", "--output", "custom-out"],
+        &[("RUST_LOG", "warn")],
+    );
+    assert!(
+        out.status.success(),
+        "update --output 应成功，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("orphan.md"),
+        "尾部复核应发现 --output 目录的孤儿页，实际 stderr: {stderr}"
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
+
+/// audit-cli-09：sync 写指纹库（generation_state.json），与 generate/update/watch
+/// 并发会互相覆盖状态——纳入运行锁后撞锁必须拒绝（非 0 + 「正在运行」）。
+/// 主测试进程持内核写锁，sync 子进程（独立进程）打开同一锁文件必然撞锁。
+#[test]
+fn test_sync_rejected_while_locked() {
+    let work_dir = prepare_repo("sync_lock_conflict");
+
+    // 锁路径对齐：子进程 cwd=work_dir、config 无 output.dir → output_dir()
+    // 回退 .code-repo-wiki 相对 cwd = work_dir/.code-repo-wiki
+    let config = WikiConfig {
+        output_dir: Some(work_dir.join(".code-repo-wiki")),
+        ..Default::default()
+    };
+    let _lock = acquire_run_lock(&config).expect("主测试进程应能获取运行锁");
+
+    let out = run_bin_with_envs(
+        &work_dir,
+        &["sync", "--config", "mock-server.toml"],
+        &[],
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !out.status.success(),
+        "sync 撞内核锁应拒绝，实际 status: {:?}\n输出: {combined}",
+        out.status
+    );
+    assert!(
+        combined.contains("正在运行"),
+        "撞锁报错应含「正在运行」提示，实际输出: {combined}"
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
+
+/// audit-cli-04：card --root 需 global=true——`card generate <module> --root X`
+/// 在动作子命令后传参可解析（与 --wait/--skip-if-locked 同构）。修复前 --root
+/// 仅卡级，动作后传报 unexpected argument（跨 cwd 运行静默失败）。
+#[test]
+fn test_card_generate_root_after_action_parses() {
+    let work_dir = prepare_repo("card_root_global");
+
+    let out = run_bin_with_envs(&work_dir, &["generate", "--config", "mock-server.toml"], &[]);
+    assert!(
+        out.status.success(),
+        "generate 应成功，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let cards_dir = work_dir.join(".code-repo-wiki").join("cards").join("zh");
+    let card_file = std::fs::read_dir(&cards_dir)
+        .unwrap_or_else(|e| panic!("卡片目录应存在 {}: {}", cards_dir.display(), e))
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|x| x == "md"))
+        .expect("generate 后应有卡片文件");
+    let module = card_file
+        .file_stem()
+        .unwrap()
+        .to_string_lossy()
+        .replace('_', "::");
+    let root_str = work_dir.to_str().unwrap();
+
+    // --root 放在动作子命令之后：修复前 clap 解析期拒绝（unexpected argument）
+    let out = run_bin_with_envs(
+        &work_dir,
+        &["card", "generate", &module, "--root", root_str, "--config", "mock-server.toml"],
+        &[],
+    );
+    assert!(
+        out.status.success(),
+        "card generate --root 动作后传参应可解析并成功，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}

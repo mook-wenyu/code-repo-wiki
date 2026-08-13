@@ -12,7 +12,6 @@ pub struct StatusReport {
     pub wiki_pages: usize,      // wiki/{lang}/*.md 数量（所有语言合计）
     pub cards: usize,           // cards/{lang}/*.md 数量
     pub issues: Vec<LintIssue>, // lint 产物健康检查结果
-    pub config_path: String,
 }
 
 /// 汇总产物状态：页面/卡片数量 + lint 健康检查（供 `code-repo-wiki status` 使用）
@@ -34,7 +33,6 @@ pub fn status_report(config: &WikiConfig, root: &crate::project::ProjectRoot) ->
         wiki_pages,
         cards,
         issues,
-        config_path: config.output_dir().to_string_lossy().into_owned(),
     }
 }
 

@@ -82,6 +82,34 @@ fn test_export_skip_generate_missing_snapshot_errors() {
     let _ = std::fs::remove_dir_all(&work_dir);
 }
 
+/// audit-cli-08：export --skip-generate 与 --output 同时给出时此前静默忽略
+/// --output（快照绑定配置文件 output.dir，--output 无落点）——显式报错防误用
+#[test]
+fn test_export_skip_generate_output_conflict_errors() {
+    let work_dir = prepare_repo("skip_generate_output");
+
+    let out = run_bin(
+        &work_dir,
+        &["export", "--skip-generate", "--output", "custom-out", "-c", "config.toml"],
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !out.status.success(),
+        "--skip-generate --output 应显式失败，实际 status: {:?}\n输出: {combined}",
+        out.status
+    );
+    assert!(
+        combined.contains("--output 不生效"),
+        "应提示 --output 不生效并给出指引，实际: {combined}"
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
+
 /// 快照过期（票 04）：快照 mtime 早于最新 wiki 页时 export --skip-generate
 /// 必须显式报错，不得静默导出过期内容（陈旧不可观测是数据正确性风险）。
 #[test]
