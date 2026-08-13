@@ -15,7 +15,9 @@
 //! - 调用方（state/快照/缓存/卡片）各自决定失败语义（fail-loud 或
 //!   warn+降级），本函数只负责原子落盘。
 
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 
 use anyhow::{Context, Result};
 /// 原子写入：内容写入 `path` 同目录的临时文件后 rename 覆盖
@@ -89,25 +91,65 @@ pub fn restrict_private_permissions(path: &Path) -> Result<()> {
 /// - `_lock`：fd_lock 写守卫，是锁的真正载体。其 Drop 显式调用
 ///   UnlockFile 释放内核锁并关闭句柄；守卫被 drop 之前锁一直有效
 ///   （`#[must_use]`，若守卫不保存会在获取处立刻释放）。
-/// - `path`：锁文件路径，仅用于诊断报错。
+/// - `_pool`：池归还令牌。必须声明在 `_lock` 之后——结构体字段按声明序
+///   drop，`_lock`（内核守卫）先释放内核锁，随后 `_pool` drop 时把本锁
+///   用的 RwLock 归还进程级复用池（见 PoolToken）。
 ///
 /// 锁文件本身常驻，本结构体 Drop 只关闭句柄，不删除文件。
 #[derive(Debug)]
 pub struct RunLock {
     _lock: fd_lock::RwLockWriteGuard<'static, std::fs::File>,
-    // 锁路径保留用于诊断（Debug 输出可见）；运行期冲突报错在
-    // acquire_run_lock 内完成，本字段无运行期读取点
-    #[allow(dead_code)]
-    path: std::path::PathBuf,
+    /// 池归还令牌（声明在 _lock 之后，drop 顺序见 PoolToken 注释）
+    _pool: PoolToken,
 }
 
-/// 打开（必要时创建）运行锁文件：不 truncate、不删除——文件常驻，
-/// 锁状态由内核管理。返回 (锁路径, 打开的文件句柄)。
-fn open_lock_file(config: &crate::config::schema::WikiConfig) -> Result<(std::path::PathBuf, std::fs::File)> {
+/// 运行锁文件路径：`{output_dir}/.state/run.lock`，并确保状态目录存在。
+/// 打开文件本身由 `pool_checkout` 按需执行（首次使用该路径时才打开）。
+fn lock_file_path(config: &crate::config::schema::WikiConfig) -> Result<std::path::PathBuf> {
     let state_dir = config.output_dir().join(".state");
     std::fs::create_dir_all(&state_dir)
         .with_context(|| format!("创建状态目录失败: {}", state_dir.display()))?;
-    let path = state_dir.join("run.lock");
+    Ok(state_dir.join("run.lock"))
+}
+
+/// 池中已泄漏 RwLock 的裸指针。`*mut` 非 Send/Sync，无法放进 `static` 或
+/// 跨线程 move，用新类型 + unsafe impl 声明安全前提（借用手册见 LOCK_POOL
+/// 与 pool_checkout/pool_return 注释：指针只在「被取池独占借用」时才解引用，
+/// 池本身受 Mutex 保护，共享指针值本身不构成数据竞争）。
+#[derive(Debug, Clone, Copy)]
+struct RwLockPtr(*mut fd_lock::RwLock<std::fs::File>);
+unsafe impl Send for RwLockPtr {}
+unsafe impl Sync for RwLockPtr {}
+
+/// 进程级运行锁复用池：`锁文件路径 -> 空闲 RwLock 列表`。
+///
+/// 为什么需要池：fd-lock 的写守卫是 `RwLockWriteGuard<'static, _>`，其借用
+/// 的 RwLock 必须 `'static`（内存永驻），旧实现因此每次调用都 `Box::leak`
+/// 一个新 Box + 打开一个新文件句柄——`--wait` 轮询每进入一次 +1、watch
+/// 常驻每轮 +1（Windows 进程句柄上限约 16K，长 wait 可能耗尽）。本池把
+/// 泄漏压到「每路径每进程一次」：首次使用该路径时打开句柄并泄漏一个
+/// RwLock，之后取池复用；守卫释放后经 PoolToken::drop 归还池中。
+///
+/// 借用手册（内存安全前提）：同一 RwLock 任意时刻只被一个持有者借用——
+/// 要么在池中（无存活守卫）、要么被一个 acquire 调用独占（守卫 Drop 后才
+/// 归还）。因此对同一 RwLock 至多存在一个 `&mut`，不会出现「守卫存活期间
+/// 另一调用从同一指针重建 `&mut`」的别名冲突。这正是把缓存设计成池而非
+/// 单实例的原因：冲突测试「先持锁再二次获取」在单实例缓存下会让二次获取
+/// 与存活守卫同时持有同一 RwLock 的 `&'static mut`，属未定义行为。
+static LOCK_POOL: OnceLock<Mutex<HashMap<std::path::PathBuf, Vec<RwLockPtr>>>> = OnceLock::new();
+
+/// 从池中取出（或首次创建）一个 RwLock，返回 `(锁路径, 裸指针)`。
+///
+/// 首次使用某路径时：打开常驻锁文件（不 truncate、不删除），`Box::leak`
+/// 一个 RwLock 换 `'static`（每路径每进程仅一次）；此后该路径的 RwLock
+/// 都在池中流转，不再新建——`--wait` 长轮询与 watch 每轮复用同一句柄。
+fn pool_checkout(config: &crate::config::schema::WikiConfig) -> Result<(std::path::PathBuf, *mut fd_lock::RwLock<std::fs::File>)> {
+    let path = lock_file_path(config)?;
+    let pool = LOCK_POOL.get_or_init(Default::default);
+    let mut pool = pool.lock().unwrap();
+    if let Some(RwLockPtr(ptr)) = pool.entry(path.clone()).or_default().pop() {
+        return Ok((path, ptr));
+    }
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -115,34 +157,56 @@ fn open_lock_file(config: &crate::config::schema::WikiConfig) -> Result<(std::pa
         .truncate(false)
         .open(&path)
         .with_context(|| format!("获取运行锁失败: {}", path.display()))?;
-    Ok((path, file))
+    let rwlock: *mut fd_lock::RwLock<std::fs::File> =
+        Box::leak(Box::new(fd_lock::RwLock::new(file)));
+    Ok((path, rwlock))
 }
 
-/// 构造进程级 RwLock：guard 借用 RwLock 本身（自引用），故 RwLock 需要
-/// 'static——此处泄漏一个 Box（Windows 上仅含 File 句柄，约 16 字节），
-/// 进程退出由 OS 回收，可接受（audit-srch-04 的取舍：泄漏频次见
-/// acquire_run_lock_with_options 注释，--wait 轮询已复用同一句柄）。
-fn leaked_rwlock(file: std::fs::File) -> &'static mut fd_lock::RwLock<std::fs::File> {
-    Box::leak(Box::new(fd_lock::RwLock::new(file)))
+/// 把 RwLock 归还池中（仅在守卫已释放、无存活借用时调用——即取池方在
+/// 冲突/超时/出错分支主动归还，或 PoolToken::drop 在守卫字段 drop 后归还）
+fn pool_return(path: &std::path::Path, rwlock: *mut fd_lock::RwLock<std::fs::File>) {
+    let pool = LOCK_POOL.get_or_init(Default::default);
+    let mut pool = pool.lock().unwrap();
+    pool.entry(path.to_path_buf()).or_default().push(RwLockPtr(rwlock));
 }
 
-/// 获取运行锁：打开（必要时创建）常驻锁文件 → 获取内核写锁 →
-/// 写持锁者身份。锁被占用时报错并给出持锁者身份。
+/// 池归还令牌：作为 RunLock 字段存在，且必须声明在 `_lock` 之后。
+///
+/// 结构体字段按声明序 drop（先于 `Drop::drop` 之后、逐个字段执行），
+/// `_lock`（内核守卫）先释放内核锁，随后 `_pool` drop 时 RwLock 已空闲，
+/// 归还池中供下次复用（下次 `--wait`/watch 轮询不再新开句柄）。
+#[derive(Debug)]
+struct PoolToken {
+    path: std::path::PathBuf,
+    ptr: RwLockPtr,
+}
+
+impl Drop for PoolToken {
+    fn drop(&mut self) {
+        pool_return(&self.path, self.ptr.0);
+    }
+}
+
+/// 获取运行锁：从进程级池取出（或首次打开）常驻锁文件句柄 → 获取内核
+/// 写锁 → 写持锁者身份。锁被占用时报错并给出持锁者身份。
+///
+/// 池语义：RwLock 每次进入本函数不新建（仅首次打开并泄漏一次），冲突/
+/// 出错路径即时归还，成功路径由 RunLock::_pool 在守卫释放后归还。
 pub fn acquire_run_lock(config: &crate::config::schema::WikiConfig) -> Result<RunLock> {
-    let (path, file) = open_lock_file(config)?;
-    let lock = leaked_rwlock(file);
-
-    match lock.try_write() {
-        Ok(mut guard) => {
-            // 先获锁再写身份：避免未获锁时截断覆盖持锁者的诊断内容
-            // （否则冲突分支读到的会是「自己刚写的」而非持锁者的）
-            write_lock_info(&mut guard)
-                .with_context(|| format!("获取运行锁失败: {}", path.display()))?;
-            Ok(RunLock { _lock: guard, path })
+    let (path, rwlock) = pool_checkout(config)?;
+    match try_acquire_once(rwlock, &path) {
+        Ok(Some(run_lock)) => Ok(run_lock),
+        // 锁被占用（WouldBlock）：读锁文件定位持锁者，给出可操作报错；
+        // RwLock 未产生守卫，即时归还池中
+        Ok(None) => {
+            pool_return(&path, rwlock);
+            Err(lock_conflict_error(&path))
         }
-        // 锁被占用（WouldBlock）：读锁文件定位持锁者，给出可操作报错
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Err(lock_conflict_error(&path)),
-        Err(e) => Err(e).with_context(|| format!("获取运行锁失败: {}", path.display())),
+        Err(e) => {
+            // try_acquire_once 已带「获取运行锁失败」上下文，此处直接传播
+            pool_return(&path, rwlock);
+            Err(e)
+        }
     }
 }
 
@@ -192,14 +256,17 @@ pub fn is_lock_conflict(err: &anyhow::Error) -> bool {
 ///
 /// 返回 `Ok(Some(RunLock))` 获锁、`Ok(None)` 冲突（WouldBlock）、`Err` 其他
 /// 错误。守卫借用 RwLock 需 'static（RunLock 字段约束），故 RwLock 必须
-/// 以裸指针传入：裸指针指向 leaked_rwlock 泄漏的堆对象，进程生命周期内
-/// 有效；每次调用从指针重建 `&mut`，前一调用的守卫在返回前已 drop
-/// （Ok 分支返回后不再重建，WouldBlock/Err 分支不产生守卫），无别名冲突。
+/// 以裸指针传入：裸指针指向池中泄漏的堆对象（pool_checkout），进程生命周期
+/// 内有效；每次调用从指针重建 `&mut`，前一调用的守卫在返回前已 drop
+/// （Ok 分支返回后不再重建，WouldBlock/Err 分支不产生守卫），且池借用
+/// 手册保证同一 RwLock 同一时刻至多一个持有者，无别名冲突。冲突/出错时
+/// 调用方负责把 RwLock 归还池中（本函数不持有池上下文）。
 fn try_acquire_once(
-    rwlock: *mut fd_lock::RwLock<std::fs::File>,
+    raw: *mut fd_lock::RwLock<std::fs::File>,
     path: &std::path::Path,
 ) -> Result<Option<RunLock>> {
-    let rwlock = unsafe { &mut *rwlock };
+    // 保留裸指针供 PoolToken 归还使用（`rwlock` 局部借用会遮蔽参数）
+    let rwlock = unsafe { &mut *raw };
     match rwlock.try_write() {
         Ok(mut guard) => {
             // 先获锁再写身份：避免未获锁时截断覆盖持锁者的诊断内容
@@ -208,7 +275,10 @@ fn try_acquire_once(
                 .with_context(|| format!("获取运行锁失败: {}", path.display()))?;
             Ok(Some(RunLock {
                 _lock: guard,
-                path: path.to_path_buf(),
+                _pool: PoolToken {
+                    path: path.to_path_buf(),
+                    ptr: RwLockPtr(raw),
+                },
             }))
         }
         // 锁被占用（WouldBlock）：返回 None 由调用方决定轮询/跳过/报错
@@ -218,23 +288,24 @@ fn try_acquire_once(
 }
 
 /// 带选项获取运行锁：冲突轮询等待/超时后跳过或报错（见 `LockAcquire`）
+///
+/// 池语义：锁句柄在进入轮询前只从池中取一次（首次打开并泄漏一次），冲突
+/// 重试复用同一句柄（try_acquire_once 内反复 try_write）——不随尝试次数
+/// 逐次泄漏。无论何种退出（获锁 / 跳过 / 超时报错 / 其他 I/O 错误），
+/// RwLock 都归还池中（获锁路径由 RunLock::_pool 在守卫释放后归还，其余
+/// 路径在此显式归还），下次进入复用同一句柄，`--wait` 长轮询与 watch 每轮
+/// 不再增量泄漏 Box/句柄（旧实现每次进入泄漏一个，Windows 进程句柄上限
+/// 约 16K，长 wait 可能耗尽）。
 pub fn acquire_run_lock_with_options(
     config: &crate::config::schema::WikiConfig,
     lock: &crate::LockOptions,
 ) -> Result<LockAcquire> {
-    // audit-srch-04：锁句柄在进入轮询前只打开一次，冲突重试复用同一句柄
-    // （try_acquire_once 内反复 try_write）——旧实现每次尝试都 Box::leak
-    // 一个新句柄，--wait 长轮询（150ms 一次）会随尝试次数线性泄漏句柄/
-    // 内存（Windows 进程句柄上限约 16K，长 wait 可能耗尽）。每次进入本
-    // 函数仍泄漏一个 16 字节 Box + 一个句柄（进程级一次性开销，见
-    // leaked_rwlock 注释；watch 每轮增量获取一次，频率远低于冲突轮询）。
-    let (path, file) = open_lock_file(config)?;
-    let rwlock: *mut fd_lock::RwLock<std::fs::File> = leaked_rwlock(file);
+    let (path, rwlock) = pool_checkout(config)?;
     let start = std::time::Instant::now();
     loop {
-        match try_acquire_once(rwlock, &path)? {
-            Some(run_lock) => return Ok(LockAcquire::Acquired(run_lock)),
-            None => {
+        match try_acquire_once(rwlock, &path) {
+            Ok(Some(run_lock)) => return Ok(LockAcquire::Acquired(run_lock)),
+            Ok(None) => {
                 // 冲突：有 wait 且未超时 → 轮询重试；否则按 skip 或报错
                 let timed_out = match lock.wait {
                     Some(d) => start.elapsed() >= d,
@@ -242,11 +313,20 @@ pub fn acquire_run_lock_with_options(
                 };
                 if timed_out {
                     if lock.skip_if_locked {
+                        pool_return(&path, rwlock);
                         return Ok(LockAcquire::Skipped);
                     }
+                    pool_return(&path, rwlock);
                     return Err(lock_conflict_error(&path));
                 }
                 std::thread::sleep(std::time::Duration::from_millis(150));
+            }
+            // 其他 I/O 错误（打开/创建锁文件、写身份失败）不视为冲突，
+            // 直接传播；RwLock 未产生守卫（try_acquire_once 内部已 drop），
+            // 归还池中
+            Err(e) => {
+                pool_return(&path, rwlock);
+                return Err(e);
             }
         }
     }
@@ -465,6 +545,30 @@ mod tests {
             Ok(LockAcquire::Skipped) => panic!("wait 未超时应获锁而非跳过"),
             Err(e) => panic!("wait 未超时应获锁: {e}"),
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 池归还纪律回归：--wait 冲突超时路径必须把 RwLock 归还池中（旧实现
+    /// 每次进入泄漏一个 Box+句柄，watch 常驻每轮增量一次），否则释放首锁后
+    /// 再次获取会新建句柄——本测试验证「超时归还 → 释放 → 复用同一路径」
+    /// 仍能成功获取（池中 RwLock 可复用，而非无限新建）。
+    #[test]
+    fn test_lock_pool_reuse_after_timeout() {
+        let dir = temp_path("lock_pool_reuse", "");
+        let config = lock_config(&dir);
+        let first = acquire_run_lock(&config).unwrap();
+        // 冲突 + 短 wait 超时 → 该次获取的 RwLock 须归还池中（非泄漏）
+        let options = crate::LockOptions {
+            wait: Some(std::time::Duration::from_millis(200)),
+            skip_if_locked: false,
+        };
+        let err = acquire_run_lock_with_options(&config, &options).unwrap_err();
+        assert!(err.to_string().contains("正在运行"), "超时仍应报冲突: {err}");
+        drop(first);
+        // 释放后再次获取：应复用池中 RwLock 成功（若池归还纪律失效，此处
+        // 也会成功但会新建句柄——该测试的回归价值在于保覆盖、防删除归还
+        // 路径；句柄复用本身由池实现保证）
+        let _second = acquire_run_lock(&config).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

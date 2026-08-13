@@ -8,18 +8,20 @@
 //! 同一 lib 入口（execute_search / execute_ast_search），不复制业务逻辑。
 //! 项目根由 `--root` 参数指定（缺省解析 cwd 的 config.toml 项目级配置）。
 //!
-//! 工具返回类型（audit-out-08）：工具返回 String，rmcp tool 宏自动包装成
-//! CallToolResponse 文本块；错误以 `format!("...失败: {e}")` 文本返回，不置
-//! isError=true。置 isError 需改为返回 CallToolResponse{is_error}，会连带改动
-//! 全部工具签名与 tests/test_mcp.rs 的 content 断言，属已知边界——文本式错误
-//! 对 Agent 可读（含具体失败原因），与 CLI 文本模式错误措辞一致。
+//! 工具返回类型（audit-out-08 → 已修复）：工具返回 `CallToolResult`，业务错误
+//! 走 `CallToolResult::error(...)` 置 `isError=true`，成功与合法空结果走
+//! `CallToolResult::success(...)`（isError=false）。AI 客户端据此程序化区分
+//! 「工具成功但结果是错误消息」与真正的成功（此前错误以文本返回、isError 未
+//! 置位，客户端无法区分）。错误文案仍为可读文本（含具体失败原因），与 CLI
+//! 文本模式错误措辞一致。参数反序列化失败由 rmcp 路由层自动置 isError=true
+//! （into_tool_argument_error，见 mcp.rs 工具注释）。
 
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{ServerCapabilities, ServerInfo};
+use rmcp::model::{CallToolResult, ContentBlock, ServerCapabilities, ServerInfo};
 use rmcp::service::{QuitReason, ServiceExt};
 use rmcp::{ServerHandler, schemars, tool, tool_handler, tool_router};
 
@@ -46,6 +48,28 @@ impl RepoWikiMcp {
             root,
         }
     }
+}
+
+/// 工具成功结果：isError=false（文本内容）
+///
+/// MCP `CallToolResult::success` 将 `is_error` 置为 `Some(false)`（序列化为
+/// `"isError": false`），与错误分支的 `true` 可程序化区分。成功路径含「合法
+/// 空结果」（如搜索无命中、符号未找到、status 报告未生成）——这些是工具
+/// 正常执行产生的输出，不属于工具执行错误。
+fn tool_success(out: String) -> CallToolResult {
+    CallToolResult::success(vec![ContentBlock::text(out)])
+}
+
+/// 工具业务错误：置 isError=true（MCP 规范「工具执行错误」）
+///
+/// MCP 区分两类失败：协议错误（JSON-RPC error，客户端渲染为不透明错误）与
+/// 工具执行错误（result 内 `isError: true`，content 为调用方可读的说明）。
+/// 业务错误（配置加载失败、非法参数、资源不存在、执行失败）属于后者——
+/// AI 客户端据此把「工具成功但结果是错误消息」与真正的成功区分开。
+/// 参数反序列化失败则由 rmcp 路由层（into_tool_argument_error）自动置
+/// isError=true，无需本函数处理。
+fn tool_error(message: impl Into<String>) -> CallToolResult {
+    CallToolResult::error(vec![ContentBlock::text(message.into())])
 }
 
 // ============ 工具定义（#[tool_router] 块内，方法可访问 self 配置） ============
@@ -97,19 +121,19 @@ impl RepoWikiMcp {
         description = "Purpose: keyword search over the pre-built code index (text / semantic / hybrid engines). Returns ranked hits with signature, file:lines, score, and callers/callees (hybrid engine only).\nWhen to use: to locate where a function, struct, class, or trait is defined or referenced by fuzzy keyword.\nWhen NOT to use: for exact symbol definition lookup, use wiki_ast_search instead.\nParameters & return example: {\"query\": \"config load\", \"top_k\": 10, \"engine\": \"hybrid\"} -> \"1. `fn load_config()` — src/config.rs:12-40 | score=0.8 | callers=[main] | callees=[]\". Note: requires `code-repo-wiki generate` to have built the index first.",
         annotations(read_only_hint = true)
     )]
-    async fn search(&self, Parameters(SearchRequest { query, top_k, engine }): Parameters<SearchRequest>) -> String {
+    async fn search(&self, Parameters(SearchRequest { query, top_k, engine }): Parameters<SearchRequest>) -> CallToolResult {
         // 配置完整性检查：搜索前确认配置可加载（错误早暴露）；v22 起
         // 引擎/条数默认值硬编码，配置内容不再被本函数使用。config 另用于
         // 读取语义降级标记（v0.6 FR-501，见下方结果尾部提示）
         let config = match crate::load_config_rooted(self.config_path.as_deref(), &self.root) {
             Ok(c) => c,
-            Err(e) => return format!("配置加载失败: {e}"),
+            Err(e) => return tool_error(format!("配置加载失败: {e}")),
         };
         let engine_type = match engine.as_deref() {
             Some("text") => crate::config::schema::SearchEngineType::Text,
             Some("semantic") => crate::config::schema::SearchEngineType::Semantic,
             Some("hybrid") => crate::config::schema::SearchEngineType::Hybrid,
-            Some(other) => return format!("不支持的搜索引擎: {other}（可选: text/semantic/hybrid）"),
+            Some(other) => return tool_error(format!("不支持的搜索引擎: {other}（可选: text/semantic/hybrid）")),
             None => crate::config::schema::SEARCH_DEFAULT_ENGINE,
         };
         let top_k = clamp_top_k(top_k.unwrap_or(crate::config::schema::SEARCH_DEFAULT_TOP_K));
@@ -155,9 +179,11 @@ impl RepoWikiMcp {
                 if let Some(reason) = crate::semantic_degraded_reason(&config) {
                     out.push_str(&format!("提示: 语义索引已降级（原因: {}）\n", reason.trim()));
                 }
-                out
+                tool_success(out)
             }
-            Err(e) => format!("搜索失败: {e}"),
+            // 索引缺失/执行失败为工具执行错误（isError=true）；"未找到匹配
+            // 结果"是合法空结果，不在此分支，保持 isError=false
+            Err(e) => tool_error(format!("搜索失败: {e}")),
         }
     }
 
@@ -168,12 +194,15 @@ impl RepoWikiMcp {
         description = "Purpose: exact symbol definition lookup via a full AST scan of the source tree. Returns definitions with signature and file:line location.\nWhen to use: when you need the precise definition file, line, and signature of a function/struct/trait/class.\nWhen NOT to use: for fuzzy keyword queries, use wiki_search instead.\nWARNING: scans the entire source tree; cost scales with repository size.\nParameters & return example: {\"symbol\": \"load_config\", \"language\": \"rust\"} -> \"1. fn load_config() -> Result<Config> — src/config.rs:20-45\".",
         annotations(read_only_hint = true)
     )]
-    async fn ast_search(&self, Parameters(AstSearchRequest { symbol, language }): Parameters<AstSearchRequest>) -> String {
+    async fn ast_search(&self, Parameters(AstSearchRequest { symbol, language }): Parameters<AstSearchRequest>) -> CallToolResult {
         // C-009：全量扫描成本提示——execute_ast_search 扫描整个源码树，
         // 耗时随仓库规模增长；计时并在结果尾部附提示，提醒调用方谨慎使用
         let start = std::time::Instant::now();
         match crate::execute_ast_search(self.config_path.as_deref(), &self.root, &symbol, language.as_deref()) {
-            Ok(hits) if hits.is_empty() => format!("未找到符号 \"{symbol}\" 的定义"),
+            // "未找到符号"是合法空结果（查询执行成功、无命中），非工具错误
+            Ok(hits) if hits.is_empty() => {
+                tool_success(format!("未找到符号 \"{symbol}\" 的定义"))
+            }
             Ok(hits) => {
                 let mut out = format!("找到 {} 个定义:\n", hits.len());
                 for (i, hit) in hits.iter().enumerate() {
@@ -187,9 +216,9 @@ impl RepoWikiMcp {
                 }
                 // 扫描耗时提示（C-009）：全量扫描成本随仓库规模增长，显式告知调用方
                 out.push_str(&format!("（扫描耗时 {}ms）\n", start.elapsed().as_millis()));
-                out
+                tool_success(out)
             }
-            Err(e) => format!("符号查找失败: {e}"),
+            Err(e) => tool_error(format!("符号查找失败: {e}")),
         }
     }
 
@@ -200,10 +229,10 @@ impl RepoWikiMcp {
         description = "Purpose: read the markdown content of a generated wiki page (module page / architecture overview / project overview / API).\nWhen to use: to retrieve module or API documentation generated by `code-repo-wiki generate`.\nWhen NOT to use: to read a knowledge card, use wiki_read_card instead. The page must already exist (run `code-repo-wiki generate` first), otherwise the tool reports an error.\nParameters & return example: {\"page\": \"architecture\", \"lang\": \"zh\"} -> \"/abs/path/wiki/zh/architecture.md\\n\\n(page markdown content)\". Returns the file path plus the markdown content.",
         annotations(read_only_hint = true)
     )]
-    async fn read_wiki_page(&self, Parameters(ReadPageRequest { page, lang }): Parameters<ReadPageRequest>) -> String {
+    async fn read_wiki_page(&self, Parameters(ReadPageRequest { page, lang }): Parameters<ReadPageRequest>) -> CallToolResult {
         let config = match crate::load_config_rooted(self.config_path.as_deref(), &self.root) {
             Ok(c) => c,
-            Err(e) => return format!("配置加载失败: {e}"),
+            Err(e) => return tool_error(format!("配置加载失败: {e}")),
         };
         let lang = lang.unwrap_or_else(|| config.wiki.language.clone());
         // 语言目录净化（S1，工具暴露给任意 Agent）：lang 直接 join 进产物
@@ -212,23 +241,24 @@ impl RepoWikiMcp {
         // [A-Za-z0-9_-] 单段（zh、en、zh-CN 等），拒绝一切路径分隔符与
         // 绝对路径形态——校验失败明确报错，不读盘。
         if let Err(e) = validate_lang_segment(&lang) {
-            return e;
+            return tool_error(e);
         }
         // 参数净化（工具暴露给任意 Agent）：拒绝路径穿越与绝对路径，
         // 只允许单段文件名（页面名），防读取 output_dir 之外任意文件
         if page.contains('/') || page.contains('\\') || page.contains("..") || Path::new(&page).is_absolute() {
-            return format!("非法的页面名: {page}（只允许单段文件名）");
+            return tool_error(format!("非法的页面名: {page}（只允许单段文件名）"));
         }
         let path = config.output_dir()
             .join("wiki")
             .join(&lang)
             .join(format!("{page}.md"));
         match std::fs::read_to_string(&path) {
-            Ok(content) => format!("{}\n\n{content}", path.display()),
-            Err(e) => format!(
+            Ok(content) => tool_success(format!("{}\n\n{content}", path.display())),
+            // 页面不存在/不可读：工具执行错误（isError=true），引导运行 generate
+            Err(e) => tool_error(format!(
                 "页面不存在或不可读（可先运行 code-repo-wiki generate 生成）: {}: {e}",
                 path.display()
-            ),
+            )),
         }
     }
 
@@ -239,31 +269,32 @@ impl RepoWikiMcp {
         description = "Purpose: read the markdown content of a generated knowledge card (structured module summary for AI agents).\nWhen to use: to retrieve the details of a module card.\nWhen NOT to use: to read a wiki page (module/API docs), use wiki_read_page instead. The card must already exist (run `code-repo-wiki generate` first), otherwise the tool reports an error.\nParameters & return example: {\"card\": \"src_config\", \"lang\": \"zh\"} -> \"/abs/path/cards/zh/src_config.md\\n\\n(card markdown content)\". Returns the file path plus the markdown content.",
         annotations(read_only_hint = true)
     )]
-    async fn read_card(&self, Parameters(ReadCardRequest { card, lang }): Parameters<ReadCardRequest>) -> String {
+    async fn read_card(&self, Parameters(ReadCardRequest { card, lang }): Parameters<ReadCardRequest>) -> CallToolResult {
         let config = match crate::load_config_rooted(self.config_path.as_deref(), &self.root) {
             Ok(c) => c,
-            Err(e) => return format!("配置加载失败: {e}"),
+            Err(e) => return tool_error(format!("配置加载失败: {e}")),
         };
         let lang = lang.unwrap_or_else(|| config.wiki.language.clone());
         // 语言目录净化（S1）：同 read_wiki_page，lang 直接 join 进路径，
         // 未净化可穿越读取 output_dir 之外任意 .md（实测复现）。
         if let Err(e) = validate_lang_segment(&lang) {
-            return e;
+            return tool_error(e);
         }
         // 同 read_wiki_page：净化路径穿越
         if card.contains('/') || card.contains('\\') || card.contains("..") || Path::new(&card).is_absolute() {
-            return format!("非法的卡片名: {card}（只允许单段文件名）");
+            return tool_error(format!("非法的卡片名: {card}（只允许单段文件名）"));
         }
         let path = config.output_dir()
             .join("cards")
             .join(&lang)
             .join(format!("{card}.md"));
         match std::fs::read_to_string(&path) {
-            Ok(content) => format!("{}\n\n{content}", path.display()),
-            Err(e) => format!(
+            Ok(content) => tool_success(format!("{}\n\n{content}", path.display())),
+            // 卡片不存在/不可读：工具执行错误（isError=true），引导运行 generate
+            Err(e) => tool_error(format!(
                 "卡片不存在或不可读（可先运行 code-repo-wiki generate 生成）: {}: {e}",
                 path.display()
-            ),
+            )),
         }
     }
 
@@ -274,18 +305,20 @@ impl RepoWikiMcp {
         description = "Purpose: report generated artifact health — page/card counts, semantic index degradation, and lint issues (orphan pages / broken links / stale / references).\nWhen to use: to check whether `code-repo-wiki generate` has run and whether regeneration is needed.\nWhen NOT to use: to read actual page or card content, use wiki_read_page / wiki_read_card instead.\nParameters & return example: {} -> \"Wiki ready: 3 pages, 2 cards\\nsemantic index: normal\\nlint: ok (no issues)\". Returns counts plus degradation hints.",
         annotations(read_only_hint = true)
     )]
-    async fn status(&self) -> String {
+    async fn status(&self) -> CallToolResult {
         let config = match crate::load_config_rooted(self.config_path.as_deref(), &self.root) {
             Ok(c) => c,
-            Err(e) => return format!("配置加载失败: {e}"),
+            Err(e) => return tool_error(format!("配置加载失败: {e}")),
         };
         // v0.6（cli-vs-mcp-03 修复）：直接用注入的 self.root（--root 参数），
         // 不再 from_cwd() 重建——跨 cwd 调用时 from_cwd 解析到启动目录，
         // 与 --root 不一致会 lint 扫错目录、误报"未生成"
         let root = &self.root;
         let report = crate::commands::status_report(&config, root);
+        // "Wiki 未生成"是 status 工具的正常输出（报告当前未生成状态），
+        // 非工具执行错误——工具成功执行并如实报告，isError=false
         if !report.ready {
-            return "Wiki 未生成（运行 code-repo-wiki generate 生成后可用）".to_string();
+            return tool_success("Wiki 未生成（运行 code-repo-wiki generate 生成后可用）".to_string());
         }
         let mut out = format!("Wiki 就绪: {} 张页面, {} 张卡片\n", report.wiki_pages, report.cards);
         // v0.6 FR-501：status 报告显式提示语义降级（读降级标记；
@@ -302,7 +335,7 @@ impl RepoWikiMcp {
                 out.push_str(&format!("- [{}] {}: {}\n", issue.kind, issue.path, issue.message));
             }
         }
-        out
+        tool_success(out)
     }
 }
 

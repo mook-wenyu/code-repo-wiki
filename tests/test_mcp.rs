@@ -150,11 +150,18 @@ async fn test_mcp_initialize_lists_tools_and_calls() {
         }),
     )
     .await;
+    // 成功路径：isError=false（AI 客户端可程序化识别为成功）
+    assert_eq!(
+        resp["result"]["isError"],
+        serde_json::json!(false),
+        "工具成功应置 isError=false: {resp}"
+    );
     let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
     assert!(text.contains("hello_world"), "wiki_ast_search 应找到符号: {text}");
     assert!(text.contains("扫描耗时"), "wiki_ast_search 应附带扫描耗时成本提示: {text}");
 
-    // 5. tools/call status：配置可加载（未生成 wiki → 未就绪提示）
+    // 5. tools/call status：配置可加载（未生成 wiki → 未就绪提示；status
+    //    如实报告状态，属成功输出，isError=false）
     let resp = rpc_call(
         &mut stdin,
         &mut stdout,
@@ -163,10 +170,16 @@ async fn test_mcp_initialize_lists_tools_and_calls() {
         serde_json::json!({"name": "wiki_status", "arguments": {}}),
     )
     .await;
+    assert_eq!(
+        resp["result"]["isError"],
+        serde_json::json!(false),
+        "status 报告未生成属正常输出，isError 应为 false: {resp}"
+    );
     let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
     assert!(text.contains("Wiki"), "status 应返回 wiki 状态: {text}");
 
-    // 6. tools/call wiki_read_page：未生成的页面给出引导提示
+    // 6. tools/call wiki_read_page：未生成的页面给出引导提示——工具执行
+    //    错误（isError=true），AI 客户端可程序化区分
     let resp = rpc_call(
         &mut stdin,
         &mut stdout,
@@ -175,6 +188,11 @@ async fn test_mcp_initialize_lists_tools_and_calls() {
         serde_json::json!({"name": "wiki_read_page", "arguments": {"page": "architecture"}}),
     )
     .await;
+    assert_eq!(
+        resp["result"]["isError"],
+        serde_json::json!(true),
+        "读取不存在的页面应置 isError=true: {resp}"
+    );
     let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
     assert!(text.contains("code-repo-wiki generate"), "未生成时应有引导提示: {text}");
 
@@ -189,6 +207,12 @@ async fn test_mcp_initialize_lists_tools_and_calls() {
         serde_json::json!({"name": "wiki_search", "arguments": {"query": "hello", "engine": "text"}}),
     )
     .await;
+    // 索引缺失是工具执行错误：isError=true，客户端可程序化区分
+    assert_eq!(
+        resp["result"]["isError"],
+        serde_json::json!(true),
+        "索引缺失应置 isError=true: {resp}"
+    );
     let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
     assert!(
         text.contains("搜索索引不存在"),
@@ -242,7 +266,8 @@ async fn test_mcp_lang_traversal_rejected() {
     assert!(resp["result"]["protocolVersion"].is_string());
     notify(&mut stdin, "notifications/initialized", serde_json::json!({})).await;
 
-    // 1. wiki_read_page lang 穿越（相对穿越 ../..）：拒绝且不泄漏内容
+    // 1. wiki_read_page lang 穿越（相对穿越 ../..）：拒绝且不泄漏内容——
+    //    参数校验失败属工具执行错误，isError=true
     let resp = rpc_call(
         &mut stdin,
         &mut stdout,
@@ -251,11 +276,16 @@ async fn test_mcp_lang_traversal_rejected() {
         serde_json::json!({"name": "wiki_read_page", "arguments": {"page": "secret", "lang": "../.."}}),
     )
     .await;
+    assert_eq!(
+        resp["result"]["isError"],
+        serde_json::json!(true),
+        "lang 穿越应置 isError=true: {resp}"
+    );
     let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
     assert!(!text.contains("SECRET-CONTENT"), "穿越必须被拒绝, 泄漏: {text}");
     assert!(text.contains("非法语言名"), "应返回明确的校验错误: {text}");
 
-    // 2. wiki_read_card lang 穿越：同样拒绝
+    // 2. wiki_read_card lang 穿越：同样拒绝（isError=true）
     let resp = rpc_call(
         &mut stdin,
         &mut stdout,
@@ -264,11 +294,16 @@ async fn test_mcp_lang_traversal_rejected() {
         serde_json::json!({"name": "wiki_read_card", "arguments": {"card": "secret", "lang": "../../x"}}),
     )
     .await;
+    assert_eq!(
+        resp["result"]["isError"],
+        serde_json::json!(true),
+        "wiki_read_card 穿越应置 isError=true: {resp}"
+    );
     let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
     assert!(!text.contains("SECRET-CONTENT"), "wiki_read_card 穿越必须被拒绝: {text}");
     assert!(text.contains("非法语言名"), "wiki_read_card 应返回明确的校验错误: {text}");
 
-    // 3. 合法 lang 不受影响：正常读取 wiki/zh/architecture.md
+    // 3. 合法 lang 不受影响：正常读取 wiki/zh/architecture.md（isError=false）
     let resp = rpc_call(
         &mut stdin,
         &mut stdout,
@@ -277,6 +312,11 @@ async fn test_mcp_lang_traversal_rejected() {
         serde_json::json!({"name": "wiki_read_page", "arguments": {"page": "architecture", "lang": "zh"}}),
     )
     .await;
+    assert_eq!(
+        resp["result"]["isError"],
+        serde_json::json!(false),
+        "合法 lang 应置 isError=false: {resp}"
+    );
     let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
     assert!(text.contains("ok-content"), "合法 lang 应正常读取: {text}");
 
@@ -373,6 +413,11 @@ async fn test_mcp_status_uses_root_and_shows_degradation() {
         serde_json::json!({"name": "wiki_status", "arguments": {}}),
     )
     .await;
+    assert_eq!(
+        resp["result"]["isError"],
+        serde_json::json!(false),
+        "status 就绪报告应置 isError=false: {resp}"
+    );
     let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
     assert!(text.contains("Wiki 就绪"), "status 应就绪（root 化），实际: {text}");
     // FR-501：status 报告显式提示降级原因
@@ -393,6 +438,11 @@ async fn test_mcp_status_uses_root_and_shows_degradation() {
         serde_json::json!({"name": "wiki_search", "arguments": {"query": "hello_world", "engine": "text"}}),
     )
     .await;
+    assert_eq!(
+        resp["result"]["isError"],
+        serde_json::json!(false),
+        "search 命中应置 isError=false: {resp}"
+    );
     let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
     assert!(text.contains("hello_world"), "search 应命中索引实体: {text}");
     assert!(text.contains("score="), "search 命中应含 score 字段: {text}");
@@ -406,7 +456,8 @@ async fn test_mcp_status_uses_root_and_shows_degradation() {
 
     // 3. search 空结果 + 降级标记：提示必须无条件出现（reviewer 14.2
     //    必须项闭合——降级场景 hybrid 静默降级为纯 text 可能返回空
-    //    结果，用户必须仍能看到降级原因，与 CLI 文本模式一致）
+    //    结果，用户必须仍能看到降级原因，与 CLI 文本模式一致）。
+    //    空结果是合法空结果集（非工具错误），isError=false
     let resp = rpc_call(
         &mut stdin,
         &mut stdout,
@@ -415,6 +466,11 @@ async fn test_mcp_status_uses_root_and_shows_degradation() {
         serde_json::json!({"name": "wiki_search", "arguments": {"query": "no_such_symbol_xyz", "engine": "text"}}),
     )
     .await;
+    assert_eq!(
+        resp["result"]["isError"],
+        serde_json::json!(false),
+        "搜索空结果应置 isError=false: {resp}"
+    );
     let text = resp["result"]["content"][0]["text"].as_str().expect("工具结果应有 text");
     assert!(text.starts_with("未找到匹配结果"), "空结果应报告未找到: {text}");
     let tail = text.lines().last().map(str::trim).unwrap_or("");
