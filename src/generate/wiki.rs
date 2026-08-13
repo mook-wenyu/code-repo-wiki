@@ -381,11 +381,13 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
         // 降级注释含错误消息，供人工与下次 LLM 生成时参考修复（repair 语义）。
         if !last_mermaid.is_empty() {
             tracing::warn!(
-                "Wiki 页面 Mermaid 重试耗尽（{} 个坏块），降级为 text 块: {}",
+                "Wiki 页面 Mermaid 重试耗尽（{} 个坏块），降级为 text 块并显式标注: {}",
                 last_mermaid.len(),
                 chunk.module_path.join("::")
             );
-            content = crate::output::mermaid_check::degrade_mermaid_blocks(&content, &last_mermaid);
+            content = annotate_mermaid_degraded(
+                &crate::output::mermaid_check::degrade_mermaid_blocks(&content, &last_mermaid),
+            );
         }
 
         let now = chrono::Utc::now().to_rfc3339();
@@ -730,6 +732,26 @@ pub(crate) fn collect_module_entity_names(
         .collect()
 }
 
+/// 坏块降级产物的可见标注（A7.7 audit-llm P1「坏块变 text」修复）
+///
+/// `output::mermaid_check::degrade_mermaid_blocks` 只在坏块上方插入 HTML 注释
+/// （`<!-- code-repo-wiki: mermaid parse failed: ... -->`）——渲染后的页面里
+/// 注释不可见，读者无法感知「原图已降级」，等价于静默吞错（违禁兜底）。
+/// 本函数在每个降级注释后插入一行 Markdown blockquote 横幅，让降级在产物中
+/// 显式可见；text 内容与错误注释原样保留（信息不丢失，供人工修复与下次
+/// LLM 生成参考）。
+pub(crate) fn annotate_mermaid_degraded(degraded: &str) -> String {
+    let mut out = String::with_capacity(degraded.len() + 128);
+    for line in degraded.lines() {
+        out.push_str(line);
+        out.push('\n');
+        if line.trim_start().starts_with("<!-- code-repo-wiki: mermaid parse failed") {
+            out.push_str("> ⚠️ **原 Mermaid 图生成失败，已降级为文本块**（语法错误见上方注释，内容保留在下文，供人工修复参考）\n");
+        }
+    }
+    out
+}
+
 /// 带 Mermaid 校验的 LLM 调用（自由函数版，U03/D1 提取）
 ///
 /// 与 WikiGenerator::complete_with_mermaid_guard 等价，但直接接受
@@ -794,10 +816,9 @@ pub async fn complete_with_mermaid_guard_free<P: LlmProvider>(
         );
     }
 
-    tracing::warn!("{label} Mermaid 重试耗尽（{} 个坏块），降级为 text 块", last_mermaid.len());
-    Ok(crate::output::mermaid_check::degrade_mermaid_blocks(
-        &content,
-        &last_mermaid,
+    tracing::warn!("{label} Mermaid 重试耗尽（{} 个坏块），降级为 text 块并显式标注", last_mermaid.len());
+    Ok(annotate_mermaid_degraded(
+        &crate::output::mermaid_check::degrade_mermaid_blocks(&content, &last_mermaid),
     ))
 }
 
@@ -936,11 +957,14 @@ fn build_references(chunk: &Chunk, language: &str) -> Vec<Reference> {
         .collect()
 }
 
-/// 确定性架构/概览骨架（U06/D12）：provider 失败时降级而非丢页
+/// 确定性架构/概览骨架（历史 U06/D12）
 ///
-/// 内容 = 模块列表（名 + 实体数 + 依赖清单），全部来自 knowledge graph
-/// （零 LLM 调用），与 index.md 的确定性骨架同一思路：页面存在性优先，
-/// LLM 摘要可在下次成功生成时补齐。kind/title 由调用方传入（架构概览与
+/// **A7.7 起生产路径不再调用**：LLM 失败已改 fail-fast 缺页（记入
+/// failed_modules + 显式告警，见 generate_global_documents），不再产出
+/// 骨架页作为主产出——产物级确定性降级违反「禁兜底」（audit-llm P0）。
+/// 本函数仅保留作测试/参考工具（确定性输出性质本身无害，但不得作为
+/// 生产降级出口）。内容 = 模块列表（名 + 实体数 + 依赖清单），全部来自
+/// knowledge graph（零 LLM 调用）。kind/title 由调用方传入（架构概览与
 /// 项目概览共用，避免两份骨架代码漂移）。
 pub fn fallback_architecture_doc(
     graph: &KnowledgeGraph,

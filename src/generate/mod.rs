@@ -692,13 +692,12 @@ async fn generate_global_documents(
                 // U06/D12：provider 瞬时失败不再丢页——降级为确定性骨架
                 //（模块/依赖清单，零 LLM），下次成功生成时补齐摘要
                 Err(e) => {
-                    tracing::warn!("架构概览生成失败，降级为确定性骨架: {e}");
-                    documents.push(crate::generate::wiki::fallback_architecture_doc(
-                        graph,
-                        config,
-                        crate::model::DocumentKind::ArchitectureOverview,
-                        "架构概览",
-                    ));
+                    // A7.7 audit-llm P0：LLM 失败不再降级为确定性骨架（产物级
+                    // 确定性降级违反「禁兜底」）。fail-fast 缺页——本页不产出，
+                    // 记入 failed_modules（随生成摘要/状态可见 + 增量补偿重试）
+                    // 并显式告警；架构概览缺失不中断整批（与模块页失败隔离一致）。
+                    tracing::warn!("架构概览生成失败，架构概览页缺失（fail-fast）: {e}");
+                    wiki_gen.record_failure("架构概览".into());
                 }
             }
             match wiki_gen
@@ -707,13 +706,10 @@ async fn generate_global_documents(
             {
                 Ok(overview) => documents.push(overview),
                 Err(e) => {
-                    tracing::warn!("项目概览生成失败，降级为确定性骨架: {e}");
-                    documents.push(crate::generate::wiki::fallback_architecture_doc(
-                        graph,
-                        config,
-                        crate::model::DocumentKind::ProjectOverview,
-                        "项目概览",
-                    ));
+                    // A7.7 audit-llm P0：同架构概览——fail-fast 缺页，不再产出
+                    // 确定性骨架；记入 failed_modules 供摘要/状态/增量补偿可见。
+                    tracing::warn!("项目概览生成失败，项目概览页缺失（fail-fast）: {e}");
+                    wiki_gen.record_failure("项目概览".into());
                 }
             }
         }
@@ -734,15 +730,12 @@ async fn generate_global_documents(
             .await
         {
             Ok(arch) => documents.push(arch),
-            // U06/D12：同 affected 路径——失败降级为确定性骨架而非丢页
             Err(e) => {
-                tracing::warn!("架构概览生成失败，降级为确定性骨架: {e}");
-                documents.push(crate::generate::wiki::fallback_architecture_doc(
-                    graph,
-                    config,
-                    crate::model::DocumentKind::ArchitectureOverview,
-                    "架构概览",
-                ));
+                // A7.7 audit-llm P0：同 affected 路径——快照回退重生成失败同样
+                // fail-fast 缺页（记入 failed_modules + 显式告警），不再降级为
+                // 确定性骨架（产物级确定性降级违反「禁兜底」）。
+                tracing::warn!("架构概览生成失败，架构概览页缺失（fail-fast）: {e}");
+                wiki_gen.record_failure("架构概览".into());
             }
         }
         match wiki_gen
@@ -751,13 +744,8 @@ async fn generate_global_documents(
         {
             Ok(overview) => documents.push(overview),
             Err(e) => {
-                tracing::warn!("项目概览生成失败，降级为确定性骨架: {e}");
-                documents.push(crate::generate::wiki::fallback_architecture_doc(
-                    graph,
-                    config,
-                    crate::model::DocumentKind::ProjectOverview,
-                    "项目概览",
-                ));
+                tracing::warn!("项目概览生成失败，项目概览页缺失（fail-fast）: {e}");
+                wiki_gen.record_failure("项目概览".into());
             }
         }
     }
