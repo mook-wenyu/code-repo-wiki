@@ -1,21 +1,10 @@
-
-
-[output]
-dir = "wiki"
-
+# sample-repo 项目级配置（A7.6 audit-cfg-08 清理：v30 已删除 [output]/
+# [incremental]/[search] 死段，serde 静默忽略未知键——保留会让配置面与
+# schema 脱节；max_concurrent typo 改回 max_concurrency，否则「限并发」
+# 从未生效）
 [llm]
 provider = "mock"
 model = "gpt-4o"
 api_key = "mock"
 api_key_env = "OPENAI_API_KEY"
-max_concurrent = 1
-
-[incremental]
-enabled = false
-strategy = "git-diff"
-
-[search]
-enabled = true
-index_dir = ".search"
-default_engine = "text"
-default_top_k = 10
+max_concurrency = 1

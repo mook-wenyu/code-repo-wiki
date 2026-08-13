@@ -1,10 +1,10 @@
 //! key：LLM API key 交互式配置命令
 //!
 //! 安全边界（用户拍板）：明文 api_key 只写入**用户级**配置
-//! `config.toml`（`%APPDATA%/code-repo-wiki/` 或 `$HOME/code-repo-wiki/`，
-//! 见 [`crate::config::global_config_dir`]），**绝不写项目级** `config.toml`
-//! ——项目级随 Git 共享，明文凭据写入即泄露。`--env` 模式不落明文，
-//! 改写入建议的环境变量名引用（`api_key_env` 是既有机制，见
+//! `config.toml`（`%USERPROFILE%/.code-repo-wiki/` 或 `$HOME/.code-repo-wiki/`，
+//! v41 home 点目录惯例，见 [`crate::config::global_config_dir`]），**绝不写
+//! 项目级** `config.toml`——项目级随 Git 共享，明文凭据写入即泄露。`--env`
+//! 模式不落明文，改写入建议的环境变量名引用（`api_key_env` 是既有机制，见
 //! [`crate::config::schema::LlmSection`]，api_key 字段优先于 env 读取）。
 
 use std::io::{self, IsTerminal, Write};
@@ -115,13 +115,14 @@ fn run_with_io(
     Ok(())
 }
 
-/// --env 模式的建议环境变量名（用户拍板：openai→DEEPSEEK_API_KEY、
-/// anthropic→ANTHROPIC_API_KEY；openai-compatible 归入 openai 阵营——
-/// 默认阵营统一 DeepSeek 模板，见 schema::LlmSection Default）
+/// --env 模式的建议环境变量名（audit-cfg-07：对齐默认阵营——openai /
+/// openai-compatible 默认阵营=opencode 网关，默认 env 名
+/// `OPENCODEGO2_API_KEY`（schema::default_llm_api_key_env）；此前误建议
+/// `DEEPSEEK_API_KEY`，写入了也不生效；anthropic→ANTHROPIC_API_KEY）
 fn suggested_env_name(provider: &LlmProviderType) -> &'static str {
     match provider {
         LlmProviderType::Anthropic => "ANTHROPIC_API_KEY",
-        _ => "DEEPSEEK_API_KEY",
+        _ => "OPENCODEGO2_API_KEY",
     }
 }
 
@@ -141,6 +142,13 @@ fn write_field(target: &Path, field: &str, value: &str) -> Result<()> {
         .with_context(|| format!("读取配置失败: {}", target.display()))?;
     let updated = set_llm_field(&text, field, value)?;
     crate::fs::write_file_atomic(target, &updated)?;
+    // audit-cfg-02：用户级配置可能含明文 api_key，落盘后收紧 Unix 权限
+    // （文件 0600 + 目录 0700）——write_file_atomic 的 rename 会替换 inode，
+    // 新文件按 umask 默认（0644）落盘，必须重新收紧；Windows 走 ACL 跳过
+    crate::fs::restrict_private_permissions(target)?;
+    if let Some(parent) = target.parent() {
+        crate::fs::restrict_private_permissions(parent)?;
+    }
     // 写后重新解析验证：字段必须真实生效（TOML 转义错误等在此暴露；
     // 用户级文件原样加载，无注入无净化——v30 已整体删除）
     let cfg = load_config(target)
@@ -252,6 +260,13 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    /// Unix 权限位读取（audit-cfg-02 断言用；Windows 无 POSIX 权限位，跳过）
+    #[cfg(unix)]
+    fn mode_of(path: &std::path::Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
     /// 构造临时用户级目录 + 模板变体：api_key_env 指向一个不可能存在的
     /// 环境变量名（规避测试机真实设置 DEEPSEEK_API_KEY/OPENCODEGO2_API_KEY
     /// 等触发③"已配置"早退分支；v29 起模板阵营为 opencode 网关，
@@ -312,7 +327,28 @@ mod tests {
         // 写后重新解析验证生效
         let cfg = load_config(&target).unwrap();
         assert_eq!(cfg.llm.api_key.as_deref(), Some("sk-test-123"));
+        // audit-cfg-02：明文 key 写入后 Unix 权限收紧（文件 0600 + 目录 0700）
+        #[cfg(unix)]
+        {
+            assert_eq!(mode_of(&target), 0o600, "用户级配置应 0600: {text}");
+            assert_eq!(mode_of(&global_dir), 0o700, "用户级目录应 0700");
+        }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// audit-cfg-07：--env 建议名对齐默认阵营——openai 阵营（默认）建议
+    /// OPENCODEGO2_API_KEY（此前误建议 DEEPSEEK_API_KEY，写入不生效）
+    #[test]
+    fn test_suggested_env_name_aligns_default_camp() {
+        assert_eq!(
+            suggested_env_name(&LlmProviderType::OpenAiCompatible),
+            "OPENCODEGO2_API_KEY"
+        );
+        assert_eq!(suggested_env_name(&LlmProviderType::OpenAI), "OPENCODEGO2_API_KEY");
+        assert_eq!(
+            suggested_env_name(&LlmProviderType::Anthropic),
+            "ANTHROPIC_API_KEY"
+        );
     }
 
     /// --env 模式：不落明文，写按 provider 建议的环境变量名引用

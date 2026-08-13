@@ -42,16 +42,25 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
         }
     }
 
-    /** --config 值：root 是项目根目录（拼 root/.code-repo-wiki/config.toml），缺省用 cwd 相对路径 */
-    function configPath(root?: string): string {
-        return root ? `${root}/.code-repo-wiki/config.toml` : ".code-repo-wiki/config.toml";
+    /**
+     * --config 参数（audit-cfg-01）：root 提供时指向项目根 `config.toml`
+     * （v25 起项目级配置文件名，见 config::PROJECT_CONFIG_FILE）；缺省
+     * 不传 `--config`——CLI 以 cwd 走默认配置链（插件运行时 cwd=directory，
+     * 与 --root 同基准）。
+     *
+     * 历史死设计 `.code-repo-wiki/config.toml`（v25 前产物目录内配置文件）
+     * 已废弃：15 个工具此前全传该路径，全部读不到配置而失效。
+     */
+    function configArg(root?: string): string[] {
+        return root ? ["--config", `${root}/config.toml`] : [];
     }
 
     /**
      * --root 参数（A7）：所有支持 root 的工具必须显式传入。
-     * config 里 output.dir/scope 等路径相对 cwd 解析，插件运行时 cwd 可能
-     * 不是项目根——只传 --config 不传 --root 会让 status/lint/sync/note 等
-     * 以 cwd 解析产物目录而错位（找不到 .code-repo-wiki/.state 等）。
+     * 产物目录（output_dir 硬编码 .code-repo-wiki）相对 cwd 解析，插件
+     * 运行时 cwd 可能不是项目根——缺省不传 --config 时 CLI 以 cwd 定位
+     * 项目配置与产物；提供 root 时同时传 --root，让 status/lint/sync/note
+     * 等以 root 解析产物目录（找不到 .code-repo-wiki/.state 等）。
      */
     function rootArg(root?: string): string[] {
         return root ? ["--root", root] : [];
@@ -103,7 +112,7 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
             "search", "-q", query,
             "-k", String(topK),
             "--json",
-            "--config", configPath(root),
+            ...configArg(root),
             ...rootArg(root),
         ];
         if (engine) cliArgs.push("--engine", engine);
@@ -148,7 +157,7 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
                 const cliArgs = [
                     "card", action, args.module,
                     "--instruction", args.instruction,
-                    "--config", configPath(args.root),
+                    ...configArg(args.root),
                     ...rootArg(args.root),
                 ];
                 if (args.reference?.length) {
@@ -171,7 +180,7 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
                     .describe("项目根目录（默认当前工作目录；提供时从 root/.code-repo-wiki/ 读写产物）"),
             },
             execute: async (args) => {
-                const result = await runCli([name, "--config", configPath(args.root), ...rootArg(args.root), ...extraArgs]);
+                const result = await runCli([name, ...configArg(args.root), ...rootArg(args.root), ...extraArgs]);
                 return result.code === 0
                     ? (result.stdout || `code-repo-wiki ${name} 完成`)
                     : `code-repo-wiki ${name} 失败: ${result.stderr}`;
@@ -192,7 +201,7 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
                 },
                 execute: async (args) => {
                     if (!args.symbol) return "请提供要查找的符号名";
-                    const cliArgs = ["ast-search", args.symbol, "--config", configPath(args.root), ...rootArg(args.root)];
+                    const cliArgs = ["ast-search", args.symbol, ...configArg(args.root), ...rootArg(args.root)];
                     if (args.language) cliArgs.push("--language", args.language);
                     const result = await runCli(cliArgs);
                     return result.code === 0
@@ -250,7 +259,7 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
                         .describe("项目根目录（默认当前工作目录；提供时从 root/.code-repo-wiki/ 读写产物）"),
                 },
                 execute: async (args) => {
-                    const cliArgs = ["generate", "--config", configPath(args.root), ...rootArg(args.root)];
+                    const cliArgs = ["generate", ...configArg(args.root), ...rootArg(args.root)];
                     if (args.output) cliArgs.push("-o", args.output);
                     if (args.force) cliArgs.push("--force");
                     const result = await runCli(cliArgs);
@@ -286,7 +295,7 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
                 execute: async (args) => {
                     const result = await runCli([
                         "card", "generate", args.module,
-                        "--config", configPath(args.root),
+                        ...configArg(args.root),
                         ...rootArg(args.root),
                     ]);
                     return result.code === 0
@@ -317,7 +326,7 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
                     if (!args.text || !args.text.trim()) return "请提供记录内容";
                     const result = await runCli([
                         "note", args.text.trim(),
-                        "--config", configPath(args.root),
+                        ...configArg(args.root),
                         ...rootArg(args.root),
                     ]);
                     return result.code === 0
@@ -334,7 +343,7 @@ export const RepoWikiPlugin: Plugin = async ({ directory }: PluginInput) => {
                 },
                 execute: async (args) => {
                     const result = await runCli([
-                        "lint", "--config", configPath(args.root),
+                        "lint", ...configArg(args.root),
                         ...rootArg(args.root),
                     ]);
                     return result.code === 0

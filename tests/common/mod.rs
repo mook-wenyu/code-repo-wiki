@@ -84,7 +84,7 @@ provider = "mock"
 model = "mock-model"
 api_key = "mock"
 api_key_env = ""
-max_concurrent = 1
+max_concurrency = 1
 
 [embed]
 provider = "mock"
@@ -108,7 +108,7 @@ model = "gpt-4o"
 base_url = "http://127.0.0.1:{port}/v1"
 api_key = "mock"
 api_key_env = "OPENAI_API_KEY"
-max_concurrent = 1
+max_concurrency = 1
 
 [embed]
 provider = "mock"

@@ -661,4 +661,29 @@ export const RepoWikiPlugin = () => {
         let err = inject_exe_path(template, r#""/usr/local/bin/code-repo-wiki""#).unwrap_err();
         assert!(err.to_string().contains("占位符缺失"), "错误应说明占位符缺失: {err}");
     }
+
+    /// audit-cfg-01：插件模板 --config 路径字面量断言——root 提供时指向
+    /// `{root}/config.toml`（v25 起项目级配置文件名），死设计
+    /// `.code-repo-wiki/config.toml`（v25 前产物目录内配置）不得残留
+    /// （15 个工具此前全传该路径致全部失效）。
+    #[test]
+    fn test_plugin_template_config_path_literal() {
+        let raw = include_str!("plugin-template.ts");
+        // 新契约：--config 只可能指向项目根 config.toml（configArg 拼字面量）
+        assert!(
+            raw.contains("`${root}/config.toml`"),
+            "模板 --config 应指向 {{root}}/config.toml，实际模板:\n{}",
+            raw.chars().take(1200).collect::<String>()
+        );
+        // 旧 configPath 函数（死路径生成器）必须整体移除
+        assert!(
+            !raw.contains("configPath"),
+            "模板不得残留旧 configPath 函数（生成 .code-repo-wiki/config.toml 死路径）"
+        );
+        // 旧拼接形态 `"--config", configPath(...)` 不得残留
+        assert!(
+            !raw.contains("--config\", configPath("),
+            "模板不得残留旧 --config 拼接形态"
+        );
+    }
 }

@@ -47,6 +47,24 @@ pub fn write_file_atomic(path: &Path, content: &str) -> Result<()> {
     Ok(())
 }
 
+/// 收紧敏感文件/目录权限（audit-cfg-02；密钥类资产用）
+///
+/// Unix 下：文件 0600（仅所有者读写）、目录 0700（仅所有者全部权限）——
+/// 用户级 config.toml 可能含明文 api_key，默认 umask 落盘（0644/0755）
+/// 会让同机其他用户可读；Windows 无 POSIX 权限位，走 ACL 机制另行管理，
+/// 此处按 cfg(unix) 条件编译跳过。
+#[cfg_attr(not(unix), allow(unused_variables))]
+pub fn restrict_private_permissions(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = if path.is_dir() { 0o700 } else { 0o600 };
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+            .with_context(|| format!("设置权限失败: {}", path.display()))?;
+    }
+    Ok(())
+}
+
 // ==================== 单实例运行锁（Phase 15.1，fd-lock 内核锁）====================
 //
 // 并发 generate/update/watch 会把状态/索引/产物互相覆盖（最后写入者

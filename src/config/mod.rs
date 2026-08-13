@@ -41,11 +41,17 @@ pub fn load_config(path: &Path) -> Result<schema::WikiConfig> {
 
 /// 创建默认配置文件（写入 install 模板 config.toml，非 schema 默认值序列化）。
 /// 模板含注释与生产默认值（如 DeepSeek base_url），serde 序列化会丢失这些信息。
+///
+/// audit-cfg-02：用户级配置目录可能承载明文 api_key，创建即收紧 Unix
+/// 权限（文件 0600 + 目录 0700），避免「创建后、key 写入前」窗口期被
+/// 同机其他用户读取。
 pub fn create_default_config(path: &Path) -> Result<schema::WikiConfig> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
+        crate::fs::restrict_private_permissions(parent)?;
     }
     std::fs::write(path, include_str!("../../config.toml"))?;
+    crate::fs::restrict_private_permissions(path)?;
     load_config(path)
 }
 
@@ -215,6 +221,8 @@ pub fn load_default_config_with(
             .with_context(|| format!("读取项目级配置失败: {}", project_config.display()))?;
         let overlay: toml::Value = toml::from_str(&project_text)
             .with_context(|| format!("解析项目级配置失败: {}", project_config.display()))?;
+        // audit-cfg-06：项目级文件自身含明文 api_key → 显式警告（见 helper 注释）
+        warn_project_plaintext_key(&overlay);
         let merged = merge_config(&base, &overlay);
         let text = toml::to_string(&merged).context("合并配置序列化失败")?;
         let config: schema::WikiConfig = toml::from_str(&text)
@@ -295,10 +303,90 @@ pub fn resolve_config_path(config: Option<&Path>, root: &ProjectRoot) -> Result<
     }
 }
 
-/// 校验配置合法性（v30+：扫描范围等算法项已硬编码，无可校验键——
-/// 保留入口便于未来新增约束；当前恒通过）
-fn validate_config(_config: &schema::WikiConfig) -> Result<()> {
+/// 校验配置合法性（audit-cfg-03/04/05：算法项已硬编码，以下为必填契约与
+/// 值域校验——违反即报错，阻止带病配置进入运行期；与 provider 构造器的
+/// max_concurrency>0 运行时守卫（llm.rs/embed.rs）同源，解析期先行拦截）
+fn validate_config(config: &schema::WikiConfig) -> Result<()> {
+    // wiki.language：单段语言代码，字符白名单 [A-Za-z0-9_-]（与 MCP 侧
+    // validate_lang_segment 同口径，src/mcp.rs:338）。语言值会被拼进产物
+    // 路径（output/wiki/{language}/），非法字符（/ \ .. 空格 盘符等）会
+    // 造成路径穿越或脏路径——audit-cfg-04。
+    if config.wiki.language.is_empty()
+        || !config
+            .wiki
+            .language
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        anyhow::bail!(
+            "配置错误: wiki.language = {:?} 不合法（仅允许 [A-Za-z0-9_-] 单段，如 \"zh\"、\"en_US\"）",
+            config.wiki.language
+        );
+    }
+    // llm.reasoning_effort：值域白名单（v50 DeepSeek 官方映射 low/high/max，
+    // 见 schema.rs LlmSection 注释）——非法值原样透传 API 会在供应商侧报错，
+    // 解析期拦截给出明确提示——audit-cfg-05。
+    if let Some(level) = &config.llm.reasoning_effort
+        && !matches!(level.as_str(), "low" | "high" | "max")
+    {
+        anyhow::bail!(
+            "配置错误: llm.reasoning_effort = {:?} 不合法（仅支持 \"low\" / \"high\" / \"max\"）",
+            level
+        );
+    }
+    // max_concurrency：必须为正整数——0 会让 Semaphore::new(0) 无许可，
+    // 运行期表现为永久挂起（llm.rs/embed.rs 构造器同款守卫，解析期先行）。
+    if config.llm.max_concurrency == Some(0) {
+        anyhow::bail!("配置错误: llm.max_concurrency 必须大于 0");
+    }
+    if config.embed.max_concurrency == Some(0) {
+        anyhow::bail!("配置错误: embed.max_concurrency 必须大于 0");
+    }
+    // model/base_url：非空——空模型名/空端点会请求到空串，供应商侧报错
+    // 且错误难以定位；schema 默认值均非空，此处只拦截显式写空的配置。
+    if config.llm.model.trim().is_empty() {
+        anyhow::bail!("配置错误: llm.model 不能为空");
+    }
+    if let Some(url) = &config.llm.base_url
+        && url.trim().is_empty()
+    {
+        anyhow::bail!("配置错误: llm.base_url 不能为空");
+    }
+    if config.embed.model.trim().is_empty() {
+        anyhow::bail!("配置错误: embed.model 不能为空");
+    }
+    if let Some(url) = &config.embed.base_url
+        && url.trim().is_empty()
+    {
+        anyhow::bail!("配置错误: embed.base_url 不能为空");
+    }
     Ok(())
+}
+
+/// 项目级配置明文 api_key 显式警告（audit-cfg-06）
+///
+/// 项目级 config.toml 随 Git 提交共享，明文 api_key 一旦提交即泄露（v30
+/// 起项目级配置原样解析、不净化，明文键完整生效）。默认配置链的项目分支
+/// 加载时检查原始 overlay——只对「项目级文件自身含明文键」告警，用户级
+/// 配置（明文键的合法存放位置）不受影响。引导改用 api_key_env 环境变量
+/// 引用（`code-repo-wiki key --env` 可自动写入建议名）。
+///
+/// 为什么不在 load_config 内告警：load_config 同时服务用户级加载（mod.rs
+/// 225/231、key.rs 写后验证），无法区分文件级别，用户级明文键是设计内的
+/// 合法存放，不该每次加载都告警。
+fn warn_project_plaintext_key(overlay: &toml::Value) {
+    let has_plain = |section: &str| {
+        overlay
+            .get(section)
+            .and_then(|t| t.get("api_key"))
+            .and_then(|k| k.as_str())
+            .is_some_and(|s| !s.is_empty())
+    };
+    if has_plain("llm") || has_plain("embed") {
+        eprintln!(
+            "警告: 项目级 config.toml 包含明文 api_key（随 Git 共享有泄露风险；建议改用 api_key_env 环境变量引用，可运行 `code-repo-wiki key --env` 自动写入）"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -655,5 +743,105 @@ api_key_env = "ANTHROPIC_API_KEY"
         // 显式指定不创建全局目录/文件
         assert!(!dir.join("global").exists());
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ============ A7.6 audit-cfg-03/04/05：validate_config 解析期校验 ============
+
+    /// 写入配置文件并 load_config，断言返回 Err 且错误消息含关键词
+    /// （仅测试调用；cfg(test) 隔离避免非测试构建 dead_code 告警）
+    #[cfg(test)]
+    fn assert_config_rejected(tag: &str, text: &str, needle: &str) {
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_cfg_valid_{}_{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, text).unwrap();
+        let err = load_config(&path).unwrap_err().to_string();
+        assert!(
+            err.contains(needle),
+            "应拒绝非法配置（{needle}），实际: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// audit-cfg-04：wiki.language 含路径分隔符/点段 → 解析期拒绝
+    #[test]
+    fn test_validate_rejects_language_with_path_chars() {
+        for bad in ["zh/../en", "zh en", "..", "C:zh"] {
+            assert_config_rejected("lang", &format!("[wiki]\nlanguage = \"{bad}\"\n"), "wiki.language");
+        }
+        // 反斜杠在 TOML 基本字符串需转义（\e 非法、解析层就拒），用字面量
+        // 字符串形态注入，验证 charset 校验本身拒绝反斜杠（Windows 路径分隔符）
+        assert_config_rejected("lang_bs", "[wiki]\nlanguage = 'zh\\en'\n", "wiki.language");
+    }
+
+    /// audit-cfg-05：llm.reasoning_effort 非白名单值 → 解析期拒绝
+    #[test]
+    fn test_validate_rejects_invalid_reasoning_effort() {
+        assert_config_rejected(
+            "effort",
+            "[llm]\nreasoning_effort = \"banana\"\n",
+            "reasoning_effort",
+        );
+    }
+
+    /// audit-cfg-03：max_concurrency=0 → 解析期拒绝（Semaphore 永久挂起前拦截）
+    #[test]
+    fn test_validate_rejects_zero_max_concurrency() {
+        assert_config_rejected("llm_mc", "[llm]\nmax_concurrency = 0\n", "max_concurrency");
+        assert_config_rejected("embed_mc", "[embed]\nmax_concurrency = 0\n", "max_concurrency");
+    }
+
+    /// audit-cfg-03：model / base_url 显式写空 → 解析期拒绝
+    #[test]
+    fn test_validate_rejects_empty_model_and_base_url() {
+        assert_config_rejected("empty_model", "[llm]\nmodel = \"\"\n", "llm.model");
+        assert_config_rejected("empty_base", "[llm]\nbase_url = \"\"\n", "llm.base_url");
+        assert_config_rejected("empty_embed", "[embed]\nmodel = \"\"\n", "embed.model");
+    }
+
+    /// audit-cfg-03：合法配置（含默认语言 zh）不被误拒
+    #[test]
+    fn test_validate_accepts_valid_configs() {
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_cfg_ok_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        // 最小合法配置：缺 [wiki] → 默认 zh；缺 model/base_url → schema 默认填充
+        std::fs::write(&path, "[llm]\nprovider = \"mock\"\n").unwrap();
+        assert!(load_config(&path).is_ok(), "最小合法配置应通过校验");
+        // 合法 reasoning_effort 值域内 + 正并发
+        std::fs::write(
+            &path,
+            "[llm]\nprovider = \"mock\"\nreasoning_effort = \"high\"\nmax_concurrency = 8\n",
+        )
+        .unwrap();
+        assert!(load_config(&path).is_ok(), "合法值域配置应通过校验");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// audit-cfg-02：create_default_config 创建的用户级 config 在 Unix 下
+    /// 权限收紧（文件 0600 + 目录 0700），key 写入前窗口期即受保护
+    #[test]
+    fn test_create_default_config_sets_private_permissions() {
+        let dir = std::env::temp_dir().join(format!("code_repo_wiki_cfg_perm_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let config_path = dir.join("config.toml");
+        create_default_config(&config_path).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&config_path).unwrap().permissions().mode() & 0o777,
+                0o600,
+                "用户级配置应 0600"
+            );
+            assert_eq!(
+                std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+                0o700,
+                "用户级目录应 0700"
+            );
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }

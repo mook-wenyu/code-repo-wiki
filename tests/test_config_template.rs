@@ -8,6 +8,8 @@ use std::path::PathBuf;
 
 use code_repo_wiki::config::{load_config, schema};
 
+mod common;
+
 const TEMPLATE: &str = include_str!("../config.toml");
 
 /// 解析模板并断言不存在已废弃的配置段
@@ -42,6 +44,26 @@ fn test_template_loads_cleanly() {
     assert_eq!(config.llm.api_key_env, "OPENCODEGO2_API_KEY");
         // embed 段随模板配置（当前模板启用百炼 embedding，仅断言字段可解析）
     assert!(!config.embed.model.is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A7.6 audit-cfg-08：mock_config 的 max_concurrency 必须真正生效——
+/// 此前 `max_concurrent` typo 被 serde 静默忽略，「限并发」语义从未生效
+#[test]
+fn test_mock_config_max_concurrency_effective() {
+    let dir = std::env::temp_dir().join(format!("code-repo-wiki-mc-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path: PathBuf = dir.join("config.toml");
+    std::fs::write(&path, common::mock_config()).unwrap();
+
+    let config: schema::WikiConfig = load_config(&path).expect("mock_config 必须可被 load_config 加载");
+    assert_eq!(
+        config.llm.max_concurrency,
+        Some(1),
+        "mock_config 的 max_concurrency 应生效（typo 已修正），实际: {:?}",
+        config.llm.max_concurrency
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
