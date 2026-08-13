@@ -1,0 +1,12 @@
+# 统一行尾策略（根治历史 CRLF→LF 噪音 diff 根因——8797e06 STATUS.md 991 行
+# CRLF→LF 改动即因此产生）：文本文件入库统一 LF（* text=auto）；
+# *.sh/*.rs/*.md 显式强制 LF（跨平台一致，Windows 检出也保持 LF）；
+# *.ps1 保留 CRLF（PowerShell 生态惯例，windows 原生脚本按 CRLF 检出）。
+# 已提交的 7 个 CRLF 文件（rust-toolchain.toml + tests/fixtures/sample-repo/src/
+# {auth,main,storage}.rs + .gitignore + scripts/cleanup-test-residue.ps1 +
+# src/project.rs）由 `git add --renormalize .` 一次性归一化为 LF 入库。
+* text=auto
+*.sh text eol=lf
+*.ps1 text eol=crlf
+*.rs text eol=lf
+*.md text eol=lf
