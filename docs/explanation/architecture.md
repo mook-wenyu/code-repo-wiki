@@ -25,7 +25,7 @@ Source Files → ingest (tree-sitter AST 解析) → analysis (知识图谱 + �
 
 - chunk 切分（实体摘要片段，带引用来源）→ 知识卡片（LLM）→ 模块页 / api.md / architecture.md / overview.md。
 - 实体引用清单只含签名与文件路径（不发全文件给 LLM）；签名级片段注入（v31）。
-- `wiki.guide` 生成引导：`pages` 白名单过滤 / `priority` 确定性排序 / `notes` 全局注意事项注入。
+- `wiki_plan.yaml` 生成干预（v0.9）：`repowiki.notes` 全局引导注入 / `repowiki.template` 模板选择 / `repowiki.documents` 自定义文档页（parent 挂载 _toc）/ `knowledgecard.notes` 卡片引导 / `knowledgecard.scope` 扫描范围覆盖（.gitignore 语法）。
 - 16 路并发 LLM 调用；失败模块记录 `failed_modules` + 调用级重试 3 次退避；404/400 自动回退协议一次。
 
 ### output（渲染与导出）

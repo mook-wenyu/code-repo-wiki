@@ -14,10 +14,13 @@ v30 起绝大多数选项已硬编码为合理默认（输出目录恒 `.code-re
 [wiki]
 language = "zh"          # 文档语言（默认 zh）
 
-[wiki.guide]             # 生成引导：只对 pages 列的模块生成独立页面，其余并入 overview（空 = 默认行为）
-pages = []               # 模块路径前缀白名单，如 ["src/core"]；未匹配的模块不生成独立页但保留 overview 汇总
-priority = []            # 模块生成顺序（确定性优先），如 ["src/core", "src/analysis"]
-notes = []               # 注入模块页 prompt 的全局注意事项，如 ["本项目的 xx 约定…"]
+# 生成引导/自定义文档/扫描范围不再放 config.toml——由项目根 wiki_plan.yaml 控制
+# （v0.9 起替代旧 [wiki.guide] 段；文件不存在 = 默认行为）：
+#   repowiki.template       # "" 默认 | "architecture" 架构概览模板
+#   repowiki.notes          # [{text, author}] Wiki 页生成引导
+#   repowiki.documents      # [{title, goal, parent, hints}] 自定义文档页
+#   knowledgecard.notes     # [{text, author}] 卡片生成引导
+#   knowledgecard.scope     # {include, exclude} 文件扫描范围（.gitignore 语法）
 
 [llm]
 provider = "openai-compatible"  # openai / openai-compatible / anthropic / mock

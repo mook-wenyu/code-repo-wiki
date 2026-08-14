@@ -7,12 +7,8 @@
 [wiki]
 language = "zh"
 
-# 可选生成引导段 [wiki.guide]（缺省整段省略=零配置现行为；键集合见 schema.rs）：
-#   pages    = ["src/net"]      # 模块页白名单前缀（空=全部模块；未匹配不生成独立页但保留 overview 汇总）
-#   priority = ["src/core"]     # 模块页确定性排序（优先条目在前，未匹配保持默认顺序）
-#   notes    = ["引导说明1"]     # 注入模块页生成 prompt 的引导注记（逐条列出）
-#   tier     = "comprehensive"  # 引导档位：comprehensive（默认，全量）/ concise（精简：
-#                               # notes 每条截断至 160 字符、最多注入 3 条——不丢模块/不丢页面）
+# 生成引导/自定义文档/扫描范围现由项目根 wiki_plan.yaml 控制（v0.9 起替代旧
+# [wiki.guide] 段；文件不存在 = 默认行为，见 docs/reference/config.md）。见 src/config/plan.rs。
 
 [llm]
 provider = "openai"

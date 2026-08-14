@@ -81,6 +81,32 @@ code-repo-wiki generate
 | AI Agent 友好 | 自动生成 `llms.txt`/`llms-full.txt`（Agent 索引）、AGENTS.md 引导块；`install` 注册 OpenCode 插件 / Claude / Codex MCP（用户级全局） |
 | 质量评测 | `bench` RepoDocBench 五维评测 + rubrics 准则评分；`lint` 九类健康检查（断链/过时/引用错位/LLM 编造） |
 
+## 生成干预（wiki_plan.yaml）
+
+仓库根放置 `wiki_plan.yaml`（随 Git 提交共享），可干预 LLM 生成方向。文件不存在 = 默认行为零破坏；存在但解析/校验失败 = 显式报错终止。
+
+```yaml
+version: 1                 # 格式版本（仅支持 1，缺省视为 1）
+repowiki:
+  template: ""             # 仅支持 ""（默认）与 "architecture"；其他值解析报错
+  notes:                   # 全局生成引导（替代旧 [wiki.guide].notes，新增 author）
+    - text: "命名规范：公开函数必须写文档注释"
+      author: "架构组"      # 可选，注入 prompt 时附注作者
+  documents:               # 自定义文档页（与自动模块页并存；title 不覆盖模块页）
+    - title: "接入指南"
+      goal: "介绍如何集成本库"
+      parent: "运维手册"     # 可选，决定 _toc 挂载层级；空 = 顶层全局文档
+      hints: "突出快速开始"  # 可选，额外生成提示
+knowledgecard:
+  notes:                   # 卡片生成引导（新增能力）
+    - text: "卡片注明编码规约"
+  scope:                   # 文件扫描范围（.gitignore 语法；顶层 scope 为显式别名）
+    include: ["src/**"]
+    exclude: ["src/vendor/**"]
+```
+
+修改后重新运行 `code-repo-wiki generate`（或 `update`）生效。
+
 ## 面向 AI 助手
 
 本项目把「可被 AI 高效使用」作为一等目标：

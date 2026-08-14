@@ -3,6 +3,25 @@
 本文件记录 code-repo-wiki 的重要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（SemVer）。
 
+## [0.9.0] - 2026-08-14
+
+### Added
+- **wiki_plan.yaml 前置干预重构（替代旧 [wiki.guide] 段）**：重新引入 YAML 依赖 `serde_yaml_ng 0.10`（`serde_yaml` 已弃用、`serde_yml` 已归档且 RUSTSEC-2025-0068；serde_yaml_ng 为持续维护 fork，API 完全一致）
+  - `repowiki.notes`：Wiki 页生成引导（替代旧 guide.notes，新增 author 字段）
+  - `repowiki.template`：`""` 默认 / `"architecture"` 架构概览模板；其他值解析报错
+  - `repowiki.documents`：自定义文档页（LLM 按 goal/hints 生成 title 页，parent 决定 _toc 挂载），与自动模块页并存
+  - `knowledgecard.notes`：卡片生成引导（新增能力）
+  - `knowledgecard.scope`（顶层 scope 为显式别名）：文件扫描范围覆盖（.gitignore 语法，解析期校验）
+  - 文件不存在 = 默认行为零破坏；存在但解析/校验失败 = 显式报错终止（不静默忽略、不兜底）
+
+### Removed
+- **`[wiki.guide]` 配置段整体删除**：`pages` / `priority` / `notes` / `tier`（GuideTier / WikiGuideSection / trim_guide_notes 及模块页过滤/排序逻辑全部移除）——其职责由 `wiki_plan.yaml` 承接（页面白名单与排序能力不再保留，属简化决策）
+
+### Changed
+- `wiki_page_prompt` / `knowledge_card_prompt` 的 notes 参数链改为接收 plan notes（PlanNote{text, author}）
+- `WikiDocument` 新增 `parent` 字段（serde default，旧快照兼容）；`_toc.md` 按 parent 分组挂载自定义文档
+- 扫描器新增可选 scope 过滤（include/exclude，相对项目根匹配）
+
 ## [0.8.0] - 2026-08-14
 
 ### Added
