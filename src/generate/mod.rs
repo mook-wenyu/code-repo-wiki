@@ -4,6 +4,7 @@ pub mod context;
 pub mod embed;
 pub mod index;
 pub mod llm;
+pub mod project_card;
 pub mod prompt;
 pub mod schema;
 pub mod wiki;

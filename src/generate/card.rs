@@ -670,7 +670,9 @@ fn backfill_entity_sources(card: &mut KnowledgeCard, chunk: &Chunk) {
 }
 
 /// 从 LLM 响应中提取 JSON 字符串（去除 Markdown 代码块标记）
-fn extract_json(text: &str) -> &str {
+///
+/// pub(crate)：项目卡（project_card.rs）的 Spec JSON 解析复用同一提取逻辑。
+pub(crate) fn extract_json(text: &str) -> &str {
     let text = text.trim();
     if let Some(start) = text.find('{') {
         let end = text.rfind('}').map(|i| i + 1).unwrap_or(text.len());
