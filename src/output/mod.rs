@@ -320,6 +320,15 @@ pub fn rendered_paths(
             }
         }
     }
+    // 项目级卡片（Spec/TechStack）：无关联文档模块（module_name 是
+    // project::spec/tech-stack，不匹配任何 doc.module_path），须独立纳入
+    // rendered 集合，否则 cleanup 差集把 render_all 刚写盘的项目卡误判为
+    // 孤儿/过期而删除（项目卡写盘走 card_write_path 的 project/ 子目录）。
+    for card in cards {
+        if card.card_kind != crate::model::CardKind::Module {
+            paths.insert(card_write_path(output_dir, &config.wiki.language, card));
+        }
+    }
     paths.insert(api_doc_path(output_dir, &config.wiki.language));
     paths.insert(toc_doc_path(output_dir));
     paths.into_iter().collect()

@@ -17,7 +17,7 @@ use anyhow::Result;
 
 use crate::config::schema::WikiConfig;
 use crate::ingest::parser::FileInsight;
-use crate::model::{KnowledgeCard, KnowledgeGraph, WikiDocument};
+use crate::model::{CardKind, KnowledgeCard, KnowledgeGraph, WikiDocument};
 
 use self::card::CardGenerator;
 use self::chunk::Chunk;
@@ -164,13 +164,31 @@ pub async fn run_generation(
         config.wiki.language.clone(),
         card_dep_contexts,
         card_caller_contexts,
-        card_notes,
+        // clone：new_with_card_notes 拥有 card_notes；副本留给项目卡（Spec
+        // 提炼同样注入 card_notes）消费，避免 move 后无所有权。
+        card_notes.clone(),
     );
     let mut cards = card_gen
         .generate_all_cards(&chunks, extra_edits, on_progress)
         .await?;
     // 特征追溯回填（演进计划 T3.3）：模块实体与特征实体的交集 → 特征名
     backfill_features(&mut cards, &chunks, graph);
+    // 项目级卡片（Spec 规约 / TechStack 技术栈清单）：全量恒生成。
+    // 生成失败显式告警（失败隔离语义：不中断主流程，但不静默——与模块卡
+    // T3.2 失败隔离同语义：失败只影响项目卡这一路，余下 Wiki 阶段照常）。
+    let project_cards =
+        match crate::generate::project_card::generate_project_cards(&provider, config, root, &card_notes).await
+        {
+            Ok(pc) => pc,
+            Err(e) => {
+                tracing::warn!("项目级卡片生成失败（本轮项目卡降级为空，不中断主流程）: {e}");
+                Vec::new()
+            }
+        };
+    // 差集对账：'cards' 是迭代 Option 的模块卡位，项目卡直接以 Some 追加；
+    // 位置在 backfill_features 之后——backfill_features 按 chunks 索引循环，
+    // 不受尾部追加影响（索引错位免疫）。
+    cards.append(&mut project_cards.into_iter().map(Some).collect());
     tracing::info!(
         "生成进度: 60% - 知识卡片生成完成，共 {} 个卡片",
         cards.iter().flatten().count()
@@ -301,6 +319,13 @@ pub async fn run_generation_filtered(
     // 详见函数注释。
     compensate_deleted_files(changed_files, insights, root, config, &mut changed_insights);
 
+    // v0.9 W1：plan 接入点（语义同 run_generation）。提前到空集分支之前推导
+    // ——项目卡需在其分支消费 card_notes（清单/规约文件改动不产 FileInsight，
+    // 只走空集分支）。
+    let wiki_notes = plan.map(|p| p.notes.clone()).unwrap_or_default();
+    let card_notes = plan.map(|p| p.card_notes.clone()).unwrap_or_default();
+    let template = plan.map(|p| p.template).unwrap_or_default();
+
     if changed_insights.is_empty() {
         // 空集场景（v23 A1 起含「无实体变更」文件：纯空白/注释/换行符变化
         // 被实体级分类排除；v21 验证轮起含「整模块全删」：删除补偿未命中
@@ -310,7 +335,21 @@ pub async fn run_generation_filtered(
         // v51 拆分为独立函数 snapshot_backfill：快照可用时回填未删除模块的
         // 旧产物（零 LLM 成本）；快照缺失（异常）时返回 None 回退全量生成，
         // 宁可多生成也不丢数据。
-        if let Some(output) = snapshot_backfill(changed_files, root, config)? {
+        if let Some(mut output) = snapshot_backfill(changed_files, root, config)? {
+            // 项目级卡片在本分支单独接入：清单/规约文件（Cargo.toml 等）不在
+            // insights，改动既不进 changed_insights、也不被 snapshot_backfill 的
+            // 模块删除过滤感知——但它们可能在 changed_files 中（经 watch 事件/
+            // 指纹差异进入）。在快照回填基础上重算项目卡（输入变更重生成 /
+            // 未变更回填），替换快照中的旧项目卡，保证项目卡与输入一致。
+            if project_inputs_changed(changed_files) {
+                let provider = create_provider(config)?;
+                let project_cards = project_cards_for_incremental(
+                    &provider, config, root, &card_notes, changed_files,
+                )
+                .await?;
+                output.cards.retain(|c| c.card_kind != CardKind::Spec && c.card_kind != CardKind::TechStack);
+                output.cards.extend(project_cards);
+            }
             return Ok(output);
         }
         changed_insights = insights.to_vec();
@@ -332,13 +371,9 @@ pub async fn run_generation_filtered(
     tracing::info!("增量分块完成: {} 个块", chunks.len());
     let chunk_ms = chunk_start.elapsed().as_millis() as u64;
 
-    // 2. 创建 LLM Provider
+    // 2. 创建 LLM Provider（plan 的 wiki_notes/card_notes/template 已在较早处推导，
+    // 供项目卡空集分支与下方卡片阶段共用）
     let provider = create_provider(config)?;
-
-    // v0.9 W1：plan 接入点（语义同 run_generation，见其上注释）
-    let wiki_notes = plan.map(|p| p.notes.clone()).unwrap_or_default();
-    let card_notes = plan.map(|p| p.card_notes.clone()).unwrap_or_default();
-    let template = plan.map(|p| p.template).unwrap_or_default();
 
     // 3. 并行生成 Knowledge Card（仅变更块）
     let card_start = Instant::now();
@@ -350,7 +385,9 @@ pub async fn run_generation_filtered(
         config.wiki.language.clone(),
         card_dep_contexts,
         card_caller_contexts,
-        card_notes,
+        // clone：new_with_card_notes 拥有 card_notes；副本留给项目卡（Spec
+        // 提炼同样注入 card_notes）消费，避免 move 后无所有权。
+        card_notes.clone(),
     );
     let mut cards = card_gen
         .generate_all_cards(&chunks, extra_edits, on_progress)
@@ -440,6 +477,15 @@ pub async fn run_generation_filtered(
         &mut documents,
         &stats.failed_modules,
     );
+    // 项目级卡片（Spec / TechStack）：输入变更（清单/规约）重生成、未变更
+    // 从快照回填，与模块卡的 backfill_unchanged_modules 分离（backfill 只回填
+    // 模块卡，见其注释——项目卡若混入快照回填会与本轮重生成的同 kind 卡
+    // 重复/残留）。append 在 backfill 之后，保证完整文档集语义。
+    let project_cards = project_cards_for_incremental(
+        &provider, config, root, &card_notes, changed_files,
+    )
+    .await?;
+    cards.extend(project_cards);
 
     Ok(GenerationOutput {
         cards,
@@ -516,6 +562,130 @@ fn compensate_deleted_files(
                 "增量生成: 删除文件所属模块的 {} 个存活文件并入变更集，重生成清除被删实体残留",
                 merged
             );
+        }
+    }
+}
+
+/// 全局文档（架构/概览）生成快照的卡片集合：仅模块卡。
+///
+/// generate_architecture/generate_overview 用 output.cards 构建「模块引用」
+///（target_path = wiki/{lang}/{module_name.replace("::","_")}.md）。项目卡
+///（Spec/TechStack）无对应 wiki 模块页，混入会产生断链（lint broken），
+/// 在此过滤。
+fn global_doc_snapshot_cards(cards: &[Option<KnowledgeCard>]) -> Vec<KnowledgeCard> {
+    cards
+        .iter()
+        .flatten()
+        .filter(|c| c.card_kind == CardKind::Module)
+        .cloned()
+        .collect()
+}
+
+/// 项目卡增量输入文件（basename 匹配增量判定）：依赖清单 + 规约文件。
+///
+/// 与 techstack.rs 支持的清单名（Cargo.toml/Cargo.lock/package.json/
+/// pyproject.toml/requirements.txt/go.mod）、project_card::SPEC_FILES 保持
+/// 一致——一致性由 tests e2e（改 Cargo.toml 触发 tech-stack 刷新）守护。
+/// docs/glossary.md 的 basename 是 glossary.md（SPEC_FILES 里是
+/// "docs/glossary.md"，basename 匹配用 glossary.md 覆盖，两处都列出）。
+const PROJECT_CARD_INPUT_FILES: &[&str] = &[
+    // 依赖清单（techstack.rs 解析）
+    "Cargo.toml",
+    "Cargo.lock",
+    "package.json",
+    "pyproject.toml",
+    "requirements.txt",
+    "go.mod",
+    // 规约文件（project_card.rs SPEC_FILES）
+    "AGENTS.md",
+    ".editorconfig",
+    "rustfmt.toml",
+    ".rustfmt.toml",
+    "clippy.toml",
+    "CONTRIBUTING.md",
+    "glossary.md",
+];
+
+/// 项目卡输入是否发生变更：变更集任一文件 basename 命中项目卡输入集合。
+///
+/// 精确匹配（大小写敏感），跨平台一致——basename 是文件名的规范形态，
+/// Windows 文件系统虽大小写不敏感，但增量列表来自 git/指纹，用精确匹配
+/// 保持与 manifest/spec 文件名的确定性一致，避免误触发无关文件重生成。
+fn project_inputs_changed(changed_files: &[std::path::PathBuf]) -> bool {
+    changed_files.iter().any(|p| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| PROJECT_CARD_INPUT_FILES.contains(&n))
+    })
+}
+
+/// 从导出快照读取上一轮的项目卡（CardKind != Module），供未变更回填。
+/// 快照缺失/损坏时返回 None（调用方回退重生成保证存在性）。
+fn snapshot_project_cards(config: &WikiConfig) -> Option<Vec<KnowledgeCard>> {
+    let path = crate::output::export_snapshot_path(config.output_dir());
+    let content = std::fs::read_to_string(&path).ok()?;
+    let snapshot = serde_json::from_str::<crate::output::ExportSnapshot>(&content).ok()?;
+    Some(
+        snapshot
+            .cards
+            .into_iter()
+            .filter(|c| c.card_kind != CardKind::Module)
+            .collect(),
+    )
+}
+
+/// 差集清理由标准 cleanup_stale_outputs 承接：rendered_paths 现将项目卡
+/// （card_write_path 的 project/ 子目录）纳入渲染集，record_doc_fingerprints
+/// 也以 card_write_path 记录项目卡指纹 → 项目卡与模块卡一致地参与
+/// 「旧指纹 - 本次渲染集」差集（输入被删 → 卡不存在 → 旧文件清除）。
+/// 故增量路径无需在 generate 层额外删文件（单一来源，避免双写）。
+
+/// 增量路径的项目卡集合：输入变更（清单/规约文件）重生成，否则从导出
+/// 快照回填。返回项目卡列表（0~2 张）。
+///
+/// - 判定：project_inputs_changed（basename 命中 PROJECT_CARD_INPUT_FILES）。
+/// - 重生成：会同全量失败隔离语义——生成失败显式告警（tracing::warn）并
+///   降级为空集，不中断主流程；不静默。
+/// - 回填：快照不可用/损坏 → 回退重生成保证存在性（"宁可多生成不丢数据"，
+///   与既有 snapshot_backfill/backfill_unchanged_modules 同语义）。
+/// - 清理：由下游 cleanup_stale_outputs 的差集语义完成（见上）。
+async fn project_cards_for_incremental<P: LlmProvider>(
+    provider: &P,
+    config: &WikiConfig,
+    root: &crate::project::ProjectRoot,
+    card_notes: &[crate::config::plan::PlanNote],
+    changed_files: &[std::path::PathBuf],
+) -> Result<Vec<KnowledgeCard>> {
+    if project_inputs_changed(changed_files) {
+        match crate::generate::project_card::generate_project_cards(provider, config, root, card_notes)
+            .await
+        {
+            Ok(pc) => Ok(pc),
+            Err(e) => {
+                // 失败隔离（与模块卡 T3.2 / 全量路径同语义）：显式告警，
+                // 不中断增量主流程（本轮项目卡降级为空）。
+                tracing::warn!("项目卡增量重生成失败（本轮项目卡降级为空）: {e}");
+                Ok(Vec::new())
+            }
+        }
+    } else {
+        match snapshot_project_cards(config) {
+            Some(cards) => Ok(cards),
+            None => {
+                // 快照缺失/损坏：回退重生成保证项目卡存在性（宁可多生成不丢数据）。
+                tracing::warn!("导出快照不可用，回退重生成项目卡（宁可多生成不丢数据）");
+                match crate::generate::project_card::generate_project_cards(
+                    provider, config, root, card_notes,
+                )
+                .await
+                {
+                    Ok(pc) => Ok(pc),
+                    Err(e) => {
+                        tracing::warn!("项目卡回退重生成失败（本轮项目卡降级为空）: {e}");
+                        Ok(Vec::new())
+                    }
+                }
+            }
         }
     }
 }
@@ -662,7 +832,11 @@ fn backfill_unchanged_modules(
     let mut merged_docs = 0usize;
 
     for card in &snapshot.cards {
-        if card.related_files.is_empty()
+        // 项目卡（Spec/TechStack）不回填到模块卡集合：项目卡由调用方
+        // project_cards_for_incremental 统一处理（输入变更重生成/未变更回填），
+        // 避免快照旧项目卡与本轮重生成的同 kind 卡重复/残留。
+        if card.card_kind != CardKind::Module
+            || card.related_files.is_empty()
             || deleted_modules.contains(&card.module_name)
             || failed.contains(card.module_name.as_str())
             || current_card_modules.contains(&card.module_name)
@@ -929,9 +1103,12 @@ async fn generate_global_documents(
         // 模块被重生成（孤立文件全删），架构/概览也必须重生成，否则回填旧版继续
         // 列出已删模块（v21 验证轮修复）。
         if cards.iter().any(|c| c.is_some()) || has_deleted_files {
-            // generate_architecture / generate_overview 需要 GenerationOutput 快照（内部只用 cards 构建引用列表）
+            // generate_architecture / generate_overview 需要 GenerationOutput 快照
+            //（内部只用 cards 构建引用列表）。引用指向模块 wiki 页
+            //（wiki/{lang}/{module}.md）；项目卡无 wiki 页，须在此过滤掉，
+            // 否则其引用会产生断链（lint broken，实测 mock 全量）。
             let output_snapshot = GenerationOutput {
-                cards: cards.iter().flatten().cloned().collect(),
+                cards: global_doc_snapshot_cards(cards),
                 documents: documents.clone(),
                 generation_stats: GenerationStats::default(),
                 timings: crate::GenerationTimings::default(),
@@ -976,7 +1153,7 @@ async fn generate_global_documents(
         // 快照不可用（首次增量/快照损坏）→ 回退生成，保证页面存在性
         tracing::info!("全局文档快照回填不可用，回退重新生成");
         let output_snapshot = GenerationOutput {
-            cards: cards.iter().flatten().cloned().collect(),
+            cards: global_doc_snapshot_cards(cards),
             documents: documents.clone(),
             generation_stats: GenerationStats::default(),
             timings: crate::GenerationTimings::default(),

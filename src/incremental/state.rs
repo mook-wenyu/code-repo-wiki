@@ -192,8 +192,10 @@ impl GenerationState {
     /// 另补记三个全局文档（api.md / overview.md / _toc.md）的指纹，
     /// 路径复用 output::api_doc_path / overview_doc_path / toc_doc_path，
     /// 与 render_all 的保护判定路径同一规则产出。
-    /// 卡片同样计入指纹（路径 cards/{lang}/{module.replace("::","_")}.md，与
-    /// render_all 写盘路径一致），使人工编辑的卡片与 wiki 页一样被
+    /// 卡片同样计入指纹（路径经 output::card_write_path 按 card_kind 分派：
+    /// 模块卡 cards/{lang}/{module.replace("::","_")}.md，项目卡
+    /// cards/{lang}/project/{spec|tech-stack}.md，与 render_all 写盘路径一致），
+    /// 使人工编辑的卡片与 wiki 页一样被
     /// detect_manually_modified 识别并纳入保护集，全量 generate 不再静默覆盖。
     ///
     /// 返回值：(文档指纹表, 文档模块归属表)。模块归属 = 产物路径 → 模块名
@@ -245,10 +247,15 @@ impl GenerationState {
             fps.insert(toc_path.to_string_lossy().to_string(), fp);
         }
         // 卡片指纹：所有语言目录下已落盘的卡片都计入（卡片实际写盘语言
-        // 取决于关联文档的 doc.language，与 render_all 的写盘路径一致）
+        // 取决于关联文档的 doc.language，与 render_all 的写盘路径一致）。
+        // 用 card_write_path 按 card_kind 分派：模块卡 cards/{lang}/{stem}.md，
+        // 项目卡（Spec/TechStack）cards/{lang}/project/{spec|tech-stack}.md——
+        // 此前用 card_page_path（只按模块卡命名）记录，项目卡写盘路径在
+        // project/ 子目录，命中不到导致项目卡指纹缺失（人工修改保护 +
+        // 增量清理对项目卡失效）。
         for lang in languages {
             for card in cards {
-                let card_path = crate::output::card_page_path(output_dir, lang, &card.module_name);
+                let card_path = crate::output::card_write_path(output_dir, lang, card);
                 if card_path.exists() {
                     let fp = Self::compute_file_fingerprint(&card_path)?;
                     fps.insert(card_path.to_string_lossy().to_string(), fp);
