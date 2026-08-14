@@ -1,5 +1,23 @@
 # 项目状态简报 （AI自动维护，禁止贴代码）
 
+## 七十七、U1 模块划分质量（跨域约束 + tests 功能域拆分 + γ 实证 + 真实 LLM 复验）（2026-08-15）
+- 前置状态：七十六收尾唯一 P0 遗留 U1（缝合实证：tests::gamma_scan 页把 benches/gamma_scan.rs + src/output/residue_check.rs + src/search/tokenize.rs + 4 个 tests 文件缝进一页，LLM 转述占位符 doc 注释触发残留重试；约束前基线 γ=0.2~0.6 最大社区 97~115 文件——**γ 调参无法拆散缝合**，桥接边累积权重远超 γ）；HEAD f0ec376
+- 决策（ask_user_question 全部采纳推荐）：**D1 跨域边剔除**（社区划分跳过跨顶层目录 Imports/Calls 边；leiden-rs 0.8.1 无约束分区 API，后处理分裂治标不治本）/ **D2 fixtures 进噪音清单**（任意深度剪枝）/ **D3 tests 拆子目录 + 目录聚簇**（39 文件 → 10 功能域，wiki 按域分页）/ **D4 路径首段即域**（src/tests/benches/<root> 各一域，src 子目录间不设限）
+- 修改的功能（10 提交，3 并行 worker A/B/C + D 串行 + 主代理集成）：
+  - **feat(analysis) community.rs**（Worker A）：`top_level_domain` 纯函数（字节扫描零分配、反斜杠归一、根散文件 <root>）；跨域边剔除 + 域内策略（src 域有边走实体级 Leiden、src 孤立按目录聚簇、**非 src 域一律按目录聚簇**、`/common` 目录键并入父键）；`detect_communities_with_quality` 新 pub API（gamma_scan 实证用，LeidenOutput.quality 现被丢弃处捕获）；新增 6 测试 + 夹具 `dirNN/`→`src/dirNN/` 适配
+  - **feat(scanner)**（Worker B）：NOISE_DIRS 加 `fixtures`（任意深度剪枝）+ 单测；config.md 噪音清单说明
+  - **refactor(tests)**（Worker C）：39 集成测试按功能域拆 10 子目录（clustering/bench/incremental/install/cli/plan/generation/content/quality/overview），每域 main.rs 聚合（#[path] common）+ 15 处 mod common 上移 + 14 处 use crate::common + include_str 路径修正
+  - **feat(bench) gamma_scan**（Worker D）：quality API + 跨域社区数哨兵（U1 后恒 0）+ U1 语义注释（quality 跨 γ 不可比，γ 选优看模块数曲线平台）
+  - **fix(lint)**（主代理集成）：entity-coverage 识别通配符系列名（真实 LLM 用 `test_render_*` 概括测试系列 → 提取 `test_render_` 前缀，权威/源码侧同前缀即非编造；coverage 与 ownership 规则 5 双路径）+ 单测
+  - **test(incremental)**（主代理集成）：large_fixture 断言适配目录聚簇（m07 段边界切片修复 split 取到文件尾的断言缺陷、单文件页→目录页名、删除场景页面集合无增减——目录页内单文件删除重生成无残留，优于旧回填）
+  - **docs**：src/ 5 处 tests 路径注释串更新（拆目录文档漂移）
+- 摸到的文件：src/analysis/community.rs、src/ingest/scanner.rs、src/output/lint.rs、benches/gamma_scan.rs、tests/（39 文件移动 + 10 main.rs + test_incremental_large_fixture.rs）、docs/reference/config.md、src/{fs,main,lib,model/document,analysis/techstack}.rs（注释）、Cargo 无变化
+- 是否改变了接口/契约：**行为变更**——①噪音目录清单新增 fixtures（有 fixtures 目录的项目将不再扫描，语义=测试夹具不文档化，CHANGELOG 记录）；②模块划分规则变化（跨域不合并、非 src 域目录粒度、src 域孤立目录聚簇）——模块页集合/名称跨版本变化（增量 update 会自然重生成）；③`detect_communities_with_quality` 新 pub API（gamma_scan 用）；④tests 测试二进制名变化（tests/<域>/main.rs，CI 全量跑不受影响）；产物格式不变
+- 验证：`cargo test -j 2` 全量 **974 测试全绿**（含新增 community 6 + lint 1）；clippy 0 告警；fmt 0 差异；**γ 实证**（GAMMA_REPO=.，132 文件）：跨域社区**恒 0**（缝合根治）、最大社区 97~115→71~75（剩余=src 域内部密集协作的实体级 Leiden 合并，γ 不敏感）、模块数-γ 曲线 0.2~0.4 平台（18）无更优拐点 → **γ=0.5 生产默认保持不变**；**真实 LLM 复验**（cargo run + Machine key）：generate --force exit 0（260s）→ 新模块划分 20 模块/23 页：**缝合页消失、tests 11 功能域页、benches 页、fixtures 假模块页消失**；update 增量补页（lint.rs 改动后指纹）→ **lint exit 0（0 error，仅 entity-ownership 13 条 A8 宽容 warning）**
+- 提交：c45b318（feat scanner fixtures）→ 69619d2（refactor tests 拆分）→ 9920b26（docs 注释路径）→ b102fa2（feat analysis 跨域约束）→ 97439b5（feat bench gamma_scan）→ bef617a（test large_fixture 适配）→ 4d933da（style fmt）→ 后补 fix lint 系列名（待提交）
+- 已知风险（诚实自曝）：①**src 大社区**（73 文件页：lib/main/ingest/generate/search/config/output/incremental/analysis 全聚一页）——单 crate 仓库实体级 Leiden 的固有结果（crate 内部强连接），γ 调参无效（0.2~0.6 最大仍 71~75），大 chunk 致 LLM 只概括代表性实体（页质量降级）——**需用户拍板 src 域粒度方向**（候选：src 统一目录聚簇 / 社区大小上限后处理拆分 / 保持现状）；②tests 功能域页 LLM 声称实体 22 条 entity-ownership warning（A8 宽容，测试函数名仅命中 stem 的既有语义）；③语义索引本次降级（embed key 未注入 + MCP 进程持有 db 句柄 os error 32，U16 既有，纯文本搜索可用）；④PATH 旧版 code-repo-wiki.exe 与当前代码不一致（复验须 cargo run 或重装）；⑤src/search 拆 3 页（mod/tokenize 单文件页 + 核心页）——有边/孤立混合划分的命名现象，语义完整可接受
+- 下次最该做的事：**src 域粒度方向拍板**（γ 实证数据 + 新划分产物已就绪）；可选：bench 基线重录（embed 配额确认后）、测试夹具 weight 常量统一、U16 mcp 句柄
+
 ## 七十六、分析报告实现批次（08-15 复验 N1/N2/N3 + 发布对齐 + 清理 + bench 修复 + 真实 LLM 复验）（2026-08-15）
 - 前置状态：七十五收尾；08-15 ascetic-breaker 分析（.swarm/analysis-report-2026-08-15.md，4 并行子代理）确认 P0/P1 遗留 + 新实证 N1/N2/N3；HEAD a7c7744
 - 修改的功能（8 提交，6 并行 worker + 主代理集成修复）：

@@ -3,6 +3,20 @@
 本文件记录 code-repo-wiki 的重要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（SemVer）。
 
+## [Unreleased]
+
+### Changed
+- **模块划分质量（U1）**：社区检测加**跨顶层域约束**——Imports/Calls 边两端文件顶层目录（`src`/`tests`/`benches`/根散文件 `<root>`）不同即不参与社区合并（根治 tests/benches 经共享工具与跨域 API 调用桥把 src 内部模块缝进同一社区的输入污染源）；非 src 域文件一律按目录聚簇（`/common` 目录并入父目录键），src 域孤立文件按目录聚簇、有依赖文件仍走实体级 Leiden（γ 分辨率参数语义不变）
+- **噪音目录清单新增 `fixtures`**（任意深度剪枝）：测试夹具数据目录不再被当作真实源码文档化（修复 tests/fixtures 演示仓库生成误导性模块页的问题）；scope include 无法恢复（噪音剪枝先于 scope 过滤，既有机制边界）
+- **lint entity-coverage 识别通配符系列名**：模块页用 `test_render_*` 概括同名测试函数系列（真实 LLM 常见写法）不再误报——权威/源码侧存在同前缀实体即放行；无任何同前缀实体仍报（防编造语义不变）
+
+### Added
+- **`detect_communities_with_quality`**（analysis 层 pub API）：返回 `(社区划分, Leiden CPM quality)`——gamma_scan 等实证工具获取划分质量；目录分流/无 Leiden 时 quality=0.0 语义值
+- **gamma_scan 增强**：输出 Leiden quality 与「跨域社区数」（U1 约束后恒 0，缝合消失的回归哨兵）；注释明确 quality 跨 γ 不可直接比较（CPM 目标函数随 γ 变化），γ 选优看模块数-γ 曲线稳定平台
+
+### Fixed
+- **增量 large_fixture 删除场景语义随 U1 更新**：目录聚簇粒度下删除目录内单文件 → 模块页重生成（删除传播）且页面集合无增减，不再有单文件页清理
+
 ## [0.9.0] - 2026-08-14
 
 ### Added
