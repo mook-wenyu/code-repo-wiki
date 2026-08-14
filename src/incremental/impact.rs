@@ -948,6 +948,8 @@ mod tests {
                 design_rationale: None,
                 pending_manual_edits: vec![],
                 features: Vec::new(),
+                card_kind: crate::model::CardKind::Module,
+                spec_categories: vec![],
             }
         }
         crate::output::ExportSnapshot {

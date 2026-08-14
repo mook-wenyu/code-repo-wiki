@@ -64,6 +64,8 @@ pub struct Reference {
 /// Knowledge Card（给 AI Agent 的结构化格式）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KnowledgeCard {
+    /// 模块名（模块卡）；项目卡背负固定卡片名——Spec 卡=`project::spec`、
+    /// TechStack 卡=`project::tech-stack`（见 CardKind 注释）
     pub module_name: String,
     pub module_type: String,
     pub summary: String,
@@ -99,6 +101,42 @@ pub struct KnowledgeCard {
     /// 由生成管道从 graph.features 与模块实体的交集回填，不经过 LLM）
     #[serde(default)]
     pub features: Vec<String>,
+    /// 卡片类型（serde default 兼容旧卡旧快照：缺省=模块卡）
+    #[serde(default)]
+    pub card_kind: CardKind,
+    /// Spec 卡的结构化规约分类（仅 card_kind==Spec 时非空；模块卡恒空）
+    #[serde(default)]
+    pub spec_categories: Vec<SpecCategory>,
+}
+
+/// 知识卡片类型（对齐 Qoder 三类：架构文档 / 代码规约 Spec / 技术栈）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum CardKind {
+    /// 模块架构卡（既有模块卡，= Qoder 架构文档类）
+    #[default]
+    #[serde(rename = "module")]
+    Module,
+    /// 项目级代码规约卡（全项目一张）
+    #[serde(rename = "spec")]
+    Spec,
+    /// 项目级技术栈卡（全项目一张）
+    #[serde(rename = "tech-stack")]
+    TechStack,
+}
+
+/// 规约分类（Spec 卡专用：分类名 + 规约条目列表）
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SpecCategory {
+    pub name: String,
+    pub items: Vec<SpecItem>,
+}
+
+/// 规约条目：rule=规约内容，source=来源文件路径（防幻觉锚定）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpecItem {
+    pub rule: String,
+    #[serde(default)]
+    pub source: String,
 }
 
 /// 实体摘要（用于 Knowledge Card）
@@ -112,4 +150,90 @@ pub struct EntitySummary {
     /// 由生成管道从 chunk 实体回填，不经过 LLM）
     #[serde(default)]
     pub source: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 旧卡/旧快照（无 card_kind / spec_categories 字段）反序列化默认
+    /// 为模块卡 + 空分类，保证旧产物仍可读（serde default 契约）
+    #[test]
+    fn test_old_card_json_defaults_to_module_kind() {
+        let old = r#"{
+            "module_name": "src::config",
+            "module_type": "module",
+            "summary": "配置模块",
+            "key_entities": [],
+            "dependencies": [],
+            "dependents": [],
+            "design_patterns": [],
+            "todo_notes": [],
+            "related_files": [],
+            "coding_spec": null,
+            "tech_stack": [],
+            "architecture": null,
+            "design_rationale": null,
+            "pending_manual_edits": [],
+            "features": []
+        }"#;
+        let card: KnowledgeCard = serde_json::from_str(old).unwrap();
+        assert_eq!(card.card_kind, CardKind::Module, "缺省应为模块卡");
+        assert!(
+            card.spec_categories.is_empty(),
+            "缺省应为空规约分类"
+        );
+    }
+
+    /// CardKind 的 serde 序列化形态为 kebab-case 字符串
+    ///（"module"/"spec"/"tech-stack"），供 _index.json 的 kind 字段消费
+    #[test]
+    fn test_card_kind_serde_names() {
+        assert_eq!(serde_json::to_value(CardKind::Module).unwrap(), "module");
+        assert_eq!(serde_json::to_value(CardKind::Spec).unwrap(), "spec");
+        assert_eq!(
+            serde_json::to_value(CardKind::TechStack).unwrap(),
+            "tech-stack"
+        );
+    }
+
+    /// Spec 卡 JSON 能反序列化出结构化规约分类（分类名 + 条目 + 来源）
+    #[test]
+    fn test_spec_card_deserializes_spec_categories() {
+        let spec = r#"{
+            "module_name": "project::spec",
+            "module_type": "project",
+            "summary": "仓库代码规约",
+            "key_entities": [],
+            "dependencies": [],
+            "dependents": [],
+            "design_patterns": [],
+            "todo_notes": [],
+            "related_files": ["AGENTS.md"],
+            "coding_spec": null,
+            "tech_stack": [],
+            "architecture": null,
+            "design_rationale": null,
+            "pending_manual_edits": [],
+            "features": [],
+            "card_kind": "spec",
+            "spec_categories": [
+                {
+                    "name": "提交纪律",
+                    "items": [
+                        { "rule": "一个逻辑变更一个提交", "source": "AGENTS.md" },
+                        { "rule": "中文 commit message" }
+                    ]
+                }
+            ]
+        }"#;
+        let card: KnowledgeCard = serde_json::from_str(spec).unwrap();
+        assert_eq!(card.card_kind, CardKind::Spec);
+        assert_eq!(card.spec_categories.len(), 1);
+        assert_eq!(card.spec_categories[0].name, "提交纪律");
+        assert_eq!(card.spec_categories[0].items[0].rule, "一个逻辑变更一个提交");
+        assert_eq!(card.spec_categories[0].items[0].source, "AGENTS.md");
+        // 缺省 source 归空串
+        assert_eq!(card.spec_categories[0].items[1].source, "");
+    }
 }

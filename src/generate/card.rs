@@ -636,6 +636,9 @@ fn parse_card_response(response: &str, chunk: &Chunk) -> Result<KnowledgeCard> {
         pending_manual_edits: Vec::new(),
         features: Vec::new(),
         design_rationale,
+        // 模块卡：CardKind::Module（项目级 Spec/TechStack 卡由其他生成方构造）
+        card_kind: crate::model::CardKind::Module,
+        spec_categories: Vec::new(),
     })
 }
 

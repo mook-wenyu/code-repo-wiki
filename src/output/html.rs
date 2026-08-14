@@ -595,6 +595,8 @@ mod tests {
                 "人工修改待同步: wiki/zh/核心_模块.md 内容摘要: 手动改".into(),
             ],
             features: Vec::new(),
+            card_kind: crate::model::CardKind::Module,
+            spec_categories: vec![],
         };
 
         // 快照形态的模块摘要（含文件列表才会出现在 Mermaid 图中）

@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 
 use crate::config::schema::WikiConfig;
-use crate::model::{KnowledgeCard, KnowledgeGraph, WikiDocument};
+use crate::model::{CardKind, KnowledgeCard, KnowledgeGraph, WikiDocument};
 
 use self::markdown::write_document;
 
@@ -66,6 +66,42 @@ pub(crate) fn card_page_path(output_dir: &Path, lang: &str, module: &str) -> Pat
         .join("cards")
         .join(lang)
         .join(format!("{}.md", card_file_stem(module)))
+}
+
+/// 项目级卡片写盘路径：`cards/{lang}/project/{spec|tech-stack}.md`
+///
+/// 子目录隔离，杜绝与模块卡 stem 冲突——根级模块名恰为 spec/tech-stack 时
+/// 模块卡是 `cards/{lang}/spec.md`，与 `project/` 子目录天然不冲突。
+/// 仅用于项目卡（Spec/TechStack）；Module 卡调用走 card_write_path 的
+/// 根级分支，不会到达本函数。未传入合法项目卡时显式断言（不变量）。
+pub(crate) fn project_card_page_path(output_dir: &Path, lang: &str, kind: CardKind) -> PathBuf {
+    let stem = match kind {
+        CardKind::Module => unreachable!("project_card_page_path 仅用于项目卡（Spec/TechStack）"),
+        CardKind::Spec => "spec",
+        CardKind::TechStack => "tech-stack",
+    };
+    output_dir
+        .join("cards")
+        .join(lang)
+        .join("project")
+        .join(format!("{stem}.md"))
+}
+
+/// 卡片写盘路径统一入口：按 card_kind 分派——项目卡（Spec/TechStack）
+/// 落 `cards/{lang}/project/` 子目录，模块卡走既有根级命名。
+/// render_all 写盘、rendered_paths 清理 diff、_index.json 路径共用本函数，
+/// 保证命名不会漂移（单一来源）。
+pub(crate) fn card_write_path(
+    output_dir: &Path,
+    lang: &str,
+    card: &KnowledgeCard,
+) -> PathBuf {
+    match card.card_kind {
+        CardKind::Module => card_page_path(output_dir, lang, &card.module_name),
+        kind @ (CardKind::Spec | CardKind::TechStack) => {
+            project_card_page_path(output_dir, lang, kind)
+        }
+    }
 }
 
 /// Wiki 页面写盘路径：`{}/wiki/{lang}/{file}.md`
@@ -280,7 +316,7 @@ pub fn rendered_paths(
         let doc_module = doc.module_path.join("::");
         for card in cards {
             if card.module_name == doc_module {
-                paths.insert(card_page_path(output_dir, &doc.language, &card.module_name));
+                paths.insert(card_write_path(output_dir, &doc.language, card));
             }
         }
     }
@@ -347,7 +383,7 @@ pub fn render_all(
     // 卡片跳过（保留人工版）。卡片仅主语言生成一次（generate_all_cards 以
     // 主语言调用），各语言目录写同一份内容——与旧实现语义一致。
     for card in cards {
-        let card_path = card_page_path(output_dir, &primary_lang, &card.module_name);
+        let card_path = card_write_path(output_dir, &primary_lang, card);
         if protected.contains(&card_path.to_string_lossy().to_string()) {
             continue;
         }
@@ -375,10 +411,24 @@ pub fn render_all(
         "version": "1.0",
         "generated_at": chrono::Utc::now().to_rfc3339(),
         "cards": cards.iter().map(|c| {
+            // 相对路径（含 project/ 子目录），与卡片写盘命名一致；统一正斜杠
+            //（Windows 下 Path 产出反斜杠，索引路径保持 Linux 惯例防断链）
+            let abs = card_write_path(output_dir, &primary_lang, c);
+            // 结构安全证据：card_write_path 恒以 output_dir 为前缀（join 语义），
+            // strip_prefix 不可能失败；失败即路径规则被破坏，显式断言暴露
+            let rel = abs
+                .strip_prefix(output_dir)
+                .expect("card_write_path 恒以 output_dir 为前缀")
+                .to_string_lossy()
+                .replace('\\', "/");
             serde_json::json!({
                 "name": card_file_stem(&c.module_name),
                 "title": c.module_name,
-                "path": format!("cards/{}/{}.md", primary_lang, card_file_stem(&c.module_name)),
+                "path": rel,
+                // kind：CardKind 序列化为 kebab-case 字符串（module/spec/tech-stack）；
+                // 简单无字段枚举序列化不可能失败（结构安全证据）
+                "kind": serde_json::to_value(c.card_kind)
+                    .expect("CardKind 序列化不可能失败（无字段枚举）"),
             })
         }).collect::<Vec<_>>(),
     });
@@ -582,6 +632,8 @@ mod tests {
             design_rationale: None,
             pending_manual_edits: vec![],
             features: Vec::new(),
+            card_kind: CardKind::Module,
+            spec_categories: vec![],
         }
     }
 
@@ -643,6 +695,118 @@ mod tests {
                 .join("zh")
                 .join("src_testmodule.md")
         );
+        // 项目卡走 project/ 子目录，与根级模块卡（恰为 spec/tech-stack 时）
+        // 天然隔离，杜绝 stem 冲突
+        assert_eq!(
+            project_card_page_path(Path::new("out"), "zh", CardKind::Spec),
+            Path::new("out")
+                .join("cards")
+                .join("zh")
+                .join("project")
+                .join("spec.md")
+        );
+        assert_eq!(
+            project_card_page_path(Path::new("out"), "zh", CardKind::TechStack),
+            Path::new("out")
+                .join("cards")
+                .join("zh")
+                .join("project")
+                .join("tech-stack.md")
+        );
+        // card_write_path 按 card_kind 分派：模块卡根级、项目卡 project/ 子目录
+        let mut module_card = make_card();
+        module_card.module_name = "src::testmodule".into();
+        assert_eq!(
+            card_write_path(Path::new("out"), "zh", &module_card),
+            Path::new("out").join("cards").join("zh").join("src_testmodule.md")
+        );
+        // make_card 默认模块卡，改造为 Spec 卡验证分派
+        let mut spec_card = make_card();
+        spec_card.card_kind = CardKind::Spec;
+        assert_eq!(
+            card_write_path(Path::new("out"), "zh", &spec_card),
+            Path::new("out").join("cards").join("zh").join("project").join("spec.md")
+        );
+    }
+
+    /// 项目卡（Spec/TechStack）由 render_all 落盘到 project/ 子目录，
+    /// 且 _index.json 的 kind 字段为 kebab-case 字符串
+    #[test]
+    fn test_render_all_writes_project_cards_with_kind_index() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_project_card_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let config = WikiConfig {
+            output_dir: Some(dir.to_path_buf()),
+            ..Default::default()
+        };
+
+        let mut spec_card = make_card();
+        spec_card.module_name = "project::spec".into();
+        spec_card.module_type = "project".into();
+        spec_card.card_kind = CardKind::Spec;
+        spec_card.spec_categories = vec![crate::model::SpecCategory {
+            name: "提交纪律".into(),
+            items: vec![crate::model::SpecItem {
+                rule: "一个逻辑变更一个提交".into(),
+                source: "AGENTS.md".into(),
+            }],
+        }];
+
+        let mut ts_card = make_card();
+        ts_card.module_name = "project::tech-stack".into();
+        ts_card.module_type = "project".into();
+        ts_card.card_kind = CardKind::TechStack;
+
+        let graph = KnowledgeGraph::default();
+        let empty_docs: [WikiDocument; 0] = [];
+        let empty_protected = std::collections::HashSet::new();
+        render_all(
+            &empty_docs,
+            &[spec_card, ts_card],
+            &graph,
+            &config,
+            &empty_protected,
+        )
+        .unwrap();
+
+        // 项目卡写到 project/ 子目录
+        assert!(
+            dir.join("cards").join("zh").join("project").join("spec.md").exists(),
+            "Spec 卡应写入 cards/zh/project/spec.md"
+        );
+        assert!(
+            dir.join("cards")
+                .join("zh")
+                .join("project")
+                .join("tech-stack.md")
+                .exists(),
+            "TechStack 卡应写入 cards/zh/project/tech-stack.md"
+        );
+        // 渲染产物含类型标记
+        let spec_content =
+            std::fs::read_to_string(dir.join("cards").join("zh").join("project").join("spec.md"))
+                .unwrap();
+        assert!(spec_content.contains("card_kind: spec"));
+        assert!(spec_content.contains("## 规约分类"));
+
+        // _index.json 的 kind 字段：module/spec/tech-stack（kebab-case）
+        let index = std::fs::read_to_string(dir.join("cards").join("zh").join("_index.json"))
+            .unwrap();
+        assert!(index.contains("\"kind\": \"spec\""), "索引应含 spec 卡 kind: {index}");
+        assert!(
+            index.contains("\"kind\": \"tech-stack\""),
+            "索引应含 tech-stack 卡 kind: {index}"
+        );
+        // path 含 project/ 子目录
+        assert!(
+            index.contains("\"path\": \"cards/zh/project/spec.md\""),
+            "Spec 卡 path 应指向 project/ 子目录: {index}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A3：人工编辑过的卡片进入保护集后，全量 generate 不覆盖（保留人工编辑版）

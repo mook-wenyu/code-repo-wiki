@@ -144,13 +144,24 @@ fn kind_label(kind: &crate::model::NodeKind) -> &'static str {
 }
 
 /// 渲染 KnowledgeCard 为 Markdown（YAML frontmatter 格式）
+///
+/// 按 CardKind 分支：模块卡走既有结构（关键实体/编码规范/架构/设计意图/
+/// 待办/特征追溯）；Spec 卡输出「规约分类」、TechStack 卡输出「技术栈清单」。
+/// 标题与 frontmatter 的 module_name 均为卡片固定名（Spec=project::spec、
+/// TechStack=project::tech-stack）。
 pub fn render_knowledge_card(card: &KnowledgeCard) -> String {
+    // YAML frontmatter（各类型统一输出 module_name/module_type/card_kind）
     let mut output = String::new();
-
-    // YAML frontmatter
     output.push_str("---\n");
     output.push_str(&format!("module_name: {}\n", card.module_name));
     output.push_str(&format!("module_type: {}\n", card.module_type));
+    // 卡片类型标签（kebab-case；module 为默认/既有，spec/tech-stack 为项目卡）
+    let kind_name = match card.card_kind {
+        crate::model::CardKind::Module => "module",
+        crate::model::CardKind::Spec => "spec",
+        crate::model::CardKind::TechStack => "tech-stack",
+    };
+    output.push_str(&format!("card_kind: {kind_name}\n"));
     if !card.dependencies.is_empty() {
         output.push_str(&format!(
             "dependencies: [{}]\n",
@@ -171,10 +182,55 @@ pub fn render_knowledge_card(card: &KnowledgeCard) -> String {
     }
     output.push_str("---\n");
 
-    // 内容
+    // 内容（标题 = 模块名/项目卡固定名）
     output.push_str(&format!("# {}\n\n", card.module_name));
     output.push_str(&format!("## 摘要\n\n{}\n\n", card.summary));
 
+    // 按卡片类型分支渲染中间节（相关文件位置按类型约定：
+    // 模块卡保持既有结构（关键实体之后），项目卡在类型专属节之后）
+    match card.card_kind {
+        crate::model::CardKind::Module => {
+            render_module_sections(card, &mut output);
+        }
+        crate::model::CardKind::Spec => {
+            render_spec_sections(card, &mut output);
+            render_related_files(card, &mut output);
+        }
+        crate::model::CardKind::TechStack => {
+            render_tech_stack_sections(card, &mut output);
+            render_related_files(card, &mut output);
+        }
+    }
+
+    // 人工修改待同步（增量管道注入的记录，仅非空时渲染避免空节；三类通用）
+    if !card.pending_manual_edits.is_empty() {
+        output.push_str("## 人工修改待同步\n\n");
+        for note in &card.pending_manual_edits {
+            output.push_str(&format!("- {}\n", note));
+        }
+        output.push('\n');
+    }
+
+    output
+}
+
+/// 相关文件节（来自 chunk 源文件列表，非 LLM 输出；项目卡为输入文件列表）。
+/// 模块卡在 render_module_sections 原位输出（保持既有结构不变），
+/// Spec/TechStack 卡由调用方在类型专属节之后调用本函数。
+fn render_related_files(card: &KnowledgeCard, output: &mut String) {
+    if !card.related_files.is_empty() {
+        output.push_str("## 相关文件\n\n");
+        for f in &card.related_files {
+            output.push_str(&format!("- `{}`\n", f));
+        }
+        output.push('\n');
+    }
+}
+
+/// 渲染模块卡（既有结构，保持不动）：关键实体/相关文件/编码规范/架构/
+/// 设计意图/待办/特征追溯。不输出 spec_categories/tech_stack 节
+/// （tech_stack 走 frontmatter 行）。
+fn render_module_sections(card: &KnowledgeCard, output: &mut String) {
     // 关键实体（source 为回填的源码定位反向链接，T3.3）
     if !card.key_entities.is_empty() {
         output.push_str("## 关键实体\n\n");
@@ -195,14 +251,8 @@ pub fn render_knowledge_card(card: &KnowledgeCard) -> String {
         output.push('\n');
     }
 
-    // 相关文件（来自 chunk 源文件列表，非 LLM 输出）
-    if !card.related_files.is_empty() {
-        output.push_str("## 相关文件\n\n");
-        for f in &card.related_files {
-            output.push_str(&format!("- `{}`\n", f));
-        }
-        output.push('\n');
-    }
+    // 相关文件（既有位置：关键实体之后——保持模块卡输出结构字节序不变）
+    render_related_files(card, output);
 
     // 编码规范
     if let Some(spec) = &card.coding_spec {
@@ -238,17 +288,35 @@ pub fn render_knowledge_card(card: &KnowledgeCard) -> String {
         }
         output.push('\n');
     }
+}
 
-    // 人工修改待同步（增量管道注入的记录，仅非空时渲染避免空节）
-    if !card.pending_manual_edits.is_empty() {
-        output.push_str("## 人工修改待同步\n\n");
-        for note in &card.pending_manual_edits {
-            output.push_str(&format!("- {}\n", note));
+/// 渲染 Spec 卡中间节：规约分类逐分类输出条目（source 空时省略来源后缀）
+fn render_spec_sections(card: &KnowledgeCard, output: &mut String) {
+    if !card.spec_categories.is_empty() {
+        output.push_str("## 规约分类\n\n");
+        for category in &card.spec_categories {
+            output.push_str(&format!("### {}\n\n", category.name));
+            for item in &category.items {
+                if item.source.is_empty() {
+                    output.push_str(&format!("- {}\n", item.rule));
+                } else {
+                    output.push_str(&format!("- {}（来源：{}）\n", item.rule, item.source));
+                }
+            }
+            output.push('\n');
+        }
+    }
+}
+
+/// 渲染 TechStack 卡中间节：技术栈清单逐行原样输出（预渲染行由生成方填充）
+fn render_tech_stack_sections(card: &KnowledgeCard, output: &mut String) {
+    if !card.tech_stack.is_empty() {
+        output.push_str("## 技术栈清单\n\n");
+        for entry in &card.tech_stack {
+            output.push_str(&format!("- {entry}\n"));
         }
         output.push('\n');
     }
-
-    output
 }
 
 /// 渲染目录页 _toc.md
@@ -446,6 +514,8 @@ mod tests {
                 "人工修改待同步: wiki/zh/src_config.md 内容摘要: 手动改".into(),
             ],
             features: Vec::new(),
+            card_kind: crate::model::CardKind::Module,
+            spec_categories: vec![],
         };
 
         let output = render_knowledge_card(&card);
@@ -488,11 +558,216 @@ mod tests {
             design_rationale: None,
             pending_manual_edits: vec![],
             features: Vec::new(),
+            card_kind: crate::model::CardKind::Module,
+            spec_categories: vec![],
         };
 
         let output = render_knowledge_card(&card);
         assert!(!output.contains("人工修改待同步"), "无记录时不应渲染空节");
         assert!(!output.contains("设计意图"), "无意图时不应渲染空节");
+    }
+
+    /// Spec 卡渲染：frontmatter 含 card_kind: spec，标题为固定名，
+    /// 规约分类逐分类输出条目（含来源锚定；source 空时省略来源后缀）
+    #[test]
+    fn test_render_knowledge_card_spec() {
+        let card = KnowledgeCard {
+            module_name: "project::spec".into(),
+            module_type: "project".into(),
+            summary: "仓库代码规约全集".into(),
+            key_entities: vec![],
+            dependencies: vec![],
+            dependents: vec![],
+            design_patterns: vec![],
+            todo_notes: vec![],
+            related_files: vec!["AGENTS.md".into()],
+            coding_spec: None,
+            tech_stack: vec![],
+            architecture: None,
+            design_rationale: None,
+            pending_manual_edits: vec!["人工修改待同步: wiki/zh/foo.md 内容摘要: 手动改".into()],
+            features: Vec::new(),
+            card_kind: crate::model::CardKind::Spec,
+            spec_categories: vec![
+                crate::model::SpecCategory {
+                    name: "提交纪律".into(),
+                    items: vec![
+                        crate::model::SpecItem {
+                            rule: "一个逻辑变更一个提交".into(),
+                            source: "AGENTS.md".into(),
+                        },
+                        crate::model::SpecItem {
+                            rule: "中文 commit message".into(),
+                            source: String::new(),
+                        },
+                    ],
+                },
+                crate::model::SpecCategory {
+                    name: "验证 gate".into(),
+                    items: vec![crate::model::SpecItem {
+                        rule: "交付前跑 cargo test".into(),
+                        source: "CONTRIBUTING.md".into(),
+                    }],
+                },
+            ],
+        };
+
+        let output = render_knowledge_card(&card);
+        // frontmatter 类型标记
+        assert!(output.contains("card_kind: spec"), "Spec 卡 frontmatter 应含 card_kind: spec");
+        // 标题为固定卡片名
+        assert!(output.contains("# project::spec"));
+        // 摘要 + 规约分类节
+        assert!(output.contains("## 摘要"));
+        assert!(output.contains("仓库代码规约全集"));
+        assert!(output.contains("## 规约分类"));
+        assert!(output.contains("### 提交纪律"));
+        assert!(output.contains("- 一个逻辑变更一个提交（来源：AGENTS.md）"));
+        // source 为空时省略「（来源：…）」后缀
+        assert!(output.contains("- 中文 commit message\n"));
+        assert!(output.contains("### 验证 gate"));
+        assert!(output.contains("- 交付前跑 cargo test（来源：CONTRIBUTING.md）"));
+        // 复用相关文件/人工修改待同步节
+        assert!(output.contains("## 相关文件"));
+        assert!(output.contains("AGENTS.md"));
+        assert!(output.contains("## 人工修改待同步"));
+        // Spec 分支不输出模块专属节
+        assert!(!output.contains("关键实体"));
+    }
+
+    /// Spec 卡规约分类为空时不输出该节（避免空节）
+    #[test]
+    fn test_render_knowledge_card_spec_empty_categories() {
+        let card = KnowledgeCard {
+            module_name: "project::spec".into(),
+            module_type: "project".into(),
+            summary: "无规约".into(),
+            key_entities: vec![],
+            dependencies: vec![],
+            dependents: vec![],
+            design_patterns: vec![],
+            todo_notes: vec![],
+            related_files: vec![],
+            coding_spec: None,
+            tech_stack: vec![],
+            architecture: None,
+            design_rationale: None,
+            pending_manual_edits: vec![],
+            features: Vec::new(),
+            card_kind: crate::model::CardKind::Spec,
+            spec_categories: vec![],
+        };
+        let output = render_knowledge_card(&card);
+        assert!(!output.contains("## 规约分类"), "空分类不应渲染该节");
+        assert!(output.contains("# project::spec"));
+    }
+
+    /// TechStack 卡渲染：frontmatter 含 card_kind: tech-stack，标题为固定名，
+    /// 技术栈清单逐行原样输出（预渲染行由生成方填充）
+    #[test]
+    fn test_render_knowledge_card_tech_stack() {
+        let card = KnowledgeCard {
+            module_name: "project::tech-stack".into(),
+            module_type: "project".into(),
+            summary: "项目技术栈总览".into(),
+            key_entities: vec![],
+            dependencies: vec![],
+            dependents: vec![],
+            design_patterns: vec![],
+            todo_notes: vec![],
+            related_files: vec!["Cargo.toml".into()],
+            coding_spec: None,
+            tech_stack: vec![
+                "rustc@1.84（compiler，Cargo.toml）".into(),
+                "serde@1.0（serialization，Cargo.toml）".into(),
+            ],
+            architecture: None,
+            design_rationale: None,
+            pending_manual_edits: vec![],
+            features: Vec::new(),
+            card_kind: crate::model::CardKind::TechStack,
+            spec_categories: vec![],
+        };
+
+        let output = render_knowledge_card(&card);
+        assert!(
+            output.contains("card_kind: tech-stack"),
+            "TechStack 卡 frontmatter 应含 card_kind: tech-stack"
+        );
+        assert!(output.contains("# project::tech-stack"));
+        assert!(output.contains("## 摘要"));
+        assert!(output.contains("项目技术栈总览"));
+        assert!(output.contains("## 技术栈清单"));
+        assert!(output.contains("- rustc@1.84（compiler，Cargo.toml）"));
+        assert!(output.contains("- serde@1.0（serialization，Cargo.toml）"));
+        assert!(output.contains("## 相关文件"));
+        assert!(output.contains("Cargo.toml"));
+        // TechStack 分支不输出规约分类/模块专属节
+        assert!(!output.contains("规约分类"));
+        assert!(!output.contains("关键实体"));
+    }
+
+    /// TechStack 卡技术栈为空时不输出「技术栈清单」节（避免空节）
+    #[test]
+    fn test_render_knowledge_card_tech_stack_empty() {
+        let card = KnowledgeCard {
+            module_name: "project::tech-stack".into(),
+            module_type: "project".into(),
+            summary: "无技术栈".into(),
+            key_entities: vec![],
+            dependencies: vec![],
+            dependents: vec![],
+            design_patterns: vec![],
+            todo_notes: vec![],
+            related_files: vec![],
+            coding_spec: None,
+            tech_stack: vec![],
+            architecture: None,
+            design_rationale: None,
+            pending_manual_edits: vec![],
+            features: Vec::new(),
+            card_kind: crate::model::CardKind::TechStack,
+            spec_categories: vec![],
+        };
+        let output = render_knowledge_card(&card);
+        assert!(!output.contains("技术栈清单"), "空技术栈不应渲染该节");
+    }
+
+    /// 既有模块卡回归：新增 card_kind: module frontmatter 行，Module 分支
+    /// 结构保持不变（关键实体/编码规范/架构/设计意图等节仍输出）
+    #[test]
+    fn test_render_knowledge_card_module_regression() {
+        let card = KnowledgeCard {
+            module_name: "crate::config".into(),
+            module_type: "module".into(),
+            summary: "配置管理模块".into(),
+            key_entities: vec![],
+            dependencies: vec![],
+            dependents: vec![],
+            design_patterns: vec![],
+            todo_notes: vec![],
+            related_files: vec![],
+            coding_spec: Some("遵循 rustfmt".into()),
+            tech_stack: vec!["serde".into()],
+            architecture: Some("分层".into()),
+            design_rationale: Some("依赖注入".into()),
+            pending_manual_edits: vec![],
+            features: vec!["config".into()],
+            card_kind: crate::model::CardKind::Module,
+            spec_categories: vec![],
+        };
+        let output = render_knowledge_card(&card);
+        // Module 分支 default：frontmatter 追加 card_kind: module
+        assert!(output.contains("card_kind: module"), "模块卡 frontmatter 应含 card_kind: module");
+        // 既有结构不破坏（关键实体空时不渲染该节，其余既有节保持——关键实体/
+        // 编码规范等节由 test_render_knowledge_card 覆盖完整断言）
+        assert!(output.contains("## 编码规范"));
+        assert!(output.contains("## 架构说明"));
+        assert!(output.contains("## 设计意图"));
+        assert!(output.contains("## 特征追溯"));
+        // Module 分支不输出规约分类/技术栈清单节（tech_stack 走既有 frontmatter 行）
+        assert!(!output.contains("## 规约分类"));
+        assert!(!output.contains("## 技术栈清单"));
     }
 
     #[test]

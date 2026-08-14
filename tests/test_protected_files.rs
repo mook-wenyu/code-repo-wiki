@@ -269,6 +269,8 @@ fn test_render_all_protected_page_still_writes_card() {
         design_rationale: None,
         pending_manual_edits: vec!["人工修改待同步: wiki/zh/foo.md 内容摘要: 用户改的".into()],
         features: Vec::new(),
+        card_kind: code_repo_wiki::model::CardKind::Module,
+        spec_categories: vec![],
     };
 
     let config = WikiConfig {
@@ -476,6 +478,8 @@ fn test_manual_edit_recorded_in_card() {
         design_rationale: None,
         pending_manual_edits: vec![],
         features: Vec::new(),
+        card_kind: code_repo_wiki::model::CardKind::Module,
+        spec_categories: vec![],
     };
 
     // 注入前：无记录时卡片渲染不含该节（避免空节）

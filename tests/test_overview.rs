@@ -196,6 +196,8 @@ fn test_overview_module_refs_match_write_path() {
         design_rationale: None,
         pending_manual_edits: vec![],
         features: Vec::new(),
+        card_kind: code_repo_wiki::model::CardKind::Module,
+        spec_categories: vec![],
     };
 
     let card2 = KnowledgeCard {
@@ -214,6 +216,8 @@ fn test_overview_module_refs_match_write_path() {
         design_rationale: None,
         pending_manual_edits: vec![],
         features: Vec::new(),
+        card_kind: code_repo_wiki::model::CardKind::Module,
+        spec_categories: vec![],
     };
 
     let provider = MockProvider::new();

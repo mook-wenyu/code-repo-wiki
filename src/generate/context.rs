@@ -479,6 +479,8 @@ mod tests {
             pending_manual_edits: vec![],
             features: vec![],
             design_rationale: None,
+            card_kind: crate::model::CardKind::Module,
+            spec_categories: vec![],
         };
         let mut cards: HashMap<String, &KnowledgeCard> = HashMap::new();
         cards.insert("src::b".to_string(), &card);

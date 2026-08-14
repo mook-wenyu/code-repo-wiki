@@ -1134,6 +1134,8 @@ mod tests {
                 design_rationale: None,
                 pending_manual_edits: vec![],
                 features: vec![],
+                card_kind: crate::model::CardKind::Module,
+                spec_categories: vec![],
             }],
             modules: vec![],
         };

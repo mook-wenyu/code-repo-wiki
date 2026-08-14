@@ -2216,6 +2216,8 @@ mod tests {
             features: Vec::new(),
             // 跨域契约：design_rationale 字段由 model/document.rs 的 worker 添加
             design_rationale: None,
+            card_kind: crate::model::CardKind::Module,
+            spec_categories: vec![],
         };
         let prompt = overview_user_prompt(&[], &[card], &graph, &config);
         assert!(prompt.contains("## 模块卡片摘要"), "应含卡片摘要节");
