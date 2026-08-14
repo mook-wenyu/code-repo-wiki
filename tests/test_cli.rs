@@ -1119,7 +1119,11 @@ fn test_card_generate_project_card() {
     let work_dir = unique_dir("card_project");
     let _ = std::fs::remove_dir_all(&work_dir);
     std::fs::create_dir_all(work_dir.join("src")).unwrap();
-    std::fs::write(work_dir.join("src").join("main.rs"), "pub fn main_fn() {}\n").unwrap();
+    std::fs::write(
+        work_dir.join("src").join("main.rs"),
+        "pub fn main_fn() {}\n",
+    )
+    .unwrap();
     std::fs::write(
         work_dir.join("Cargo.toml"),
         "[package]\nname=\"cli-demo\"\n\n[dependencies]\nserde=\"1.0\"\n",
@@ -1160,7 +1164,10 @@ api_key_env = ""
         .join("project")
         .join("tech-stack.md");
     let stack = std::fs::read_to_string(&stack_path).unwrap_or_else(|_| {
-        panic!("project/tech-stack.md 应生成, 实际: {}", stack_path.display())
+        panic!(
+            "project/tech-stack.md 应生成, 实际: {}",
+            stack_path.display()
+        )
     });
     assert!(
         stack.contains("serde@1.0"),

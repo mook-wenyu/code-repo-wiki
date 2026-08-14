@@ -337,16 +337,16 @@ impl RepoWikiMcp {
         // 项目卡写盘路径（card_write_path 的 project/{spec|tech-stack}.md 子目录）；
         // 其余按模块卡根级命名 cards/{lang}/{card}.md 解析。
         let path = match card.as_str() {
-            "project::spec" => {
-                crate::output::project_card_page_path(config.output_dir(), &lang, crate::model::CardKind::Spec)
-            }
-            "project::tech-stack" => {
-                crate::output::project_card_page_path(
-                    config.output_dir(),
-                    &lang,
-                    crate::model::CardKind::TechStack,
-                )
-            }
+            "project::spec" => crate::output::project_card_page_path(
+                config.output_dir(),
+                &lang,
+                crate::model::CardKind::Spec,
+            ),
+            "project::tech-stack" => crate::output::project_card_page_path(
+                config.output_dir(),
+                &lang,
+                crate::model::CardKind::TechStack,
+            ),
             _ => config
                 .output_dir()
                 .join("cards")

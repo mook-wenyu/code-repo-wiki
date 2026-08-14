@@ -31,7 +31,10 @@ fn build_fixture_repo(repo: &Path) -> anyhow::Result<()> {
     // 会自建导航 AGENTS.md，导致「第二次生成」的规约输入比第一次多一份
     // AGENTS.md → Spec 卡在第二次才出现，破坏产物集合确定性。显式给出
     // AGENTS.md 使两次生成的规约输入一致（generate_agents_md 见已存在则跳过）。
-    std::fs::write(repo.join("AGENTS.md"), "本仓库的代码规约（e2e 确定性 fixture）\n")?;
+    std::fs::write(
+        repo.join("AGENTS.md"),
+        "本仓库的代码规约（e2e 确定性 fixture）\n",
+    )?;
 
     let config = WikiConfig {
         output_dir: Some((repo.join(".code-repo-wiki").to_string_lossy().into_owned()).into()),

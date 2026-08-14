@@ -614,7 +614,10 @@ mod tests {
 
         let output = render_knowledge_card(&card);
         // frontmatter 类型标记
-        assert!(output.contains("card_kind: spec"), "Spec 卡 frontmatter 应含 card_kind: spec");
+        assert!(
+            output.contains("card_kind: spec"),
+            "Spec 卡 frontmatter 应含 card_kind: spec"
+        );
         // 标题为固定卡片名
         assert!(output.contains("# project::spec"));
         // 摘要 + 规约分类节
@@ -758,7 +761,10 @@ mod tests {
         };
         let output = render_knowledge_card(&card);
         // Module 分支 default：frontmatter 追加 card_kind: module
-        assert!(output.contains("card_kind: module"), "模块卡 frontmatter 应含 card_kind: module");
+        assert!(
+            output.contains("card_kind: module"),
+            "模块卡 frontmatter 应含 card_kind: module"
+        );
         // 既有结构不破坏（关键实体空时不渲染该节，其余既有节保持——关键实体/
         // 编码规范等节由 test_render_knowledge_card 覆盖完整断言）
         assert!(output.contains("## 编码规范"));

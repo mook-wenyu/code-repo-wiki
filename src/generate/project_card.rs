@@ -84,7 +84,8 @@ pub async fn generate_project_spec_card<P: LlmProvider>(
         Err(first_err) => {
             messages.push(Message::user(
                 "你上一次的输出无法解析为合法 JSON。请只输出 JSON 对象本体：\
-                 不要任何 ``` 围栏、不要解释、不要尾随内容。".to_string(),
+                 不要任何 ``` 围栏、不要解释、不要尾随内容。"
+                    .to_string(),
             ));
             response = provider
                 .complete_with_budget(&messages, Some(SPEC_CARD_MAX_OUTPUT_TOKENS))
@@ -175,7 +176,11 @@ pub fn generate_project_tech_stack_card(
     Ok(Some(KnowledgeCard {
         module_name: "project::tech-stack".to_string(),
         module_type: "project".to_string(),
-        summary: format!("共 {} 项依赖，分布于 {} 类清单", entries.len(), manifests.len()),
+        summary: format!(
+            "共 {} 项依赖，分布于 {} 类清单",
+            entries.len(),
+            manifests.len()
+        ),
         key_entities: vec![],
         dependencies: vec![],
         dependents: vec![],
@@ -266,8 +271,7 @@ fn truncate_bytes_safe(s: &str, max_bytes: u64) -> String {
 /// 从 LLM 响应提取 JSON 并解析（复用 card.rs extract_json：取首{尾}切片）
 fn parse_spec_json(response: &str) -> Result<serde_json::Value> {
     let json_str = crate::generate::card::extract_json(response);
-    serde_json::from_str(json_str)
-        .map_err(|e| anyhow::anyhow!("解析 Spec 卡 JSON 失败: {}", e))
+    serde_json::from_str(json_str).map_err(|e| anyhow::anyhow!("解析 Spec 卡 JSON 失败: {}", e))
 }
 
 #[cfg(test)]
@@ -301,10 +305,7 @@ mod tests {
     /// ——MockProvider 不认 Spec 卡的「只输出 JSON 本体」措辞，会回 Markdown）
     struct SpecJsonProvider;
     impl crate::generate::llm::LlmProvider for SpecJsonProvider {
-        async fn complete(
-            &self,
-            _messages: &[Message],
-        ) -> anyhow::Result<String> {
+        async fn complete(&self, _messages: &[Message]) -> anyhow::Result<String> {
             Ok(
                 r#"{"summary":"仓库代码规约","categories":[{"name":"提交纪律","items":[{"rule":"一个逻辑变更一个提交","source":"AGENTS.md"},{"rule":"中文提交"}]}]}"#
                     .to_string(),
@@ -320,16 +321,10 @@ mod tests {
         calls: AtomicUsize,
     }
     impl crate::generate::llm::LlmProvider for FlakySpecProvider {
-        async fn complete(
-            &self,
-            _messages: &[Message],
-        ) -> anyhow::Result<String> {
+        async fn complete(&self, _messages: &[Message]) -> anyhow::Result<String> {
             let n = self.calls.fetch_add(1, Ordering::Relaxed);
             if n == 0 {
-                Ok(
-                    "```json\n{\"summary\":\"首次\"}\n```\n尾随 { \"extra\": 1 }"
-                        .to_string(),
-                )
+                Ok("```json\n{\"summary\":\"首次\"}\n```\n尾随 { \"extra\": 1 }".to_string())
             } else {
                 Ok(r#"{"summary":"重试成功","categories":[]}"#.to_string())
             }
@@ -375,9 +370,15 @@ mod tests {
         // JSON categories 结构化映射完整（source 缺省空串）
         assert_eq!(card.spec_categories.len(), 1);
         assert_eq!(card.spec_categories[0].name, "提交纪律");
-        assert_eq!(card.spec_categories[0].items[0].rule, "一个逻辑变更一个提交");
+        assert_eq!(
+            card.spec_categories[0].items[0].rule,
+            "一个逻辑变更一个提交"
+        );
         assert_eq!(card.spec_categories[0].items[0].source, "AGENTS.md");
-        assert_eq!(card.spec_categories[0].items[1].source, "", "source 缺省空串");
+        assert_eq!(
+            card.spec_categories[0].items[1].source, "",
+            "source 缺省空串"
+        );
         // 模块级维度全空
         assert!(card.key_entities.is_empty());
         assert!(card.tech_stack.is_empty());
@@ -423,7 +424,11 @@ mod tests {
         assert_eq!(card.module_name, "project::tech-stack");
         assert_eq!(card.card_kind, CardKind::TechStack);
         // summary 含计数「N 项 / M 类」
-        assert!(card.summary.starts_with("共 "), "summary 计数: {}", card.summary);
+        assert!(
+            card.summary.starts_with("共 "),
+            "summary 计数: {}",
+            card.summary
+        );
         assert!(card.summary.contains("项依赖"));
         assert!(card.summary.contains("类清单"));
         // related_files 含两个清单名（去重排序）
@@ -431,12 +436,16 @@ mod tests {
         assert!(card.related_files.contains(&"package.json".to_string()));
         // tech_stack 渲染行（有版本 @version + 全角括号；category/manifest 溯源）
         assert!(
-            card.tech_stack.iter().any(|l| l.contains("serde@1.0") && l.contains("rust/cargo")),
+            card.tech_stack
+                .iter()
+                .any(|l| l.contains("serde@1.0") && l.contains("rust/cargo")),
             "serde 行: {:?}",
             card.tech_stack
         );
         assert!(
-            card.tech_stack.iter().any(|l| l.contains("react@^18.0.0") && l.contains("javascript/npm")),
+            card.tech_stack
+                .iter()
+                .any(|l| l.contains("react@^18.0.0") && l.contains("javascript/npm")),
             "react 行: {:?}",
             card.tech_stack
         );
@@ -462,7 +471,11 @@ mod tests {
     async fn test_generate_project_cards_both() {
         let dir = temp_dir("entry_both");
         write_file(&dir, "AGENTS.md", "规约\n");
-        write_file(&dir, "Cargo.toml", "[package]\nname=\"x\"\n\n[dependencies]\nserde=\"1\"\n");
+        write_file(
+            &dir,
+            "Cargo.toml",
+            "[package]\nname=\"x\"\n\n[dependencies]\nserde=\"1\"\n",
+        );
         let root = crate::project::ProjectRoot::new(dir.clone());
         let provider = SpecJsonProvider;
         let config = WikiConfig::default();
@@ -479,7 +492,11 @@ mod tests {
     #[tokio::test]
     async fn test_generate_project_cards_only_techstack() {
         let dir = temp_dir("entry_stack");
-        write_file(&dir, "package.json", "{ \"dependencies\": { \"lodash\": \"^4.0\" } }");
+        write_file(
+            &dir,
+            "package.json",
+            "{ \"dependencies\": { \"lodash\": \"^4.0\" } }",
+        );
         let root = crate::project::ProjectRoot::new(dir.clone());
         let provider = SpecJsonProvider;
         let config = WikiConfig::default();

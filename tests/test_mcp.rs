@@ -283,7 +283,10 @@ async fn test_mcp_read_project_card() {
     std::fs::write(dir.join("mcp-test.toml"), &config).unwrap();
     // 预置产物：项目卡（project/ 子目录）与模块卡（根级），供读取
     std::fs::write(
-        out.join("cards").join("zh").join("project").join("tech-stack.md"),
+        out.join("cards")
+            .join("zh")
+            .join("project")
+            .join("tech-stack.md"),
         "tech-stack 技术栈卡人工内容\n",
     )
     .unwrap();
@@ -363,10 +366,7 @@ async fn test_mcp_read_project_card() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 // helper：完成 MCP 握手（initialize 响应 + initialized 通知）
-async fn resp_ok(
-    stdin: &mut tokio::process::ChildStdin,
-    stdout: &mut tokio::process::ChildStdout,
-) {
+async fn resp_ok(stdin: &mut tokio::process::ChildStdin, stdout: &mut tokio::process::ChildStdout) {
     let _ = rpc_call(
         stdin,
         stdout,
@@ -379,12 +379,7 @@ async fn resp_ok(
         }),
     )
     .await;
-    notify(
-        stdin,
-        "notifications/initialized",
-        serde_json::json!({}),
-    )
-    .await;
+    notify(stdin, "notifications/initialized", serde_json::json!({})).await;
 }
 
 /// wiki_get_dependencies I/O 契约（v0.9 W2）：已存在模块 → success 返回

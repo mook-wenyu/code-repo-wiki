@@ -1717,15 +1717,9 @@ mod tests {
             "验收标准",
             "边界",
         ] {
-            assert!(
-                zh.contains(kw),
-                "产品需求模板必须含「{kw}」六段之一: {zh}"
-            );
+            assert!(zh.contains(kw), "产品需求模板必须含「{kw}」六段之一: {zh}");
         }
-        assert!(
-            zh.contains("简体中文"),
-            "zh 语言必须显式化为简体中文: {zh}"
-        );
+        assert!(zh.contains("简体中文"), "zh 语言必须显式化为简体中文: {zh}");
         // 语言映射：zh → 简体中文；en 原样（仅措辞字段变化，结构标题为中文契约）
         let en = product_requirement_system_prompt("en");
         assert!(en.contains("请用 en 输出"), "en 语言应原样输出: {en}");
@@ -1737,17 +1731,29 @@ mod tests {
     fn test_spec_card_user_prompt_concatenates_material_and_notes() {
         let files = vec![
             ("AGENTS.md".to_string(), "禁止 git add -A".to_string()),
-            (".editorconfig".to_string(), "indent_style = space".to_string()),
+            (
+                ".editorconfig".to_string(),
+                "indent_style = space".to_string(),
+            ),
         ];
         let notes = vec![PlanNote {
             text: "规约缺失处写（信息不足）".into(),
             author: "架构组".into(),
         }];
         let user = spec_card_user_prompt(&files, &notes);
-        assert!(user.contains("## 规约文件：AGENTS.md"), "material 节: {user}");
+        assert!(
+            user.contains("## 规约文件：AGENTS.md"),
+            "material 节: {user}"
+        );
         assert!(user.contains("禁止 git add -A"), "AGENTS.md 内容: {user}");
-        assert!(user.contains("## 规约文件：.editorconfig"), "第二个文件: {user}");
-        assert!(user.contains("## 人工规约引导"), "notes 非空应生成引导节: {user}");
+        assert!(
+            user.contains("## 规约文件：.editorconfig"),
+            "第二个文件: {user}"
+        );
+        assert!(
+            user.contains("## 人工规约引导"),
+            "notes 非空应生成引导节: {user}"
+        );
         assert!(user.contains("（作者：架构组）"), "author 附注: {user}");
         // 空 notes：不生成引导节
         let user_empty = spec_card_user_prompt(&files, &[]);

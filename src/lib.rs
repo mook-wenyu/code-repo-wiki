@@ -856,7 +856,9 @@ pub fn run_card_command(
             if matches!(module.as_str(), "spec" | "tech-stack") {
                 rt.block_on(generate_project_card_cli(&provider, &config, root, module))
             } else {
-                rt.block_on(generate::card::generate_module_card(&provider, &config, root, module))
+                rt.block_on(generate::card::generate_module_card(
+                    &provider, &config, root, module,
+                ))
             }
         }
         generate::card::CardAction::Modify {
@@ -914,8 +916,9 @@ async fn generate_project_card_cli(
     // card_notes 置空：单卡命令不承载 plan 上下文，Spec 卡仅从规约文件提炼
     //（与流水线经 plan 注入 notes 解耦；无规约文件即不生成，防幻觉）。
     let card = match module {
-        "spec" => generate::project_card::generate_project_spec_card(provider, config, root, &[])
-            .await?,
+        "spec" => {
+            generate::project_card::generate_project_spec_card(provider, config, root, &[]).await?
+        }
         "tech-stack" => generate::project_card::generate_project_tech_stack_card(root)?,
         _ => unreachable!("run_card_command 已特判 spec/tech-stack，此处不可达（结构安全）"),
     };

@@ -91,11 +91,7 @@ pub(crate) fn project_card_page_path(output_dir: &Path, lang: &str, kind: CardKi
 /// 落 `cards/{lang}/project/` 子目录，模块卡走既有根级命名。
 /// render_all 写盘、rendered_paths 清理 diff、_index.json 路径共用本函数，
 /// 保证命名不会漂移（单一来源）。
-pub(crate) fn card_write_path(
-    output_dir: &Path,
-    lang: &str,
-    card: &KnowledgeCard,
-) -> PathBuf {
+pub(crate) fn card_write_path(output_dir: &Path, lang: &str, card: &KnowledgeCard) -> PathBuf {
     match card.card_kind {
         CardKind::Module => card_page_path(output_dir, lang, &card.module_name),
         kind @ (CardKind::Spec | CardKind::TechStack) => {
@@ -727,14 +723,21 @@ mod tests {
         module_card.module_name = "src::testmodule".into();
         assert_eq!(
             card_write_path(Path::new("out"), "zh", &module_card),
-            Path::new("out").join("cards").join("zh").join("src_testmodule.md")
+            Path::new("out")
+                .join("cards")
+                .join("zh")
+                .join("src_testmodule.md")
         );
         // make_card 默认模块卡，改造为 Spec 卡验证分派
         let mut spec_card = make_card();
         spec_card.card_kind = CardKind::Spec;
         assert_eq!(
             card_write_path(Path::new("out"), "zh", &spec_card),
-            Path::new("out").join("cards").join("zh").join("project").join("spec.md")
+            Path::new("out")
+                .join("cards")
+                .join("zh")
+                .join("project")
+                .join("spec.md")
         );
     }
 
@@ -783,7 +786,11 @@ mod tests {
 
         // 项目卡写到 project/ 子目录
         assert!(
-            dir.join("cards").join("zh").join("project").join("spec.md").exists(),
+            dir.join("cards")
+                .join("zh")
+                .join("project")
+                .join("spec.md")
+                .exists(),
             "Spec 卡应写入 cards/zh/project/spec.md"
         );
         assert!(
@@ -802,9 +809,12 @@ mod tests {
         assert!(spec_content.contains("## 规约分类"));
 
         // _index.json 的 kind 字段：module/spec/tech-stack（kebab-case）
-        let index = std::fs::read_to_string(dir.join("cards").join("zh").join("_index.json"))
-            .unwrap();
-        assert!(index.contains("\"kind\": \"spec\""), "索引应含 spec 卡 kind: {index}");
+        let index =
+            std::fs::read_to_string(dir.join("cards").join("zh").join("_index.json")).unwrap();
+        assert!(
+            index.contains("\"kind\": \"spec\""),
+            "索引应含 spec 卡 kind: {index}"
+        );
         assert!(
             index.contains("\"kind\": \"tech-stack\""),
             "索引应含 tech-stack 卡 kind: {index}"

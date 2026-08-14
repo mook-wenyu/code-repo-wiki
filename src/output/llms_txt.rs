@@ -152,7 +152,10 @@ pub fn render_llms_txt(
             .map(|c| {
                 let rel = match c.card_kind {
                     crate::model::CardKind::Module => {
-                        format!("cards/{primary}/{}.md", crate::output::card_file_stem(&c.module_name))
+                        format!(
+                            "cards/{primary}/{}.md",
+                            crate::output::card_file_stem(&c.module_name)
+                        )
                     }
                     crate::model::CardKind::Spec => format!("cards/{primary}/project/spec.md"),
                     crate::model::CardKind::TechStack => {
