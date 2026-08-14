@@ -1,5 +1,21 @@
 # 项目状态简报 （AI自动维护，禁止贴代码）
 
+## 七十五、知识卡片三类化 + product_requirement 模板（对齐 Qoder Repo Wiki 定义）（2026-08-15）
+- 前置状态：七十四收尾后分析报告（.swarm/analysis-report-2026-08-14.md）确认唯一实质差距 = 知识卡片仅"模块卡"一类；Qoder 官方定义三类（架构文档 / 代码规约 Spec / 技术栈）且 `repowiki.template` 支持 product_requirement（阿里云官方帮助页 help.aliyun.com/zh/lingma/repo-wiki 已查证原文）；HEAD 0cd89ef
+- 修改的功能（9 提交 + 2 收尾，三波并行 worker + 主代理集成）：
+  - **模型层**：`KnowledgeCard` 新增 `card_kind: CardKind`（module/spec/tech-stack，serde default 兼容旧卡旧快照）+ `spec_categories: Vec<SpecCategory>`（结构化规约：分类/条目/来源锚定）；渲染按 kind 分支（模块卡结构字节序不变，仅 frontmatter 加 card_kind 行）；项目卡路径 `cards/{lang}/project/{spec|tech-stack}.md`（`card_write_path` 统一分派，子目录隔离杜绝模块卡 stem 冲突）；`_index.json` 条目加 kind + 相对路径正斜杠归一
+  - **技术栈卡（确定性零 LLM）**：`analysis::techstack::parse_tech_stack`——六类清单（Cargo.toml/lock 合并 lock 权威版本、package.json、pyproject.toml、requirements.txt、go.mod）；坏清单告警跳过不中断；不输出传递依赖；XML 形态清单不支持（限制项已注明）
+  - **Spec 卡（LLM 提炼）**：输入 = plan notes + 规约文件扫描（32KB 截断），无输入不生成（防幻觉）；JSON 输出契约（summary/categories/rule/source），解析失败重试一次
+  - **流水线接入**：全量恒生成；增量 `project_inputs_changed` 判定重生成/快照回填（差集清理不误删）；**非 git 裸 update 检出闭环**（清单/规约文件纳入指纹基线 + 单独比对三态：变更→重生成、未变→no-op、删除→清理；git 仓库走 GitDiff 天然覆盖）；权威集合 `model::PROJECT_CARD_INPUT_FILES`（避免 incremental→generate 循环依赖）
+  - **product_requirement 模板**：`PlanTemplate::ProductRequirement` + 六段需求格式 system prompt（Qoder 官方无更细规范，格式为合理默认，README 注明）
+  - **暴露面**：llms.txt 项目卡条目（llms-full 过滤不混入）、`card generate spec|tech-stack`、MCP `wiki_read_card` 项目卡、install 注入块「少调工具」节补项目卡指引
+- 摸到的文件：src/model/document.rs、src/output/{markdown,mod,llms_txt}.rs、src/generate/{mod,card,prompt,project_card}.rs、src/config/plan.rs、src/analysis/techstack.rs、src/incremental/{mod,state}.rs、src/commands.rs、src/mcp.rs、src/lib.rs、tests/test_project_cards.rs（新增 7 场景）、README.md、docs/{reference/config,reference/limitations,glossary}.md、config.toml、CHANGELOG.md
+- 是否改变了接口/契约：是——`KnowledgeCard` 增字段（serde default 兼容）、`card_write_path` 新分派入口（项目卡）、`extract_json` 提 pub(crate)、`PlanTemplate` 增变体、`MANIFEST_FILES`/`PROJECT_CARD_INPUT_FILES` 新常量；产物新增 `cards/{lang}/project/` 目录（增量能力，无破坏）
+- 验证：cargo test -j 2 全量 exit 0（736 lib + 全集成含新增 ~25 测试）；cargo clippy --all-targets 0 告警；cargo fmt --check 0 差异；e2e 七场景（全量生成三类卡 + lint 无 error / 改清单刷新 / 未变更回填保留 / 删清单差集清理 / 人工编辑保护 / 非 git 裸 update 检出 / 常量一致性）；mock 产物 lint exit 0 对齐 CI lint-artifacts 门禁
+- 提交：96f636b（docs）→ d2111db（feat analysis）→ 5f593df（feat model）→ f908d54（feat generate 项目卡）→ f03d782（feat plan 模板）→ f77278f（feat generate 流水线接入，含 rendered_paths/指纹根因修复）→ 5ef2c5a（feat output llms）→ 04cb607（feat cli/mcp）→ 8d951ac（test e2e）→ 0b56914（fix incremental 非 git 检出闭环）→ 60bd5f7（chore fmt 归一）
+- 已知风险（诚实自曝）：①Spec 卡 LLM JSON 依赖模型稳定性（重试一次 + 失败隔离告警已兜底，但真实 LLM 质量未复验——mock 全链路门禁已过，真实复验需 danger-full-access 通道 + key）；②XML 形态清单（pom.xml/*.csproj）不支持（v1 明确边界）；③产品需求模板格式为合理默认（官方无细节）；④多语言并存/Qoder Git 自动同步检测/每日 CI 刷新节奏未做（范围外，文档已注明差异）；⑤实体级特征聚类与模块划分质量（七十四遗留主任务）未在本次处理
+- 下次最该做的事：真实 LLM 环境复验三类卡产物（Spec 卡质量 / product_requirement 页面形态 / tech-stack 确定性无幻觉），然后推进七十四遗留的模块划分质量立项
+
 ## 七十四、真实 LLM 复验 + embed 配置官方对齐（Phase A10 收尾）（2026-08-14）
 - 前置状态：HEAD 733c407 三修复就绪（embed 批内并发默认 1 / api.md 不嵌 doc 首行 / residue 收紧为完整占位符形态）；七十三遗留 embed 429 疑云（充值后仍 insufficient_quota）；lint 77 条全部为产物过期告警；`.search/semantic_degraded` 存在、semantic_index.db 仅 4096B
 - 官方查证（用户指路百炼模型市场页，权威来源 help.aliyun.com）：

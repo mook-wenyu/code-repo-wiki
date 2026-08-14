@@ -715,6 +715,10 @@ pub fn wiki_block_template(output_dir: &str, lang: &str) -> String {
 2. `{output_dir}/llms-full.txt` 一次可回答实体级问题（模块职责 + 实体清单内联）；
 3. 知识卡片 `dependents` 字段（`{output_dir}/cards/{lang}/<模块>.md`）直接给出
    反向依赖；能少调 MCP 工具就少调（工具调用有上下文与延迟成本）。
+4. 项目级知识卡（写代码/审查前先读，对齐团队规范与技术环境）：
+   `{output_dir}/cards/{lang}/project/spec.md`（代码规约：命名/接口/约束，
+   每条带来源文件）与 `{output_dir}/cards/{lang}/project/tech-stack.md`
+   （技术栈清单：依赖/版本/来源清单，确定性解析零 LLM 防幻觉）。
 
 ## 何时不做
 
