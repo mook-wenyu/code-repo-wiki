@@ -376,11 +376,18 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
                 );
             }
             if !last_residue.is_empty() {
+                // 日志带残留位置+片段：无内容明细时残留无法诊断（733c407 收紧
+                // 规则后命中形态已知，但具体残留文本仍需可见才能定位输入污染源）
+                let detail: Vec<String> = last_residue
+                    .iter()
+                    .map(|r| format!("L{}: {}", r.line, r.snippet))
+                    .collect();
                 tracing::warn!(
-                    "Wiki 页面模板占位符残留（第 {} 次，残留 {} 处）: {}",
+                    "Wiki 页面模板占位符残留（第 {} 次，残留 {} 处）: {} | {}",
                     attempt + 1,
                     last_residue.len(),
-                    chunk.module_path.join("::")
+                    chunk.module_path.join("::"),
+                    detail.join("; ")
                 );
             }
             if !last_dep_violations.is_empty() {

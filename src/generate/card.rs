@@ -542,10 +542,17 @@ fn parse_card_response(response: &str, chunk: &Chunk) -> Result<KnowledgeCard> {
     // 消息重试一次（P2-10），重试仍失败才返回错误）
     let residues = crate::output::residue_check::scan_template_residue(json_str);
     if !residues.is_empty() {
+        // 日志带残留位置+片段：无内容明细时残留无法诊断（733c407 收紧规则后
+        // 命中形态已知，但具体残留文本仍需可见才能定位输入污染源）
+        let detail: Vec<String> = residues
+            .iter()
+            .map(|r| format!("L{}: {}", r.line, r.snippet))
+            .collect();
         tracing::warn!(
-            "卡片 JSON 含模板占位符残留（{} 处），字段可能损坏: {}",
+            "卡片 JSON 含模板占位符残留（{} 处），字段可能损坏: {} | {}",
             residues.len(),
-            chunk.module_path.join("::")
+            chunk.module_path.join("::"),
+            detail.join("; ")
         );
     }
 
