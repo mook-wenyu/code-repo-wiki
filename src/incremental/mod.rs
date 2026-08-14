@@ -227,6 +227,7 @@ pub fn run_incremental_update_at(
     // 社区名会永远落空（Unity 实测补偿未触发）。快照是唯一同时携带
     // 两套信息的持久化载体。
     let mut changed_files = changed_files;
+    let mut affected_modules = affected_modules;
     if let Ok(state) = GenerationState::load(&state_dir)
         && !state.failed_modules.is_empty()
     {
@@ -267,6 +268,45 @@ pub fn run_incremental_update_at(
                 state.failed_modules.len()
             );
             changed_files = merged;
+        }
+    }
+
+    // 删除文件的「反向引用失效」（Phase A10 / I3 根因修复）：被删文件在
+    // 图谱中无节点（impact.rs find_start_nodes 找不到即跳过），语义传播永远
+    // 无法标记「页面文本引用了被删文件」的模块——引用页面残留坏引用（lint
+    // bad-citation/source-missing/orphan）。从旧导出快照构建反向索引，凡
+    // 引用了被删文件的模块并入受影响集，使其在增量 update 中被重生成；
+    // 重生成时引用校验（validate_citations_against_entities）强制 LLM 剔除
+    // 对已删文件的引用，页面自愈。只失效「确实引用了它」的页面（不无差别
+    // 全量重生成）；快照缺失/损坏时告警跳过（保守不并入，宁可残留也不误伤）。
+    let deleted_files: std::collections::HashSet<std::path::PathBuf> = changed_files
+        .iter()
+        .filter(|f| !root.path().join(f).exists())
+        .cloned()
+        .collect();
+    if !deleted_files.is_empty() {
+        let snapshot_path = crate::output::export_snapshot_path(config.output_dir());
+        if let Ok(content) = std::fs::read_to_string(&snapshot_path)
+            && let Ok(snapshot) = serde_json::from_str::<crate::output::ExportSnapshot>(&content)
+        {
+            let referencing = impact::reverse_reference_affected_modules(&deleted_files, &snapshot);
+            for m in &referencing {
+                if !affected_modules.contains(m) {
+                    affected_modules.push(m.clone());
+                }
+            }
+            if !referencing.is_empty() {
+                affected_modules.sort();
+                tracing::info!(
+                    "删除文件的引用页反向失效: 模块 {:?} 引用了被删文件，并入受影响集重生成",
+                    referencing
+                );
+            }
+        } else {
+            tracing::warn!(
+                "删除引用页反向失效：导出快照不可读（{}），跳过（无法定位引用被删文件的页面）",
+                snapshot_path.display()
+            );
         }
     }
 

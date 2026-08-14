@@ -1976,7 +1976,9 @@ fn extract_md_links(content: &str) -> Vec<String> {
 /// KNOWN-06：只提取代码文件（SUPPORTED_EXTENSIONS 限定）——相关文件段应只
 /// 列源码，非代码引用（README/配置/产物 .md/.json 等）不参与 stale 与
 /// source-missing 检查，否则删除的文档/配置引用会被误报"源文件缺失"。
-fn extract_source_files(content: &str) -> Vec<String> {
+/// pub(crate)：增量层 impact.rs 反向引用失效（删除文件 → 引用页失效）复用
+/// 同一提取规则，DRY 收敛（此前仅本 lint 模块内部使用）。
+pub(crate) fn extract_source_files(content: &str) -> Vec<String> {
     let mut out = Vec::new();
     for line in content.lines() {
         let line = line.trim();

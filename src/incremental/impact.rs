@@ -79,6 +79,83 @@ pub fn module_files(affected_modules: &[String], graph: &KnowledgeGraph) -> Vec<
     files
 }
 
+/// 删除文件的「反向引用失效」：返回引用了任一被删文件的模块名集合
+///
+/// 根因（Phase A10 / I3）：源码文件被删除时，被删文件在知识图谱中已无节点
+/// （find_start_nodes 按路径找不到即返回空起点），语义传播
+/// （propagate_impact / propagate_impact_semantic）的起点缺失使「被删文件
+/// 自身」不触发任何模块受影响——正文引用了它的页面（path:line 引用、
+/// `- `code`` 相关文件列表）残留对已删文件的引用，lint 的 bad-citation /
+/// source-missing / orphan 等错误由此产生。
+///
+/// 本函数从旧导出快照（.state/export_snapshot.json，记录上一轮完整生成集）
+/// 构建「源文件 → 引用它的模块」反向索引，复用现有提取工具（DRY）：
+/// - citation::extract_citations：页面正文的 `path:line` 引用（LLM 生成
+///   内容中最常见的源码引用形态）；
+/// - lint::extract_source_files：页面正文 `- `code`` 相关文件列表形态；
+/// - KnowledgeCard.related_files：卡片的结构化相关文件字段。
+///
+/// 凡引用命中被删文件的模块并入返回集，由调用方并入 affected_modules 触发
+/// 重生成——重生成时引用校验（validate_citations_against_entities）会强制
+/// LLM 剔除对已删文件的引用，页面随之自愈。
+///
+/// 边界：只失效「确实引用了被删文件」的页面，不做无差别全量重生成
+/// （避免烧 credits）；被删文件可能同时被多个模块引用，逐个命中即失效。
+/// 全局文档（module_path 为空）无模块归属，不参与（api.md 由代码图渲染
+/// 自愈，架构/概览由既有 has_interface_change 路径重生成）。
+pub fn reverse_reference_affected_modules(
+    deleted_files: &std::collections::HashSet<std::path::PathBuf>,
+    snapshot: &crate::output::ExportSnapshot,
+) -> Vec<String> {
+    // 归一化比较：快照引用路径（git 正斜杠）与 changed_files 路径
+    // （Windows 反斜杠）统一替换为 "/" 后按字符串精确比较
+    // （与 norm_sep 同规则，见 incremental/mod.rs:137）。
+    let deleted: HashSet<String> = deleted_files
+        .iter()
+        .map(|p| super::norm_sep(&p.to_string_lossy()))
+        .collect();
+    let mut affected: HashSet<String> = HashSet::new();
+
+    // Wiki 页面正文：path:line 引用 + `- `code`` 相关文件列表
+    for doc in &snapshot.documents {
+        if doc.kind != crate::model::DocumentKind::WikiPage {
+            continue;
+        }
+        let cites = crate::output::citation::extract_citations(&doc.content);
+        let source_files = crate::output::lint::extract_source_files(&doc.content);
+        let referenced_deleted = cites
+            .iter()
+            .map(|c| super::norm_sep(&c.path))
+            .any(|p| deleted.contains(&p))
+            || source_files
+                .iter()
+                .map(|f| super::norm_sep(f))
+                .any(|f| deleted.contains(&f));
+        if referenced_deleted {
+            let module = doc.module_path.join("::");
+            if !module.is_empty() {
+                affected.insert(module);
+            }
+        }
+    }
+
+    // 卡片：related_files 结构化字段（渲染为「相关文件」段的引用形态）
+    for card in &snapshot.cards {
+        if card
+            .related_files
+            .iter()
+            .map(|f| super::norm_sep(f))
+            .any(|f| deleted.contains(&f))
+        {
+            affected.insert(card.module_name.clone());
+        }
+    }
+
+    let mut result: Vec<String> = affected.into_iter().collect();
+    result.sort();
+    result
+}
+
 /// 语义影响传播：区分接口级与实现级变化（演进计划 T2.2）
 ///
 /// 分类语义（change.rs）：
@@ -832,5 +909,136 @@ mod tests {
         assert!(!batch.contains_key("not_exist.rs"));
         // 空输入 → 空表
         assert!(find_start_nodes_per_file(&[], &graph).is_empty());
+    }
+
+    // ==================== 删除文件的「反向引用失效」 ====================
+
+    /// 构造快照：B 模块页正文含对 src/a/x.rs 的 path:line 引用，
+    /// C 模块卡片 related_files 含 src/c/z.rs（未删），D 模块卡片
+    /// related_files 含 src/a/x.rs。
+    fn make_snapshot_with_references() -> crate::output::ExportSnapshot {
+        fn doc(title: &str, module: &[&str], content: &str) -> crate::model::WikiDocument {
+            crate::model::WikiDocument {
+                title: title.into(),
+                kind: crate::model::DocumentKind::WikiPage,
+                content: content.into(),
+                language: "zh".into(),
+                module_path: module.iter().map(|s| s.to_string()).collect(),
+                references: vec![],
+                parent: String::new(),
+                last_updated: String::new(),
+                based_on_commit: None,
+                fingerprint: None,
+            }
+        }
+        fn card(module: &str, related: &[&str]) -> crate::model::KnowledgeCard {
+            crate::model::KnowledgeCard {
+                module_name: module.into(),
+                module_type: "module".into(),
+                summary: String::new(),
+                key_entities: vec![],
+                dependencies: vec![],
+                dependents: vec![],
+                design_patterns: vec![],
+                todo_notes: vec![],
+                related_files: related.iter().map(|s| s.to_string()).collect(),
+                coding_spec: None,
+                tech_stack: vec![],
+                architecture: None,
+                design_rationale: None,
+                pending_manual_edits: vec![],
+                features: Vec::new(),
+            }
+        }
+        crate::output::ExportSnapshot {
+            version: 1,
+            documents: vec![
+                doc(
+                    "B 模块",
+                    &["src", "b"],
+                    "## 概述\n\n见 src/a/x.rs:1 的实现。\n",
+                ),
+                doc("C 模块", &["src", "c"], "## 概述\n\n无引用。\n"),
+            ],
+            cards: vec![
+                card("src::c", &["src/c/y.rs"]),
+                card("src::d", &["src/a/x.rs", "src/d/w.rs"]),
+            ],
+            modules: vec![],
+        }
+    }
+
+    /// 页面正文 path:line 引用命中被删文件 → 对应模块失效；未引用模块不失效
+    #[test]
+    fn test_reverse_reference_citation_hit() {
+        let deleted: std::collections::HashSet<std::path::PathBuf> =
+            [std::path::PathBuf::from("src/a/x.rs")]
+                .into_iter()
+                .collect();
+        let affected =
+            reverse_reference_affected_modules(&deleted, &make_snapshot_with_references());
+        assert!(
+            affected.contains(&"src::b".to_string()),
+            "B 页正文引用 x.rs 应失效: {:?}",
+            affected
+        );
+        assert!(
+            !affected.contains(&"src::c".to_string()),
+            "C 页未引用被删文件不得失效: {:?}",
+            affected
+        );
+    }
+
+    /// 卡片 related_files 命中被删文件 → 该模块失效（跨模块引用场景）
+    #[test]
+    fn test_reverse_reference_card_related_files_hit() {
+        let deleted: std::collections::HashSet<std::path::PathBuf> =
+            [std::path::PathBuf::from("src/a/x.rs")]
+                .into_iter()
+                .collect();
+        let affected =
+            reverse_reference_affected_modules(&deleted, &make_snapshot_with_references());
+        assert!(
+            affected.contains(&"src::d".to_string()),
+            "D 卡 related_files 含 x.rs 应失效: {:?}",
+            affected
+        );
+        assert_eq!(affected, vec!["src::b".to_string(), "src::d".to_string()]);
+    }
+
+    /// 无被删文件 / 无引用命中 → 空结果（不无差别全量重生成）
+    #[test]
+    fn test_reverse_reference_no_hit_empty() {
+        let snapshot = make_snapshot_with_references();
+        // 未被任何页面引用的删除文件 → 无失效
+        let unrelated: std::collections::HashSet<std::path::PathBuf> =
+            [std::path::PathBuf::from("src/ghost.rs")]
+                .into_iter()
+                .collect();
+        assert!(
+            reverse_reference_affected_modules(&unrelated, &snapshot).is_empty(),
+            "未被引用的删除文件不得失效任何模块"
+        );
+        // 无删除文件 → 空
+        assert!(
+            reverse_reference_affected_modules(&Default::default(), &snapshot).is_empty(),
+            "无删除文件时应返回空"
+        );
+    }
+
+    /// Windows 路径分隔符归一化：快照引用正斜杠、被删路径反斜杠时仍命中
+    #[test]
+    fn test_reverse_reference_normalizes_separators() {
+        let deleted: std::collections::HashSet<std::path::PathBuf> =
+            [std::path::PathBuf::from("src\\a\\x.rs")]
+                .into_iter()
+                .collect();
+        let affected =
+            reverse_reference_affected_modules(&deleted, &make_snapshot_with_references());
+        assert!(
+            affected.contains(&"src::b".to_string()),
+            "反斜杠被删路径应命中正斜杠引用: {:?}",
+            affected
+        );
     }
 }
