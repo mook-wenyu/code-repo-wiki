@@ -20,6 +20,10 @@ model = "deepseek-v4-flash"
 base_url = "https://opencode.ai/zen/go/v1"
 #api_key = ""
 api_key_env = "OPENCODEGO2_API_KEY"
+# v50 thinking 开关（bench 基线重录前关闭提速）：false = 发送
+# `thinking: {"type":"disabled"}`。注意：仅 openai-compatible（chat/completions）
+# 协议生效；provider=openai（Responses 协议）下该参数被静默忽略（llm.rs 警告）。
+thinking = false
 # 并发 LLM 调用上限可配：max_concurrency（缺省 16；超出上限的调用排队等待，
 # 防触发服务端动态限流——P2-8）；温度等其余参数已硬编码（v22 简化）
 
