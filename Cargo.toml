@@ -13,6 +13,10 @@ categories = ["command-line-utilities"]
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# wiki_plan.yaml 解析（v0.9 W1 重新引入）：serde_yaml 已被 dtolnay 弃用（2024-03）、
+# serde_yml 已归档且社区标记可疑（RUSTSEC-2025-0068）；serde_yaml_ng 是 serde_yaml
+# 的持续维护分支，API 完全一致（from_str/to_string 直接替换），是稳定的 drop-in 替代。
+serde_yaml_ng = "0.10"
 toml = "0.8"
 rusqlite = { version = "0.38", features = ["bundled", "load_extension", "fallible_uint"] }
 tree-sitter = "0.25"

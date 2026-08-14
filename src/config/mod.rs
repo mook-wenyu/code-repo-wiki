@@ -3,6 +3,8 @@
 pub mod mcp;
 pub mod opencode;
 
+/// wiki_plan.yaml 前置干预配置（v0.9 W1 重构，对齐 Qoder 语义，替代旧 [wiki.guide]）
+pub mod plan;
 pub mod schema;
 
 use std::path::{Path, PathBuf};
