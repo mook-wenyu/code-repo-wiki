@@ -11,18 +11,23 @@ language = "zh"
 # [wiki.guide] 段；文件不存在 = 默认行为，见 docs/reference/config.md）。见 src/config/plan.rs。
 
 [llm]
-provider = "openai"
+provider = "openai-compatible"
 model = "deepseek-v4-flash"
-# base_url 与模型配套（模板默认阵营=v29 实测可用组合）：provider=openai
-# 缺省端点=OpenAI 官方（llm.rs OpenAiProvider 兜底），不写 base_url 会把
-# DeepSeek 模型打到 OpenAI 端点（v28 t11 一键 e2e 实测连接失败）——模板
-# 必须显式声明 DeepSeek 端点，换用 OpenAI/其他服务时改此处
+# base_url 与模型配套（模板默认阵营=v29 实测可用组合）：provider=
+# openai-compatible（chat/completions，DeepSeek 网关文档化路由，见
+# schema.rs LlmProviderType 注释）缺省端点=DeepSeek 网关；显式声明便于
+# 换用 OpenAI/其他服务时改此处
 base_url = "https://opencode.ai/zen/go/v1"
 #api_key = ""
 api_key_env = "OPENCODEGO2_API_KEY"
-# v50 thinking 开关（bench 基线重录前关闭提速）：false = 发送
-# `thinking: {"type":"disabled"}`。注意：仅 openai-compatible（chat/completions）
-# 协议生效；provider=openai（Responses 协议）下该参数被静默忽略（llm.rs 警告）。
+# v50 thinking 开关（bench 基线重录前关闭提速）：false = 关闭思考。
+# 两条 openai 协议的 thinking 写法不同（I1 双路径对齐，见 llm.rs）：
+#   openai-compatible（chat/completions）→ `thinking: {"type":"disabled"}`
+#     + 可选 `reasoning_effort: "low|high|max"`
+#   openai（Responses）→ `reasoning: {"effort":"none"}`（关）/
+#     `reasoning: {"effort":"low|high|max"}`（开）
+# 模板默认 openai-compatible，故 thinking=false 实际发出
+# `thinking: {"type":"disabled"}`。
 thinking = false
 # 并发 LLM 调用上限可配：max_concurrency（缺省 16；超出上限的调用排队等待，
 # 防触发服务端动态限流——P2-8）；温度等其余参数已硬编码（v22 简化）

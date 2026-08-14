@@ -495,16 +495,11 @@ impl OpenAiProvider {
             .build()
             .context("创建 HTTP 客户端失败")?;
 
-        // P2-11：thinking/reasoning_effort 仅 chat/completions 协议有效——
-        // Responses 协议无对应参数（官方 Responses 用 output_config），
-        // 用户按文档配置的 5× 提速开关在 Responses 下静默失效，必须显式警告
-        if protocol == OpenAiProtocol::Responses
-            && (config.thinking.is_some() || config.reasoning_effort.is_some())
-        {
-            tracing::warn!(
-                "配置了 thinking/reasoning_effort，但当前 provider 使用 Responses 协议——该参数仅 chat/completions 协议生效（被静默忽略）"
-            );
-        }
+        // I1：thinking/reasoning_effort 在 chat/completions（thinking +
+        // reasoning_effort）与 Responses（reasoning.effort）两条协议路径均
+        // 正确发射（见 build_chat_body / build_responses_body 注释）——无
+        // 静默忽略组合，无需警告。Anthropic 协议无 thinking 参数，配置了
+        // 仅是不生效，不误报（见 build_messages_body 注释）。
 
         Ok(Self {
             client,
@@ -515,8 +510,9 @@ impl OpenAiProvider {
             max_retries: MAX_RETRIES,
             max_tokens: None,
             temperature: None,
-            // v50：thinking 相关参数从配置透传（仅 chat 协议使用——
-            // Responses 协议无对应参数，见 build_chat_body 注释）
+            // v50：thinking 相关参数从配置透传——chat 协议发 thinking +
+            // reasoning_effort，Responses 协议发 reasoning.effort
+            //（I1，见 build_chat_body / build_responses_body 注释）
             thinking: config.thinking,
             reasoning_effort: config.reasoning_effort.clone(),
             call_count: std::sync::atomic::AtomicUsize::new(0),
@@ -559,14 +555,14 @@ impl OpenAiProvider {
         if let Some(temp) = self.temperature {
             body["temperature"] = serde_json::json!(temp);
         }
-        // v50：DeepSeek 系 thinking 模式/推理强度（仅 chat/completions 协议）
+        // v50：DeepSeek 系 thinking 模式/推理强度（chat/completions 协议）
         //
         // 官方参数（2026-08-10 抓取 api-docs.deepseek.com/guides/thinking_mode）：
         //   thinking: {"type":"enabled"/"disabled"} + reasoning_effort: "low"/"high"/"max"
         // thinking 默认启用且 effort=high；批量文档/卡片生成（低推理任务）
         // 显式关闭可省约 5× 延迟（thinking 多 3.7× 输出 token——第三方实测）。
-        // Responses 协议无此参数（其 effort 走 output_config——本项目未使用，
-        // 见 build_responses_body 注释），Anthropic 协议无此参数。
+        // Responses 协议参数名不同（顶层 reasoning.effort，I1，见
+        // build_responses_body 注释），Anthropic 协议无此参数。
         if let Some(thinking) = self.thinking {
             body["thinking"] =
                 serde_json::json!({ "type": if thinking { "enabled" } else { "disabled" } });
@@ -621,6 +617,30 @@ impl OpenAiProvider {
         }
         if let Some(temp) = self.temperature {
             body["temperature"] = serde_json::json!(temp);
+        }
+        // I1：Responses 协议发射 thinking 控制（顶层 `reasoning` 对象，
+        // 与 chat/completions 的 `thinking:{type:...}` + `reasoning_effort`
+        // 是两套不同参数——2026-08-10 逐字核证
+        // api-docs.deepseek.com/guides/thinking_mode）：
+        //   {"reasoning":{"effort":"none"}}                关闭思考模式
+        //   {"reasoning":{"effort":"low|high|max"}}        开启并按强度
+        // 与 build_chat_body 的语义对齐（同一次配置在两条协议下行为一致）：
+        //   thinking=Some(false)            → {"effort":"none"}（显式关闭）
+        //   thinking=Some(true)             → {"effort": reasoning_effort
+        //                                      或默认 "high"}
+        //   thinking=None + effort=Some(e)  → {"effort":e}（按强度控制）
+        //   thinking=None + effort=None     → 不发射（保持 provider 默认）
+        match (self.thinking, self.reasoning_effort.as_deref()) {
+            (Some(false), _) => {
+                body["reasoning"] = serde_json::json!({ "effort": "none" });
+            }
+            (Some(true), effort) => {
+                body["reasoning"] = serde_json::json!({ "effort": effort.unwrap_or("high") });
+            }
+            (None, Some(effort)) => {
+                body["reasoning"] = serde_json::json!({ "effort": effort });
+            }
+            (None, None) => {}
         }
         body
     }
@@ -837,6 +857,10 @@ impl AnthropicProvider {
     /// 从配置创建 Anthropic Provider
     ///
     /// 优先使用 api_key 字段，其次从环境变量读取。
+    ///
+    /// 注意：thinking / reasoning_effort 仅 openai（Responses）与
+    /// openai-compatible（chat/completions）两条协议发射（I1）；Anthropic
+    /// Messages API 无对应参数，配置了仅不生效、不告警（非本次范围）。
     pub fn new(config: &LlmSection) -> Result<Self> {
         let api_key = config.api_key.clone()
             .or_else(|| std::env::var(&config.api_key_env).ok())
@@ -1422,6 +1446,59 @@ data: [DONE]
         let body = provider.build_chat_body(&[], false, None);
         assert_eq!(body["thinking"]["type"], "enabled");
         assert_eq!(body["reasoning_effort"], "high");
+    }
+
+    #[test]
+    fn test_build_responses_body_reasoning() {
+        // I1：Responses 协议用顶层 reasoning.effort 控制思考——官方格式
+        // {"reasoning":{"effort":"none"}} 关闭、{"effort":"low|high|max"}
+        // 开启（2026-08-10 核证 api-docs.deepseek.com/guides/thinking_mode），
+        // 与 chat 协议的 thinking.type + reasoning_effort 是两套参数。
+        let base = OpenAiProvider::new(
+            &openai_config("http://localhost:1"),
+            OpenAiProtocol::Responses,
+        )
+        .unwrap();
+
+        // None + None：不发射 reasoning（保持 provider 默认）
+        let body = base.build_responses_body(&[], false, None);
+        assert!(
+            body.get("reasoning").is_none(),
+            "均 None 不应发射 reasoning"
+        );
+        assert!(
+            body.get("thinking").is_none() && body.get("reasoning_effort").is_none(),
+            "Responses 不得用 chat 协议的参数名（thinking / reasoning_effort）"
+        );
+
+        // Some(false)：显式关闭 → {"effort":"none"}
+        let mut cfg = openai_config("http://localhost:1");
+        cfg.thinking = Some(false);
+        let provider = OpenAiProvider::new(&cfg, OpenAiProtocol::Responses).unwrap();
+        let body = provider.build_responses_body(&[], false, None);
+        assert_eq!(body["reasoning"]["effort"], "none");
+
+        // Some(true) + effort：开启并指定强度
+        let mut cfg = openai_config("http://localhost:1");
+        cfg.thinking = Some(true);
+        cfg.reasoning_effort = Some("high".into());
+        let provider = OpenAiProvider::new(&cfg, OpenAiProtocol::Responses).unwrap();
+        let body = provider.build_responses_body(&[], false, None);
+        assert_eq!(body["reasoning"]["effort"], "high");
+
+        // Some(true) 无 effort：回退默认 high
+        let mut cfg = openai_config("http://localhost:1");
+        cfg.thinking = Some(true);
+        let provider = OpenAiProvider::new(&cfg, OpenAiProtocol::Responses).unwrap();
+        let body = provider.build_responses_body(&[], false, None);
+        assert_eq!(body["reasoning"]["effort"], "high");
+
+        // None + effort：按强度控制思考
+        let mut cfg = openai_config("http://localhost:1");
+        cfg.reasoning_effort = Some("low".into());
+        let provider = OpenAiProvider::new(&cfg, OpenAiProtocol::Responses).unwrap();
+        let body = provider.build_responses_body(&[], false, None);
+        assert_eq!(body["reasoning"]["effort"], "low");
     }
 
     #[tokio::test]

@@ -118,17 +118,22 @@ pub struct LlmSection {
     /// None = 不发送该参数（保持 provider 默认——deepseek-v4 官方默认
     /// **启用** thinking 且 effort=high，批量文档生成实测慢约 5×、输出
     /// token 多约 3.7×，是「LLM 太慢」的根因之一）；
-    /// Some(true) = 发送 `thinking: {"type":"enabled"}`；
-    /// Some(false) = 发送 `thinking: {"type":"disabled"}`。
+    /// Some(true) = 开启思考（chat 发 `thinking: {"type":"enabled"}`，
+    ///             Responses 发 `reasoning: {"effort":...}`）；
+    /// Some(false) = 关闭思考（chat 发 `thinking: {"type":"disabled"}`，
+    ///              Responses 发 `reasoning: {"effort":"none"}`）。
     ///
-    /// 仅 openai-compatible（chat/completions）路径生效；Responses 与
-    /// Anthropic 协议不支持该参数（llm.rs 注释说明）。值域/映射以
-    /// DeepSeek 官方 Thinking Mode 文档为准（2026-08-10 抓取核证）。
+    /// openai-compatible（chat/completions）与 openai（Responses）两条
+    /// 协议均生效（I1 双路径对齐）：Responses 用顶层 `reasoning.effort`，
+    /// chat 用 `thinking.type` + `reasoning_effort`。Anthropic 协议不
+    /// 支持该参数。值域/映射以 DeepSeek 官方 Thinking Mode 文档为准
+    /// （2026-08-10 抓取核证）。
     #[serde(default)]
     pub thinking: Option<bool>,
     /// DeepSeek 系推理强度（v50，可选）："low" / "high" / "max"
     ///
-    /// 与 thinking 配套发送 `reasoning_effort` 字段；缺省不发送。
+    /// 与 thinking 配套发送：chat 协议写 `reasoning_effort` 字段，
+    /// Responses 协议写 `reasoning.effort`；缺省不发送。
     /// 官方映射：v4-flash low→low、high→high、max→max。
     #[serde(default)]
     pub reasoning_effort: Option<String>,
