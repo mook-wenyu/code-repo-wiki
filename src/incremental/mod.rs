@@ -318,6 +318,34 @@ pub fn run_incremental_update_at(
     })
 }
 
+/// 指纹比对统一入口（FileWatch 策略）：文件是否应计入变更集。
+///
+/// Err（指纹读取失败，如 IO 错误/路径是目录）必须**保守视为已变更**——
+/// 漏更新 = 产物过期且无感知（静默失败，比多生成危险得多）；多生成 =
+/// 幂等重生成，代价仅为一次重算（与 cargo/bazel "指纹失效→重建"惯例一致）。
+/// 这是语义决策而非防御性兜底：Err 时显式告警，不静默。
+fn classify_fingerprint_changed(
+    state: Option<&GenerationState>,
+    root: &ProjectRoot,
+    path: &Path,
+) -> bool {
+    match state {
+        // 状态缺失（无基线）→ 回退全量（与状态加载失败处理一致）
+        None => true,
+        Some(state) => match state.is_file_changed(root, path) {
+            Ok(changed) => changed,
+            Err(e) => {
+                tracing::warn!(
+                    "文件指纹读取失败，保守视为已变更: {}: {}",
+                    path.display(),
+                    e
+                );
+                true
+            }
+        },
+    }
+}
+
 /// FileWatch 策略的增量更新
 ///
 /// root 注入：git 仓库定位与实体变化分类的仓库根都由 root 显式给出
@@ -341,11 +369,7 @@ fn run_file_watch_incremental(
     let mut changed_files: Vec<PathBuf> = Vec::new();
 
     for insight in insights {
-        if let Ok(true) = state
-            .as_ref()
-            .map(|s| s.is_file_changed(root, &insight.path))
-            .unwrap_or(Ok(true))
-        {
+        if classify_fingerprint_changed(state.as_ref(), root, &insight.path) {
             changed_files.push(insight.path.clone());
         }
     }
@@ -367,7 +391,9 @@ fn run_file_watch_incremental(
                 }
                 continue;
             }
-            if !changed_files.contains(&rel) && state.is_file_changed(root, &rel).unwrap_or(true) {
+            if !changed_files.contains(&rel)
+                && classify_fingerprint_changed(Some(state), root, &rel)
+            {
                 changed_files.push(rel);
             }
         }
@@ -768,6 +794,96 @@ mod tests {
             changed
         );
         assert_eq!(changed.len(), 2, "指纹与 watch 路径取并集，不应重复");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// N1 回归锚：指纹读取失败（Err）必须保守视为已变更——否则该文件被
+    /// 静默剔除变更集导致漏更新（产物过期且无感知）。构造：指纹表含
+    /// `src/dirfile` 但磁盘上该路径是目录（read 目录必然 Err）。
+    #[test]
+    fn test_file_watch_fingerprint_err_is_conservative_changed() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_watch_fp_err_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let src = dir.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let rel = "src/dirfile";
+        let abs = src.join("dirfile");
+        std::fs::write(&abs, "v1").unwrap();
+
+        // 先保存状态（dirfile 指纹 v1），再把文件换成同名目录 → 读取必然 Err
+        let insight = make_insight(rel);
+        let state_dir = dir.join(".state");
+        let root = crate::project::ProjectRoot::new(dir.clone());
+        let state =
+            GenerationState::from_insights(&root, std::slice::from_ref(&insight), "test").unwrap();
+        state.save(&state_dir).unwrap();
+        std::fs::remove_file(&abs).unwrap();
+        std::fs::create_dir_all(&abs).unwrap();
+
+        // 前提确认：is_file_changed 对目录确实返回 Err（否则本测试失去意义）
+        let reloaded = GenerationState::load(&state_dir).unwrap();
+        assert!(
+            reloaded.is_file_changed(&root, Path::new(rel)).is_err(),
+            "读取目录应返回 Err（前提不成立则测试无效）"
+        );
+
+        let graph = KnowledgeGraph::default();
+        let (changed, _affected, _entity_changes, _has_deleted) = run_file_watch_incremental(
+            &root,
+            std::slice::from_ref(&insight),
+            &graph,
+            &state_dir,
+            &[],
+        )
+        .unwrap();
+        assert!(
+            changed.contains(&PathBuf::from(rel)),
+            "指纹读取 Err 必须保守计入变更集（否则漏更新）: {:?}",
+            changed
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// N1 场景 B 回归：正常未变更文件不进变更集（保守语义不能把
+    /// 正常路径全量误判为变更）。
+    #[test]
+    fn test_file_watch_unchanged_not_in_changed_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_watch_unchanged_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let src = dir.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let rel = "src/a.rs";
+        std::fs::write(src.join("a.rs"), "v1").unwrap();
+
+        let insight = make_insight(rel);
+        let state_dir = dir.join(".state");
+        let root = crate::project::ProjectRoot::new(dir.clone());
+        let state =
+            GenerationState::from_insights(&root, std::slice::from_ref(&insight), "test").unwrap();
+        state.save(&state_dir).unwrap();
+
+        let graph = KnowledgeGraph::default();
+        let (changed, _affected, _entity_changes, _has_deleted) = run_file_watch_incremental(
+            &root,
+            std::slice::from_ref(&insight),
+            &graph,
+            &state_dir,
+            &[],
+        )
+        .unwrap();
+        assert!(
+            !changed.contains(&PathBuf::from(rel)),
+            "未变更文件不得计入变更集: {:?}",
+            changed
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
