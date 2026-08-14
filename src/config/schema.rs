@@ -83,73 +83,6 @@ impl WikiConfig {
 pub struct WikiSection {
     #[serde(default = "default_language")]
     pub language: String,
-    /// v32 9.1：生成引导段（[wiki.guide]）——空=现行为零破坏。
-    /// 缺段或缺键时全部回退空 Vec，不报错（傻瓜式零配置原则）。
-    #[serde(default)]
-    pub guide: WikiGuideSection,
-}
-
-/// 生成引导档位：
-/// - `comprehensive`（默认）：全量生成，notes 引导注记全部注入；
-/// - `concise`：精简引导——notes 每条截断至 160 字符、最多注入 3 条
-///   （不丢模块/不丢页面，只精简「引导注记」本身；pages/priority 语义不变）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum GuideTier {
-    #[default]
-    Comprehensive,
-    Concise,
-}
-
-/// v32 9.1 生成引导（[wiki.guide]）：
-/// - `pages`：要生成的模块页路径前缀白名单（空=全部模块）。匹配按
-///   模块路径前缀（如 "src/net" 匹配 "src/net/tcp.rs" 模块页）；未匹配
-///   的模块不生成独立页，但仍保留 overview 汇总；全部为空匹配时报错。
-/// - `priority`：模块页确定性排序列表（优先在前的路径前缀），用于把
-///   核心模块排在文档前面；不在列表中的模块保持默认顺序。
-/// - `notes`：注入模块页生成 prompt 的引导说明（逐条列出），引导 LLM
-///   按项目约定撰写页面内容（如命名规范、必写小节、注意事项）。
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct WikiGuideSection {
-    #[serde(default)]
-    pub pages: Vec<String>,
-    #[serde(default)]
-    pub priority: Vec<String>,
-    #[serde(default)]
-    pub notes: Vec<String>,
-    /// 生成引导档位（v32 T08b）：缺省 comprehensive=全量现行为零破坏；
-    /// concise 只精简引导注记本身（不丢模块/不丢页面）。
-    #[serde(default)]
-    pub tier: GuideTier,
-}
-
-/// 按档位裁剪引导注记：comprehensive 原样返回；concise 每条截断至
-/// 160 字符、最多 3 条（超出附加省略说明）。不改变 pages/priority 语义。
-pub fn trim_guide_notes(tier: GuideTier, notes: &[String]) -> Vec<String> {
-    match tier {
-        GuideTier::Comprehensive => notes.to_vec(),
-        GuideTier::Concise => {
-            let mut out: Vec<String> = notes
-                .iter()
-                .take(3)
-                .map(|n| {
-                    let trimmed: String = n.chars().take(160).collect();
-                    if trimmed.chars().count() < n.chars().count() {
-                        format!("{}…", trimmed)
-                    } else {
-                        trimmed
-                    }
-                })
-                .collect();
-            if notes.len() > 3 {
-                out.push(format!(
-                    "（其余 {} 条引导注记已省略——concise 档位）",
-                    notes.len() - 3
-                ));
-            }
-            out
-        }
-    }
 }
 
 fn default_language() -> String {
@@ -160,7 +93,6 @@ impl Default for WikiSection {
     fn default() -> Self {
         Self {
             language: "zh".to_string(),
-            guide: WikiGuideSection::default(),
         }
     }
 }

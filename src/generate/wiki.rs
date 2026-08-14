@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::Result;
 
-use crate::config::schema::{WikiConfig, trim_guide_notes};
+use crate::config::schema::WikiConfig;
 use crate::generate::GenerationOutput;
 use crate::generate::chunk::Chunk;
 use crate::generate::llm::{LlmProvider, Message};
@@ -272,14 +272,11 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
         }
 
         let language = &config.wiki.language;
-        // T08b：concise 档位精简引导注记（每条截断至 160 字符 + 最多 3 条；
-        // 不改变 pages/priority 语义，不丢模块与页面）
-        let guide_notes = trim_guide_notes(config.wiki.guide.tier, &config.wiki.guide.notes);
         let mut messages = prompt::wiki_page_prompt(
             chunk,
             card_summary,
             language,
-            &guide_notes,
+            &[],
             dep_contexts,
             caller_contexts,
         );

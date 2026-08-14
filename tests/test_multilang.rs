@@ -79,7 +79,6 @@ fn test_render_all_multi_lang_dirs() {
     let config = WikiConfig {
         wiki: WikiSection {
             language: "zh".into(),
-            guide: Default::default(),
         },
         ..Default::default()
     };

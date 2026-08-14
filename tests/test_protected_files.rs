@@ -197,7 +197,6 @@ fn test_render_all_protected_skips() {
         output_dir: Some((dir.to_string_lossy().to_string()).into()),
         wiki: WikiSection {
             language: "zh".into(),
-            guide: Default::default(),
         },
         ..Default::default()
     };
@@ -273,7 +272,6 @@ fn test_render_all_protected_page_still_writes_card() {
         output_dir: Some((dir.to_string_lossy().to_string()).into()),
         wiki: WikiSection {
             language: "zh".into(),
-            guide: Default::default(),
         },
         ..Default::default()
     };
@@ -341,7 +339,6 @@ fn test_schema_doc_fingerprint_path_matches_render_all() {
         output_dir: Some((dir.to_string_lossy().to_string()).into()),
         wiki: WikiSection {
             language: "zh".into(),
-            guide: Default::default(),
         },
         ..Default::default()
     };
@@ -409,7 +406,6 @@ fn test_doc_fingerprint_path_matches_render_all() {
         output_dir: Some((dir.to_string_lossy().to_string()).into()),
         wiki: WikiSection {
             language: "zh".into(),
-            guide: Default::default(),
         },
         ..Default::default()
     };

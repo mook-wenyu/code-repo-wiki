@@ -248,7 +248,6 @@ fn bench_setup(
         ),
         wiki: WikiSection {
             language: "zh".into(),
-            guide: Default::default(),
         },
         llm: LlmSection {
             provider: LlmProviderType::OpenAiCompatible,

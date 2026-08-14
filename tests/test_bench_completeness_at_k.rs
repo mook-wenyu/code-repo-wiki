@@ -74,7 +74,6 @@ fn repo_with_pages(
         ),
         wiki: WikiSection {
             language: "zh".into(),
-            guide: Default::default(),
         },
         llm: LlmSection {
             provider: LlmProviderType::Mock,

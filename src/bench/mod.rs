@@ -2615,7 +2615,6 @@ mod tests {
             output_dir: Some((dir.join(".code-repo-wiki").to_string_lossy().into_owned()).into()),
             wiki: WikiSection {
                 language: "zh".into(),
-                guide: Default::default(),
             },
             llm: LlmSection {
                 provider: LlmProviderType::Mock,
@@ -2690,7 +2689,6 @@ mod tests {
             output_dir: Some((dir.join(".code-repo-wiki").to_string_lossy().into_owned()).into()),
             wiki: WikiSection {
                 language: "zh".into(),
-                guide: Default::default(),
             },
             llm: LlmSection {
                 provider: LlmProviderType::Mock,
@@ -2767,7 +2765,6 @@ mod tests {
             output_dir: Some((dir.join(".code-repo-wiki").to_string_lossy().into_owned()).into()),
             wiki: WikiSection {
                 language: "zh".into(),
-                guide: Default::default(),
             },
             llm: LlmSection {
                 provider: LlmProviderType::Mock,
@@ -2826,7 +2823,6 @@ mod tests {
             output_dir: Some((dir.join(".code-repo-wiki").to_string_lossy().into_owned()).into()),
             wiki: WikiSection {
                 language: "zh".into(),
-                guide: Default::default(),
             },
             llm: LlmSection {
                 provider: LlmProviderType::Mock,

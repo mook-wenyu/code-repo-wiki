@@ -46,7 +46,6 @@ pub fn beta() -> &'static str { "beta" }
         output_dir: Some((repo.join(".code-repo-wiki").to_string_lossy().into_owned()).into()),
         wiki: WikiSection {
             language: "zh".into(),
-            guide: Default::default(),
         },
         llm: LlmSection {
             provider: LlmProviderType::Mock,

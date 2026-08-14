@@ -143,7 +143,6 @@ fn bench_setup(tag: &str, llm: LlmSection) -> (ProjectRoot, WikiConfig) {
         ),
         wiki: WikiSection {
             language: "zh".into(),
-            guide: Default::default(),
         },
         llm,
         ..Default::default()
@@ -349,7 +348,6 @@ fn bench_setup_scripted(tag: &str, base_url: &str) -> (ProjectRoot, WikiConfig) 
         ),
         wiki: WikiSection {
             language: "zh".into(),
-            guide: Default::default(),
         },
         llm: LlmSection {
             provider: LlmProviderType::OpenAiCompatible,
