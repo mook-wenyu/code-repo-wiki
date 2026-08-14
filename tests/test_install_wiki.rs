@@ -71,6 +71,27 @@ fn test_install_wiki_creates_agents_md() {
         content.contains("完成定义"),
         "应含完成定义判据，实际: {content}"
     );
+    // W3 补强：注入块含产物新鲜度核对/人工修改保护/何时不做/预构建架构知识
+    assert!(
+        content.contains("产物新鲜度核对"),
+        "应含产物新鲜度核对指引，实际: {content}"
+    );
+    assert!(
+        content.contains("人工修改保护"),
+        "应含人工修改保护说明，实际: {content}"
+    );
+    assert!(
+        content.contains("何时不做"),
+        "应含何时不做指引，实际: {content}"
+    );
+    assert!(
+        content.contains("预构建架构知识") && content.contains("architecture-map.md"),
+        "应含少调工具架构地图指引，实际: {content}"
+    );
+    assert!(
+        content.contains("dependents"),
+        "应含卡片 dependents 反向依赖指引，实际: {content}"
+    );
 
     let _ = std::fs::remove_dir_all(&work_dir);
 }

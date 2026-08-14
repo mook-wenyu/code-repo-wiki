@@ -607,10 +607,17 @@ pub const LEGACY_WIKI_BLOCK_END: &str = "<!-- REPO-WIKI:END -->";
 ///
 /// 内容按 agents.md 标准五要素组织：命令优先（核心命令速查）/ MCP 工具清单
 /// （16.1 改名后的 wiki_ 前缀工具与使用时机）/ 完成定义（update no-op、lint
-/// 通过等判据）/ 渐进式披露（llms.txt 站点地图 → overview/architecture →
-/// 模块页 → api.md，按上下文预算分层）。只引产物路径与常用命令，不复制 wiki
-/// 正文（避免与 LLM 生成的产物内容双份漂移）。以换行结尾，保证追加/
-/// 替换后与相邻内容衔接干净。
+/// 通过等判据）/ 产物新鲜度核对（过期判据与 update 刷新路径，W3 补强——
+/// 对齐 generate_agents_md 的「先核对再消费」指引）/ 人工修改保护（指纹保护
+/// 与 generate --force 强制覆盖）/ 预构建架构知识 · 少调工具（先读
+/// architecture-map.md / llms-full.txt / 卡片 dependents 再决定是否调 MCP，
+/// W3 补强）/ 何时不做（不手改确定性重生成产物）/ 渐进式披露（llms.txt 站点
+/// 地图 → overview/architecture → 模块页 → api.md，按上下文预算分层）。
+///
+/// 只引**稳定产物路径**与模块依赖概念（llms.txt、architecture-map.md、卡片
+/// dependents 字段等产物层名词），不写易变的源码具体路径。不复制 wiki 正文
+/// （避免与 LLM 生成的产物内容双份漂移）。以换行结尾，保证追加/替换后与
+/// 相邻内容衔接干净。
 ///
 /// 产物路径按实际配置渲染（U02）：`output_dir` 与 `lang` 来自目标仓库的
 /// config.toml（output.dir / wiki.language）——此前模板硬编码 `wiki/` 与
@@ -650,6 +657,36 @@ pub fn wiki_block_template(output_dir: &str, lang: &str) -> String {
 - `update` 输出 no-op（无文件变更，跳过更新）即无增量待生成；
 - `lint` 无孤儿页/断链/过时/引用错位问题即产物健康；
 - `generate` 输出完成摘要（扫描 N 文件 / M 实体 / K 页文档）即生成成功。
+
+## 产物新鲜度核对
+
+- `{output_dir}/llms.txt` 头部含生成工具版本行，产物 mtime 距今超过 7 天视为过期
+  （过期产物会降低 Agent 检索质量）；
+- 不确定 `{output_dir}/wiki/{lang}/architecture.md` 与 `{output_dir}/wiki/{lang}/overview.md`
+  是否与当前代码一致时，以 `code-repo-wiki status` / `code-repo-wiki lint` 输出为准；
+- 过期或拿不准：先 `code-repo-wiki update` 增量刷新（无变更秒回 no-op）再消费产物。
+
+## 人工修改保护
+
+- 产物页面/知识卡片被人工编辑后不会被自动覆盖（指纹保护；`update` 跳过该页，
+  修改记入卡片 `pending_manual_edits` 节）；
+- 需要强制覆盖时用 `code-repo-wiki generate --force` 清空保护集。
+
+## 预构建架构知识 · 少调工具
+
+回答「X 如何实现」「谁依赖 X」类问题，先读产物再决定是否调 MCP 工具：
+
+1. 先读 `{output_dir}/wiki/{lang}/architecture-map.md` 架构地图——模块职责与
+   依赖/调用关系大多可直接回答实现方式与反向依赖；
+2. `{output_dir}/llms-full.txt` 一次可回答实体级问题（模块职责 + 实体清单内联）；
+3. 知识卡片 `dependents` 字段（`{output_dir}/cards/{lang}/<模块>.md`）直接给出
+   反向依赖；能少调 MCP 工具就少调（工具调用有上下文与延迟成本）。
+
+## 何时不做
+
+- 不直接编辑 `{output_dir}/llms.txt` / `{output_dir}/llms-full.txt`（确定性重生成会覆盖）；
+- 不在产物目录手工放置页面（`code-repo-wiki lint` 会判为孤儿页）；
+- 未改代码时不跑 `update`（no-op 无收益）。
 
 ## 渐进式披露（按上下文预算分层）
 
