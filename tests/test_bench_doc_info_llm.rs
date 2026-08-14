@@ -121,6 +121,51 @@ fn temp_dir(tag: &str) -> PathBuf {
     dir
 }
 
+/// B3 根治（测试端兜底）：强制 reqwest 对本地 mock server 直连、不走代理。
+///
+/// 背景：生产 LLM 客户端（src/generate/llm.rs 的 OpenAiProvider 等）在
+/// `Client::builder().build()` 时读取环境代理变量（HTTP_PROXY/ALL_PROXY/
+/// NO_PROXY）。若外部环境配置了代理，reqwest 会把对本地 mock server
+/// （127.0.0.1:随端口）的 HTTP 请求也经代理转发——代理对 loopback 返回
+/// 502 → 判定调用失败/断言挂（旧 flake）。因为客户端构建处在 src/generate/
+/// llm.rs（超出本任务文件域），无法像 `ClientBuilder::no_proxy()` 那样按
+/// URL 区分，故在此把 loopback 地址并入 NO_PROXY，使 reqwest 构建出的
+/// client 直连本地 mock server。
+///
+/// 并发安全：`std::env::set_var` 在 edition 2024 为 `unsafe`（进程级全局
+/// 可变，并行测试并发调用是数据竞争）；用 Mutex + `OnceLock` 语义保证
+/// 进程内仅执行一次 set_var，其余测试线程读到已设标记即 no-op。
+fn ensure_loopback_no_proxy() {
+    use std::sync::Mutex;
+    use std::sync::OnceLock;
+    static MUTEX: Mutex<()> = Mutex::new(());
+    static SET: OnceLock<()> = OnceLock::new();
+    let _ = SET.get_or_init(|| {
+        let _g = MUTEX.lock().unwrap();
+        let cur = std::env::var("NO_PROXY").unwrap_or_default();
+        // 已含全部 loopback 地址则保持用户原值不越权修改
+        let present = |host: &str| {
+            cur.split([',', ' ', ';'])
+                .filter(|p| !p.is_empty())
+                .any(|p| p.eq_ignore_ascii_case(host))
+        };
+        let missing: Vec<&str> = ["127.0.0.1", "localhost", "::1"]
+            .iter()
+            .copied()
+            .filter(|h| !present(h))
+            .collect();
+        if !missing.is_empty() {
+            let merged = if cur.is_empty() {
+                missing.join(",")
+            } else {
+                format!("{cur},{}", missing.join(","))
+            };
+            // Rust 2024：set_var 为 unsafe；由 OnceLock 保证单次执行
+            unsafe { std::env::set_var("NO_PROXY", merged) };
+        }
+    });
+}
+
 /// 构造被测仓库：src/a.rs（coverage 实体）+ 手工产物页 wiki/zh/a.md
 /// （确定性内容，不依赖生成流水线；TQS/Rubric 无快照/README 自动跳过）
 fn bench_setup(tag: &str, llm: LlmSection) -> (ProjectRoot, WikiConfig) {
@@ -186,7 +231,7 @@ fn test_render_markdown_doc_info_llm_branches() {
             commits_scanned: 0,
             commits_with_changes: 0,
             correctly_updated: 0,
-            recall: 1.0,
+            recall: 0.0,
         },
         time: TimeReport {
             scan_ms: 0,
@@ -379,6 +424,8 @@ fn bench_setup_scripted(tag: &str, base_url: &str) -> (ProjectRoot, WikiConfig) 
 /// - 判定调用总数 = 4（a 重试 2 + b/c 各 1）——无重试实现为 3，计数区分。
 #[test]
 fn test_doc_info_llm_retry_abstain_average_e2e() {
+    // B3：先确保 loopback 直连，再构建 provider（reqwest 在 build 时读 NO_PROXY）
+    ensure_loopback_no_proxy();
     let judge_calls = Arc::new(AtomicUsize::new(0));
     let jc = judge_calls.clone();
     let base_url = spawn_mock_server(move |body| {

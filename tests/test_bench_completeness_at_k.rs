@@ -130,7 +130,7 @@ fn base_report(completeness: CompletenessReport) -> BenchReport {
             commits_scanned: 0,
             commits_with_changes: 0,
             correctly_updated: 0,
-            recall: 1.0,
+            recall: 0.0,
         },
         time: TimeReport {
             scan_ms: 0,

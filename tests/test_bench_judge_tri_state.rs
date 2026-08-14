@@ -115,6 +115,49 @@ fn sse_response(content: &str) -> String {
     format!("data: {{\"choices\":[{{\"delta\":{{\"content\":{encoded}}}}}]}}\n\ndata: [DONE]\n\n")
 }
 
+/// B3 根治（测试端兜底）：强制 reqwest 对本地 mock server 直连、不走代理。
+///
+/// 背景：生产 LLM 客户端（src/generate/llm.rs）在 `Client::builder().build()`
+/// 时读取环境代理变量（HTTP_PROXY/ALL_PROXY/NO_PROXY）。外部环境配置代理时，
+/// reqwest 会把对 127.0.0.1:随端口 mock server 的 HTTP 请求也经代理转发 →
+/// 代理对 loopback 返回 502 → 判定调用失败/断言挂（旧 flake）。客户端构建在
+/// src/generate/llm.rs（超出本任务文件域），无法按 URL 加
+/// `ClientBuilder::no_proxy()`，故这里把 loopback 并入 NO_PROXY 使 client
+/// 直连 mock server。
+///
+/// 并发安全：edition 2024 下 `std::env::set_var` 为 `unsafe`（全局可变，
+/// 并行测试并发调用是数据竞争）；用 Mutex + OnceLock 保证进程内仅一次
+/// set_var，其余线程读到已设标记即 no-op。
+fn ensure_loopback_no_proxy() {
+    use std::sync::Mutex;
+    use std::sync::OnceLock;
+    static MUTEX: Mutex<()> = Mutex::new(());
+    static SET: OnceLock<()> = OnceLock::new();
+    let _ = SET.get_or_init(|| {
+        let _g = MUTEX.lock().unwrap();
+        let cur = std::env::var("NO_PROXY").unwrap_or_default();
+        let present = |host: &str| {
+            cur.split([',', ' ', ';'])
+                .filter(|p| !p.is_empty())
+                .any(|p| p.eq_ignore_ascii_case(host))
+        };
+        let missing: Vec<&str> = ["127.0.0.1", "localhost", "::1"]
+            .iter()
+            .copied()
+            .filter(|h| !present(h))
+            .collect();
+        if !missing.is_empty() {
+            let merged = if cur.is_empty() {
+                missing.join(",")
+            } else {
+                format!("{cur},{}", missing.join(","))
+            };
+            // Rust 2024：set_var 为 unsafe；由 OnceLock 保证单次执行
+            unsafe { std::env::set_var("NO_PROXY", merged) };
+        }
+    });
+}
+
 // ================= 响应构造 =================
 
 /// rubric 树（1 个叶子）：生成×3 与合并×1 共用同一棵树
@@ -279,6 +322,7 @@ fn bench_setup(
 /// 若无重试路径（首 uncertain 直接 abstain）则仅 5 次——计数断言区分。
 #[test]
 fn test_rubric_uncertain_retry_abstains_e2e() {
+    ensure_loopback_no_proxy();
     let responses: Vec<String> = vec![
         rubric_tree(),
         rubric_tree(),
@@ -311,6 +355,7 @@ fn test_rubric_uncertain_retry_abstains_e2e() {
 /// 则仅 3 次——计数断言区分）。
 #[test]
 fn test_rubric_uncertain_retry_recovers_e2e() {
+    ensure_loopback_no_proxy();
     let responses: Vec<String> = vec![
         rubric_tree(),
         rubric_tree(),
@@ -345,6 +390,7 @@ fn test_rubric_uncertain_retry_recovers_e2e() {
 /// 防止该修复回退。
 #[test]
 fn test_rubric_uncertain_retry_swaps_variant() {
+    ensure_loopback_no_proxy();
     let responses: Vec<String> = vec![
         rubric_tree(),
         rubric_tree(),
@@ -376,6 +422,7 @@ fn test_rubric_uncertain_retry_swaps_variant() {
 /// 不升级复测轮数（repeats = 5）。对照基线。
 #[test]
 fn test_tqs_no_escalation_below_thresholds_e2e() {
+    ensure_loopback_no_proxy();
     let a_win = tqs_score([8.0; 5], [7.0; 5]);
     let tie = tqs_score([7.0; 5], [7.0; 5]);
     // v32 6.2 起 run_rubrics_only 在 TQS 前执行 Doc Info LLM 判定
@@ -404,6 +451,7 @@ fn test_tqs_no_escalation_below_thresholds_e2e() {
 /// 升级复测轮数至 11 轮（22 次调用），repeats = 11。
 #[test]
 fn test_tqs_escalates_on_high_tie_rate_e2e() {
+    ensure_loopback_no_proxy();
     let a_win = tqs_score([8.0; 5], [7.0; 5]);
     let tie = tqs_score([7.0; 5], [7.0; 5]);
     // 前 10 次：6 平（i<6）+ 4 A 胜（6≤i<10）→ tie 0.6 触发升级；
