@@ -48,8 +48,15 @@ pub fn render_wiki_page(doc: &WikiDocument) -> String {
 
 /// 渲染 API 参考页（按模块分组，每实体一行）
 ///
-/// 输出 `签名 — 文档注释 — 文件:行` 格式，供 api-ref 模板的页面使用。
+/// 输出 `签名 — 文件:行` 格式，供 api-ref 模板的页面使用。
 /// 只收录代码实体节点，跳过 project/module/file 容器节点。
+///
+/// 实体行不嵌入源码 doc 注释首行（I-badcitation）：api.md 是纯程序化机器页，
+/// doc 注释是开发者手写的散文，可能含裸 `path:line` 形态（如 `feature.rs:144`）——
+/// lint 的引用提取器会把 `冒号前含 `.` 的路径形态` 当引用，而裸短名相对项目根
+/// 解析不到真实文件（真实文件是 `src/analysis/feature.rs`）→ 机器页自造
+/// bad-citation「引用不存在」误报。签名 + 类型 + 可见性 + 程序化定位锚点
+/// ` — {file}:{line}` 已构成完整实体清单，doc 文本交给 LLM 模块页承载。
 pub fn render_api_reference(graph: &KnowledgeGraph) -> WikiDocument {
     let mut lines = vec!["# API 参考".to_string(), String::new()];
 
@@ -71,12 +78,6 @@ pub fn render_api_reference(graph: &KnowledgeGraph) -> WikiDocument {
             }
             // 签名优先，缺失时退回实体名
             let signature = node.signature.as_deref().unwrap_or(node.name.as_str());
-            // 文档注释多行时只取首行，保持一行一实体
-            let doc = node
-                .doc_comment
-                .as_deref()
-                .map(|d| d.lines().next().unwrap_or(""))
-                .unwrap_or("");
             // v21 G 组：实体行增强标注——追加类型中文名与可见性修饰符
             // （如 `- \`pub fn load(...)\` (函数, pub) — ...`），使文档读者
             // 一眼可知实体形态与可访问性。可见性由解析器按行级文本提取
@@ -87,7 +88,13 @@ pub fn render_api_reference(graph: &KnowledgeGraph) -> WikiDocument {
                 .as_deref()
                 .map(|v| format!(", {v}"))
                 .unwrap_or_default();
-            let mut line = format!("- `{}` ({kind_zh}{vis_part}) — {}", signature, doc);
+            // I-badcitation：不嵌入源码 doc 注释首行。doc 注释是开发者手写的
+            // 散文，可能含裸 `path:line` 形态（如 `feature.rs:144`）——提取器
+            // 把 `冒号前含 `.` 的路径形态` 当引用，裸短名相对项目根解析不到
+            // → 机器页自造 bad-citation「引用不存在」误报。真实定位由下面
+            // 程序化锚点 ` — {file}:{line}` 承担（file 是解析器产出的完整
+            // 相对路径，可被正常解析），doc 文本交给 LLM 模块页承载。
+            let mut line = format!("- `{}` ({kind_zh}{vis_part})", signature);
             // 文件:行定位（无行号信息时省略）
             if let Some(file) = node.file_path.as_deref() {
                 if let Some((start, _)) = node.line_range {
@@ -595,8 +602,17 @@ mod tests {
         assert_eq!(doc.kind, DocumentKind::ApiReference);
         // 容器节点被跳过，只输出函数实体
         assert!(doc.content.contains("## crate::config"));
-        // v21 G 组：实体行带类型中文标注 + 可见性修饰符
-        assert!(doc.content.contains("- `pub fn load(path: &str) -> Result<Config>` (函数, pub) — 加载配置 — src/config.rs:12"));
+        // v21 G 组：实体行带类型中文标注 + 可见性修饰符；
+        // I-badcitation：doc 注释首行（含裸 path:line 散文）不再嵌入机器页
+        assert!(doc.content.contains(
+            "- `pub fn load(path: &str) -> Result<Config>` (函数, pub) — src/config.rs:12"
+        ));
+        assert!(!doc.content.contains("加载配置"), "doc 注释不应嵌入机器页");
+        // 程序化定位锚点仍可被引用提取器命中（不破坏 api_entity_citations 契约）
+        let cites = crate::output::citation::extract_citations(&doc.content);
+        assert_eq!(cites.len(), 1, "api.md 锚点应能被正常提取: {:?}", cites);
+        assert_eq!(cites[0].path, "src/config.rs");
+        assert_eq!(cites[0].start, 12);
         assert!(!doc.content.contains("config.rs` —"));
     }
 
@@ -630,11 +646,60 @@ mod tests {
             features: Vec::new(),
         };
         let doc = render_api_reference(&graph);
-        assert!(
-            doc.content
-                .contains("- `def run()` (函数) —  — src/main.py:1")
-        );
+        assert!(doc.content.contains("- `def run()` (函数) — src/main.py:1"));
         assert!(!doc.content.contains(", pub)"));
+    }
+
+    /// I-badcitation 回归锚：doc 注释里的裸 `path:line` 散文（开发者手写的
+    /// `feature.rs:144-155`，真实文件是 `src/analysis/feature.rs`）不得嵌入
+    /// 机器页——否则 lint 引用提取器把它当引用、裸短名相对项目根解析不到
+    /// 报「引用不存在」误报。签名 + 程序化锚点（完整相对路径）必须仍在。
+    #[test]
+    fn test_render_api_reference_omits_bare_pathline_doc() {
+        let mut g = petgraph::stable_graph::StableDiGraph::<
+            crate::model::CodeNode,
+            crate::model::CodeEdge,
+        >::new();
+        let fn_id = g.add_node(crate::model::CodeNode {
+            id: petgraph::stable_graph::NodeIndex::new(0),
+            kind: crate::model::NodeKind::Function,
+            name: "load".into(),
+            file_path: Some("src/analysis/feature.rs".into()),
+            line_range: Some((144, 155)),
+            doc_comment: Some("（feature.rs:144-155 failed → None）".into()),
+            signature: Some("pub fn load() -> Option<()>".into()),
+            visibility: Some("pub".into()),
+            module_path: vec!["crate".into(), "analysis".into()],
+        });
+        let graph = KnowledgeGraph {
+            graph: g,
+            modules: vec![crate::model::ModuleCluster {
+                name: "crate::analysis".into(),
+                node_ids: vec![fn_id],
+                cohesion: 1.0,
+                coupling: 0.0,
+                description: None,
+            }],
+            features: Vec::new(),
+        };
+        let doc = render_api_reference(&graph);
+        // 裸短名引用与 doc 文本不得出现在机器页
+        assert!(
+            !doc.content.contains("feature.rs:144-155"),
+            "裸 path:line 不得嵌入"
+        );
+        assert!(!doc.content.contains("failed → None"), "doc 散文不得嵌入");
+        // 签名 + 程序化定位锚点仍在
+        assert!(
+            doc.content.contains(
+                "- `pub fn load() -> Option<()>` (函数, pub) — src/analysis/feature.rs:144"
+            )
+        );
+        // 锚点可被引用提取器正常解析（真实相对路径）
+        let cites = crate::output::citation::extract_citations(&doc.content);
+        assert_eq!(cites.len(), 1, "锚点应可正常提取: {:?}", cites);
+        assert_eq!(cites[0].path, "src/analysis/feature.rs");
+        assert_eq!(cites[0].start, 144);
     }
 
     #[test]

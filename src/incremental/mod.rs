@@ -745,7 +745,7 @@ mod tests {
     }
 
     /// 票 03 回归锚（P0-5 配套）：分析阶段不写盘推进指纹/commit。
-    /// 存盘块已删除，状态推进由 lib.rs:617 save_generation_state 统一负责；
+    /// 存盘块已删除，状态推进由 src/lib.rs:617 save_generation_state 统一负责；
     /// 保护字段由磁盘旧状态天然承载。
     #[test]
     fn test_file_watch_midway_save_preserves_protection() {

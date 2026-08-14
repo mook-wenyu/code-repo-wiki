@@ -588,7 +588,7 @@ mod tests {
     }
 
     /// v52 T11（test_engineer 缺口 (a)）：embed_batch 失败 → 整体降级纯结构
-    /// （feature.rs:144-155 failed → None），行为等价于 embedder=None。
+    /// （src/analysis/feature.rs:144-155 failed → None），行为等价于 embedder=None。
     /// 注入恒失败 embedder，断言不 panic 且结果与 None 路径一致。
     #[test]
     fn test_detect_features_embedding_failure_degrades() {
