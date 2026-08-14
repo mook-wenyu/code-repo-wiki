@@ -19,8 +19,9 @@
 //! ## 语义对齐（阈值换算依据）
 //!
 //! vec0 的 `distance_metric=cosine` 返回 `1 - cosine_similarity`
-//! （sqlite-vec.c:479，与 usearch Cos 同语义）。原实现的相似度阈值 0.3
-//! （semantic.rs 硬编码）等价换算为 **distance ≤ 0.7**（1 - 0.3）。
+//! （sqlite-vec.c:479，与 usearch Cos 同语义）。相似度阈值由
+//! [`crate::search::MIN_COSINE_SIMILARITY`]（= 0.3）单一权威定义，
+//! 换算为 **distance ≤ 0.7**（1 - 0.3，见 [`MAX_COSINE_DISTANCE`]）。
 //! 排序方向也一致：distance 升序 = 相似度降序。
 //!
 //! ## 维度契约
@@ -41,11 +42,12 @@ use std::sync::OnceLock;
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
-/// 相似度阈值 0.3 换算后的余弦距离上限（1 - 0.3 = 0.7）
+/// 余弦距离上限 = 1 - 相似度阈值（由权威常量派生的距离形式，见模块头）
 ///
-/// 换算依据见模块头：vec0 cosine distance = 1 - cosine_similarity。
-/// 保持与旧实现（cosine_similarity > 0.3）逐位一致的行为。
-pub const MAX_COSINE_DISTANCE: f64 = 0.7;
+/// 相似度阈值由 [`crate::search::MIN_COSINE_SIMILARITY`]（= 0.3）单一权威
+/// 定义，本常量机械派生（1 - 0.3 = 0.7），保证 semantic.rs 与存储层换算
+/// 逐位一致、不再各自硬编码漂移。
+pub const MAX_COSINE_DISTANCE: f64 = 1.0 - crate::search::MIN_COSINE_SIMILARITY;
 
 /// KNN 超采样扩大的上限：单次查询最多取这么多候选行
 ///

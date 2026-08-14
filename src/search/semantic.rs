@@ -8,10 +8,11 @@
 //! - `SemanticSearch` trait：语义引擎的抽象接口，供 SearchAgent
 //!   依赖抽象（可注入 mock 测试混合检索路径）。
 //!
-//! ## 阈值语义（v6 决策 4：保持硬编码 0.3）
+//! ## 阈值语义（v6 决策 4）
 //!
-//! 相似度阈值 0.3 硬编码（OpenAI 官方 cosine 参考线），换算为余弦
-//! 距离 `MAX_COSINE_DISTANCE = 0.7`（vecdb 常量）下推到存储层过滤。
+//! 相似度阈值由 [`crate::search::MIN_COSINE_SIMILARITY`]（= 0.3，OpenAI
+//! 官方 cosine 参考线）单一权威定义；换算为余弦距离
+//! `MAX_COSINE_DISTANCE = 0.7`（vecdb 常量，由该权威派生）下推到存储层过滤。
 
 use std::path::Path;
 use std::sync::Arc;
@@ -35,7 +36,7 @@ pub trait SemanticSearch {
     fn index(&mut self, node: &CodeNode, block: &Block) -> Result<()>;
     /// 批量索引多个实体
     fn index_batch(&mut self, items: &[(CodeNode, Block)]) -> Result<()>;
-    /// 搜索最相似的 k 个实体（0.3 相似度阈值过滤）
+    /// 搜索最相似的 k 个实体（MIN_COSINE_SIMILARITY=0.3 相似度阈值过滤）
     fn search(&self, query: &str, limit: usize) -> Result<Vec<(CodeNode, f32)>>;
     /// 删除指定文件路径关联的所有向量条目
     fn remove_by_file(&mut self, file_path: &str) -> Result<usize>;
@@ -187,7 +188,8 @@ impl SemanticSearch for SemanticEngine {
             self.embedder.embed(original)
         })?;
         let query_json = vec_to_json(&q_vec);
-        // 阈值换算：相似度 0.3 ↔ 距离 0.7（vecdb 常量，见模块头）
+        // 阈值换算：相似度 MIN_COSINE_SIMILARITY(=0.3) ↔ 距离
+        // MAX_COSINE_DISTANCE(=0.7，由该权威派生，见模块头与 search::mod)
         let rows = self.db.knn(
             &query_json,
             limit,
@@ -369,7 +371,6 @@ mod tests {
             line_range: (start, end),
             signature: node.signature.clone().unwrap_or_default(),
             visibility: node.visibility.clone(),
-            scope: vec![],
             doc_comment: node.doc_comment.clone(),
             text: format!("{} {body}", node.name),
             entity: EntityRef {
@@ -704,7 +705,6 @@ mod tests {
             line_range: (1, 83),
             signature: "fn process()".into(),
             visibility: None,
-            scope: vec![],
             doc_comment: None,
             text: format!("src::process::process Function\n{body}"),
             entity: EntityRef {

@@ -180,18 +180,15 @@ pub const CITATION_RETRY_MAX: usize = 2;
 /// 与 CITATION_RETRY_MAX 合并进同一重试循环（上限取两者最大值）。
 pub const MERMAID_RETRY_MAX: usize = crate::output::mermaid_check::MERMAID_RETRY_MAX;
 
-/// 带退避的 LLM 调用重试（v50 简化：重试语义统一在 llm.rs 层）
+/// 一次 LLM 调用 + 失败告警透传（v50 起不再实现重试）。
 ///
-/// 原实现（v22）在此层对**一切** Err 无条件重试 3 次——但 llm.rs 的
-/// retry_with_backoff 已对可重试错误（429/5xx/reqwest 连接失败）重试
-/// 过 MAX_RETRIES 次，且对不可重试错误（黑洞首字节超时 90s、业务 4xx）
-/// 立即返回 Err。上层重复重试把黑洞最坏等待从 90s 放大到约 270s
-/// （v50 实测链：llm.rs 判不可重试 → wiki.rs 再等 3×90s），且 mock/
-/// 测试注入的失败也被白白重试。修复：上层直接透传 llm.rs 的重试结论。
-///
-/// provider 泛型化保留（Mock 也走此路径）；瞬时错误自愈能力完全由
-/// llm.rs 层提供，本函数仅保留包装（失败信息附模块上下文便于排查）。
-async fn complete_with_retry<P: LlmProvider>(
+/// 重试由 llm.rs 的 retry_with_backoff 层统一负责：它对可重试错误
+/// （429/5xx/reqwest 连接失败）已重试 MAX_RETRIES 次，对不可重试错误
+/// （黑洞首字节超时 90s、业务 4xx）立即返回 Err。本层此前（v22 起）对
+/// **一切** Err 无条件重试 3 次，把黑洞最坏等待从 90s 放大到约 270s
+/// 且 mock/测试注入的失败也被白白重试；v50 修复为上层直接透传 llm.rs
+/// 的重试结论——本函数仅负责一次调用 + 失败时 warn 并原样返回结果。
+async fn complete_with_failure_warn<P: LlmProvider>(
     provider: &P,
     messages: &[Message],
     module: &str,
@@ -322,9 +319,11 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
             // v22 修复：调用级失败（连接重置/超时/5xx 等瞬时错误）原先
             // 直接 `?` 抛出——长任务中瞬时错误会让整个模块页静默丢失
             // （Unity 实测 10 个模块页因调用失败而缺失，卡片页一并丢失）。
-            // 此处只重试调用错误；校验失败走下方既有反馈循环。
-            content = complete_with_retry(self.provider, &messages, &chunk.module_path.join("::"))
-                .await?;
+            // v50 起重试统一在 llm.rs 层，此处仅告警透传调用错误（失败
+            // warn + 原样返回）；校验失败走下方既有反馈循环。
+            content =
+                complete_with_failure_warn(self.provider, &messages, &chunk.module_path.join("::"))
+                    .await?;
             // 空/纯空白内容同样视为校验失败（重试语义：不产出空白页面）
             last_invalid = if content.trim().is_empty() {
                 vec![crate::output::citation::InvalidCitation {
@@ -718,7 +717,7 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
         // 聚类/职责/卡片摘要/依赖摘要均声明为数据而非指令）
         let messages = vec![
             Message::system(overview_system_prompt(&config.wiki.language)),
-            Message::user(overview_user_prompt(&modules, &output.cards, graph, config)),
+            Message::user(overview_user_prompt(&modules, &output.cards, graph)),
         ];
         let content = self
             .complete_with_mermaid_guard(messages, "项目概览")
@@ -992,7 +991,6 @@ fn overview_user_prompt(
     modules: &[crate::model::ModuleCluster],
     cards: &[crate::model::KnowledgeCard],
     graph: &KnowledgeGraph,
-    _config: &WikiConfig,
 ) -> String {
     let mut parts = Vec::new();
 
@@ -1252,7 +1250,7 @@ mod tests {
     async fn test_complete_with_retry_passthrough_success() {
         // v50：成功路径一次调用直接返回内容（上层无重试循环）
         let provider = FlakyProvider::new(0);
-        let content = complete_with_retry(&provider, &[], "src::test")
+        let content = complete_with_failure_warn(&provider, &[], "src::test")
             .await
             .unwrap();
         assert_eq!(content, "重试成功");
@@ -1266,7 +1264,7 @@ mod tests {
         // 透传）。上层重复重试会把 90s 黑洞放大到约 270s（v50 修复），
         // 故失败仅记录 warn 后原样返回，调用恰好 1 次。
         let provider = FlakyProvider::new(10);
-        let err = complete_with_retry(&provider, &[], "src::test")
+        let err = complete_with_failure_warn(&provider, &[], "src::test")
             .await
             .unwrap_err();
         assert!(err.to_string().contains("模拟瞬时网络错误"));
@@ -2192,7 +2190,6 @@ mod tests {
         use crate::model::KnowledgeCard;
 
         let graph = KnowledgeGraph::default();
-        let config = WikiConfig::default();
         let card = KnowledgeCard {
             module_name: "src::net".into(),
             module_type: "module".into(),
@@ -2219,7 +2216,7 @@ mod tests {
             card_kind: crate::model::CardKind::Module,
             spec_categories: vec![],
         };
-        let prompt = overview_user_prompt(&[], &[card], &graph, &config);
+        let prompt = overview_user_prompt(&[], &[card], &graph);
         assert!(prompt.contains("## 模块卡片摘要"), "应含卡片摘要节");
         assert!(prompt.contains("src::net"), "应含模块名");
         assert!(prompt.contains("网络模块"), "应含卡片摘要");

@@ -1,8 +1,8 @@
 //! 结构感知代码块——语义索引的最小单元
 //!
 //! 语义嵌入/检索从「裸实体源码片段」升级为「结构感知块」（v0.7.2）：
-//! 每个块承载模块路径、作用域链、文件行、可见性、签名、doc 首段与
-//! body 源码，嵌入文本即「作用域前缀 + 签名 + body」的拼接——对应 T2
+//! 每个块承载模块路径、文件行、可见性、签名、doc 首段与
+//! body 源码，嵌入文本即「模块路径 + 签名 + body」的拼接——对应 T2
 //! 最佳实践：避免裸函数体（裸 body 丢失语义上下文，向量退化为词袋）。
 //!
 //! 块由 chunker（src/search/chunker.rs）按 tree-sitter 顶层定义节点切分，
@@ -44,10 +44,8 @@ pub struct Block {
     /// 声明头（body 字段之前的部分，如 `pub fn foo(a: i32)`）
     pub signature: String,
     pub visibility: Option<String>,
-    /// 作用域链（包围 impl/class 名；顶层块为空——嵌套方法并入父块不拆）
-    pub scope: Vec<String>,
     pub doc_comment: Option<String>,
-    /// 嵌入文本（模块路径 + 作用域 + 文件行 + 可见性 + 签名 + doc + body）
+    /// 嵌入文本（模块路径 + 文件行 + 可见性 + 签名 + doc + body）
     pub text: String,
     /// 源码级实体引用（与图 CodeNode 关联的轻量键）
     pub entity: EntityRef,

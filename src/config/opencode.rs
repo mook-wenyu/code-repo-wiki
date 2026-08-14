@@ -98,15 +98,11 @@ impl OpenCodeConfig {
                 "清理 opencode.json 中无效的 plugins 键（官方仅认单数 plugin）: {}",
                 self.config_path.display()
             );
-            // 顶层必须是对象（数组/标量 JSON 无键可清，属配置错误，显式报错而非兜底）
+            // 已在函数顶部确认顶层为 JSON 对象（非对象已 bail），此处重复的对象
+            // 检查是死代码，直接以断言清键（行为与原先完全一致）。
             value
                 .as_object_mut()
-                .with_context(|| {
-                    format!(
-                        "opencode.json 顶层应为 JSON 对象: {}",
-                        self.config_path.display()
-                    )
-                })?
+                .expect("函数顶部已确认顶层为 JSON 对象")
                 .remove("plugins");
         }
 

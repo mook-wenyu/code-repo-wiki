@@ -281,7 +281,7 @@ fn has_path(events: &[WatchEvent], kind: ChangeKind, path: &Path) -> bool {
         .iter()
         .any(|e| e.kind == kind && e.paths.iter().any(|p| p == path))
 }
-///
+
 /// Modify 与 Remove 混合的窗口产出两个独立事件，删除路径不与被
 /// 修改路径混在一起，下游可直入清理而无需 exists() 推断。
 fn aggregate_events(

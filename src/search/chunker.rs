@@ -110,7 +110,6 @@ impl Chunker for FileChunker {
             line_range: (1, line_count),
             signature: String::new(),
             visibility: None,
-            scope: vec![],
             doc_comment: None,
             text,
             entity: EntityRef {
@@ -213,7 +212,6 @@ fn block_from_node(
         line_range: (start, end),
         signature,
         visibility,
-        scope: vec![],
         doc_comment: doc,
         text,
         entity: EntityRef {

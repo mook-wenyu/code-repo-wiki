@@ -1980,7 +1980,6 @@ fn synthetic_block(node: &model::CodeNode, source: Option<&str>) -> search::bloc
         line_range: (start, end),
         signature: node.signature.clone().unwrap_or_default(),
         visibility: node.visibility.clone(),
-        scope: vec![],
         doc_comment: node.doc_comment.clone(),
         text,
         entity: search::block::EntityRef {
@@ -2424,7 +2423,6 @@ mod tests {
             line_range: (2, 6),
             signature: String::new(),
             visibility: None,
-            scope: vec![],
             doc_comment: None,
             text: "impl Point body".to_string(),
             entity: search::block::EntityRef {
