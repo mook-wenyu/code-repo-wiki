@@ -25,6 +25,7 @@
 - `wiki_page_prompt` / `knowledge_card_prompt` 的 notes 参数链改为接收 plan notes（PlanNote{text, author}）
 - `WikiDocument` 新增 `parent` 字段（serde default，旧快照兼容）；`_toc.md` 按 parent 分组挂载自定义文档
 - 扫描器新增可选 scope 过滤（include/exclude，相对项目根匹配）
+- **embed 批内并发默认为 1（修复百炼 429 吞吐限流）**：批内 HTTP 并发从硬编码 4 改为可配置 `[embed] batch_concurrency`（缺省 1）——阿里百炼 qwen3-text-embedding 默认 TPM=1M/分钟，429 `insufficient_quota` 是 TPS/TPM 吞吐限流（非资金配额），批内 4 路并发 × 每请求 20 条 × 每条最多 8000 字符轻松打满且持续 429；默认串行批内请求压到 TPM 之下，整批并发仍由 `max_concurrency`（缺省 4）控制，`batch_concurrency=0` 解析期/构造期双双拒绝（buffer_unordered(0) panic 前拦截）
 
 ## [0.8.0] - 2026-08-14
 

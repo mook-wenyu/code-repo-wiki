@@ -276,6 +276,7 @@ mod tests {
             api_key_env: "OPENAI_API_KEY".into(),
             base_url: Some("http://localhost:9999/v1".into()),
             max_concurrency: None,
+            batch_concurrency: None,
             provider: EmbedProvider::Remote,
         };
         Arc::new(EmbeddingEngine::new(&config, test_runtime().handle().clone()).unwrap())
@@ -290,6 +291,7 @@ mod tests {
             api_key_env: "OPENAI_API_KEY".into(),
             base_url: Some(format!("{}/v1", base_url)),
             max_concurrency: None,
+            batch_concurrency: None,
             provider: EmbedProvider::Remote,
         };
         Arc::new(EmbeddingEngine::new(&config, rt.handle().clone()).unwrap()) as Arc<dyn Embedder>

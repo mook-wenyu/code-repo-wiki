@@ -238,9 +238,21 @@ pub struct EmbedSection {
     pub api_key_env: String,
     /// Embedding 调用并发上限（P2-8 配套，可选）
     ///
-    /// embed_batch 分批发往 API 的并发信号量上限；None 时引擎用内置默认 4。
+    /// embed_batch 分批发往 API 的并发信号量上限（整批并发）；None 时引擎用
+    /// 内置默认 4。与 batch_concurrency 是两层：前者限制「同时运行的整批嵌入」，
+    /// 后者限制「单个批内并发 HTTP 请求数」。
     #[serde(default)]
     pub max_concurrency: Option<u32>,
+    /// 批内并发 HTTP 请求数（可选，默认 1）
+    ///
+    /// 单个 embed_batch 内同时发往 API 的请求数。默认 1（串行批内请求）：
+    /// 阿里百炼 qwen3-text-embedding 默认 TPM=1,000,000/分钟，429
+    /// insufficient_quota 官方定义为 TPS/TPM 每分钟吞吐限流（非资金配额），
+    /// 此前批内硬编码 4 路并发 × 每请求 20 条 × 每条最多 8000 字符，大仓一次
+    /// 嵌入轻松打满 1M TPM 且持续 429（重试退避封顶 8s 仍落同一分钟窗口）。
+    /// 需要提速时手动调大（超限由 retry_with_backoff 的 429 退避兜底）。
+    #[serde(default)]
+    pub batch_concurrency: Option<u32>,
     /// 嵌入提供方：remote（远程 API，默认）| mock（测试）
     #[serde(default)]
     pub provider: EmbedProvider,
@@ -271,6 +283,7 @@ impl Default for EmbedSection {
             api_key: None,
             api_key_env: "BAILIAN_API_KEY".to_string(),
             max_concurrency: None,
+            batch_concurrency: None,
             provider: EmbedProvider::default(),
         }
     }

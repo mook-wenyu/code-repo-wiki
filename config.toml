@@ -39,5 +39,11 @@ model = "qwen3.7-text-embedding"
 base_url = "https://llm-q0265e4he9m0qs23.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
 #api_key = ""
 api_key_env = "BAILIAN_API_KEY"
-# 批量嵌入并发可配：embed.max_concurrency（缺省 4）；batch_size 已硬编码
+# 批量嵌入并发可配（两层）：
+#   embed.max_concurrency  缺省 4——整批并发上限（同时运行的 embed_batch 数）
+#   embed.batch_concurrency 缺省 1——单批内并发 HTTP 请求数。百炼
+#     qwen3-text-embedding TPM=1M/分钟，批内并发过高触发 429 吞吐限流
+#     （insufficient_quota=TPS/TPM 限流，非资金配额）；默认 1 保守串行，
+#     需提速再手动调大（超限由 429 重试退避兜底）。
+# batch_size 已硬编码
 # provider = "remote"   # remote=远程 API（默认）| mock=测试 mock server；本地 ONNX 路径已删除（v0.7.2）

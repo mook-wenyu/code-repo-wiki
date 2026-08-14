@@ -13,8 +13,11 @@ pub struct EmbeddingEngine {
     client: reqwest::Client,
     config: EmbedSection,
     call_count: AtomicUsize,
-    /// 并发信号量（P2-8）：embed_batch 分批发往 API 的并发上限（默认 4）
+    /// 并发信号量（P2-8）：embed_batch 分批发往 API 的整批并发上限（默认 4）
     semaphore: Arc<tokio::sync::Semaphore>,
+    /// 批内并发 HTTP 请求数（batch_concurrency，默认 1）——单个 embed_batch
+    /// 内同时发送的请求数。默认 1 串行批内请求，避免打满百炼 TPM 吞吐限流。
+    batch_concurrency: usize,
     /// 全局 tokio Runtime 句柄（同步 Embedder 实现经其驱动 async 请求）
     rt: tokio::runtime::Handle,
 }
@@ -38,6 +41,13 @@ impl EmbeddingEngine {
                 anyhow::ensure!(mc > 0, "max_concurrency 必须为正整数（当前 0）");
                 mc as usize
             })),
+            // batch_concurrency：批内并发（默认 1）。0 会让 buffer_unordered(0)
+            // 直接 panic，构造期拦截（与 max_concurrency 同款守卫）。
+            batch_concurrency: {
+                let bc = config.batch_concurrency.unwrap_or(1);
+                anyhow::ensure!(bc > 0, "batch_concurrency 必须为正整数（当前 0）");
+                bc as usize
+            },
             rt,
         })
     }
@@ -104,9 +114,16 @@ impl EmbeddingEngine {
             .map_err(|_| anyhow::anyhow!("并发信号量已关闭"))?;
 
         // P2-13：批次间并发——embedding 请求是纯网络 IO（无共享状态），
-        // 串行等待每批 RTT 让大仓批量嵌入分钟级阻塞。buffer_unordered(4)
-        // 并发发送、按 chunk 索引收集，保持结果顺序与串行一致。
-        const EMBED_CONCURRENCY: usize = 4;
+        // 串行等待每批 RTT 让大仓批量嵌入分钟级阻塞。buffer_unordered 并发
+        // 发送、按 chunk 索引收集，保持结果顺序与串行一致。
+        //
+        // 并发度取 batch_concurrency（默认 1）而非硬编码 4：阿里百炼
+        // qwen3-text-embedding 默认 TPM=1,000,000/分钟，429 insufficient_quota
+        // 是 TPS/TPM 每分钟吞吐限流（非资金配额）。批内 4 路并发 × 每请求 20 条
+        // × 每条最多 8000 字符，大仓一次嵌入轻松打满 1M TPM；重试退避封顶 8s
+        // 仍落同一分钟窗口 → 持续 429。默认 1 把单批吞吐压到 TPM 之下，整批
+        // 并发仍由 max_concurrency 信号量控制；需要提速时手动调大
+        // batch_concurrency（超限由 retry_with_backoff 的 429 退避兜底）。
         let chunks: Vec<&[&str]> = texts
             .chunks(crate::config::schema::EMBED_BATCH_SIZE)
             .collect();
@@ -157,7 +174,7 @@ impl EmbeddingEngine {
                 Ok::<_, anyhow::Error>((idx, resp))
             }
         }))
-        .buffer_unordered(EMBED_CONCURRENCY);
+        .buffer_unordered(self.batch_concurrency);
 
         // 按索引收集（buffer_unordered 完成序与提交序不同，必须重排）
         while let Some(item) = stream.next().await {
@@ -342,5 +359,46 @@ mod tests {
             err.contains("必须为正整数"),
             "错误信息应引导配置修正: {err}"
         );
+    }
+
+    /// batch_concurrency=0 是配置错误：buffer_unordered(0) 直接 panic（futures 约束），
+    /// 构造期拦截（与 max_concurrency 同款守卫）。
+    #[test]
+    fn test_embedding_engine_rejects_zero_batch_concurrency() {
+        let cfg = EmbedSection {
+            batch_concurrency: Some(0),
+            ..Default::default()
+        };
+        let handle = tokio::runtime::Runtime::new().unwrap().handle().clone();
+        let err = EmbeddingEngine::new(&cfg, handle)
+            .err()
+            .expect("batch_concurrency=0 应被构造器拒绝")
+            .to_string();
+        assert!(
+            err.contains("batch_concurrency"),
+            "错误信息应点名 batch_concurrency: {err}"
+        );
+    }
+
+    /// 批内并发默认 1：不配置 batch_concurrency 时引擎回落保守串行，
+    /// 避免大仓一次嵌入打满百炼 TPM 吞吐限流（429 insufficient_quota）。
+    #[test]
+    fn test_embedding_engine_default_batch_concurrency_is_one() {
+        let cfg = EmbedSection::default();
+        let handle = tokio::runtime::Runtime::new().unwrap().handle().clone();
+        let engine = EmbeddingEngine::new(&cfg, handle).expect("默认配置应可构造");
+        assert_eq!(engine.batch_concurrency, 1);
+    }
+
+    /// 显式配置 batch_concurrency 生效：engine 按配置值约束批内并发。
+    #[test]
+    fn test_embedding_engine_reads_batch_concurrency() {
+        let cfg = EmbedSection {
+            batch_concurrency: Some(3),
+            ..Default::default()
+        };
+        let handle = tokio::runtime::Runtime::new().unwrap().handle().clone();
+        let engine = EmbeddingEngine::new(&cfg, handle).expect("batch_concurrency=3 应可构造");
+        assert_eq!(engine.batch_concurrency, 3);
     }
 }

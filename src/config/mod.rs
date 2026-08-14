@@ -346,6 +346,11 @@ fn validate_config(config: &schema::WikiConfig) -> Result<()> {
     if config.embed.max_concurrency == Some(0) {
         anyhow::bail!("配置错误: embed.max_concurrency 必须大于 0");
     }
+    // batch_concurrency=0 会让 buffer_unordered(0) panic（futures 库约束），
+    // 解析期先行拦截（embed.rs 构造器同款守卫）。
+    if config.embed.batch_concurrency == Some(0) {
+        anyhow::bail!("配置错误: embed.batch_concurrency 必须大于 0");
+    }
     // model/base_url：非空——空模型名/空端点会请求到空串，供应商侧报错
     // 且错误难以定位；schema 默认值均非空，此处只拦截显式写空的配置。
     if config.llm.model.trim().is_empty() {
@@ -847,6 +852,17 @@ fn test_validate_rejects_zero_max_concurrency() {
         "embed_mc",
         "[embed]\nmax_concurrency = 0\n",
         "max_concurrency",
+    );
+}
+
+/// audit-cfg-03：embed.batch_concurrency=0 → 解析期拒绝（buffer_unordered(0)
+/// panic 前拦截，与 max_concurrency=0 同款守卫）
+#[test]
+fn test_validate_rejects_zero_batch_concurrency() {
+    assert_config_rejected(
+        "embed_bc",
+        "[embed]\nbatch_concurrency = 0\n",
+        "batch_concurrency",
     );
 }
 
