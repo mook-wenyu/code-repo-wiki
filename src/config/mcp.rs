@@ -796,8 +796,9 @@ impl DshMcp {
         let out = Self::cleanup_blank_lines(&Self::splice(&content, s, e, ""));
         if out.trim().is_empty() {
             // 剩余内容为空（文件本工具独占且无用户内容）→ 删除文件
-            std::fs::remove_file(&self.path)
-                .with_context(|| format!("删除空 cordis.patch.yml 失败: {}", self.path.display()))?;
+            std::fs::remove_file(&self.path).with_context(|| {
+                format!("删除空 cordis.patch.yml 失败: {}", self.path.display())
+            })?;
         } else {
             Self::write(&self.path, &out)?;
         }
@@ -1269,7 +1270,10 @@ mod tests {
         mcp.install("/usr/bin/code-repo-wiki").unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("# 用户注释"), "用户注释应保留");
-        assert!(content.contains("id: memory-my-server"), "其他 insert 行应保留");
+        assert!(
+            content.contains("id: memory-my-server"),
+            "其他 insert 行应保留"
+        );
         assert!(content.contains("id: code-repo-wiki"), "本工具行应追加");
     }
 
@@ -1278,7 +1282,10 @@ mod tests {
     fn dsh_remove_block_cleans_and_is_idempotent() {
         let dir = temp_dir("dsh-remove");
         let path = dir.join("cordis.patch.yml");
-        write(&path, "# 用户注释\n- insert:\n    - id: other\n      name: x\n");
+        write(
+            &path,
+            "# 用户注释\n- insert:\n    - id: other\n      name: x\n",
+        );
         let mcp = DshMcp { path: path.clone() };
         mcp.install("/usr/bin/code-repo-wiki").unwrap();
         assert!(mcp.remove().unwrap(), "首次卸载应实际移除");
@@ -1288,10 +1295,7 @@ mod tests {
         assert!(!content.contains("id: code-repo-wiki"), "本工具行应被删除");
         assert!(content.contains("# 用户注释"), "用户内容应保留");
         assert!(content.contains("id: other"), "其他 insert 行应保留");
-        assert!(
-            !content.contains("\n\n\n"),
-            "块删除后不得残留连续空行"
-        );
+        assert!(!content.contains("\n\n\n"), "块删除后不得残留连续空行");
     }
 
     /// 卸载：文件缺失 / 无本工具记录 → 幂等 false
@@ -1331,10 +1335,7 @@ mod tests {
             .to_string();
         write(&path, &bare);
         let mcp = DshMcp { path: path.clone() };
-        assert!(
-            mcp.install("/new/rw").unwrap(),
-            "命令不一致应升级为管理块"
-        );
+        assert!(mcp.install("/new/rw").unwrap(), "命令不一致应升级为管理块");
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains(DSH_BLOCK_START), "应升级为受管块");
         assert!(content.contains("command: \"/new/rw\""), "command 应更新");
@@ -1348,7 +1349,9 @@ mod tests {
         let dir2 = temp_dir("dsh-legacy-match");
         let path2 = dir2.join("cordis.patch.yml");
         write(&path2, &bare);
-        let mcp2 = DshMcp { path: path2.clone() };
+        let mcp2 = DshMcp {
+            path: path2.clone(),
+        };
         assert!(!mcp2.install("/old/rw").unwrap(), "命令一致应跳过");
         let content2 = std::fs::read_to_string(&path2).unwrap();
         assert_eq!(content2, bare, "跳过时文件不得被改动");

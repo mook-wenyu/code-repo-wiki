@@ -1253,11 +1253,7 @@ fn main() -> anyhow::Result<()> {
             // 配置链解析完成（来源可能是用户级或项目级 config.toml——
             // 项目级存在时优先，用户级缺失不自动创建，见 load_default_config）
             tracing::info!("配置链就绪（来源: {}）", source.display());
-            let opts = code_repo_wiki::commands::InstallOptions {
-                claude,
-                codex,
-                dsh,
-            };
+            let opts = code_repo_wiki::commands::InstallOptions { claude, codex, dsh };
             code_repo_wiki::commands::install(&root, &opts)?;
         }
         Commands::Uninstall { force, root } => {

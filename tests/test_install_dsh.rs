@@ -114,11 +114,7 @@ fn test_install_dsh_with_codex_both_written() {
     let (work_dir, home, envs) = setup("dsh_codex");
     let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
-    let out = run_bin_with_envs(
-        &work_dir,
-        &["install", "--dsh", "--codex"],
-        &envs_ref,
-    );
+    let out = run_bin_with_envs(&work_dir, &["install", "--dsh", "--codex"], &envs_ref);
     assert!(
         out.status.success(),
         "install --dsh --codex 应成功，stderr: {}",
@@ -177,7 +173,10 @@ fn test_uninstall_dsh_removes_block() {
     let out3 = run_bin_with_envs(&work_dir, &["uninstall", "--force"], &envs_ref);
     assert!(out3.status.success(), "未安装时卸载应退出码 0");
     let stdout = String::from_utf8_lossy(&out3.stdout);
-    assert!(stdout.contains("不存在"), "应提示条目不存在，实际: {stdout}");
+    assert!(
+        stdout.contains("不存在"),
+        "应提示条目不存在，实际: {stdout}"
+    );
 
     let _ = std::fs::remove_dir_all(&work_dir);
 }
