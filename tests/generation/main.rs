@@ -5,10 +5,10 @@
 mod common;
 
 mod integration_test;
-mod test_e2e;
-mod test_based_on_commit;
 mod output_override_test;
 mod progress_test;
-mod test_determinism;
 mod snapshot_test;
+mod test_based_on_commit;
+mod test_determinism;
+mod test_e2e;
 mod test_v31_empty_chunk_fix;

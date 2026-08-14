@@ -4,6 +4,6 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-mod test_mcp;
-mod test_graph_incremental_index;
 mod test_edge_cases;
+mod test_graph_incremental_index;
+mod test_mcp;

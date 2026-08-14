@@ -4,7 +4,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-mod test_install_wiki;
-mod test_install_opencode;
-mod test_install_dsh;
 mod test_hook_install;
+mod test_install_dsh;
+mod test_install_opencode;
+mod test_install_wiki;

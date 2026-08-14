@@ -5,7 +5,7 @@
 mod common;
 
 mod test_config_template;
+mod test_index_guide;
 mod test_multilang;
 mod test_parser_dedup_7lang;
-mod test_index_guide;
 mod test_protected_files;

@@ -5,5 +5,5 @@
 mod common;
 
 mod test_bench_completeness_at_k;
-mod test_bench_judge_tri_state;
 mod test_bench_doc_info_llm;
+mod test_bench_judge_tri_state;

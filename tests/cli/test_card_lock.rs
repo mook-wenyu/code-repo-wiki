@@ -11,9 +11,9 @@
 //! acquire_run_lock 写入锁文件；Windows 上 LockFileEx 阻止子进程读锁定
 //! 区域，错误信息会退化为「PID 未知」——断言只依赖「正在运行」。
 
+use crate::common::{mock_llm_server, openai_compatible_config, run_bin_with_envs, unique_dir};
 use code_repo_wiki::config::schema::WikiConfig;
 use code_repo_wiki::fs::acquire_run_lock;
-use crate::common::{mock_llm_server, openai_compatible_config, run_bin_with_envs, unique_dir};
 use std::path::Path;
 
 /// 复制 fixture 并写入指向 mock LLM 的 mock-server.toml，返回工作目录

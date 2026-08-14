@@ -308,10 +308,7 @@ pub fn detect_communities_with_quality(
     // 按社区 ID 分组回 File 节点（src 连通子集）
     let mut groups: HashMap<usize, Vec<NodeId>> = HashMap::new();
     for (p, &comm) in membership.iter().enumerate() {
-        groups
-            .entry(comm)
-            .or_default()
-            .push(leiden_vector[p].1);
+        groups.entry(comm).or_default().push(leiden_vector[p].1);
     }
     communities.extend(groups.into_values());
 
@@ -997,7 +994,12 @@ mod tests {
 
         let communities = detect_communities(&kg);
         // src::a + src::b 应同社区；tests::t 独立
-        assert_eq!(communities.len(), 2, "应产出 2 个社区, 实际 {:?}", communities);
+        assert_eq!(
+            communities.len(),
+            2,
+            "应产出 2 个社区, 实际 {:?}",
+            communities
+        );
         let src_comm = communities
             .iter()
             .find(|c| c.len() == 2)
@@ -1005,15 +1007,24 @@ mod tests {
         let sp = community_paths(&kg, src_comm);
         assert!(sp.contains(&"src/a.rs".to_string()));
         assert!(sp.contains(&"src/b.rs".to_string()));
-        assert!(!sp.contains(&"tests/t.rs".to_string()), "跨域文件不得并入 src 社区");
+        assert!(
+            !sp.contains(&"tests/t.rs".to_string()),
+            "跨域文件不得并入 src 社区"
+        );
 
         let tests_comm = communities
             .iter()
             .find(|c| {
-                community_paths(&kg, c).iter().any(|p| p.starts_with("tests/"))
+                community_paths(&kg, c)
+                    .iter()
+                    .any(|p| p.starts_with("tests/"))
             })
             .expect("tests/t.rs 应独立成社区");
-        assert_eq!(tests_comm.len(), 1, "tests 域不参与 Leiden，单文件一社区(tests)");
+        assert_eq!(
+            tests_comm.len(),
+            1,
+            "tests 域不参与 Leiden，单文件一社区(tests)"
+        );
     }
 
     /// U1：非 src 域文件全部按目录聚簇（不走 Leiden）——tests/clustering/ 下
@@ -1051,8 +1062,10 @@ mod tests {
         assert_eq!(bench.len(), 1, "独立测试文件按目录聚簇单文件: {bench:?}");
         // 跨目录互调未把 x 与 z 并入（不同目录键）
         assert!(
-            !pairs.iter().any(|p| p.contains(&"tests/clustering/x.rs".to_string())
-                && p.contains(&"tests/bench/z.rs".to_string())),
+            !pairs
+                .iter()
+                .any(|p| p.contains(&"tests/clustering/x.rs".to_string())
+                    && p.contains(&"tests/bench/z.rs".to_string())),
             "非 src 不同目录不得合并: {pairs:?}"
         );
     }
@@ -1068,7 +1081,12 @@ mod tests {
         add_calls(g, efoo, ecommon);
 
         let communities = detect_communities(&kg);
-        assert_eq!(communities.len(), 1, "common 并入父目录后应只剩 1 社区, 实际 {:?}", communities);
+        assert_eq!(
+            communities.len(),
+            1,
+            "common 并入父目录后应只剩 1 社区, 实际 {:?}",
+            communities
+        );
         assert_eq!(
             communities[0].len(),
             2,
@@ -1100,11 +1118,18 @@ mod tests {
         let lp = community_paths(&kg, lib_comm);
         assert!(lp.contains(&"src/mod/lib.rs".to_string()));
         assert!(lp.contains(&"src/mod/other.rs".to_string()));
-        assert!(!lp.contains(&"src/test/git.rs".to_string()), "孤立文件不得并入 lib 社区");
+        assert!(
+            !lp.contains(&"src/test/git.rs".to_string()),
+            "孤立文件不得并入 lib 社区"
+        );
 
         let git_comm = communities
             .iter()
-            .find(|c| community_paths(&kg, c).iter().any(|p| p == "src/test/git.rs"))
+            .find(|c| {
+                community_paths(&kg, c)
+                    .iter()
+                    .any(|p| p == "src/test/git.rs")
+            })
             .expect("src/test/git.rs 应独立成社区");
         assert_eq!(git_comm.len(), 1, "src 孤立文件按目录聚簇为独立单文件社区");
     }
@@ -1126,7 +1151,10 @@ mod tests {
         // make_graph（src/a↔b 互调 + src/net/tcp 独立）→ Leiden 产出真实 CPM 质量
         let kg = make_graph();
         let (_communities, quality) = detect_communities_with_quality(&kg, LEIDEN_RESOLUTION);
-        assert!(quality.is_finite(), "Leiden quality 应为有限值, 实际 {quality}");
+        assert!(
+            quality.is_finite(),
+            "Leiden quality 应为有限值, 实际 {quality}"
+        );
         assert!(quality >= 0.0, "CPM quality 应非负, 实际 {quality}");
 
         // 根目录散文件仓库（目录数==1 早退）→ quality 语义 0.0

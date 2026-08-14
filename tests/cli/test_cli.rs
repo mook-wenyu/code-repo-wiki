@@ -10,9 +10,11 @@
 //! 公共 helper（unique_dir/copy_dir/run_bin_with_envs/mock_llm_server）
 //! 收敛于 common 模块（v13 B8）。
 
+use crate::common::{
+    copy_dir, mock_llm_server, openai_compatible_config, run_bin_with_envs, unique_dir,
+};
 use code_repo_wiki::config::schema::WikiConfig;
 use code_repo_wiki::fs::acquire_run_lock;
-use crate::common::{copy_dir, mock_llm_server, openai_compatible_config, run_bin_with_envs, unique_dir};
 use std::path::{Path, PathBuf};
 
 /// 最小可用配置：LLM 指向本地 mock server，输出硬编码 .code-repo-wiki

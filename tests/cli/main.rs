@@ -4,8 +4,8 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+mod test_card_lock;
 mod test_cli;
 mod test_cli_smoke;
-mod test_key_cli;
 mod test_export_skip;
-mod test_card_lock;
+mod test_key_cli;
