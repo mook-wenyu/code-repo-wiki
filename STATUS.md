@@ -1,5 +1,23 @@
 # 项目状态简报 （AI自动维护，禁止贴代码）
 
+## 七十六、分析报告实现批次（08-15 复验 N1/N2/N3 + 发布对齐 + 清理 + bench 修复 + 真实 LLM 复验）（2026-08-15）
+- 前置状态：七十五收尾；08-15 ascetic-breaker 分析（.swarm/analysis-report-2026-08-15.md，4 并行子代理）确认 P0/P1 遗留 + 新实证 N1/N2/N3；HEAD a7c7744
+- 修改的功能（8 提交，6 并行 worker + 主代理集成修复）：
+  - **N1 fix(incremental)**：`run_file_watch_incremental` 指纹比对原 `if let Ok(true) = ...unwrap_or(Ok(true))` 在 `is_file_changed` 返回 Err（读取失败）时静默剔除变更集→漏更新，与项目卡循环保守语义相反；收敛 `classify_fingerprint_changed` 统一入口（Err 显式告警 + 保守计入变更集，注释写明不变量与代价权衡）+ 场景 A/B 回归测试
+  - **N2 fix(generate)**：删 doc 注释间隔空行，clippy `empty_line_after_doc_comments` 归零（CI -D warnings 红灯解除）
+  - **N3 refactor(analysis)**：graph.rs 边权重 0.8/0.7 字面量→引用 community.rs `WEIGHT_IMPORTS/WEIGHT_CALLS` 常量（查证依赖方向单向无环；测试夹具 9 处字面量留待可选统一）
+  - **发布对齐 chore(docs)**：Cargo.toml/Cargo.lock 0.8.0→**0.9.0**（与 CHANGELOG 对齐）；limitations.md/tutorial.md 端点改历史口径（已恢复）；maintenance.md CI 三 job→五 job（补 lint-docs/lint-artifacts/macos）；config.md 补 llm.max_concurrency(16)/embed.max_concurrency(4)/embed.batch_concurrency(1) 三键（真源默认值）
+  - **测试缺口 test**：新建 tests/test_edge_cases.rs 四场景（空仓库 bail/卡片目录重建/spec 空文件不生成/非 zh 落 cards/en/）
+  - **清理批次 refactor**（10 文件 +51/-51）：complete_with_retry→complete_with_failure_warn；index.rs 头注释对齐 fail-fast；删 Block.scope 死字段+6 写入点（无 serde 无序列化影响）；删 overview_user_prompt 死参数；`MIN_COSINE_SIMILARITY=0.3` 单一权威常量（vecdb MAX_COSINE_DISTANCE 改派生）；opencode 死重复检查合并；watch 孤立注释删
+  - **bench 修复 fix/test**：derive_repo_name 回退链（显式名→git remote→目录名→unknown，修基线 repo_name=unknown）；update_recall 无快照真空 1.0→0.0 + 渲染标注；flake 根治（测试内 ensure_loopback_no_proxy 自守卫，恶意代理 127.0.0.1:9 实测 10/10 过）
+- **C1 查证纠偏（重要）**：CHANGELOG 与 bench 的 arXiv 2606.00093 引用经网络+真源查证**语义正确**（《Agreement Metrics for LLM-as-Judge》的 judge 三态/指标条目实践），08-14/15 报告"错误引用"系子代理误判；2604.26523（RepoDoc）仅指 RepoDocBench 基准（STATUS 七十三记录）——两编号各归其位，未改动
+- 摸到的文件：src/{incremental/mod,generate/{mod,wiki,index},analysis/{graph,community},bench/mod,search/{block,chunker,mod,semantic,vecdb},lib,config/opencode,incremental/watch}.rs、Cargo.toml、Cargo.lock、docs/{reference/{limitations,config},how-to/maintenance,tutorial}.md、tests/{test_edge_cases（新）,test_bench_{doc_info_llm,judge_tri_state,completeness_at_k}}.rs、STATUS.md
+- 是否改变了接口/契约：Cargo.toml 版本 0.9.0（发布级）；`MIN_COSINE_SIMILARITY` 新 pub 常量（search 域）；`classify_fingerprint_changed` 新私有函数；`complete_with_failure_warn` 更名（内部）；`overview_user_prompt` 参数删除（内部）；`Block.scope` 字段删除（无序列化影响，产物格式不变）；bench 报告 repo_name/update_recall 语义修正（字段类型不变）
+- 验证：`cargo test -j 2` 全量 42 测试二进制全绿（含新增 6+4 测试）；`cargo clippy --all-targets` 0 告警；`cargo fmt --check` 0 差异；**真实 LLM 复验**（danger-full-access + Machine key）：generate --force exit 0（125 文件/2823 实体/12 模块/224s，**2212 实体向量化无 429**，语义索引落盘）→ 三类卡产物核验（Spec 卡真实 LLM 提炼 13 规约分类逐条来源锚定防幻觉 / tech-stack 卡确定性 35 项 lock 权威版本 / 模块卡齐）→ 首次 src_search 模块页 LLM 失败（failed_modules 记录）→ update 增量补页成功 → **lint exit 0（broken 0/error 0，仅 entity-ownership 已知宽容告警）**
+- 提交：1de7ccb（fix incremental N1）→ 070dac0（fix generate N2）→ 34cbd90（refactor analysis N3）→ 2d59fe5（chore docs 发布对齐）→ 510cb64（test 边界缺口）→ 0b34f15（refactor 清理批次）→ f6f264a（fix bench B1/B2）→ 929863e（test bench B3 夹具）
+- 已知风险（诚实自曝）：①**并行 worker 干扰事故**：W-6 误执行 `git checkout` 清掉了 W-1/W-2/W-3 已落盘改动与主代理 tutorial 修改，主代理按报告重建并二次验证（教训：并行写文件 worker 禁止任何 git 写操作）；②测试夹具 9 处 weight 字面量未统一引用常量（可选小项）；③entity-ownership 告警仍 8 条（src_search stem 宽容，A8 既有，exit 0）；④build_embed_text 独立 scope 死参数、uninstall_plugin 冗余检查未清（范围外报告）；⑤MSVC linker_messages 噪音 warning（非代码问题，CI ubuntu 无）；⑥fixture sample-repo 曾被测试运行生成 .code-repo-wiki 污染（已清理，output_override_test 断言防回归）
+- 下次最该做的事：模块划分质量立项（U1，唯一 P0 遗留：社区检测跨域约束 + gamma_scan 实证 γ∈[0.2..0.6] + tests 语义拆分）；可选：bench 基线真实重录（前置已修 repo_name/update_recall，需先确认 embed 配额）、测试夹具 weight 常量统一
+
 ## 七十五、知识卡片三类化 + product_requirement 模板（对齐 Qoder Repo Wiki 定义）（2026-08-15）
 - 前置状态：七十四收尾后分析报告（.swarm/analysis-report-2026-08-14.md）确认唯一实质差距 = 知识卡片仅"模块卡"一类；Qoder 官方定义三类（架构文档 / 代码规约 Spec / 技术栈）且 `repowiki.template` 支持 product_requirement（阿里云官方帮助页 help.aliyun.com/zh/lingma/repo-wiki 已查证原文）；HEAD 0cd89ef
 - 修改的功能（9 提交 + 2 收尾，三波并行 worker + 主代理集成）：
