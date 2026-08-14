@@ -1,5 +1,19 @@
 # 项目状态简报 （AI自动维护，禁止贴代码）
 
+## 七十、v0.9 wiki_plan.yaml 前置干预重构（2026-08-14）——删除 [wiki.guide]，重建 plan 体系（对齐 Qoder 语义）
+- 前置状态：旧 `wiki_plan.yaml` 计划系统在 v30（ed2c5be）整体删除；v32 引入的 `[wiki.guide]`（pages/priority/notes/tier）成为生成干预的唯一入口。本轮以「删除 [wiki.guide] → 重建 wiki_plan.yaml」完成生成干预体系的收敛（对齐 Qoder 官方语义），分四阶段提交
+- 修改的功能（阶段一~四）：
+  - 阶段一（删除面）：schema.rs 删 WikiSection.guide / GuideTier / WikiGuideSection / trim_guide_notes；generate/mod.rs 删 filter_chunks_by_guide / guide_prefix_match 及两处调用；wiki.rs 删 trim_guide_notes 调用；全仓 23 处 guide: Default::default() fixture 移除；删除 tests/test_guide_pages.rs（7 测试）
+  - 阶段二（重建）：重新引入 YAML 依赖 serde_yaml_ng 0.10（serde_yaml 弃用、serde_yml 归档且 RUSTSEC-2025-0068；serde_yaml_ng 为持续维护 fork，API 完全一致）；新建 src/config/plan.rs（WikiPlan/RepoWikiSection/KnowledgeCardSection/PlanNote{text,author}/PlanDocument{title,goal,parent,hints}/PlanScope/PlanTemplate + load_plan_at/resolve_plan_at）；校验：version==1、template 枚举解析层拦截、scope 模式用 ignore 的 GitignoreBuilder 语法校验；顶层 scope 为显式 alias（knowledgecard.scope 官方位置优先）；tests/test_plan.rs 12 测试
+  - 阶段三（接线）：prompt.rs 的 wiki_page_prompt/wiki_page_user_prompt notes 改 PlanNote（含 author 附注），wiki_page_prompt 增 template 参数（architecture 复用架构概览 system prompt），knowledge_card_prompt 增 card_notes 注入，新增 custom_document_prompt；WikiGenerator 增 notes/template 字段 + generate_custom_document，CardGenerator 增 card_notes；run_generation/run_generation_filtered 接 plan 参数，generate_global_documents 生成自定义文档；scanner.rs 可选 scope 过滤（include/exclude，相对项目根）；WikiDocument 增 parent 字段（serde default），render_table_of_contents 按 parent 分组挂载；lib.rs run_pipeline_with_config 解析 plan（scope 覆盖扫描 + plan 传入生成）；测试：scanner scope 单测 + tests/test_plan_integration.rs（scope 覆盖/顶层 alias/无 plan 默认/documents 生成/坏 yaml 终止）
+  - 阶段四（文档面）：README 重建「生成干预（wiki_plan.yaml）」完整 schema；docs/reference/config.md 清理 [wiki.guide] 段；docs/explanation/architecture.md 更新；config.toml 注释清理；CHANGELOG 新增 v0.9.0
+- 摸到的文件：src/config/{schema,plan,mod}.rs、src/generate/{mod,wiki,card,prompt,schema,index}.rs、src/incremental/state.rs、src/ingest/{mod,scanner}.rs、src/lib.rs、src/model/document.rs、src/output/{markdown,mod,html,llms_txt}.rs、src/bench/mod.rs、Cargo.toml、config.toml、README.md、docs/{reference/config,explanation/architecture}.md、CHANGELOG.md、tests/{test_plan,test_plan_integration}.rs（新增）、tests/test_guide_pages.rs（删除）及 11 个 fixture 测试文件
+- 是否改变了接口/契约：是——config.toml 的 [wiki.guide] 段删除（破坏性，v0.9）；新增 wiki_plan.yaml（文件不存在=零破坏默认）；wiki_page_prompt/knowledge_card_prompt 的 notes 参数类型改 PlanNote；WikiDocument 增 parent 字段（serde default，旧快照兼容）；WikiGenerator/CardGenerator 增 new_with_plan/new_with_card_notes 构造器（原 new 签名保持兼容）；run_generation/run_generation_filtered 增 plan 参数；扫描器增可选 scope 覆盖
+- 验证：cargo check --all-targets 通过；cargo test 全量 895 passed / 0 failed（38 个测试二进制）；cargo clippy --all-targets 0 告警；新功能测试：test_plan（12）+ test_plan_integration（6）+ scanner scope 单测（1）全部通过
+- 提交：ea351cb（refactor 删除 [wiki.guide]）→ d38649d（refactor plan.rs 重建）→ f5144c9（feat 接线）→ f6bd30e（docs）
+- 已知风险（诚实自曝）：并行 worker 的 dsh 特性（bdff415/b0391d5）曾与本次改动交织（中途未提交状态下曾致 bin 编译失败），最终各自独立提交、全量测试全绿无冲突；模板语义（repowiki.template="architecture" 复用架构概览 system prompt 作为模块页模板）为对「映射现有架构概览模板」字面的最小实现，若 Qoder 官方语义不同需用户指正；自定义文档无指纹增量判定（每次重生成，成本=每页一次 LLM 调用），未做快照回填
+- 下次最该做的事：真实 LLM 环境验证 wiki_plan.yaml 全字段端到端（notes 注入/documents 生成/scope 覆盖），核对 template="architecture" 的产物是否符合预期；如需页面白名单/排序能力（旧 [wiki.guide].pages/priority）需另行设计（本轮按简化决策移除）
+
 ## 六十九、v0.7.2 第三轮集成与生产可用化（2026-08-13）——lint 误报修复/dependency-fabricated 接线/生产 CI/运维文档
 - 前置状态：三个并行 worker（W1 lint 代码 / W2 CI 配置 / W3 docs-bench）完成域内交付，本轮为集成验证——编译闭合、全量测试、CI 门禁、lint 实测复核、分域提交
 - 修改的功能（W1 lint）：
