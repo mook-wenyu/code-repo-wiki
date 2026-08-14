@@ -1,5 +1,22 @@
 # 项目状态简报 （AI自动维护，禁止贴代码）
 
+## 七十四、真实 LLM 复验 + embed 配置官方对齐（Phase A10 收尾）（2026-08-14）
+- 前置状态：HEAD 733c407 三修复就绪（embed 批内并发默认 1 / api.md 不嵌 doc 首行 / residue 收紧为完整占位符形态）；七十三遗留 embed 429 疑云（充值后仍 insufficient_quota）；lint 77 条全部为产物过期告警；`.search/semantic_degraded` 存在、semantic_index.db 仅 4096B
+- 官方查证（用户指路百炼模型市场页，权威来源 help.aliyun.com）：
+  - 错误码页证实 **429 insufficient_quota = `429-Throttling.AllocationQuota`（TPS/TPM 每分钟吞吐限流，非资金配额）**——证伪七十三「需在控制台显式申请已分配配额」的猜测；「Free allocated quota exceeded」才是免费额度耗尽（错误码不同，本次从未出现）
+  - qwen3.7-text-embedding 为 2026-07-15 上线的正式模型（多语言统一向量模型，256~2560 维）；限流表华北2北京 RPM=24000/分钟、TPM=1,000,000/分钟；批次上限 20 行/请求；单行上限 128K token
+  - 现有配置核对：model 名 / 业务空间专属端点（{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1，官方推荐域名）/ 批次 20 均与官方一致 → **仅需注释对齐与显式化，无需改值**
+- 修改：config.toml [embed] 注释按官方依据重写（修正模型名 qwen3-text-embedding→qwen3.7-text-embedding、补官方文档链接与限流表、显式写出 batch_concurrency = 1）
+- 环境坑（复验关键，已闭环）：DSH workspace-write 沙箱下子进程 TLS 握手失败（curl schannel `SEC_E_NO_CREDENTIALS`、reqwest `error sending request`；DNS/TCP 均通）→ 首次复验 generate LLM/embed 全连不上且 force 清理把产物删至 5 页；**danger-full-access 通道下 TLS 恢复（curl 401 = 端点可达）**——真实 LLM 复验须在无沙箱 TLS 限制的通道执行
+- 真实复验（3 次 generate --force，release 二进制重编译含三修复；key 从机器级环境变量导入，不落盘）：
+  - 第 2 次（TLS 恢复后）223s/14 页：**无 429**（batch_concurrency=1 生效，2089 实体向量化）；semantic_index.db 4096B→13.9MB（向量真实落盘）；semantic_degraded 消失；bad-citation / bad-citation-overlap / stale 全消失（bf794bf / 733c407 / 22f1a57 三修复生效）；但 gamma_scan 页 LLM 残留失败 → 断链 6 + entity-coverage 1（`CounTer`，LLM 把 src/search/text.rs:88 的 `COUNTER` 大小写写错，entity-coverage 正确拦截）+ entity-ownership 12
+  - 第 3 次（残留日志补 snippet 后）247s/15 页：gamma_scan 页重试 2 次后成功；**lint exit 0**——仅 15 条 entity-ownership warning（src_search 12 + tests_edge 1 + tests_fixtures 2，A8 目录/文件 stem 宽容告警，不阻断）
+- gamma_scan 残留根因链（snippet 日志实证，非 LLM 幻觉）：模块划分（社区检测，跨生成一致——module_descriptions 缓存 5 指纹）把 benches/gamma_scan.rs + src/output/residue_check.rs + src/search/tokenize.rs + tests/progress_test.rs + tests/test_based_on_commit.rs 聚为一模块；residue_check.rs doc 注释含 `{{ident}}`/`{{var}}` 完整占位符形态样本（733c407 收紧后的命中形态）→ LLM 转述该 doc 注释 → 命中自身残留检查 → 偶发重试（第 2 次 3 重试全失败、第 3 次 2 次重试成功）→ **重试机制兜底生效**
+- 可观测性改进：card.rs / wiki.rs 残留告警日志补「残留位置+片段」输出（此前仅报处数，残留无法诊断）
+- 提交：docs(config) → fix(generate 日志) → docs(changelog) → 本次 chore(status)
+- 已知风险（诚实自曝）：①gamma_scan 模块缝合 5 个不相干文件（residue_check/tokenize 等），模块页语义混杂——模块划分质量长期主题（src 碎片化至 1 文件、tests 模块 95 文件），未在本次处理；②LLM 转述含完整占位符形态的 doc 注释时偶发触发残留重试（gamma_scan 因模块缝合概率最高），重试兜底但存在 3 次全失败先例（第 2 次运行）；③entity-ownership 15 条 warning 为 A8 既有宽容行为（exit 0 不阻断）；④DSH 沙箱 TLS 限制（真实 LLM 复验须 full-access 通道）；⑤bench 基线（repo-wiki-45c51e8.json）未重录（可选遗留，约 10min + credits）；⑥cargo test 默认并行偶发 MSVC link.exe 1102（-j 2 规避，既有）
+- 下次最该做的事：模块划分质量立项（评估 γ 参数/文件归属策略，解决 src 碎片化与 gamma_scan 缝合，根治「LLM 转述占位符形态 doc 注释触发残留重试」的输入污染源）；可选重录 bench 基线；src_search 目录 stem entity-ownership 告警是否需提示词约束（A8 遗留）
+
 ## 七十三、真实 LLM bench 基线重录（干净版，Phase A10 复验）（2026-08-14）
 - 前置状态：v51 基线后用户充值阿里云百炼 embed 配额（此前 429 为 insufficient_quota）；thinking 修复已生效（config.toml `thinking = false`，openai-compatible chat 路径）；旧产物含 5 孤儿/坏引用页 + lint 41 errors；`.search/semantic_degraded` 标记存在（上次 embed 429 降级）
 - 构建：cargo build --release 无增量编译（0.44s，二进制已含 I3/I1 修复；HEAD 45c51e8）
