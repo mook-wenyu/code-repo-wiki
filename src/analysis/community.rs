@@ -331,11 +331,54 @@ pub fn detect_communities_with_quality(
         communities.push(cluster);
     }
 
+    // ---- 社区大小上限拆分（U1 补充）----
+    // 实证（本仓库 γ=0.2~0.6）：单 crate 仓库的 src 域实体级 Leiden 会把整个
+    // src 聚成一个大社区（内部强连接，边累积权重远超 γ，调参无效，实测 73
+    // 文件/γ 全区间 71~75）——大 chunk 致模块页 LLM 只概括代表性实体（质量
+    // 降级）。对超过上限的社区按目录键（cluster_dir_key，含 /common 折叠）
+    // 拆分子簇：保留 ≤上限 的跨目录功能域合并能力（Leiden 仍有意义），
+    // 又杜绝大社区失控。拆分键 = 目录，确定性（BTreeMap 排序）。
+    // 阈值 20 依据（本仓库目录规模）：src 各子目录 3~13 文件、tests 功能域
+    // 目录 2~8 文件均低于上限不触发；仅 src 大社区（73）触发拆分为目录簇。
+    const MAX_COMMUNITY_FILES: usize = 20;
+    let mut communities = split_oversized_communities(graph, communities, MAX_COMMUNITY_FILES);
+
     // 确定性输出：按社区大小降序（Graphify 稳定重索引：大社区编号优先，
     // 新增小社区不改变既有大社区的相对序，产物文件名/模块编号跨次稳定），
     // 同大小按最小 file_path 升序（全序确定，不依赖哈希表遍历序）
     sort_communities(graph, &mut communities);
     (communities, quality)
+}
+
+/// 社区大小上限拆分（U1 补充）：超过 `max_files` 的社区按目录键
+/// （[`cluster_dir_key`]，含 /common 折叠）拆分子簇；不超过上限的社区
+/// 原样保留。纯函数（输入输出均为社区列表），拆分键 = 目录，BTreeMap
+/// 排序保证确定性——单测直接构造大社区输入验证，不依赖 Leiden 划分行为。
+fn split_oversized_communities(
+    graph: &KnowledgeGraph,
+    communities: Vec<Vec<NodeId>>,
+    max_files: usize,
+) -> Vec<Vec<NodeId>> {
+    let mut out: Vec<Vec<NodeId>> = Vec::with_capacity(communities.len());
+    for community in communities {
+        if community.len() <= max_files {
+            out.push(community);
+            continue;
+        }
+        let mut sub_clusters: std::collections::BTreeMap<String, Vec<NodeId>> =
+            std::collections::BTreeMap::new();
+        for &nid in &community {
+            sub_clusters
+                .entry(cluster_dir_key(graph, nid))
+                .or_default()
+                .push(nid);
+        }
+        for mut cluster in sub_clusters.into_values() {
+            sort_files_by_path(graph, &mut cluster);
+            out.push(cluster);
+        }
+    }
+    out
 }
 
 /// 社区内按 file_path 字典序排序（确定性：目录聚簇/Leiden 分组的输出不
@@ -1163,5 +1206,81 @@ mod tests {
         add_file_with_entity(g, "main.rs");
         let (_comm, q) = detect_communities_with_quality(&flat, LEIDEN_RESOLUTION);
         assert_eq!(q, 0.0, "目录分流早退无 Leiden，quality 应为 0.0");
+    }
+
+    /// U1 补充：社区大小上限拆分（纯函数直测）——25 文件大社区按目录键
+    /// 拆成 5 个子簇（每目录 5 文件，目录内不分家）；≤上限社区原样保留。
+    #[test]
+    fn test_split_oversized_communities_by_dir() {
+        let mut kg = KnowledgeGraph::default();
+        let g = &mut kg.graph;
+        // 25 文件分 5 目录（每目录 5 文件），构造单一"大社区"输入
+        let mut big_community: Vec<NodeId> = Vec::new();
+        for d in 0..5 {
+            for f in 0..5 {
+                let (file, _e) = add_file_with_entity(g, &format!("src/d{d:02}/f{f}.rs"));
+                big_community.push(file);
+            }
+        }
+        // 小社区（2 文件，≤20）应原样保留
+        let (small_a, _ea) = add_file_with_entity(g, "src/small/a.rs");
+        let (small_b, _eb) = add_file_with_entity(g, "src/small/b.rs");
+
+        let out = split_oversized_communities(&kg, vec![big_community, vec![small_a, small_b]], 20);
+        // 大社区拆成 5 个子簇（每目录 5 文件），小社区原样 1 簇
+        assert_eq!(out.len(), 6, "应拆成 5 子簇 + 1 小社区, 实际: {out:?}");
+        for comm in &out {
+            assert!(comm.len() <= 20, "社区不得超过上限: {comm:?}");
+        }
+        // 目录完整性：每个 src/dNN 目录的 5 文件必须同簇（拆分键=目录，
+        // BTreeMap 键序 d00..d04 → 前 5 个子簇与目录一一对应）
+        for (d, comm) in out.iter().take(5).enumerate() {
+            let paths = community_paths(&kg, comm);
+            assert_eq!(paths.len(), 5, "子簇应含 5 文件: {paths:?}");
+            assert!(
+                paths
+                    .iter()
+                    .all(|p| p.starts_with(&format!("src/d{d:02}/"))),
+                "子簇 {d} 应只含 d{d:02} 目录文件: {paths:?}"
+            );
+        }
+        // 小社区原样保留（内容不变）
+        let small_paths = community_paths(&kg, &out[5]);
+        assert_eq!(
+            small_paths,
+            vec!["src/small/a.rs".to_string(), "src/small/b.rs".to_string()]
+        );
+        // 文件总数不变（拆分不丢文件）
+        let total: usize = out.iter().map(|c| c.len()).sum();
+        assert_eq!(total, 27, "拆分不得丢失文件");
+    }
+
+    /// U1 补充：detect 集成断言——src 强连接仓库（25 文件链式互调）划分结果
+    /// 任何社区不超过上限 20（大小拆分生效；Leiden 本身可能已切成小段，
+    /// 该断言在两种情形下都成立，只约束"不超限"这一不变量）。
+    #[test]
+    fn test_detect_communities_respect_size_cap() {
+        let mut kg = KnowledgeGraph::default();
+        let g = &mut kg.graph;
+        let mut prev_entity: Option<NodeId> = None;
+        for d in 0..5 {
+            for f in 0..5 {
+                let path = format!("src/d{d:02}/f{f}.rs");
+                let (_file, entity) = add_file_with_entity(g, &path);
+                if let Some(pe) = prev_entity {
+                    add_calls(g, pe, entity);
+                }
+                prev_entity = Some(entity);
+            }
+        }
+
+        let communities = detect_communities(&kg);
+        assert!(
+            communities.iter().all(|c| c.len() <= 20),
+            "任何社区不得超过上限 20, 实际: {:?}",
+            communities
+        );
+        let total: usize = communities.iter().map(|c| c.len()).sum();
+        assert_eq!(total, 25, "划分不得丢失文件");
     }
 }
