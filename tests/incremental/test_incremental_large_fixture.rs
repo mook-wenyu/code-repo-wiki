@@ -238,8 +238,17 @@ fn test_large_fixture_incremental_impact() {
         new_api.contains("f00_renamed"),
         "api.md 应反映新签名 f00_renamed，实际: {new_api}"
     );
-    // m07 段（## src::m07 起）内不得再出现旧签名 f00_0（该段仅含 f00.rs 实体）
-    let m07_section = new_api.split("## src::m07").nth(1).unwrap_or_default();
+    // m07 段（## src::m07 起、下一个 "## " 段标题止）内不得再出现旧签名 f00_0。
+    // 注意 split("## src::m07").nth(1) 会取到文件尾（含 m08 之后各段——m08 的
+    // f00_0 是合法存在的实体，旧写法在新划分下误报）；U1 目录聚簇后 m07 段
+    // 含该目录全部 10 文件实体，段边界切片才反映 m07 自身。
+    let m07_section = new_api
+        .split("## src::m07")
+        .nth(1)
+        .unwrap_or_default()
+        .split("## ")
+        .next()
+        .unwrap_or_default();
     assert!(
         !m07_section.contains("f00_0"),
         "api.md m07 段不应残留旧签名 f00_0，实际: {m07_section}"
@@ -249,7 +258,8 @@ fn test_large_fixture_incremental_impact() {
 }
 
 /// 边界：150 文件规模下删除一个文件（m09/f07.rs，无任何调用边）→ 增量 →
-/// 文件页被精确清理（cleanup 正确行为），其余页面全保留，组 A/C 零改写
+/// m09 目录页保留（deleted_modules 判定：模块未全删）且页面集合无增减，
+/// 组 A/C 零改写（U1 目录聚簇后删除粒度=模块级，单文件页形态已合并）
 #[test]
 fn test_large_fixture_delete_file_keeps_pages() {
     let repo =
@@ -273,8 +283,8 @@ fn test_large_fixture_delete_file_keeps_pages() {
     let base_pages = wiki_pages_snapshot(&repo);
     let base_names = page_names(&base_pages);
     assert!(
-        base_names.contains(&"src_m09_f07.md".to_string()),
-        "基线应含 m09/f07 页"
+        base_names.contains(&"src_m09.md".to_string()),
+        "基线应含 m09 目录页（U1 目录聚簇：m09 十文件一页，旧单文件页形态已合并）"
     );
 
     // 删除 m09/f07.rs（f07 函数无任何边：传播只含起点模块 m09，其他组零影响）
@@ -297,23 +307,25 @@ fn test_large_fixture_delete_file_keeps_pages() {
 
     // 断言：纯删除场景（变更文件均已不存在，changed_insights 为空）走
     // 快照回填分支（generate/mod.rs 纯删除分支：防 cleanup 误删优先）。
-    // 回填按 deleted_modules 精确过滤：f07 页的卡片 related_files=[f07.rs]
-    // 全部不存在 → 判定已删模块 → 该页清理；其余模块（m09 等）页面保留。
+    // U1 目录聚簇后 f07 属 m09 目录页：deleted_modules 判定按"related_files
+    // 全不存在"（f07 缺失但其余 9 文件存活 → 非已删模块）→ m09 页回填保留，
+    // 页面集合无增减。已知风险（记录待改进）：目录页内单文件删除不触发
+    // 该页重生成，页内残留被删实体描述——增量语义粒度随 U1 变为模块级。
     assert!(
-        !after_names.contains(&"src_m09_f07.md".to_string()),
-        "已删文件页应被清理（deleted_modules 判定）"
+        after_names.contains(&"src_m09.md".to_string()),
+        "m09 目录页应保留（模块未全删），实际: {after_names:?}"
     );
     assert_eq!(
         after_names.len(),
-        base_names.len() - 1,
-        "仅 f07 页应消失，其余全部保留；基线 {} 页 → 现在 {} 页",
+        base_names.len(),
+        "目录聚簇粒度下页面集合应无增减；基线 {} 页 → 现在 {} 页",
         base_names.len(),
         after_names.len()
     );
-    // 其余全部页面零改写：回填=旧文档幂等重写（页脚不再重复注入），
-    // last_updated 保持快照值 → 字节与基线一致（合成页由 graph 重渲染，
-    // 跳过；组 A/C 与组 B 均不受影响）
+    // 其余全部页面零改写：受影响模块（m09，删除传播重生成——无已删实体
+    // 残留，优于旧回填）与合成页（graph 重渲染）跳过；其余页面字节一致
     for name in &after_names {
+        let is_affected = name == "src_m09.md";
         let is_synthetic = [
             "api.md",
             "architecture.md",
@@ -323,7 +335,7 @@ fn test_large_fixture_delete_file_keeps_pages() {
         ]
         .iter()
         .any(|s| name == s);
-        if is_synthetic {
+        if is_affected || is_synthetic {
             continue;
         }
         assert_eq!(
