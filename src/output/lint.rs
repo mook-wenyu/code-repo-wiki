@@ -937,6 +937,13 @@ fn check_entity_coverage(
                 || modules.contains(&entity)
                 || source_entity_names.contains(&entity)
                 || source_path_names.contains(&entity)
+                // 通配符系列名（真实 LLM 常用 `test_render_*` 概括同名测试系列，
+                // 反引号内 `xxx_*` 经 entity_name_from_signature 提取为 `xxx_`
+                // 前缀）：权威/源码侧存在同前缀实体即非编造——与 DEFECT-B 同一
+                // 哲学（名字存在于代码库即非编造），放行；无任何同前缀实体仍报。
+                || (entity.ends_with('_')
+                    && (known.iter().any(|k| k.starts_with(&entity))
+                        || source_entity_names.iter().any(|k| k.starts_with(&entity))))
             {
                 continue;
             }
@@ -1058,6 +1065,18 @@ fn check_entity_ownership(
             if let Some(issue) = stem_collision_issue(&entity, source_path_names, lang, &file_name)
             {
                 issues.push(issue);
+                continue;
+            }
+            // 规则 4.5：通配符系列名（真实 LLM 用 `test_render_*` 概括同名测试
+            // 系列，提取为 `test_render_` 前缀）——权威/源码侧存在同前缀实体
+            // 即非编造（与 DEFECT-B 同一哲学：名字存在于代码库即非编造），
+            // 放行；无任何同前缀实体仍落规则 5 报错（防幻觉语义不变）
+            if entity.ends_with('_')
+                && (known.iter().any(|k| k.starts_with(entity.as_str()))
+                    || source_entity_names
+                        .iter()
+                        .any(|k| k.starts_with(entity.as_str())))
+            {
                 continue;
             }
             // 规则 5：全不满足 → 保持 entity-coverage（防编造）
@@ -3211,6 +3230,57 @@ mod tests {
             cov[0].message.contains("GhostFactory"),
             "应指向 GhostFactory: {}",
             cov[0].message
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 通配符系列名防回归（真实 LLM 生成模块页实测）：页面用 `test_render_*`
+    /// 概括同名测试函数系列，提取器得 `test_render_` 前缀——权威清单存在
+    /// 同前缀实体（test_render_doc_info_report 等）即非编造，放行；无任何
+    /// 同前缀实体仍报（防幻觉语义不变）。
+    #[test]
+    fn test_lint_entity_coverage_accepts_series_prefix_names() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_cov_series_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        // api.md 权威清单：系列实体全名（测试函数经 parser 入权威集）
+        std::fs::write(
+            wiki.join("api.md"),
+            "# API 参考\n\n## tests::bench\n\n- `test_render_doc_info_report`\n- `test_e2e_embedded`\n",
+        )
+        .unwrap();
+        // 模块页：通配符系列名（带真实 file:line 引用）+ 一个真编造名
+        std::fs::write(
+            wiki.join("tests_bench.md"),
+            "# tests::bench\n\n## 核心实体\n\n- `test_render_*` 系列 — 验证渲染分支（tests/bench/test_bench_completeness_at_k.rs:171）\n- `test_e2e_*` 系列 — 验证降级行为（tests/bench/test_bench_completeness_at_k.rs:224）\n- `GhostThing` — 编造的实体\n",
+        )
+        .unwrap();
+
+        let issues = lint(&dir, &[]);
+        let cov: Vec<_> = issues
+            .iter()
+            .filter(|i| i.kind == "entity-coverage")
+            .collect();
+        assert_eq!(
+            cov.len(),
+            1,
+            "系列前缀应放行、真编造仍报, 实际: {:?}",
+            issues
+        );
+        assert!(
+            cov[0].message.contains("GhostThing"),
+            "应指向真编造 GhostThing: {}",
+            cov[0].message
+        );
+        assert!(
+            !cov.iter().any(|i| i.message.contains("test_render_"))
+                && !cov.iter().any(|i| i.message.contains("test_e2e_")),
+            "同前缀系列名不应误报: {:?}",
+            cov
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
