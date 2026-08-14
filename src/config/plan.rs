@@ -106,8 +106,9 @@ pub struct PlanScope {
     pub exclude: Vec<String>,
 }
 
-/// repowiki.template 模板选择：仅支持 ""（默认）与 "architecture"，
-/// 其他值在 serde 解析时报错（unknown variant），不静默兜底。
+/// repowiki.template 模板选择：支持 ""（默认）、"architecture" 与
+/// "product_requirement"；其他值在 serde 解析时报错（unknown variant），
+/// 不静默兜底。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum PlanTemplate {
     /// 默认模板：模块页用标准 wiki_page_prompt
@@ -117,6 +118,9 @@ pub enum PlanTemplate {
     /// 架构概览模板：复用 architecture_overview_prompt
     #[serde(rename = "architecture")]
     Architecture,
+    /// 产品需求模板：模块页按产品需求格式输出
+    #[serde(rename = "product_requirement")]
+    ProductRequirement,
 }
 
 /// 在指定项目根下加载并校验 wiki_plan.yaml
@@ -214,4 +218,44 @@ pub fn resolve_plan_at(root: &ProjectRoot) -> Result<Option<ResolvedPlan>> {
 
 fn default_version() -> u32 {
     PLAN_VERSION
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// ProductRequirement 变体 serde 解析：YAML/JSON 的字面量
+    /// "product_requirement" ⇔ 变体可双向转换；未知值仍报错（不静默兜底）
+    #[test]
+    fn test_product_requirement_variant_serde() {
+        // 反序列化（YAML 侧：字面量 → 变体）
+        let tpl: PlanTemplate = serde_yaml_ng::from_str("product_requirement").unwrap();
+        assert_eq!(tpl, PlanTemplate::ProductRequirement);
+        // 序列化（serde_json 值 → 字面量）
+        assert_eq!(
+            serde_json::to_value(PlanTemplate::ProductRequirement).unwrap(),
+            json!("product_requirement")
+        );
+        // 默认与既有变体不受影响
+        assert_eq!(PlanTemplate::default(), PlanTemplate::Default);
+        assert_eq!(
+            serde_json::to_value(PlanTemplate::Architecture).unwrap(),
+            json!("architecture")
+        );
+        // 未知值仍报错（unknown variant），不静默兜底
+        assert!(
+            serde_yaml_ng::from_str::<PlanTemplate>("product_software").is_err(),
+            "未知 template 值应报错"
+        );
+    }
+
+    /// 整块 wiki_plan.yaml 含 repowiki.template: "product_requirement" 时
+    /// 能完整解析出 PlanTemplate（接入字段级消费的证据）
+    #[test]
+    fn test_template_field_parses_product_requirement() {
+        let yaml = "repowiki:\n  template: product_requirement\n";
+        let plan: WikiPlan = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(plan.repowiki.template, PlanTemplate::ProductRequirement);
+    }
 }
