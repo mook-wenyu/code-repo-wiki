@@ -52,7 +52,8 @@ const LOW_CONFIDENCE_STD_THRESHOLD: f64 = 2.0;
 /// 评测报告（Markdown 与 JSON 的公共数据源，JSON 由 serde 直出）
 #[derive(Debug, Clone, Serialize)]
 pub struct BenchReport {
-    /// 仓库名（报告标识，缺省取 root 目录名）
+    /// 仓库名（报告标识，由 `derive_repo_name` 按
+    /// git remote 仓库名 → root 目录名 → unknown 派生）
     pub repo_name: String,
     /// 评测时间（ISO 8601）
     pub generated_at: String,
@@ -154,7 +155,9 @@ pub struct UpdateRecallReport {
     pub commits_with_changes: usize,
     /// 成功触发重生成的 commit 数（documents 非空）
     pub correctly_updated: usize,
-    /// 召回率 = correctly / with_changes（with_changes 为 0 时为 1.0 空集约定）
+    /// 召回率 = correctly / with_changes（with_changes 为 0 且确有 git
+    /// 回放时为 1.0 空集约定；无 git 快照/无 commit（跳过）时为 0.0，
+    /// 由渲染层标注「跳过」，不产生「0 commits 但 recall=1.0」真空假值）
     pub recall: f64,
 }
 
@@ -785,7 +788,8 @@ fn measure_lint(output_dir: &Path, root: &ProjectRoot) -> LintReport {
 /// 记录该 commit 是否有源码变更（git diff 判定）以及是否成功触发重生成
 /// （run_pipeline 返回 documents 非空 = 有页面被重生成）。
 /// 召回率 = 触发重生成的变更 commit / 有变更的 commit。
-/// 边界：非 git 仓库返回空集（recall = 1.0 空集约定）；commit 不足 20 个
+/// 边界：非 git 仓库返回空集且 recall=0.0（B2：无 git 快照/无 commit
+/// 显式标跳过，而非 1.0 真空假值）；commit 不足 20 个
 /// 按实际数量回放；checkout 失败（脏工作区/文件冲突）跳过该 commit 并告警。
 fn measure_update_recall(config: &WikiConfig, root: &ProjectRoot) -> Result<UpdateRecallReport> {
     let repo = match git2::Repository::open(root.path()) {
@@ -793,12 +797,15 @@ fn measure_update_recall(config: &WikiConfig, root: &ProjectRoot) -> Result<Upda
         Err(_) => {
             // 非 git 仓库：增量回放无 commit 可循（与 get_head_commit_hash_at
             // 的非 git 空值语义一致），报告空集而非报错
-            tracing::warn!("bench: 非 git 仓库，增量召回维度跳过");
+            tracing::warn!("bench: 非 git 仓库，增量召回维度跳过（无 git 快照/无 commit）");
+            // B2：无 git 快照/无 commit 时显式输出 0（recall 占位为 0 而非
+            // 1.0）——消除「0 commits 但 recall=1.0」的真空假值；渲染层以
+            // commits_scanned==0 分支标注「跳过」，不打印误导性百分比。
             return Ok(UpdateRecallReport {
                 commits_scanned: 0,
                 commits_with_changes: 0,
                 correctly_updated: 0,
-                recall: 1.0,
+                recall: 0.0,
             });
         }
     };
@@ -1035,6 +1042,56 @@ impl Drop for HeadRestoreGuard<'_> {
     }
 }
 
+/// 仓库名推导（B1 修复）：git remote 仓库名 → root 目录名 → unknown。
+///
+/// 优先级（保证确定性，避免基线 `repo_name: "unknown"` 的失败用例）：
+/// 1. 调用方显式传名且非 `"unknown"` 哨兵 → 直接采用（用户显式命名
+///    优先于自动派生；`"unknown"` 视为「未成功派生」而非真实仓库名）。
+/// 2. 从 git remote "origin" 的 fetch URL 解析仓库名（去 `.git` 后缀，
+///    同时支持 https 与 `git@` 形态）——remote 缺失/URL 无仓库段时降级。
+/// 3. `root.path()` 目录名（ProjectRoot 名称）。
+/// 4. 目录名仍不可得（根路径无语义文件名，如 `/`）→ 显式 `"unknown"`。
+///
+/// 注：调用方（CLI）对 `--repo-name` 未传时的默认值在 main.rs 用目录名，
+/// 目录名失败时回退 `"unknown"`；本函数把该 `"unknown"` 哨兵当作「未派生」，
+/// 再做一次 git remote → 目录名 的兜底，避免因目录名边缘失败落入假 `"unknown"`。
+fn derive_repo_name(root: &ProjectRoot, given: Option<&str>) -> String {
+    if let Some(g) = given {
+        let g = g.trim();
+        if !g.is_empty() && g != "unknown" {
+            return g.to_string();
+        }
+    }
+    // git remote "origin" 的 fetch URL 仓库名（非 git/无 remote/无仓库段时 None）
+    if let Ok(repo) = git2::Repository::open(root.path())
+        && let Some(url) = repo
+            .find_remote("origin")
+            .ok()
+            .and_then(|r| r.url().map(|s| s.to_string()))
+        && let Some(name) = remote_repo_name(&url)
+    {
+        return name.to_string();
+    }
+    // 目录名兜底
+    root.path()
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// 从 git remote URL 解析仓库名（末段路径，去 `.git` 后缀）。
+/// 支持 `https://host/owner/repo[.git]` 与 `git@host:owner/repo[.git]`；
+/// 无有效末段返回 None（调用方降级到目录名）。
+fn remote_repo_name(url: &str) -> Option<&str> {
+    let tail = url
+        .trim_end_matches('/')
+        .rsplit(['/', ':', '\\'])
+        .next()?
+        .trim_end_matches(".git");
+    if tail.is_empty() { None } else { Some(tail) }
+}
+
 /// 运行自动层评测，返回报告
 ///
 /// 增量回放强制 mock provider（T05：评测语义是"增量链路是否触发重生成"，
@@ -1086,7 +1143,7 @@ pub fn run_bench(
     };
 
     Ok(BenchReport {
-        repo_name: repo_name.to_string(),
+        repo_name: derive_repo_name(root, Some(repo_name)),
         generated_at: chrono::Utc::now().to_rfc3339(),
         coverage,
         doc_info,
@@ -1107,11 +1164,14 @@ pub fn run_bench(
 /// 运行纯裁判层评测（--rubrics-only）：只执行快维度（Coverage/Doc Info/lint）
 /// 与 LLM 裁判维度（TQS/Rubric），**跳过 Update Recall 的 git commit 回放**。
 ///
-/// 适用场景：对大型仓库（数万文件）跑分时 Update Recall 回放成本不可接受
+/// 与 LLM 裁判维度（TQS/Rubric），**跳过 Update Recall 的 git commit 回放**。
+///
+/// 适用场景：对大型仓库进行 LLM 裁判跑分时，Update Recall 回放成本不可接受
 /// （每次回放都触发真实生成），而裁判打分只需当前产物与快照即可完成。
 /// 返回的 `update_recall` 为「跳过」占位（commits_scanned=0/with_changes=0/
-/// correctly_updated=0/recall=1.0 空集约定），`time.generate_ms=0`；
-/// 渲染层 `render_markdown` 对无回放的 recall 会标注「跳过（--rubrics-only）」。
+/// correctly_updated=0/recall=0.0——B2：跳过失真空，recall 用 0 而非 1.0），
+/// `time.generate_ms=0`；渲染层 `render_markdown` 对无回放的 recall 标注
+/// 「跳过（无 git 快照/无 commit 可回放）」。
 pub fn run_rubrics_only(
     root: &ProjectRoot,
     config: &WikiConfig,
@@ -1146,14 +1206,14 @@ pub fn run_rubrics_only(
         commits_scanned: 0,
         commits_with_changes: 0,
         correctly_updated: 0,
-        recall: 1.0,
+        recall: 0.0,
     };
 
     let tqs = measure_tqs(config)?;
     let rubric = measure_rubrics(config, root, &references)?;
 
     Ok(BenchReport {
-        repo_name: repo_name.to_string(),
+        repo_name: derive_repo_name(root, Some(repo_name)),
         generated_at: chrono::Utc::now().to_rfc3339(),
         coverage,
         doc_info,
@@ -2483,8 +2543,10 @@ pub fn render_markdown(report: &BenchReport) -> String {
 
     out.push_str("## 5. 增量召回（Update Recall）\n\n");
     if report.update_recall.commits_scanned == 0 {
-        // v21 D 组：--rubrics-only 明确标注跳过，避免误读为"无 commit 可回放"
-        out.push_str("- 跳过（--rubrics-only 模式：不执行 git commit 回放）\n\n");
+        // B2：无 git 快照/无 commit（非 git 仓库或 --rubrics-only 不执行回放）
+        // 一律显式标注跳过，且 recall 占位为 0——既不误报为 --rubrics-only，
+        // 也不输出「0 commits 但 recall=1.0」的真空假值
+        out.push_str("- 跳过（无 git 快照/无 commit 可回放，未执行增量召回评测）\n\n");
     } else {
         out.push_str(&format!(
             "- 回放 commit: {}（上限 {}）\n- 有变更: {}\n- 正确更新: {}（{:.1}%）\n\n",
@@ -2958,8 +3020,43 @@ mod tests {
         let _ = std::fs::remove_dir_all(root.path());
     }
 
+    /// B1：仓库名推导——显式命名优先；`"unknown"` 哨兵触发兜底；
+    /// git remote 仓库名 > 目录名；remote 无仓库段时降级目录名
+    #[test]
+    fn test_derive_repo_name_fallbacks() {
+        let dir = std::env::temp_dir().join(format!("rw_derivename_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = ProjectRoot::new(dir.clone());
+        let dirname = dir.file_name().unwrap().to_string_lossy().into_owned();
+        // 显式传名（非 unknown）直接采用
+        assert_eq!(derive_repo_name(&root, Some("my-repo")), "my-repo");
+        assert_eq!(derive_repo_name(&root, None), dirname);
+        // "unknown" 哨兵：非 git 目录 -> 目录名兜底（不再是 "unknown"）
+        let name = derive_repo_name(&root, Some("unknown"));
+        assert_ne!(name, "unknown", "非 git 目录应落到目录名");
+        assert_eq!(name, dirname);
+
+        // git remote 解析：https 与 git@ 形态、去 .git 后缀
+        assert_eq!(
+            remote_repo_name("https://github.com/owner/repo-b.git"),
+            Some("repo-b")
+        );
+        assert_eq!(
+            remote_repo_name("git@github.com:owner/repo.git"),
+            Some("repo")
+        );
+        assert_eq!(
+            remote_repo_name("https://github.com/owner/repo"),
+            Some("repo")
+        );
+        // 仅主机段（无仓库路径）时确定性返回主机段（仍是确定的非空名）
+        assert_eq!(remote_repo_name("https://github.com/"), Some("github.com"));
+        assert!(remote_repo_name("not-a-url").is_some_and(|s| s == "not-a-url"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// v21 D 组：--rubrics-only 模式跳过 git 回放，快维度仍正常
-    /// （在已有产物、多 commit 的仓库上验证：recall 占位 0/1.0，渲染标注跳过）
+    /// （在已有产物、多 commit 的仓库上验证：recall 占位 0/0.0，渲染标注跳过）
     #[test]
     fn test_run_rubrics_only_skips_replay() {
         let (root, config_path, config) = bench_repo("rubonly");
@@ -2985,6 +3082,10 @@ mod tests {
             "rubrics-only 不执行回放"
         );
         assert_eq!(report.update_recall.correctly_updated, 0);
+        assert_eq!(
+            report.update_recall.recall, 0.0,
+            "B2：跳过时 recall 应为 0 而非 1.0（不产生真空假值）"
+        );
         assert_eq!(report.time.generate_ms, 0, "无生成耗时");
         assert_eq!(
             report.coverage.total_entities, 2,
@@ -2997,7 +3098,7 @@ mod tests {
         // lint 计数本身有效即可（mock 产物可能存在已知噪声，不在此处断言为 0）
         let md = render_markdown(&report);
         assert!(
-            md.contains("跳过（--rubrics-only 模式"),
+            md.contains("跳过（无 git 快照/无 commit 可回放"),
             "渲染应标注回放跳过: {md}"
         );
 
@@ -3034,7 +3135,7 @@ mod tests {
                 commits_scanned: 0,
                 commits_with_changes: 0,
                 correctly_updated: 0,
-                recall: 1.0,
+                recall: 0.0,
             },
             time: TimeReport {
                 scan_ms: 0,
@@ -3232,7 +3333,7 @@ mod tests {
                 commits_scanned: 0,
                 commits_with_changes: 0,
                 correctly_updated: 0,
-                recall: 1.0,
+                recall: 0.0,
             },
             time: TimeReport {
                 scan_ms: 0,
@@ -3305,7 +3406,7 @@ mod tests {
                 commits_scanned: 0,
                 commits_with_changes: 0,
                 correctly_updated: 0,
-                recall: 1.0,
+                recall: 0.0,
             },
             time: TimeReport {
                 scan_ms: 0,
@@ -3508,7 +3609,7 @@ mod tests {
                 commits_scanned: 0,
                 commits_with_changes: 0,
                 correctly_updated: 0,
-                recall: 1.0,
+                recall: 0.0,
             },
             time: TimeReport {
                 scan_ms: 0,
