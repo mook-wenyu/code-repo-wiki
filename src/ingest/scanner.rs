@@ -28,8 +28,9 @@ fn is_binary_extension(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// 任意深度剪枝的噪音目录（依赖/缓存/构建产物，嵌套出现也剪）：
-/// node_modules/target/.git 等项目普遍依赖目录，出现在任意层级都应跳过。
+/// 任意深度剪枝的噪音目录（依赖/缓存/构建产物/测试夹具，嵌套出现也剪）：
+/// node_modules/target/.git 等项目普遍依赖目录，以及 fixtures 测试夹具数据
+/// 目录（任意层级的测试数据都不应被 wiki 文档化），出现在任意层级都应跳过。
 pub const NOISE_DIRS: &[&str] = &[
     "node_modules",
     ".venv",
@@ -47,6 +48,7 @@ pub const NOISE_DIRS: &[&str] = &[
     ".pytest_cache",
     ".mypy_cache",
     "bower_components",
+    "fixtures",
     ".git",
 ];
 
@@ -364,6 +366,37 @@ mod tests {
         assert!(
             names[0].ends_with("src/main.rs"),
             "唯一产物应为主源码: {names:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// fixtures 测试夹具目录整棵跳过（任意深度剪枝）：根级 fixtures/ 与
+    /// 嵌套 src/deep/fixtures/ 都不应进入结果，主源码 src/main.rs 保留
+    #[test]
+    fn test_scanner_skips_fixtures_dir() {
+        let dir = scratch("fixtures");
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::create_dir_all(dir.join("src/deep/fixtures")).unwrap();
+        std::fs::create_dir_all(dir.join("fixtures/sub")).unwrap();
+        std::fs::write(dir.join("src/main.rs"), "fn main() {}").unwrap();
+        std::fs::write(dir.join("src/deep/fixtures/b.rs"), "fn b() {}").unwrap();
+        std::fs::write(dir.join("fixtures/sub/a.rs"), "fn a() {}").unwrap();
+
+        let scanner = Scanner::new(&dir);
+        let files = scanner.scan().unwrap();
+        let names: Vec<String> = files
+            .iter()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .collect();
+        assert_eq!(names.len(), 1, "fixtures 目录应被整棵跳过: {names:?}");
+        assert!(
+            names[0].ends_with("src/main.rs"),
+            "唯一产物应为主源码 src/main.rs: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.contains("/fixtures/")),
+            "任意深度的 fixtures 目录都应被跳过: {names:?}"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
