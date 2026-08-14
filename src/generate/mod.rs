@@ -625,7 +625,6 @@ fn snapshot_project_cards(config: &WikiConfig) -> Option<Vec<KnowledgeCard>> {
 /// 也以 card_write_path 记录项目卡指纹 → 项目卡与模块卡一致地参与
 /// 「旧指纹 - 本次渲染集」差集（输入被删 → 卡不存在 → 旧文件清除）。
 /// 故增量路径无需在 generate 层额外删文件（单一来源，避免双写）。
-
 /// 增量路径的项目卡集合：输入变更（清单/规约文件）重生成，否则从导出
 /// 快照回填。返回项目卡列表（0~2 张）。
 ///
