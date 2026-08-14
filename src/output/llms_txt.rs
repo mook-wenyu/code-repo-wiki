@@ -142,13 +142,29 @@ pub fn render_llms_txt(
         && let Some(primary) = languages.first()
     {
         out.push_str("## Cards\n\n");
-        let mut card_names: Vec<&str> = cards.iter().map(|c| c.module_name.as_str()).collect();
-        card_names.sort_unstable();
-        for name in &card_names {
-            out.push_str(&format!(
-                "- [{name}](cards/{primary}/{}.md)\n",
-                name.replace("::", "_")
-            ));
+        // 卡片条目路径按 card_kind 分派：模块卡 cards/{primary}/{stem}.md，
+        // 项目卡（Spec/TechStack）cards/{primary}/project/{spec|tech-stack}.md。
+        // 相对路径与 output::card_write_path 布局一致（此函数无 output_dir，
+        // 直接构造相对路径；project 叶子名与 project_card_page_path 的
+        // CardKind::Spec→"spec"/CardKind::TechStack→"tech-stack" 对齐）。
+        let mut card_rows: Vec<(String, String)> = cards
+            .iter()
+            .map(|c| {
+                let rel = match c.card_kind {
+                    crate::model::CardKind::Module => {
+                        format!("cards/{primary}/{}.md", crate::output::card_file_stem(&c.module_name))
+                    }
+                    crate::model::CardKind::Spec => format!("cards/{primary}/project/spec.md"),
+                    crate::model::CardKind::TechStack => {
+                        format!("cards/{primary}/project/tech-stack.md")
+                    }
+                };
+                (c.module_name.clone(), rel)
+            })
+            .collect();
+        card_rows.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        for (name, rel) in &card_rows {
+            out.push_str(&format!("- [{name}]({rel})\n"));
         }
     }
     out
@@ -287,7 +303,15 @@ pub fn render_llms_full_txt(
     primary_lang: &str,
     token_budget: usize,
 ) -> String {
-    let sections = build_sections(cards);
+    // llms-full.txt 是模块实体索引：项目卡（Spec/TechStack）无源码实体，
+    // 不混入模块节（实体清单/职责是模块语义，项目卡在 llms.txt 站点地图
+    // 已有条目）。在 build_sections 前过滤，避免占用 token 预算。
+    let module_cards: Vec<KnowledgeCard> = cards
+        .iter()
+        .filter(|c| c.card_kind == crate::model::CardKind::Module)
+        .cloned()
+        .collect();
+    let sections = build_sections(&module_cards);
     let mut out = format!("# {repo_name} Wiki — 完整内容索引\n\n");
     out.push_str("> 模块职责与实体清单内联版（llms.txt 的超集，非官方规范，社区惯例格式）。\n");
     out.push_str(&format!(
