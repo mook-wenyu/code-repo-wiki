@@ -457,7 +457,8 @@ pub struct OpenAiProvider {
     max_tokens: Option<u32>,
     temperature: Option<f32>,
     /// DeepSeek 系 thinking 模式（v50）：None=不发送；Some(true/false)=
-    /// 发送 `thinking: {"type":"enabled"/"disabled"}`（仅 chat 协议——
+    /// 开启/关闭思考——chat 协议发 `thinking: {"type":"enabled"/"disabled"}`，
+    /// Responses 协议发 `reasoning: {"effort":...}`（I1，两协议对齐；
     /// deepseek-v4 默认启用 thinking，批量生成慢约 5×，见 schema 注释）
     thinking: Option<bool>,
     /// DeepSeek 系 reasoning_effort（v50）："low"/"high"/"max"，与

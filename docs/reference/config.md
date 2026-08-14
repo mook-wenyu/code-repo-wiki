@@ -28,14 +28,17 @@ model = "deepseek-v4-flash"     # 默认 opencode 网关 + deepseek-v4-flash
 # base_url = "https://opencode.ai/zen/go/v1"
 api_key = ""                    # 明文 key（仅建议用户级配置用；项目级请用下面 api_key_env 引用环境变量）
 api_key_env = "OPENCODEGO2_API_KEY"  # key 放环境变量，仓库只写变量名
-# thinking = false               # DeepSeek 系思考模式开关（v50）：false 显式关闭
-#                                #   （thinking: {"type":"disabled"}）。deepseek-v4 默认
-#                                #   启用思考且 effort=high，批量卡片/文档生成实测慢约 5×、
-#                                #   输出 token 多约 3.7×——低推理任务推荐显式关闭。
-#                                #   true = {"type":"enabled"}；缺省=不发送（provider 默认）。
-# reasoning_effort = "low"       # 思考强度："low" / "high" / "max"（与 thinking 配套发送；
+# thinking = false               # DeepSeek 系思考模式开关（v50）：false 显式关闭。
+#                                #   openai-compatible（chat/completions）发
+#                                #   thinking: {"type":"disabled"}；openai（Responses）
+#                                #   发 reasoning: {"effort":"none"}（I1 两协议对齐）。
+#                                #   deepseek-v4 默认启用思考且 effort=high，批量卡片/
+#                                #   文档生成实测慢约 5×、输出 token 多约 3.7×——低推理
+#                                #   任务推荐显式关闭。true = 开启（chat {"type":"enabled"}
+#                                #   / Responses {"effort":"low|high|max"}）；缺省=不发送。
+# reasoning_effort = "low"       # 思考强度："low" / "high" / "max"（与 thinking 配套发送：
+#                                #   chat 写 reasoning_effort、Responses 写 reasoning.effort；
 #                                #   官方映射：v4-flash low→low、high→high、max→max）。
-#                                #   仅 openai-compatible（chat/completions）路径生效。
 
 [embed]
 # provider = "remote"                 # remote=远程 API（默认）| mock=测试 mock server；本地 ONNX 路径已删除（v0.7.2）
