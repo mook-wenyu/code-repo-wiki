@@ -25,6 +25,20 @@ pub fn scan_and_parse_at(root: &ProjectRoot) -> Result<ScanOutput> {
     scan_and_parse_cached_at(root, &None, &std::collections::HashSet::new())
 }
 
+/// 带 plan scope 的全量扫描（v0.9 W1：wiki_plan.yaml scope 覆盖扫描范围；
+/// None = 无覆盖，走内置四边界默认行为）
+pub fn scan_and_parse_at_with_scope(
+    root: &ProjectRoot,
+    scope: Option<&crate::config::plan::PlanScope>,
+) -> Result<ScanOutput> {
+    scan_and_parse_cached_at_with_scope(
+        root,
+        &None,
+        &std::collections::HashSet::new(),
+        scope,
+    )
+}
+
 /// 带解析缓存的扫描（真增量扫描的 parse 层增量）
 ///
 /// `cache_path` 为 Some 时启用缓存：变更集内的文件强制重新解析，其余文件
@@ -39,7 +53,21 @@ pub fn scan_and_parse_cached_at(
     cache_path: &Option<std::path::PathBuf>,
     changed_files: &std::collections::HashSet<std::path::PathBuf>,
 ) -> Result<ScanOutput> {
-    let scanner = scanner::Scanner::new(root.path());
+    scan_and_parse_cached_at_with_scope(root, cache_path, changed_files, None)
+}
+
+/// 带 plan scope 的缓存扫描（v0.9 W1）：scope 由调用方（lib.rs 解析 plan）
+/// 传入；None = 无覆盖。其余语义与 [`scan_and_parse_cached_at`] 一致。
+pub fn scan_and_parse_cached_at_with_scope(
+    root: &ProjectRoot,
+    cache_path: &Option<std::path::PathBuf>,
+    changed_files: &std::collections::HashSet<std::path::PathBuf>,
+    scope: Option<&crate::config::plan::PlanScope>,
+) -> Result<ScanOutput> {
+    let mut scanner = scanner::Scanner::new(root.path());
+    if let Some(scope) = scope {
+        scanner = scanner.with_scope(scope.clone());
+    }
     // 扫描产出绝对路径；转换为相对扫描根的路径——
     // 模块名派生（graph/chunk 的 Normal 组件提取）、搜索索引、指纹记录
     // 全部以相对路径为基准，杜绝绝对路径污染模块名（此前产出

@@ -85,6 +85,8 @@ pub struct CardGenerator<'a, P: LlmProvider> {
     /// 供 LLM 推断卡片 design_rationale（设计意图 WHY）。
     caller_contexts:
         std::collections::HashMap<String, Vec<crate::generate::context::CallerContext>>,
+    /// knowledgecard.notes（v0.9 W1 新增能力）：注入卡片生成 prompt 的引导注记
+    card_notes: Vec<crate::config::plan::PlanNote>,
 }
 
 impl<'a, P: LlmProvider> CardGenerator<'a, P> {
@@ -109,6 +111,34 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
             Vec<crate::generate::context::CallerContext>,
         >,
     ) -> Self {
+        Self::new_with_card_notes(
+            provider,
+            config,
+            max_concurrent,
+            language,
+            dep_contexts,
+            caller_contexts,
+            Vec::new(),
+        )
+    }
+
+    /// 带 knowledgecard.notes 的构造器（生产路径）：card_notes 为卡片生成
+    /// 引导注记（v0.9 W1 新增能力），注入卡片生成 prompt。
+    pub fn new_with_card_notes(
+        provider: &'a P,
+        config: WikiConfig,
+        max_concurrent: usize,
+        language: String,
+        dep_contexts: std::collections::HashMap<
+            String,
+            Vec<crate::generate::context::DependencyContext>,
+        >,
+        caller_contexts: std::collections::HashMap<
+            String,
+            Vec<crate::generate::context::CallerContext>,
+        >,
+        card_notes: Vec<crate::config::plan::PlanNote>,
+    ) -> Self {
         // tokio Semaphore 许可数有 MAX_PERMITS 上限（约 2^61），usize::MAX 会 panic；
         // "0=不限制" 用足够大的许可数表达（对真实并发规模永不构成瓶颈）
         let max = if max_concurrent == 0 {
@@ -125,6 +155,7 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
             failed: std::sync::Mutex::new(Vec::new()),
             dep_contexts,
             caller_contexts,
+            card_notes,
         }
     }
 
@@ -176,6 +207,7 @@ impl<'a, P: LlmProvider> CardGenerator<'a, P> {
         let mut messages = prompt::knowledge_card_prompt(
             chunk,
             &self.language,
+            &self.card_notes,
             pending_manual_edits,
             &dep_contexts,
             &caller_contexts,

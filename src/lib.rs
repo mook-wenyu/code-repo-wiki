@@ -407,6 +407,11 @@ pub fn run_pipeline_with_config(
 
     // Phase 1: 扫描。增量模式启用解析缓存（parse 层增量：内容指纹未变复用
     // 缓存结果，仅变更文件重新 tree-sitter 解析）；全量模式直接全量解析。
+    // v0.9 W1：先解析 wiki_plan.yaml 生效计划——scope 覆盖扫描范围
+    // （plan 提供时），notes/template/documents 随 plan 传入生成流水线。
+    // 文件缺失 → None（空 plan，默认行为）；解析/校验失败 → 显式报错终止。
+    let plan = crate::config::plan::resolve_plan_at(root)?;
+    let scope = plan.as_ref().and_then(|p| p.scope_override.as_ref());
     let watch_list: Vec<std::path::PathBuf> = match mode {
         GenerationMode::Incremental { watch_paths, .. } => watch_paths.clone(),
         GenerationMode::Full => Vec::new(),
@@ -425,9 +430,14 @@ pub fn run_pipeline_with_config(
             .output_dir()
             .join(".state")
             .join("insights_cache.json");
-        ingest::scan_and_parse_cached_at(root, &Some(cache_path), &watch_set)?
+        ingest::scan_and_parse_cached_at_with_scope(
+            root,
+            &Some(cache_path),
+            &watch_set,
+            scope,
+        )?
     } else {
-        ingest::scan_and_parse_at(root)?
+        ingest::scan_and_parse_at_with_scope(root, scope)?
     };
     let file_insights = scan.insights;
     let files_failed = scan.files_failed;
@@ -583,6 +593,7 @@ pub fn run_pipeline_with_config(
             inc,
             &extra_edits,
             &on_progress,
+            plan.as_ref(),
         ))?
     } else {
         rt.block_on(generate::run_generation(
@@ -592,6 +603,7 @@ pub fn run_pipeline_with_config(
             root,
             &extra_edits,
             &on_progress,
+            plan.as_ref(),
         ))?
     };
     // v32 8.1：generate 侧内部段（chunk/card/wiki）合并进总计时

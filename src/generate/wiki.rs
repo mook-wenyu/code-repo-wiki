@@ -32,6 +32,10 @@ pub struct WikiGenerator<'a, P: LlmProvider> {
     /// HEAD 短哈希缓存（v32 10.2）：每轮生成只开一次 git 仓库。
     /// None 也可能被缓存（非 git 仓库——生成期间不会变成 git 仓库）。
     head_short: std::sync::OnceLock<Option<String>>,
+    /// repowiki 全局生成引导（v0.9 W1：替代旧 guide.notes，注入模块页 prompt）
+    notes: Vec<crate::config::plan::PlanNote>,
+    /// repowiki.template（v0.9 W1）：""=默认模板 / "architecture"=架构概览模板
+    template: crate::config::plan::PlanTemplate,
 }
 
 impl<P: LlmProvider> WikiGenerator<'_, P> {
@@ -202,7 +206,26 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
     /// 使用指定的 LLM Provider 创建 WikiGenerator
     ///
     /// max_concurrent 控制 describe_modules 的并行上限（0 表示不限制）。
+    /// 无 plan 配置（空引导 + 默认模板）——测试/默认路径用。
     pub fn new(provider: &'a P, max_concurrent: usize) -> Self {
+        Self::new_with_plan(
+            provider,
+            max_concurrent,
+            Vec::new(),
+            crate::config::plan::PlanTemplate::default(),
+        )
+    }
+
+    /// 带 plan 配置的 WikiGenerator 构造器（生产路径）
+    ///
+    /// notes：repowiki 全局生成引导（注入模块页 prompt；空 = 不注入）；
+    /// template：repowiki.template（""=默认 / "architecture"=架构概览模板）。
+    pub fn new_with_plan(
+        provider: &'a P,
+        max_concurrent: usize,
+        notes: Vec<crate::config::plan::PlanNote>,
+        template: crate::config::plan::PlanTemplate,
+    ) -> Self {
         // tokio Semaphore 许可数有 MAX_PERMITS 上限（约 2^61），usize::MAX 会 panic；
         // "0=不限制" 用足够大的许可数表达（对真实并发规模永不构成瓶颈）
         let max = if max_concurrent == 0 {
@@ -219,6 +242,8 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
             desc_cache: std::sync::Mutex::new(None),
             // HEAD 短哈希懒加载：首次页面构造时计算（非 git 仓库缓存 None）
             head_short: std::sync::OnceLock::new(),
+            notes,
+            template,
         }
     }
 
@@ -276,7 +301,8 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
             chunk,
             card_summary,
             language,
-            &[],
+            &self.notes,
+            self.template,
             dep_contexts,
             caller_contexts,
         );
@@ -449,6 +475,7 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
             language: config.wiki.language.clone(),
             module_path: chunk.module_path.clone(),
             references: build_references(chunk, &config.wiki.language),
+            parent: String::new(),
             last_updated: now,
             based_on_commit,
             fingerprint: None,
@@ -519,6 +546,7 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
                     relation: "module".into(),
                 })
                 .collect(),
+            parent: String::new(),
             last_updated: now,
             based_on_commit,
             fingerprint: None,
@@ -713,6 +741,39 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
                     relation: "module".into(),
                 })
                 .collect(),
+            parent: String::new(),
+            last_updated: now,
+            based_on_commit,
+            fingerprint: None,
+        })
+    }
+
+    /// 生成自定义文档页面（v0.9 W1 repowiki.documents）
+    ///
+    /// LLM 按 goal/hints 生成 title 页；与自动模块页并存。页面为全局文档
+    /// （module_path 为空），parent 字段（非空时）决定 _toc 挂载层级。
+    /// 复用 complete_with_mermaid_guard（Mermaid 校验-重试-降级路径）。
+    pub async fn generate_custom_document(
+        &self,
+        doc: &crate::config::plan::PlanDocument,
+        config: &WikiConfig,
+        root: &crate::project::ProjectRoot,
+    ) -> Result<WikiDocument> {
+        let language = &config.wiki.language;
+        let messages = prompt::custom_document_prompt(&doc.title, &doc.goal, &doc.hints, language);
+        let content = self
+            .complete_with_mermaid_guard(messages, &format!("自定义文档:{}", doc.title))
+            .await?;
+        let now = chrono::Utc::now().to_rfc3339();
+        let based_on_commit = self.head_short_for(root);
+        Ok(WikiDocument {
+            title: doc.title.clone(),
+            kind: DocumentKind::WikiPage,
+            content,
+            language: config.wiki.language.clone(),
+            module_path: vec![],
+            parent: doc.parent.clone(),
+            references: vec![],
             last_updated: now,
             based_on_commit,
             fingerprint: None,
@@ -1105,6 +1166,7 @@ pub fn fallback_architecture_doc(
         language: config.wiki.language.clone(),
         module_path: vec![],
         references: refs,
+        parent: String::new(),
         last_updated: chrono::Utc::now().to_rfc3339(),
         // 测试辅助构造：基于提交行由调用方显式指定（默认无）
         based_on_commit: None,

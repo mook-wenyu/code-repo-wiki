@@ -108,6 +108,7 @@ pub fn render_api_reference(graph: &KnowledgeGraph) -> WikiDocument {
         language: String::new(),
         module_path: vec![],
         references: vec![],
+        parent: String::new(),
         last_updated: chrono::Utc::now().to_rfc3339(),
         // API 参考页由代码图渲染（非 LLM 页），不带 git 基线行
         based_on_commit: None,
@@ -248,6 +249,10 @@ pub fn render_knowledge_card(card: &KnowledgeCard) -> String {
 /// 按模块分组（Karpathy LLM Wiki 的"index 优先导航"最佳实践）：
 /// 模块文档按 module_path 前缀分组展示，全局文档（架构/概览/API/目录）单列。
 /// 链接路径与写盘命名保持一致（wiki/{doc.language}/{file}）。
+///
+/// v0.9 W1：自定义文档（repowiki.documents）为全局文档（module_path 空），
+/// 其 parent 非空时挂载到「## {parent}」子组（parent 决定 _toc 挂载），
+/// parent 空则归入「## 全局文档」。
 pub fn render_table_of_contents(documents: &[WikiDocument]) -> String {
     let mut output = String::new();
     output.push_str("# Wiki 文档目录\n\n");
@@ -256,10 +261,19 @@ pub fn render_table_of_contents(documents: &[WikiDocument]) -> String {
     // 按 module_path 前缀分组:模块文档归入各自模块,全局文档单列
     let mut module_docs: std::collections::BTreeMap<String, Vec<&WikiDocument>> =
         Default::default();
-    let mut global_docs: Vec<&WikiDocument> = Vec::new();
+    // 全局文档按 parent 分组：parent 空 → ""（归入全局文档节），非空 → 其标题
+    let mut global_docs: std::collections::BTreeMap<String, Vec<&WikiDocument>> =
+        Default::default();
     for doc in documents {
         if doc.module_path.is_empty() {
-            global_docs.push(doc);
+            global_docs
+                .entry(if doc.parent.is_empty() {
+                    String::new()
+                } else {
+                    doc.parent.clone()
+                })
+                .or_default()
+                .push(doc);
         } else {
             module_docs
                 .entry(doc.module_path.join("::"))
@@ -268,10 +282,14 @@ pub fn render_table_of_contents(documents: &[WikiDocument]) -> String {
         }
     }
 
-    // 全局文档（架构/概览/API/目录）优先
-    if !global_docs.is_empty() {
-        output.push_str("## 全局文档\n\n");
-        for doc in &global_docs {
+    // 全局文档（架构/概览/API/目录/自定义页）优先；带 parent 的自定义页按父分组
+    for (parent, docs) in &global_docs {
+        if parent.is_empty() {
+            output.push_str("## 全局文档\n\n");
+        } else {
+            output.push_str(&format!("## {parent}\n\n"));
+        }
+        for doc in docs {
             output.push_str(&render_toc_line(doc));
         }
         output.push('\n');
@@ -376,6 +394,7 @@ mod tests {
                 target_path: "wiki/bar.md".into(),
                 relation: "depends_on".into(),
             }],
+            parent: String::new(),
             last_updated: "2025-01-01T00:00:00Z".into(),
             based_on_commit: None,
             fingerprint: None,
@@ -480,6 +499,7 @@ mod tests {
             language: "zh".into(),
             module_path: vec![],
             references: vec![],
+            parent: String::new(),
             last_updated: "2025-01-01T00:00:00Z".into(),
             based_on_commit: None,
             fingerprint: None,
@@ -507,6 +527,7 @@ mod tests {
             language: "zh".into(),
             module_path: vec![],
             references: vec![],
+            parent: String::new(),
             last_updated: "2025-01-01T00:00:00Z".into(),
             based_on_commit: None,
             fingerprint: None,

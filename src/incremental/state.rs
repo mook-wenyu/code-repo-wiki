@@ -471,6 +471,7 @@ mod tests {
             language: "zh".into(),
             module_path: vec!["src".into(), "testmodule".into()],
             references: vec![],
+            parent: String::new(),
             last_updated: String::new(),
             based_on_commit: None,
             fingerprint: None,

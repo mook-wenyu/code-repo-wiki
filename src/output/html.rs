@@ -565,6 +565,7 @@ mod tests {
             language: "zh".to_string(),
             module_path: vec!["核心".to_string(), "模块".to_string()],
             references: vec![],
+            parent: String::new(),
             last_updated: "2025-01-01".to_string(),
             based_on_commit: None,
             fingerprint: None,
@@ -656,6 +657,7 @@ mod tests {
             language: "zh".to_string(),
             module_path: vec![], // 全局文档 → 文件名来自 title
             references: vec![],
+            parent: String::new(),
             last_updated: "2025-01-01".to_string(),
             based_on_commit: None,
             fingerprint: None,

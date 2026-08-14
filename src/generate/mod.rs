@@ -65,16 +65,6 @@ pub fn create_provider(config: &WikiConfig) -> Result<Provider> {
     }
 }
 
-/// 运行完整的生成流水线
-///
-/// 1. AST 感知分块（按模块分组）
-/// 2. 并行生成 Knowledge Card
-/// 3. 串行生成 Wiki 页面（依赖前序卡片摘要）
-/// 4. 生成架构概览页面
-///
-/// extra_edits：本次运行新检测到的人工修改记录（模块名 → 记录文本），
-/// 生成卡片前注入 LLM 输入（见 CardGenerator::generate_all_cards）；
-/// 由上层（lib.rs）从状态指纹比对结果组装，无人工修改时传空表。
 /// 构建卡片阶段的模块级上下文（模块名 → 上下文）
 ///
 /// 卡片并行生成，拿不到依赖方卡片摘要 → 摘要恒 None（只给模块名）；
@@ -105,6 +95,21 @@ fn build_card_contexts(
     (dep_contexts, caller_contexts)
 }
 
+/// 运行完整的生成流水线
+///
+/// 1. AST 感知分块（按模块分组）
+/// 2. 并行生成 Knowledge Card
+/// 3. 串行生成 Wiki 页面（依赖前序卡片摘要）
+/// 4. 生成架构概览页面
+///
+/// extra_edits：本次运行新检测到的人工修改记录（模块名 → 记录文本），
+/// 生成卡片前注入 LLM 输入（见 CardGenerator::generate_all_cards）；
+/// 由上层（lib.rs）从状态指纹比对结果组装，无人工修改时传空表。
+///
+/// plan（v0.9 W1）：wiki_plan.yaml 解析后的生效计划（None=无 plan 文件，
+/// 保持默认行为）；notes/template/documents 由本函数接入生成路径。
+/// 注意：scope 覆盖已由调用方（lib.rs）在扫描阶段消费，这里只消费
+/// notes/template/documents，不在本函数内二次解析 plan 文件。
 pub async fn run_generation(
     graph: &KnowledgeGraph,
     insights: &[FileInsight],
@@ -112,6 +117,7 @@ pub async fn run_generation(
     root: &crate::project::ProjectRoot,
     extra_edits: &HashMap<String, Vec<String>>,
     on_progress: &dyn Fn(crate::ProgressEvent),
+    plan: Option<&crate::config::plan::ResolvedPlan>,
 ) -> Result<GenerationOutput> {
     let start = Instant::now();
     // v32 8.1：三段内部计时（chunk/card/wiki）
@@ -139,17 +145,25 @@ pub async fn run_generation(
     // 2. 创建 LLM Provider
     let provider = create_provider(config)?;
 
+    // v0.9 W1：plan 接入点——notes（repowiki）注入 Wiki 页 prompt、
+    // card_notes（knowledgecard）注入卡片 prompt、template 决定模块页模板、
+    // documents 生成自定义页面。None 时全部回退默认（零破坏）。
+    let wiki_notes = plan.map(|p| p.notes.clone()).unwrap_or_default();
+    let card_notes = plan.map(|p| p.card_notes.clone()).unwrap_or_default();
+    let template = plan.map(|p| p.template).unwrap_or_default();
+
     // 3. 并行生成 Knowledge Card
     let card_start = Instant::now();
     // 项目级上下文：卡片阶段摘要恒 None（并行拿不到依赖方卡片）
     let (card_dep_contexts, card_caller_contexts) = build_card_contexts(&chunks, graph);
-    let card_gen = CardGenerator::new(
+    let card_gen = CardGenerator::new_with_card_notes(
         &provider,
         config.clone(),
         crate::config::schema::llm_effective_concurrency(&config.llm),
         config.wiki.language.clone(),
         card_dep_contexts,
         card_caller_contexts,
+        card_notes,
     );
     let mut cards = card_gen
         .generate_all_cards(&chunks, extra_edits, on_progress)
@@ -165,9 +179,11 @@ pub async fn run_generation(
     // 4. 按语言独立生成 Wiki 页面（并行，演进计划 T3.1；卡片仅主语言生成一次，
     // 各语言页面复用主语言卡片摘要；语言列表在 generate_wiki_pages 内部计算）
     let wiki_start = Instant::now();
-    let wiki_gen = WikiGenerator::new(
+    let wiki_gen = WikiGenerator::new_with_plan(
         &provider,
         crate::config::schema::llm_effective_concurrency(&config.llm),
+        wiki_notes,
+        template,
     );
     let mut documents = generate_wiki_pages(
         &wiki_gen,
@@ -183,7 +199,8 @@ pub async fn run_generation(
     .await;
     let wiki_ms = wiki_start.elapsed().as_millis() as u64;
 
-    // 5. 生成全局文档（架构概览 + 数据库 Schema，全量/增量共用同一辅助函数）
+    // 5. 生成全局文档（架构概览 + 数据库 Schema + plan 自定义文档，
+    // 全量/增量共用同一辅助函数）
     generate_global_documents(
         &wiki_gen,
         &provider,
@@ -194,6 +211,7 @@ pub async fn run_generation(
         &mut documents,
         &GlobalDocAffected::all(),
         false,
+        plan,
     )
     .await?;
 
@@ -229,6 +247,12 @@ pub async fn run_generation(
 /// 文件 + 语义传播判定的受影响模块，用于增量更新场景。未变更的文件
 /// 使用已有缓存，不触发新的 LLM 调用。
 /// extra_edits 语义同 run_generation（本次新检测的人工修改记录）。
+/// plan 语义同 run_generation（v0.9 W1：notes/template/documents 接入，
+/// scope 由 lib.rs 在扫描阶段消费）。
+// 例外说明（复杂度红线 5 参数规则）：8 个参数均为相互独立的上下文项
+// （图/输入/配置/根/增量/人工修改/进度回调/plan），引入包装结构体反而
+// 降低调用点可读性；与 run_generation 同构，属明确例外。
+#[allow(clippy::too_many_arguments)]
 pub async fn run_generation_filtered(
     graph: &KnowledgeGraph,
     insights: &[FileInsight],
@@ -237,6 +261,7 @@ pub async fn run_generation_filtered(
     inc: &crate::incremental::IncrementalResult,
     extra_edits: &HashMap<String, Vec<String>>,
     on_progress: &dyn Fn(crate::ProgressEvent),
+    plan: Option<&crate::config::plan::ResolvedPlan>,
 ) -> Result<GenerationOutput> {
     let start = Instant::now();
     let changed_files = &inc.changed_files;
@@ -309,16 +334,22 @@ pub async fn run_generation_filtered(
     // 2. 创建 LLM Provider
     let provider = create_provider(config)?;
 
+    // v0.9 W1：plan 接入点（语义同 run_generation，见其上注释）
+    let wiki_notes = plan.map(|p| p.notes.clone()).unwrap_or_default();
+    let card_notes = plan.map(|p| p.card_notes.clone()).unwrap_or_default();
+    let template = plan.map(|p| p.template).unwrap_or_default();
+
     // 3. 并行生成 Knowledge Card（仅变更块）
     let card_start = Instant::now();
     let (card_dep_contexts, card_caller_contexts) = build_card_contexts(&chunks, graph);
-    let card_gen = CardGenerator::new(
+    let card_gen = CardGenerator::new_with_card_notes(
         &provider,
         config.clone(),
         crate::config::schema::llm_effective_concurrency(&config.llm),
         config.wiki.language.clone(),
         card_dep_contexts,
         card_caller_contexts,
+        card_notes,
     );
     let mut cards = card_gen
         .generate_all_cards(&chunks, extra_edits, on_progress)
@@ -330,9 +361,11 @@ pub async fn run_generation_filtered(
     // 4. 按语言独立生成 Wiki 页面（并行，演进计划 T3.1；仅变更块；卡片仅主语言生成一次，
     // 各语言页面复用主语言卡片摘要）
     let wiki_start = Instant::now();
-    let wiki_gen = WikiGenerator::new(
+    let wiki_gen = WikiGenerator::new_with_plan(
         &provider,
         crate::config::schema::llm_effective_concurrency(&config.llm),
+        wiki_notes,
+        template,
     );
     let mut documents = generate_wiki_pages(
         &wiki_gen,
@@ -374,6 +407,7 @@ pub async fn run_generation_filtered(
         &mut documents,
         &global_affected,
         inc.has_deleted_files,
+        plan,
     )
     .await?;
 
@@ -882,6 +916,7 @@ async fn generate_global_documents(
     documents: &mut Vec<WikiDocument>,
     affected: &GlobalDocAffected,
     has_deleted_files: bool,
+    plan: Option<&crate::config::plan::ResolvedPlan>,
 ) -> Result<()> {
     // 文档类型决策：DocumentKind 是纯枚举（无 architecture 等可复用字段），
     // 且 output::wiki_page_path 按 kind 特判文件名（架构概览→architecture.md，
@@ -988,6 +1023,24 @@ async fn generate_global_documents(
         }
     }
 
+    // v0.9 W1：plan 自定义文档（repowiki.documents）——与自动模块页并存，
+    // LLM 按 goal/hints 生成 title 页，parent 决定 _toc 挂载。增量路径每次
+    // 都重新生成（自定义页内容无模块指纹可判变更，增量语义=重生成最坏成本
+    // 一次 LLM 调用/页，可接受；不做快照回填，避免「改了 plan 却回填旧页」）。
+    if let Some(plan) = plan {
+        for doc in &plan.documents {
+            match wiki_gen.generate_custom_document(doc, config, root).await {
+                Ok(custom) => documents.push(custom),
+                Err(e) => {
+                    // 与架构/概览同语义：fail-fast 缺页（记入 failed_modules +
+                    // 显式告警），不产出无内容的占位页。
+                    tracing::warn!("自定义文档「{}」生成失败，该页缺失: {}", doc.title, e);
+                    wiki_gen.record_failure(doc.title.clone());
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -1051,6 +1104,7 @@ mod tests {
             language: "zh".into(),
             module_path: vec![],
             references: vec![],
+            parent: String::new(),
             last_updated: String::new(),
             based_on_commit: None,
             fingerprint: None,
@@ -1075,6 +1129,7 @@ mod tests {
             language: "zh".into(),
             module_path: vec![],
             references: vec![],
+            parent: String::new(),
             last_updated: "2025-01-01T00:00:00Z".into(),
             based_on_commit: None,
             fingerprint: None,
@@ -1086,6 +1141,7 @@ mod tests {
             language: "zh".into(),
             module_path: vec![],
             references: vec![],
+            parent: String::new(),
             last_updated: "2025-01-01T00:00:00Z".into(),
             based_on_commit: None,
             fingerprint: None,
@@ -1251,6 +1307,7 @@ mod tests {
             language: "zh".into(),
             module_path: vec![],
             references: vec![],
+            parent: String::new(),
             last_updated: "2025-01-01T00:00:00Z".into(),
             based_on_commit: None,
             fingerprint: None,
@@ -1262,6 +1319,7 @@ mod tests {
             language: "zh".into(),
             module_path: vec![],
             references: vec![],
+            parent: String::new(),
             last_updated: "2025-01-01T00:00:00Z".into(),
             based_on_commit: None,
             fingerprint: None,

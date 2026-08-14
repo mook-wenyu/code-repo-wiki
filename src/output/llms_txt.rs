@@ -419,6 +419,7 @@ mod tests {
             language: "zh".into(),
             module_path: Vec::new(),
             references: Vec::new(),
+            parent: String::new(),
             last_updated: String::new(),
             // llms.txt 契约（llms_txt.rs 顶部）：内容禁止注入易变时间戳/基线
             based_on_commit: None,

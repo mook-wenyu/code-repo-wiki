@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use ignore::WalkBuilder;
 use std::path::{Path, PathBuf};
 
@@ -73,12 +73,16 @@ fn is_noise_dir(name: &str, at_root_level: bool) -> bool {
 
 /// 文件系统遍历器：全量遍历 + 内置过滤（v30+：无 include/exclude 配置，
 /// 扫描范围由「可解析语言 + 噪音目录 + 二进制 + 文件数上限」四个内置边界决定——
-/// 不同项目目录结构不同，路径模式无法通用，语言才是 code-repo-wiki 的能力边界）
+/// 不同项目目录结构不同，路径模式无法通用，语言才是 code-repo-wiki 的能力边界；
+/// v0.9 W1 起 wiki_plan.yaml 的 scope.include/exclude 可作为第五个边界覆盖）
 pub struct Scanner {
     root: PathBuf,
     /// 本次扫描因超单文件字节上限被跳过的文件数（audit-gen-07）。
     /// 用 Cell 内变：scan 只取 &self，计数在遍历中就地累加。
     skipped_oversized: std::cell::Cell<usize>,
+    /// v0.9 W1：wiki_plan.yaml scope 覆盖（.gitignore 语法）。
+    /// None = 无 plan scope，走内置四边界默认行为。
+    scope: Option<crate::config::plan::PlanScope>,
 }
 
 impl Scanner {
@@ -87,7 +91,15 @@ impl Scanner {
         Self {
             root: root.to_path_buf(),
             skipped_oversized: std::cell::Cell::new(0),
+            scope: None,
         }
+    }
+
+    /// 设置 plan scope（include/exclude 覆盖，.gitignore 语法）——
+    /// 由 ingest 层在 plan 提供 scope 时调用。
+    pub fn with_scope(mut self, scope: crate::config::plan::PlanScope) -> Self {
+        self.scope = Some(scope);
+        self
     }
 
     /// 本次扫描因超过单文件字节上限被跳过的文件数（上游并入
@@ -101,6 +113,7 @@ impl Scanner {
     /// - 使用 `ignore::WalkBuilder` 处理 .gitignore 与隐藏目录
     /// - 跳过内置噪音目录（依赖/构建产物，见 [NOISE_DIRS]）
     /// - 只保留 [SUPPORTED_EXTENSIONS] 内的源文件
+    /// - v0.9 W1：plan scope 存在时按 include/exclude 过滤（相对项目根匹配）
     /// - 超过 MAX_FILES 个文件时返回错误
     pub fn scan(&self) -> Result<Vec<PathBuf>> {
         self.scan_with_limit(MAX_FILES)
@@ -108,6 +121,22 @@ impl Scanner {
 
     /// 带文件数上限的扫描（上限可配置，供测试覆盖超限分支）
     fn scan_with_limit(&self, limit: usize) -> Result<Vec<PathBuf>> {
+        // v0.9 W1：预构建 scope 匹配器（include/exclude 各一个 Gitignore）。
+        // 模式已在 plan 解析期校验（load_plan_at 的 scope 语法校验），
+        // 此处构建失败理论上不可达——用 `?` 显式报错，不静默跳过范围过滤。
+        let include_gi = self
+            .scope
+            .as_ref()
+            .filter(|s| !s.include.is_empty())
+            .map(|s| build_gitignore(&self.root, &s.include))
+            .transpose()?;
+        let exclude_gi = self
+            .scope
+            .as_ref()
+            .filter(|s| !s.exclude.is_empty())
+            .map(|s| build_gitignore(&self.root, &s.exclude))
+            .transpose()?;
+
         let walker = WalkBuilder::new(&self.root)
             .standard_filters(true)
             .filter_entry(|entry| {
@@ -156,6 +185,14 @@ impl Scanner {
                 continue;
             }
 
+            // v0.9 W1：plan scope 过滤（include 白名单 + exclude 黑名单，
+            // 相对项目根匹配——与 ingest 层路径相对化基准一致）
+            if let Ok(rel) = path.strip_prefix(&self.root)
+                && !in_scope(rel, include_gi.as_ref(), exclude_gi.as_ref())
+            {
+                continue;
+            }
+
             // audit-gen-07：单文件字节上限——超限跳过并告警（计入
             // skipped_oversized，上游并入 files_failed），超大文件对
             // 读取/解析/嵌入均无增益，读入反而拖垮内存与耗时
@@ -184,9 +221,41 @@ impl Scanner {
     }
 }
 
+/// 用一组模式构建 Gitignore 匹配器（scope include/exclude 共用）
+fn build_gitignore(root: &Path, patterns: &[String]) -> Result<ignore::gitignore::Gitignore> {
+    let mut builder = ignore::gitignore::GitignoreBuilder::new(root);
+    for pat in patterns {
+        builder
+            .add_line(None, pat)
+            .with_context(|| format!("scope 模式语法错误: {pat:?}"))?;
+    }
+    builder.build().map_err(anyhow::Error::from)
+}
+
+/// scope 匹配判定：include 非空时文件必须命中任一 include 模式（Ignore=命中）；
+/// exclude 命中则排除（Whitelist=被 `!` 反向，保留）。
+fn in_scope(
+    rel: &Path,
+    include_gi: Option<&ignore::gitignore::Gitignore>,
+    exclude_gi: Option<&ignore::gitignore::Gitignore>,
+) -> bool {
+    if let Some(inc) = include_gi
+        && !inc.matched(rel, false).is_ignore()
+    {
+        return false;
+    }
+    if let Some(exc) = exclude_gi
+        && exc.matched(rel, false).is_ignore()
+    {
+        return false;
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::plan::PlanScope;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static DIR_SEQ: AtomicUsize = AtomicUsize::new(0);
@@ -223,6 +292,49 @@ mod tests {
         assert!(names.iter().any(|n| n.ends_with("src/a.rs")));
         assert!(names.iter().any(|n| n.ends_with("src/sub/b.ts")));
         assert_eq!(files.len(), 2, "非支持语言与二进制应被过滤: {names:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v0.9 W1：plan scope include/exclude 覆盖扫描范围（.gitignore 语法，
+    /// 相对项目根匹配）
+    #[test]
+    fn test_scanner_scope_filters_files() {
+        let dir = scratch("scope");
+        std::fs::create_dir_all(dir.join("src/net")).unwrap();
+        std::fs::write(dir.join("src/a.rs"), "pub fn a() {}").unwrap();
+        std::fs::write(dir.join("src/net/tcp.rs"), "pub fn tcp() {}").unwrap();
+        std::fs::write(dir.join("src/b.rs"), "pub fn b() {}").unwrap();
+
+        // include 白名单：只收 src/net/**
+        let include_only = Scanner::new(&dir).with_scope(PlanScope {
+            include: vec!["src/net/**".into()],
+            exclude: vec![],
+        });
+        let files = include_only.scan().unwrap();
+        let names: Vec<String> = files
+            .iter()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .collect();
+        assert_eq!(names.len(), 1, "include 白名单应只收 src/net/**，实际: {names:?}");
+        assert!(names[0].ends_with("src/net/tcp.rs"));
+
+        // exclude 黑名单：排除 src/b.rs
+        let exclude_b = Scanner::new(&dir).with_scope(PlanScope {
+            include: vec![],
+            exclude: vec!["src/b.rs".into()],
+        });
+        let files = exclude_b.scan().unwrap();
+        let names: Vec<String> = files
+            .iter()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .collect();
+        assert_eq!(names.len(), 2, "exclude 应排除 src/b.rs，实际: {names:?}");
+        assert!(!names.iter().any(|n| n.ends_with("src/b.rs")));
+
+        // 无 scope：全量（基线）
+        let none = Scanner::new(&dir);
+        assert_eq!(none.scan().unwrap().len(), 3);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

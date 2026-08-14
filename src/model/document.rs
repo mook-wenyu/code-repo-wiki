@@ -36,6 +36,10 @@ pub struct WikiDocument {
     pub references: Vec<Reference>,
     /// 最后更新时间（ISO 8601）
     pub last_updated: String,
+    /// 父页面标题（v0.9 W1：repowiki.documents 自定义页的 parent——决定
+    /// _toc 挂载层级；空 = 顶层全局文档）。serde default 兼容旧快照。
+    #[serde(default)]
+    pub parent: String,
     /// 基于的 git 提交短哈希（v32 10.2 基线行）
     ///
     /// 取值 = 生成时 HEAD 提交短哈希（前 8 位）；非 git 仓库或无 HEAD

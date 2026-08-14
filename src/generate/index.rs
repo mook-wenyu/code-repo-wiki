@@ -277,6 +277,7 @@ fn make_document(content: String, config: &WikiConfig, infos: &[ModuleGuideInfo]
                 relation: "module".into(),
             })
             .collect(),
+        parent: String::new(),
         last_updated: Utc::now().to_rfc3339(),
         // 索引指南页由代码图渲染（非 LLM 页），不带 git 基线行
         based_on_commit: None,

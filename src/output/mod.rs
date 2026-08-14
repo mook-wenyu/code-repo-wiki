@@ -542,6 +542,7 @@ mod tests {
             language: language.into(),
             module_path: vec!["src".into(), "testmodule".into()],
             references: vec![],
+            parent: String::new(),
             last_updated: "2025-01-01T00:00:00Z".into(),
             based_on_commit: None,
             fingerprint: None,

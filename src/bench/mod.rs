@@ -1205,6 +1205,7 @@ fn measure_tqs(config: &WikiConfig) -> Result<Option<TqsReport>> {
                 language: config.wiki.language.clone(),
                 module_path: Vec::new(),
                 references: Vec::new(),
+                parent: String::new(),
                 last_updated: String::new(),
                 based_on_commit: None,
                 fingerprint: None,
