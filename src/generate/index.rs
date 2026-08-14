@@ -71,7 +71,11 @@ pub async fn generate_index_guide<P: LlmProvider>(
                     );
                     crate::output::mermaid_check::degrade_mermaid_blocks(&content, &issues)
                 };
-                return make_document(content, config, &infos);
+                return make_document(
+                    canonicalize_module_links(&content, &config.wiki.language, &infos),
+                    config,
+                    &infos,
+                );
             }
             Err(e) => last_err = Some(e),
         }
@@ -253,6 +257,56 @@ fn index_guide_prompt(infos: &[ModuleGuideInfo], language: &str) -> Vec<Message>
     vec![Message::system(system), Message::user(user)]
 }
 
+/// 模块链接确定性校正（U1 复验实证，根治 index.md 断链）
+///
+/// LLM 输出阅读指南时可能：(a) 把模块名中的连字符等字符误改为下划线
+/// （`src::config::plugin-template` → 链接目标 `src_config_plugin_template.md`，
+/// 与实际落盘文件名 `src_config_plugin-template.md` 不符 → 断链）；(b) 编造
+/// 输入模块列表之外的模块（如 `tests::ingest`，列表无此模块 → 链接目标
+/// 不存在 → 断链）。两者都是 LLM 输出偏差，prompt 规则无法强制，需下游
+/// 确定性校正（与 lint 断链防回归同哲学：产物链接必须指向真实文件）。
+///
+/// 规则：`[文本](wiki/{lang}/目标.md)` 链接按**链接文本中的模块名**反查权威
+/// 模块集合——模块名存在 → 链接目标重写为 `wiki_file_name` 派生名（权威
+/// 文件名，含连字符等原字符）；模块名不存在（编造）→ 链接降级为纯文本
+/// （保留信息、消除断链）。纯字符串处理，确定性；fallback 骨架的链接
+/// 本已正确（`::`→`_` 仅替换分隔符），经本函数幂等。
+fn canonicalize_module_links(content: &str, language: &str, infos: &[ModuleGuideInfo]) -> String {
+    let known: std::collections::HashSet<&str> =
+        infos.iter().map(|i| i.name.as_str()).collect();
+    let mut out = String::with_capacity(content.len());
+    let mut rest = content;
+    while let Some(start) = rest.find("](") {
+        let link_head = &rest[..start]; // [文本
+        // 链接文本（'[' 之后到当前 ']'）
+        let name = link_head
+            .rfind('[')
+            .map(|b| link_head[b + 1..].trim())
+            .unwrap_or("");
+        let after = &rest[start + 2..];
+        let end = after.find(')').unwrap_or(after.len());
+        let target = &after[..end];
+        let prefix = format!("wiki/{language}/");
+        let is_module_link = target.starts_with(&prefix) && target.ends_with(".md");
+        if is_module_link && known.contains(name) {
+            // 权威模块：链接目标重写为 wiki_file_name 派生名（确定性文件名）
+            out.push_str(link_head);
+            let file = format!("{}.md", name.replace("::", "_"));
+            out.push_str(&format!("]({prefix}{file})"));
+        } else if is_module_link {
+            // 编造模块名：链接降级为纯文本（丢弃 [ 与链接，保留名称信息）
+            tracing::warn!("阅读指南链接目标模块不在权威清单，降级为纯文本: {name}");
+            out.push_str(name);
+        } else {
+            out.push_str(link_head);
+            out.push_str(&format!("]({target})"));
+        }
+        rest = &after[end.min(after.len())..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// 组装阅读指南 WikiDocument
 ///
 /// kind 用 TableOfContents（非 WikiPage）：WikiPage 会在状态层按 module_path
@@ -368,5 +422,56 @@ mod tests {
             "非 zh 语言原样保留: {}",
             en[0].content
         );
+    }
+
+    /// U1 复验实证：模块链接确定性校正——(a) LLM 把模块名连字符误改为
+    /// 下划线（plugin-template → plugin_template，链接目标断链）→ 按链接
+    /// 文本模块名反查权威集合重写为权威文件名；(b) 编造模块（tests::ingest
+    /// 不在清单）→ 链接降级为纯文本；(c) 正确链接与非模块链接原样保留。
+    #[test]
+    fn test_canonicalize_module_links() {
+        let infos = vec![
+            ModuleGuideInfo {
+                name: "src::config::plugin-template".into(),
+                description: "".into(),
+                dependents: vec![],
+                dependencies: vec![],
+                in_degree: 0,
+            },
+            ModuleGuideInfo {
+                name: "src::model".into(),
+                description: "".into(),
+                dependents: vec![],
+                dependencies: vec![],
+                in_degree: 0,
+            },
+        ];
+        let content = concat!(
+            "- [src::config::plugin-template](wiki/zh/src_config_plugin_template.md)\n",
+            "- [src::config::plugin-template](wiki/zh/src_config_plugin-template.md)\n",
+            "- [tests::ingest](wiki/zh/tests_ingest.md)\n",
+            "- [src::model](wiki/zh/src_model.md)\n",
+            "- [外部链接](https://example.com)\n",
+        );
+        let out = canonicalize_module_links(content, "zh", &infos);
+        // (a) 连字符被 LLM 改下划线的目标 → 重写为权威文件名（连字符保留）
+        assert!(
+            out.contains("(wiki/zh/src_config_plugin-template.md)"),
+            "权威文件名应含连字符: {out}"
+        );
+        // 两个 plugin-template 链接（一个错一个对）校正后目标一致
+        assert_eq!(
+            out.matches("wiki/zh/src_config_plugin-template.md").count(),
+            2,
+            "两处链接应统一为权威文件名: {out}"
+        );
+        // (b) 编造模块 → 纯文本（无链接语法）
+        assert!(
+            out.contains("tests::ingest") && !out.contains("](wiki/zh/tests_ingest.md)"),
+            "编造模块应降级为纯文本: {out}"
+        );
+        // (c) 正确链接与外链原样保留
+        assert!(out.contains("(wiki/zh/src_model.md)"), "正确链接保留: {out}");
+        assert!(out.contains("(https://example.com)"), "外链保留: {out}");
     }
 }
