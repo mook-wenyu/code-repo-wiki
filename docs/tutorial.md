@@ -25,7 +25,7 @@ export OPENCODEGO2_API_KEY="sk-..."
 
 `code-repo-wiki key` 命令可交互式写入用户级配置（或 `--env` 用环境变量引用）；完整配置说明见[配置参考](reference/config.md)。
 
-> ⚠️ 2026-08 实测：默认端点 `https://opencode.ai/zen/go/v1` 当前不可用（网关生成端点返回 400/500）。需要按[配置参考的已知问题段](reference/config.md#已知问题)改用百炼等兼容端点。
+> ⚠️ 2026-08 实测记录：默认端点 `https://opencode.ai/zen/go/v1` 曾出现上游临时拒绝（网关生成端点返回 400/500），**已于 2026-08-10 实测恢复**（真实 `generate` 端到端成功，17 页产物）。若再遇 400/500：先重试一次（上游波动）；持续失败时按[配置参考的已知问题段](reference/config.md#已知问题)改用百炼等兼容端点。
 
 ## 第 3 步：生成 Wiki
 

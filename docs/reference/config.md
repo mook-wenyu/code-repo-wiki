@@ -42,6 +42,8 @@ api_key_env = "OPENCODEGO2_API_KEY"  # key 放环境变量，仓库只写变量�
 # reasoning_effort = "low"       # 思考强度："low" / "high" / "max"（与 thinking 配套发送：
 #                                #   chat 写 reasoning_effort、Responses 写 reasoning.effort；
 #                                #   官方映射：v4-flash low→low、high→high、max→max）。
+# max_concurrency = 16           # 并发 LLM 调用上限（缺省 16；超出上限的调用排队等待，
+#                                #   防触发服务端动态限流；=0 解析期/构造期双双拒绝）
 
 [embed]
 # provider = "remote"                 # remote=远程 API（默认）| mock=测试 mock server；本地 ONNX 路径已删除（v0.7.2）
@@ -49,6 +51,11 @@ model = "qwen3.7-text-embedding"      # 默认阿里百炼 + qwen3.7-text-embedd
 # base_url = "https://llm-…maas.aliyuncs.com/compatible-mode/v1"
 api_key = ""
 api_key_env = "BAILIAN_API_KEY"       # embed key 缺失时语义搜索自动降级为纯文本
+# max_concurrency = 4                 # 同时运行的整批嵌入上限（缺省 4；与 batch_concurrency
+#                                     #   两层串联取最小值生效；=0 解析期/构造期双双拒绝）
+# batch_concurrency = 1               # 批内并发（缺省 1；阿里百炼默认 TPM 限流下并发易 429
+#                                     #   Throttling.AllocationQuota，串行批内请求压到 TPM 之下；
+#                                     #   =0 解析期/构造期双双拒绝——buffer_unordered(0) panic 前拦截）
 ```
 
 ## 已知问题（2026-08 期间）

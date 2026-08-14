@@ -34,4 +34,4 @@ powershell -File scripts/cleanup-test-residue.ps1 -Apply   # 确认后删除
 - **搜索**：`code-repo-wiki search --query "k" --engine hybrid --top-k 10`；语义索引无 Key 自动降级
 - **AI Agent 入口**：`llms.txt`（站点地图）+ `llms-full.txt`（含实体签名的内联索引），随生成确定性重写
 - **评测**：`code-repo-wiki bench --root <repo> [--judge]` 自动评测；`bench --repodoc` 五维聚合报告；`bench-manifest` 清单批量跑分（详见[CLI 参考](../reference/cli.md)）
-- **CI**：GitHub Actions 三 job——check（clippy `-D warnings` + `cargo doc` 门禁）、test（ubuntu + windows 矩阵）、lint-workflow（actionlint 校验 workflow 文件）；`rust-toolchain.toml` 钉定 stable + clippy
+- **CI**：GitHub Actions 五 job——check（fmt + clippy `-D warnings` + `cargo doc` 门禁）、test（ubuntu + windows + macos 三平台矩阵）、lint-workflow（actionlint 校验 workflow 文件）、lint-docs（markdownlint-cli2 + lychee 死链检查）、lint-artifacts（PR 常驻产物门禁：mock provider 生成 sample-repo 产物后对磁盘产物 lint，零 key 零触网，Error 级阻断/Warning 级仅展示）；`rust-toolchain.toml` 钉定 stable + clippy
