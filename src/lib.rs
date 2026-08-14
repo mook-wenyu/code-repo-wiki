@@ -848,9 +848,17 @@ pub fn run_card_command(
     let provider = generate::create_provider(&config)?;
     let rt = get_global_runtime();
     match action {
-        generate::card::CardAction::Generate { module } => rt.block_on(
-            generate::card::generate_module_card(&provider, &config, root, module),
-        ),
+        generate::card::CardAction::Generate { module } => {
+            // card generate spec / card generate tech-stack：项目级卡片重生成。
+            // "spec"/"tech-stack" 是 project_card 的两个固定 kind 标识（CLI
+            // 合法参数值，非路径 hack；在分发处特判并委派 project_card 路径，
+            // 与 generate_module_card 的模块卡路径并列）。
+            if matches!(module.as_str(), "spec" | "tech-stack") {
+                rt.block_on(generate_project_card_cli(&provider, &config, root, module))
+            } else {
+                rt.block_on(generate::card::generate_module_card(&provider, &config, root, module))
+            }
+        }
         generate::card::CardAction::Modify {
             module,
             instruction,
@@ -888,6 +896,43 @@ pub fn run_card_command(
             generate::card::CardEditMode::Rewrite,
         )),
     }
+}
+
+/// `card generate spec` / `card generate tech-stack`：重生成项目级卡片并写盘。
+///
+/// 委派 project_card 的既有 pub 生成函数（Spec 走 LLM 提炼，TechStack 走
+/// 确定性清单解析），写盘路径经 output::card_write_path 按 card_kind 分派到
+/// cards/{主语言}/project/ 子目录。无对应输入（无规约文件 / 无清单）时
+/// 返回 Ok(None) → 打印"未生成"，符合项目卡输入驱动防幻觉语义（不报错）。
+async fn generate_project_card_cli(
+    provider: &generate::llm::Provider,
+    config: &config::schema::WikiConfig,
+    root: &project::ProjectRoot,
+    module: &str,
+) -> anyhow::Result<()> {
+    let primary_lang = crate::output::primary_language(config);
+    // card_notes 置空：单卡命令不承载 plan 上下文，Spec 卡仅从规约文件提炼
+    //（与流水线经 plan 注入 notes 解耦；无规约文件即不生成，防幻觉）。
+    let card = match module {
+        "spec" => generate::project_card::generate_project_spec_card(provider, config, root, &[])
+            .await?,
+        "tech-stack" => generate::project_card::generate_project_tech_stack_card(root)?,
+        _ => unreachable!("run_card_command 已特判 spec/tech-stack，此处不可达（结构安全）"),
+    };
+    match card {
+        Some(c) => {
+            let path = crate::output::card_write_path(config.output_dir(), &primary_lang, &c);
+            // 先渲染为 owned 再传 &：write_file_atomic 取 &str，临时变量借用需绑定
+            let content = crate::output::markdown::render_knowledge_card(&c);
+            crate::fs::write_file_atomic(&path, &content)?;
+            println!("{module} 卡已生成: {}", path.display());
+        }
+        None => match module {
+            "spec" => println!("Spec 卡未生成（无规约文件 AGENTS.md/CONTRIBUTING.md 等）"),
+            _ => println!("TechStack 卡未生成（无依赖清单 Cargo.toml/package.json 等）"),
+        },
+    }
+    Ok(())
 }
 
 /// 清理过期产物（票 10：产物集合 diff 语义，全量/增量统一）

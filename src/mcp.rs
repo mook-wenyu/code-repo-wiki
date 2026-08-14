@@ -307,7 +307,7 @@ impl RepoWikiMcp {
     #[tool(
         name = "wiki_read_card",
         title = "Read knowledge card",
-        description = "Purpose: read the markdown content of a generated knowledge card (structured module summary for AI agents).\nWhen to use: to retrieve the details of a module card.\nWhen NOT to use: to read a wiki page (module/API docs), use wiki_read_page instead. The card must already exist (run `code-repo-wiki generate` first), otherwise the tool reports an error.\nParameters & return example: {\"card\": \"src_config\", \"lang\": \"zh\"} -> \"/abs/path/cards/zh/src_config.md\\n\\n(card markdown content)\". Returns the file path plus the markdown content.",
+        description = "Purpose: read the markdown content of a generated knowledge card (structured module summary for AI agents).\nWhen to use: to retrieve the details of a module card, or a project card (Spec rules card / TechStack stack card) by module name \"project::spec\" / \"project::tech-stack\".\nWhen NOT to use: to read a wiki page (module/API docs), use wiki_read_page instead. The card must already exist (run `code-repo-wiki generate` first), otherwise the tool reports an error.\nParameters & return example: {\"card\": \"src_config\", \"lang\": \"zh\"} -> \"/abs/path/cards/zh/src_config.md\\n\\n(card markdown content)\"; {\"card\": \"project::tech-stack\"} -> \"/abs/path/cards/zh/project/tech-stack.md\". Returns the file path plus the markdown content.",
         annotations(read_only_hint = true)
     )]
     async fn read_card(
@@ -332,11 +332,27 @@ impl RepoWikiMcp {
         {
             return tool_error(format!("非法的卡片名: {card}（只允许单段文件名）"));
         }
-        let path = config
-            .output_dir()
-            .join("cards")
-            .join(&lang)
-            .join(format!("{card}.md"));
+        // 显式项目卡契约：MCP 的 card 参数取模块名形态 "project::spec" /
+        // "project::tech-stack"（与模块卡同以 module_name 定位的约定）时映射到
+        // 项目卡写盘路径（card_write_path 的 project/{spec|tech-stack}.md 子目录）；
+        // 其余按模块卡根级命名 cards/{lang}/{card}.md 解析。
+        let path = match card.as_str() {
+            "project::spec" => {
+                crate::output::project_card_page_path(config.output_dir(), &lang, crate::model::CardKind::Spec)
+            }
+            "project::tech-stack" => {
+                crate::output::project_card_page_path(
+                    config.output_dir(),
+                    &lang,
+                    crate::model::CardKind::TechStack,
+                )
+            }
+            _ => config
+                .output_dir()
+                .join("cards")
+                .join(&lang)
+                .join(format!("{card}.md")),
+        };
         match std::fs::read_to_string(&path) {
             Ok(content) => tool_success(format!("{}\n\n{content}", path.display())),
             // 卡片不存在/不可读：工具执行错误（isError=true），引导运行 generate

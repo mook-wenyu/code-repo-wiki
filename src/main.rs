@@ -373,9 +373,9 @@ enum Commands {
 /// 知识卡片操作子命令（业务动作定义在 lib 的 generate::card::CardAction）
 #[derive(Subcommand)]
 enum CardAction {
-    /// 为单个模块生成卡片（重新生成）
+    /// 为单个模块生成卡片（重新生成；module="spec"/"tech-stack" 生成项目级卡片）
     Generate {
-        /// 模块名（如 src::config）
+        /// 模块名（如 src::config）；特殊值 spec / tech-stack 生成项目级卡片
         module: String,
         /// 配置文件路径
         #[arg(short, long)]
