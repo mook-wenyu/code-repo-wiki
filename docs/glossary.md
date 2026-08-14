@@ -36,7 +36,10 @@
 
 ## K
 
-- **知识卡片（Knowledge Card）** —— AI 代理的结构化摘要（JSON 元数据 + Markdown），位于 `.code-repo-wiki/cards/{lang}/`。
+- **知识卡片（Knowledge Card）** —— AI 代理的结构化摘要（JSON 元数据 + Markdown），位于 `.code-repo-wiki/cards/{lang}/`，分三类：
+  - **模块卡**（`card_kind: module`，`cards/{lang}/{module}.md`）——架构文档类，每模块一张，含摘要/关键实体/依赖/设计意图。
+  - **Spec 卡**（`card_kind: spec`，`cards/{lang}/project/spec.md`）——代码规约类，项目级一张，列出命名/接口/质量/约束规约（每条带来源锚定）。
+  - **技术栈卡**（`card_kind: tech-stack`，`cards/{lang}/project/tech-stack.md`）——项目级一张，依赖清单零 LLM 确定性解析（见[限制项](reference/limitations.md)）。
 - **快照（snapshot）** —— 导出/评测用的产物快照（`.code-repo-wiki/export/`），`export --skip-generate` 从快照直接导出。
 
 ## L
@@ -77,3 +80,7 @@
 
 - **watch** —— 常驻文件监听，保存即更新；崩溃自愈循环（v36 起）+ 平台托管模板见[watch 托管](how-to/watch.md)。
 - **Wiki 页** —— 模块页（每模块一份：职责/实体/依赖/使用示例）。
+
+## X
+
+- **项目卡（project card）** —— 项目级单张卡片，存于 `cards/{lang}/project/` 子目录（与模块卡 `cards/{lang}/{module}.md` 隔离，路径明确分工不重叠）；`spec.md`= Spec 规约卡，`tech-stack.md`= 确定性依赖清单卡。

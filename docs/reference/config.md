@@ -17,6 +17,9 @@ language = "zh"          # 文档语言（默认 zh）
 # 生成引导/自定义文档/扫描范围不再放 config.toml——由项目根 wiki_plan.yaml 控制
 # （v0.9 起替代旧 [wiki.guide] 段；文件不存在 = 默认行为）：
 #   repowiki.template       # "" 默认 | "architecture" 架构概览模板
+#                           #   | "product_requirement" 产品需求格式模板（需求背景/目标用户与场景/
+#                           #     功能需求（用户故事）/非功能需求/验收标准/边界与例外。Qoder 官方仅描述
+#                           #     "按产品需求格式输出"无更细规范，此格式为本项目合理默认）
 #   repowiki.notes          # [{text, author}] Wiki 页生成引导
 #   repowiki.documents      # [{title, goal, parent, hints}] 自定义文档页
 #   knowledgecard.notes     # [{text, author}] 卡片生成引导

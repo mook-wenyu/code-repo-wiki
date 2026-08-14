@@ -9,6 +9,10 @@
 - 每种语言都独立生成会线性放大 LLM 成本——当前只输出主语言（`wiki.language`，默认 `zh`）。
 - **语言覆盖**：tree-sitter 解析支持 Rust/TypeScript/TSX/Python/Go/JS/JSX/MJS/CJS/C#/Java 11 种；**无 Ruby/PHP 解析器**（rails 等 Ruby 仓库只能解析其 JS/TS 资产；纯非支持语言仓库零源文件会显式报错「未找到任何源文件」——扫描是全量自动识别，无 include 白名单配置）。
 
+## 技术栈解析边界
+
+技术栈卡（`cards/{lang}/project/tech-stack.md`）的依赖清单采用**零 LLM 确定性解析**（防幻觉），支持六类清单：`Cargo.toml`/`Cargo.lock`/`package.json`/`pyproject.toml`/`requirements.txt`/`go.mod`。**不支持 XML 形态清单（`pom.xml`/*.csproj）**——理由：确定性解析为求极简不引入 XML 解析依赖（YAGNI），XML 清单不在支持范围。
+
 ## 扫描边界
 
 - 内置噪音目录整棵跳过：`node_modules`/`vendor`/`Pods`/`Library` 等依赖与缓存目录任意深度命中即剪。

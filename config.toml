@@ -9,6 +9,8 @@ language = "zh"
 
 # 生成引导/自定义文档/扫描范围现由项目根 wiki_plan.yaml 控制（v0.9 起替代旧
 # [wiki.guide] 段；文件不存在 = 默认行为，见 docs/reference/config.md）。见 src/config/plan.rs。
+#   repowiki.template       # "" 默认 | "architecture" | "product_requirement"（模块页按产品需求
+#                           #   格式输出；Qoder 官方仅描述"按产品需求格式输出"无更细规范，格式为本项目合理默认）
 
 [llm]
 provider = "openai-compatible"

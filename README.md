@@ -2,7 +2,7 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE) [![CI](https://github.com/mook-wenyu/code-repo-wiki/actions/workflows/ci.yml/badge.svg)](https://github.com/mook-wenyu/code-repo-wiki/actions/workflows/ci.yml)
 
-自动为代码仓库生成**持续更新**的 Wiki 文档：模块页、API 参考、知识卡片，供人和 AI 助手阅读。
+自动为代码仓库生成**持续更新**的 Wiki 文档：模块页、API 参考、知识卡片（模块卡在 `cards/{lang}/{module}.md`，项目级 Spec/技术栈卡在 `cards/{lang}/project/`），供人和 AI 助手阅读。
 
 零配置开箱即用 · 单二进制 · 支持 11 种语言 · 增量更新 · 可注册为 OpenCode 插件 / Claude / Codex MCP
 
@@ -55,7 +55,7 @@ code-repo-wiki generate
 输入一个代码仓库，`code-repo-wiki generate` 产出 `.code-repo-wiki/` 目录：
 
 - 分析源码结构（tree-sitter AST + 知识图谱 + 社区检测自动划分模块）
-- 让 LLM 为每个模块生成知识卡片与文档页（API 参考含**真实文件与行号**）
+- 让 LLM 为每个模块生成知识卡片与文档页（API 参考含**真实文件与行号**）；卡片分三类：模块卡（架构文档）、Spec 卡（代码规约）、技术栈卡（确定性依赖清单）
 - 之后每次 `git commit` 自动增量更新（只重写受影响的模块页）
 
 真实产物示例（本项目自己生成的 `.code-repo-wiki/wiki/zh/api.md`）：
@@ -73,7 +73,7 @@ code-repo-wiki generate
 |---|---|
 | 代码解析 | tree-sitter：Rust/TypeScript/TSX/Python/Go/JS/JSX/MJS/CJS/C#/Java 共 11 种；自动跳过噪音目录（依赖/构建产物/Unity 根级 `Packages`/`Temp`/`Logs`，详见[限制项](docs/reference/limitations.md)） |
 | 模块划分 | petgraph 知识图谱 + leiden-rs 社区检测，自动发现模块边界 |
-| Wiki 生成 | LLM 生成知识卡片 + 模块页 + API 参考，引用真实文件/行号 |
+| Wiki 生成 | LLM 生成三类知识卡片（模块卡/Spec 卡/技术栈卡） + 模块页 + API 参考，引用真实文件/行号 |
 | 增量更新 | 实体级变化分类（新增/删除/签名变更/正文修改）驱动语义传播，只重生成受影响模块；基于内容指纹，**非 Git 仓库同样支持** |
 | 搜索 | BM25 全文 + 向量语义 + RRF 混合排序（默认 hybrid）；另有 `ast-search` 精确符号查找 |
 | 文件监听 | `watch` 常驻监听，保存即更新（内置崩溃自愈） |
@@ -88,7 +88,11 @@ code-repo-wiki generate
 ```yaml
 version: 1                 # 格式版本（仅支持 1，缺省视为 1）
 repowiki:
-  template: ""             # 仅支持 ""（默认）与 "architecture"；其他值解析报错
+  template: ""             # 仅支持 ""（默认）、"architecture"、"product_requirement"；其他值解析报错
+                           #   product_requirement：模块页按产品需求格式输出（需求背景/目标用户与场景/
+                           #   功能需求（用户故事）/非功能需求/验收标准/边界与例外）。Qoder 官方仅描述
+                           #   "按产品需求格式输出"无更细规范（help.aliyun.com/zh/lingma/repo-wiki），
+                           #   此格式为本项目合理默认。
   notes:                   # 全局生成引导（替代旧 [wiki.guide].notes，新增 author）
     - text: "命名规范：公开函数必须写文档注释"
       author: "架构组"      # 可选，注入 prompt 时附注作者
