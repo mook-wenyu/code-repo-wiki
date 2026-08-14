@@ -1,5 +1,18 @@
 # 项目状态简报 （AI自动维护，禁止贴代码）
 
+## 七十二、Phase A10 I3 根因修复（2026-08-14）——源码删除反向失效引用页 + force 孤儿清理
+- 前置状态：v51 基线重录后 lint 实测 41 errors（bad-citation 7 / bad-citation-overlap 7 / dependency-fabricated 5 / entity-coverage 1 / entity-ownership 17 / orphan 3 / source-missing 1），残留孤儿/坏引用页（benches / tests_edge / tests_progress_test / tests_tokenize / src_search）；根因调查确认四链断点：被删文件在图谱无节点（impact.rs `let Some(...) else { continue }` 跳过）、compensate_deleted_files 只按归属不按引用、force 时 load_protection 返回 old_state=None 致 cleanup_stale_outputs 短路、页面指纹=自身内容致永不过期（删除事件本身有检出，change.rs 标 Removed）
+- 修改的功能（两个逻辑阶段，各自独立提交）：
+  - fix(incremental) 反向失效引用页：新增 impact.rs `reverse_reference_affected_modules`——删除时从旧导出快照（.state/export_snapshot.json）构建「源文件→引用模块」反向索引，复用既有提取工具（citation::extract_citations / lint::extract_source_files 转 pub(crate) / 卡片 related_files 结构化字段），凡引用了被删文件的模块并入 affected_modules（incremental/mod.rs run_incremental_update_at 插入点），增量 update 重生成时引用校验强制 LLM 剔除对已删文件的引用；只失效确实引用者，不做无差别全量重生成；快照缺失/损坏告警跳过
+  - fix(output) force 孤儿清理：lib.rs cleanup_stale_outputs 增 output_dir 参数，old_state=None 时不再短路，改走 cleanup_force_orphans——按「本次渲染集 vs 磁盘现存产物」差集清理；只删工具生成形态页面（wiki 页「最后更新」行 / 卡片 frontmatter / mock 页脚），全局合成文档（api/overview/architecture/architecture-map/_toc/index/_log 白名单）与用户手工 .md 一律保留
+- 摸到的文件：src/incremental/{impact,mod}.rs、src/output/lint.rs、src/lib.rs、tests/test_incremental_git_e2e.rs、STATUS.md
+- 是否改变了接口/契约：是——cleanup_stale_outputs 增 output_dir 参数（pub(crate)，lib.rs 1 调用点 + 5 测试同步）；lint::extract_source_files 私有→pub(crate)；impact.rs 新增 pub 函数（增量层内部接线）；其余为行为修复（删除→引用页重生成、force→孤儿清理），不改变配置与产物格式
+- 验证：cargo test 全量 40 测试二进制全绿（0 failed）；cargo clippy --all-targets 0 告警；cargo fmt --all -- --check 0 差异。新增测试：impact.rs 反向索引单测 4（正文 path:line 命中 / 卡片 related_files 命中 / 无命中空 / 分隔符归一化）+ lib.rs force 清理单测 1（孤儿删/渲染集留/人工 .md 留/全局合成文档留）+ e2e 2 场景（删被引用文件→引用页重生成且剔除引用；force 整模块删除→孤儿页清理且不在 _toc）。反向验证：临时禁用两处修复后两 e2e 场景均失败（场景 1 http 页残留引用、场景 2 src_http.md 残留），确认测试有效
+- 提交：343a479（fix(incremental)）→ 5df9624（fix(output)）→ 本次 chore(status)
+- 已知风险（诚实自曝）：e2e 场景 1 以「注入导出快照」模拟上一轮页面引用（mock provider 产物无自然引用），未注入磁盘页（避免触发人工修改保护）；force 清理以「工具生成形态标记 + 全局文档白名单」双保险防误删，architecture-map 等确定性合成产物不在此次 rendered_paths 内属预期（render_all 直接写盘）；真实 LLM 环境未复验（沙箱无 key，mock 已验证全链路）
+- 下次最该做的事：真实 LLM 环境（有 key）删一个被多处引用的源码文件后增量 update，复核引用页重生成且 lint bad-citation/source-missing/orphan 归零；force 全量重生成后复核孤儿页清理；然后按 docs/how-to/production.md 复跑 generate + `cargo run -- lint --root .` 复核 41 errors 归零
+
+
 ## 七十一、v0.9 Phase A9 集成验证与收尾（2026-08-14）——git 矛盾查证 + 全量验证 + 产物复验 + 文档收尾
 - 前置状态：三个并行 worker（W1 wiki_plan.yaml 重构 / W3 install 优化 + --dsh / W2 预构建架构地图 + wiki_get_dependencies）各自独立提交后，本轮为集成验证与收尾：查证工作区未提交改动来源、全量 test/clippy、mock 产物复验、补 CHANGELOG/README/cli 文档与 STATUS 记录
 - git 矛盾查证（W2 报告 src/config/mcp.rs、src/main.rs、tests/test_install_dsh.rs「未提交」vs W3 报告已提交 bdff415）：经 `git diff` 与 `git show --stat bdff415` 比对，三个文件**已由 bdff415 提交**，工作区残留为**纯 cargo fmt 排版差异**（换行包裹/调用折叠/struct 字面量重排，零功能改动）；证据：`git diff bdff415 HEAD -- <三文件>` 为空 + `cargo fmt --all -- --check` 工作区已 0 差异（即 bdff415 提交的是未格式化版本）。处置：按 fmt 修复并入收尾提交，2d97e89（chore(fmt)，3 文件 +22/-24）；既有 .opencode/ 三个未提交删除按约定保持不动
