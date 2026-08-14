@@ -1111,6 +1111,87 @@ fn test_sync_rejected_while_locked() {
     let _ = std::fs::remove_dir_all(&work_dir);
 }
 
+/// card generate spec / tech-stack：项目级卡片重生成（分别写 project/spec.md
+/// 与 project/tech-stack.md）。tech-stack 确定性解析清单（零 LLM）；
+/// spec 无规约文件/notes 时不生成（输入驱动防幻觉）。
+#[test]
+fn test_card_generate_project_card() {
+    let work_dir = unique_dir("card_project");
+    let _ = std::fs::remove_dir_all(&work_dir);
+    std::fs::create_dir_all(work_dir.join("src")).unwrap();
+    std::fs::write(work_dir.join("src").join("main.rs"), "pub fn main_fn() {}\n").unwrap();
+    std::fs::write(
+        work_dir.join("Cargo.toml"),
+        "[package]\nname=\"cli-demo\"\n\n[dependencies]\nserde=\"1.0\"\n",
+    )
+    .unwrap();
+    // mock provider 配置（tech-stack 确定性解析不需要 LLM；output.dir 硬编码
+    // .code-repo-wiki，v30 语义）
+    let config = r#"
+[llm]
+provider = "mock"
+model = "mock-model"
+api_key = "mock"
+api_key_env = ""
+max_concurrency = 1
+
+[embed]
+provider = "mock"
+model = "mock-embed"
+api_key_env = ""
+"#;
+    std::fs::write(work_dir.join("mock.toml"), config).unwrap();
+
+    // 1. card generate tech-stack：确定性解析 Cargo.toml → project/tech-stack.md
+    let out = run_bin_with_envs(
+        &work_dir,
+        &["card", "generate", "tech-stack", "--config", "mock.toml"],
+        &[],
+    );
+    assert!(
+        out.status.success(),
+        "card generate tech-stack 应成功，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stack_path = work_dir
+        .join(".code-repo-wiki")
+        .join("cards")
+        .join("zh")
+        .join("project")
+        .join("tech-stack.md");
+    let stack = std::fs::read_to_string(&stack_path).unwrap_or_else(|_| {
+        panic!("project/tech-stack.md 应生成, 实际: {}", stack_path.display())
+    });
+    assert!(
+        stack.contains("serde@1.0"),
+        "tech-stack 卡应含解析出的依赖, 实际:\n{stack}"
+    );
+
+    // 2. card generate spec：无规约文件 → 不生成（防幻觉，退出码 0）
+    let out = run_bin_with_envs(
+        &work_dir,
+        &["card", "generate", "spec", "--config", "mock.toml"],
+        &[],
+    );
+    assert!(
+        out.status.success(),
+        "card generate spec 无规约文件应成功退出（提示未生成），stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !work_dir
+            .join(".code-repo-wiki")
+            .join("cards")
+            .join("zh")
+            .join("project")
+            .join("spec.md")
+            .exists(),
+        "无规约文件时 Spec 卡不应生成（防幻觉）"
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
+
 /// audit-cli-04：card --root 需 global=true——`card generate <module> --root X`
 /// 在动作子命令后传参可解析（与 --wait/--skip-if-locked 同构）。修复前 --root
 /// 仅卡级，动作后传报 unexpected argument（跨 cwd 运行静默失败）。

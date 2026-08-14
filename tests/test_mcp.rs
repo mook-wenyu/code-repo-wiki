@@ -270,6 +270,123 @@ async fn test_mcp_initialize_lists_tools_and_calls() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// wiki_read_card 读取项目级卡片（Spec / TechStack）：card 参数取模块名
+/// 形态 "project::spec" / "project::tech-stack" → 映射到 card_write_path 的
+/// project/ 子目录；模块卡仍走根级命名（回归覆盖默认分支）。
+#[tokio::test]
+async fn test_mcp_read_project_card() {
+    let dir = unique_dir("mcp_project_card");
+    let _ = std::fs::remove_dir_all(&dir);
+    let out = dir.join(".code-repo-wiki");
+    std::fs::create_dir_all(out.join("cards").join("zh").join("project")).unwrap();
+    let config = mock_config();
+    std::fs::write(dir.join("mcp-test.toml"), &config).unwrap();
+    // 预置产物：项目卡（project/ 子目录）与模块卡（根级），供读取
+    std::fs::write(
+        out.join("cards").join("zh").join("project").join("tech-stack.md"),
+        "tech-stack 技术栈卡人工内容\n",
+    )
+    .unwrap();
+    std::fs::write(
+        out.join("cards").join("zh").join("project").join("spec.md"),
+        "spec 规约卡人工内容\n",
+    )
+    .unwrap();
+    std::fs::write(
+        out.join("cards").join("zh").join("src_config.md"),
+        "src_config 模块卡内容\n",
+    )
+    .unwrap();
+
+    let mut child = spawn_mcp(&dir);
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+
+    resp_ok(&mut stdin, &mut stdout).await; // initialize + initialized 握手
+    // 1. 项目卡 tech-stack（module_name 形态 → project_card_page_path）
+    let resp = rpc_call(
+        &mut stdin,
+        &mut stdout,
+        2,
+        "tools/call",
+        serde_json::json!({"name": "wiki_read_card", "arguments": {"card": "project::tech-stack"}}),
+    )
+    .await;
+    let text = resp["result"]["content"][0]["text"]
+        .as_str()
+        .expect("项目卡读取结果应有 text");
+    // 项目卡写盘在 project/ 子目录（路径分隔符随平台：Windows 反斜杠）
+    let sep = std::path::MAIN_SEPARATOR;
+    assert!(
+        text.contains(&format!("project{sep}tech-stack.md")),
+        "应读到 project/ 子目录路径, 实际: {text}"
+    );
+    assert!(
+        text.contains("tech-stack 技术栈卡人工内容"),
+        "应读到项目卡内容, 实际: {text}"
+    );
+    // 2. 项目卡 spec
+    let resp = rpc_call(
+        &mut stdin,
+        &mut stdout,
+        3,
+        "tools/call",
+        serde_json::json!({"name": "wiki_read_card", "arguments": {"card": "project::spec"}}),
+    )
+    .await;
+    let text = resp["result"]["content"][0]["text"]
+        .as_str()
+        .expect("Spec 卡读取结果应有 text");
+    assert!(
+        text.contains(&format!("project{sep}spec.md")),
+        "应读到 spec 项目卡: {text}"
+    );
+    // 3. 模块卡仍走根级命名（默认分支）
+    let resp = rpc_call(
+        &mut stdin,
+        &mut stdout,
+        4,
+        "tools/call",
+        serde_json::json!({"name": "wiki_read_card", "arguments": {"card": "src_config"}}),
+    )
+    .await;
+    let text = resp["result"]["content"][0]["text"]
+        .as_str()
+        .expect("模块卡读取结果应有 text");
+    assert!(
+        text.contains("src_config.md") && text.contains("src_config 模块卡内容"),
+        "模块卡应走根级命名, 实际: {text}"
+    );
+
+    drop(stdin);
+    let _ = child.wait().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+// helper：完成 MCP 握手（initialize 响应 + initialized 通知）
+async fn resp_ok(
+    stdin: &mut tokio::process::ChildStdin,
+    stdout: &mut tokio::process::ChildStdout,
+) {
+    let _ = rpc_call(
+        stdin,
+        stdout,
+        1,
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "test", "version": "0.0.1"}
+        }),
+    )
+    .await;
+    notify(
+        stdin,
+        "notifications/initialized",
+        serde_json::json!({}),
+    )
+    .await;
+}
+
 /// wiki_get_dependencies I/O 契约（v0.9 W2）：已存在模块 → success 返回
 /// 依赖/被依赖（isError=false）；未知模块 → 合法空结果（isError=false）；
 /// 与架构地图同一数据源（知识图谱 imports/calls 边聚合）。
