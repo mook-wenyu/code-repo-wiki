@@ -176,15 +176,20 @@ pub async fn run_generation(
     // 项目级卡片（Spec 规约 / TechStack 技术栈清单）：全量恒生成。
     // 生成失败显式告警（失败隔离语义：不中断主流程，但不静默——与模块卡
     // T3.2 失败隔离同语义：失败只影响项目卡这一路，余下 Wiki 阶段照常）。
-    let project_cards =
-        match crate::generate::project_card::generate_project_cards(&provider, config, root, &card_notes).await
-        {
-            Ok(pc) => pc,
-            Err(e) => {
-                tracing::warn!("项目级卡片生成失败（本轮项目卡降级为空，不中断主流程）: {e}");
-                Vec::new()
-            }
-        };
+    let project_cards = match crate::generate::project_card::generate_project_cards(
+        &provider,
+        config,
+        root,
+        &card_notes,
+    )
+    .await
+    {
+        Ok(pc) => pc,
+        Err(e) => {
+            tracing::warn!("项目级卡片生成失败（本轮项目卡降级为空，不中断主流程）: {e}");
+            Vec::new()
+        }
+    };
     // 差集对账：'cards' 是迭代 Option 的模块卡位，项目卡直接以 Some 追加；
     // 位置在 backfill_features 之后——backfill_features 按 chunks 索引循环，
     // 不受尾部追加影响（索引错位免疫）。
@@ -344,10 +349,16 @@ pub async fn run_generation_filtered(
             if project_inputs_changed(changed_files) {
                 let provider = create_provider(config)?;
                 let project_cards = project_cards_for_incremental(
-                    &provider, config, root, &card_notes, changed_files,
+                    &provider,
+                    config,
+                    root,
+                    &card_notes,
+                    changed_files,
                 )
                 .await?;
-                output.cards.retain(|c| c.card_kind != CardKind::Spec && c.card_kind != CardKind::TechStack);
+                output.cards.retain(|c| {
+                    c.card_kind != CardKind::Spec && c.card_kind != CardKind::TechStack
+                });
                 output.cards.extend(project_cards);
             }
             return Ok(output);
@@ -481,10 +492,8 @@ pub async fn run_generation_filtered(
     // 从快照回填，与模块卡的 backfill_unchanged_modules 分离（backfill 只回填
     // 模块卡，见其注释——项目卡若混入快照回填会与本轮重生成的同 kind 卡
     // 重复/残留）。append 在 backfill 之后，保证完整文档集语义。
-    let project_cards = project_cards_for_incremental(
-        &provider, config, root, &card_notes, changed_files,
-    )
-    .await?;
+    let project_cards =
+        project_cards_for_incremental(&provider, config, root, &card_notes, changed_files).await?;
     cards.extend(project_cards);
 
     Ok(GenerationOutput {
@@ -581,32 +590,9 @@ fn global_doc_snapshot_cards(cards: &[Option<KnowledgeCard>]) -> Vec<KnowledgeCa
         .collect()
 }
 
-/// 项目卡增量输入文件（basename 匹配增量判定）：依赖清单 + 规约文件。
-///
-/// 与 techstack.rs 支持的清单名（Cargo.toml/Cargo.lock/package.json/
-/// pyproject.toml/requirements.txt/go.mod）、project_card::SPEC_FILES 保持
-/// 一致——一致性由 tests e2e（改 Cargo.toml 触发 tech-stack 刷新）守护。
-/// docs/glossary.md 的 basename 是 glossary.md（SPEC_FILES 里是
-/// "docs/glossary.md"，basename 匹配用 glossary.md 覆盖，两处都列出）。
-const PROJECT_CARD_INPUT_FILES: &[&str] = &[
-    // 依赖清单（techstack.rs 解析）
-    "Cargo.toml",
-    "Cargo.lock",
-    "package.json",
-    "pyproject.toml",
-    "requirements.txt",
-    "go.mod",
-    // 规约文件（project_card.rs SPEC_FILES）
-    "AGENTS.md",
-    ".editorconfig",
-    "rustfmt.toml",
-    ".rustfmt.toml",
-    "clippy.toml",
-    "CONTRIBUTING.md",
-    "glossary.md",
-];
-
-/// 项目卡输入是否发生变更：变更集任一文件 basename 命中项目卡输入集合。
+/// 项目卡输入是否发生变更：变更集任一文件 basename 命中项目卡输入集合
+/// （crate::model::PROJECT_CARD_INPUT_FILES——依赖清单 + 规约文件权威集合，
+/// 与 techstack::MANIFEST_FILES / project_card::SPEC_FILES 一致性由测试守护）。
 ///
 /// 精确匹配（大小写敏感），跨平台一致——basename 是文件名的规范形态，
 /// Windows 文件系统虽大小写不敏感，但增量列表来自 git/指纹，用精确匹配
@@ -615,7 +601,7 @@ fn project_inputs_changed(changed_files: &[std::path::PathBuf]) -> bool {
     changed_files.iter().any(|p| {
         p.file_name()
             .and_then(|n| n.to_str())
-            .is_some_and(|n| PROJECT_CARD_INPUT_FILES.contains(&n))
+            .is_some_and(|n| crate::model::PROJECT_CARD_INPUT_FILES.contains(&n))
     })
 }
 
@@ -657,8 +643,10 @@ async fn project_cards_for_incremental<P: LlmProvider>(
     changed_files: &[std::path::PathBuf],
 ) -> Result<Vec<KnowledgeCard>> {
     if project_inputs_changed(changed_files) {
-        match crate::generate::project_card::generate_project_cards(provider, config, root, card_notes)
-            .await
+        match crate::generate::project_card::generate_project_cards(
+            provider, config, root, card_notes,
+        )
+        .await
         {
             Ok(pc) => Ok(pc),
             Err(e) => {

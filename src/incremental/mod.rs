@@ -350,6 +350,29 @@ fn run_file_watch_incremental(
         }
     }
 
+    // 项目卡输入文件（依赖清单/规约文件）不在 FileInsight 集：单独做指纹
+    // 比对（from_insights 已把存在者记入 file_fingerprints 基线）——否则
+    // 非 git 仓库裸 update（无 watch 事件）下 Cargo.toml 等变更不被检出，
+    // changed_files 为空走 no-op 短路，项目卡不刷新。git 仓库走 GitDiff
+    // 路径（仓库级 diff 天然含清单/规约文件），不受本循环影响。
+    // 删除语义：指纹表有基线而磁盘已不存在 = 删除信号（进入变更集供下游
+    // 差集清理）；从未有基线（未生成过）则不参与。三态：变更→重生成、
+    // 未变→不触发、删除→清理。
+    if let Some(state) = &state {
+        for name in crate::model::PROJECT_CARD_INPUT_FILES {
+            let rel = PathBuf::from(name);
+            if !root.path().join(&rel).exists() {
+                if state.file_fingerprints.contains_key(*name) && !changed_files.contains(&rel) {
+                    changed_files.push(rel);
+                }
+                continue;
+            }
+            if !changed_files.contains(&rel) && state.is_file_changed(root, &rel).unwrap_or(true) {
+                changed_files.push(rel);
+            }
+        }
+    }
+
     // 并入外部 watch 事件路径（去重）：事件路径是变更的直接证据，不再只依赖指纹比对。
     // 指纹比对保留，用于兜底 watch 事件丢失的变更（防抖窗口冲突、事件丢失等），两者取并集。
     // 不存在的路径（删除事件）原样进入 changed_files，供下游 cleanup_deleted_outputs
@@ -363,9 +386,14 @@ fn run_file_watch_incremental(
     // v30 补强：纯 update（无 watch 事件）也能检出文件删除——旧指纹表中
     // 本次 insights 已不存在的路径即删除事件（磁盘已删，下游按 exists()
     // 判断清理旧输出；与 watch 删除事件同一处理路径）。
+    // 项目卡输入文件（清单/规约）不在 insights 属常态（非源码），其删除
+    // 信号由上方专用循环按指纹基线判定，此处显式排除避免恒判删除。
     if let Some(state) = &state {
         for path_str in state.file_fingerprints.keys() {
             let p = PathBuf::from(path_str);
+            if crate::model::PROJECT_CARD_INPUT_FILES.contains(&path_str.as_str()) {
+                continue;
+            }
             if !insights.iter().any(|i| i.path == p) && !changed_files.contains(&p) {
                 changed_files.push(p);
             }

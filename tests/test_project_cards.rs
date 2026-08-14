@@ -22,7 +22,12 @@ use std::path::Path;
 use code_repo_wiki::config::schema::{LlmProviderType, LlmSection, WikiConfig, WikiSection};
 
 /// 构造临时 git 仓库：src/main.rs（使有模块页）+ Cargo.toml + 可选 AGENTS.md
-fn build_repo(repo: &Path, src: &str, cargo_toml: &str, agents_md: Option<&str>) -> anyhow::Result<()> {
+fn build_repo(
+    repo: &Path,
+    src: &str,
+    cargo_toml: &str,
+    agents_md: Option<&str>,
+) -> anyhow::Result<()> {
     std::fs::create_dir_all(repo.join("src"))?;
     std::fs::write(repo.join("src").join("main.rs"), src)?;
     std::fs::write(repo.join("Cargo.toml"), cargo_toml)?;
@@ -126,7 +131,12 @@ fn cards_index(repo: &Path) -> HashMap<String, (String, String)> {
 }
 
 /// 脚手架（每个测试独立临时目录），返回 (repo, root)
-fn setup(repo_tag: &str, src: &str, cargo_toml: &str, agents_md: Option<&str>) -> (std::path::PathBuf, code_repo_wiki::project::ProjectRoot) {
+fn setup(
+    repo_tag: &str,
+    src: &str,
+    cargo_toml: &str,
+    agents_md: Option<&str>,
+) -> (std::path::PathBuf, code_repo_wiki::project::ProjectRoot) {
     let repo = std::env::temp_dir().join(format!(
         "code_repo_wiki_project_cards_{}_{}",
         std::process::id(),
@@ -174,9 +184,12 @@ fn test_project_cards_full_generate() {
     );
     // 3. _index.json 含 kind=tech-stack 条目，路径指向 project/ 子目录
     let index = cards_index(&repo);
-    let tech = index
-        .get("project_tech-stack")
-        .unwrap_or_else(|| panic!("_index.json 应含 project_tech-stack 条目, 实际: {:?}", index));
+    let tech = index.get("project_tech-stack").unwrap_or_else(|| {
+        panic!(
+            "_index.json 应含 project_tech-stack 条目, 实际: {:?}",
+            index
+        )
+    });
     assert_eq!(tech.0, "tech-stack", "卡片 kind 应为 tech-stack");
     assert_eq!(
         tech.1, "cards/zh/project/tech-stack.md",
@@ -252,8 +265,11 @@ fn test_project_cards_preserved_when_inputs_unchanged() {
     assert!(tech_stack_md(&repo).is_some());
 
     // 仅改源码（源码属于 FileInsight，经指纹比对进入变更集）
-    std::fs::write(repo.join("src").join("main.rs"), "pub fn main_fn() -> u32 { 4242 }\n")
-        .unwrap();
+    std::fs::write(
+        repo.join("src").join("main.rs"),
+        "pub fn main_fn() -> u32 { 4242 }\n",
+    )
+    .unwrap();
     git_commit_all(&repo, "change src only");
     incremental_generate(&repo, &root, vec![]);
 
@@ -352,8 +368,11 @@ fn test_project_cards_manual_edit_protected() {
     std::fs::write(&stack_path, "## 人工维护的技术栈注记\n").unwrap();
 
     // 仅改源码 → 增量 update（不涉及清单，项目卡回填复用人工内容应被保护）
-    std::fs::write(repo.join("src").join("main.rs"), "pub fn main_fn() -> u32 { 777 }\n")
-        .unwrap();
+    std::fs::write(
+        repo.join("src").join("main.rs"),
+        "pub fn main_fn() -> u32 { 777 }\n",
+    )
+    .unwrap();
     git_commit_all(&repo, "change src only, do not touch manifest");
     incremental_generate(&repo, &root, vec![]);
 
@@ -364,4 +383,139 @@ fn test_project_cards_manual_edit_protected() {
     );
 
     let _ = std::fs::remove_dir_all(&repo);
+}
+
+/// 场景 6：非 git 仓库裸 update（无 watch 事件）下清单变更检出。
+///
+/// 依赖清单/规约文件不在 FileInsight 集：from_insights 将其纳入指纹基线、
+/// run_file_watch_incremental 单独比对（修复前漏检：changed_files 为空走
+/// no-op 短路，项目卡不刷新；且删除事件推断循环会把非源码路径恒判删除）。
+/// 验证三态：变更→重生成、未变→no-op 不触发、删除→清理。
+#[test]
+fn test_project_cards_non_git_update_detects_manifest_change() {
+    let repo = std::env::temp_dir().join(format!(
+        "code_repo_wiki_project_cards_{}_nongit",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&repo);
+    std::fs::create_dir_all(repo.join("src")).expect("创建临时仓库失败");
+    std::fs::write(repo.join("src").join("main.rs"), MAIN_RS).unwrap();
+    std::fs::write(
+        repo.join("Cargo.toml"),
+        "[package]\nname=\"demo\"\n\n[dependencies]\nserde=\"1.0\"\n",
+    )
+    .unwrap();
+    let config = WikiConfig {
+        output_dir: Some((repo.join(".code-repo-wiki").to_string_lossy().into_owned()).into()),
+        wiki: WikiSection {
+            language: "zh".into(),
+        },
+        llm: LlmSection {
+            provider: LlmProviderType::Mock,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    std::fs::write(
+        repo.join("config.toml"),
+        toml::to_string_pretty(&config).unwrap(),
+    )
+    .unwrap();
+    // 注意：不 git init（非 git 仓库，增量走内容指纹路径）
+    let root = code_repo_wiki::project::ProjectRoot::new(repo.clone());
+    let config_path = repo.join("config.toml");
+
+    // 全量生成（建立指纹基线，含 Cargo.toml）
+    code_repo_wiki::run_pipeline(
+        Some(&config_path),
+        None,
+        false,
+        &root,
+        &code_repo_wiki::GenerationMode::Full,
+    )
+    .expect("全量生成失败");
+    assert!(tech_stack_md(&repo).unwrap().contains("serde@1.0"));
+
+    // 改 Cargo.toml，无 watch 事件裸 update → 指纹检出变更 → tech-stack 刷新
+    std::fs::write(
+        repo.join("Cargo.toml"),
+        "[package]\nname=\"demo\"\n\n[dependencies]\nserde=\"2.0\"\n",
+    )
+    .unwrap();
+    code_repo_wiki::run_pipeline(
+        Some(&config_path),
+        None,
+        false,
+        &root,
+        &code_repo_wiki::GenerationMode::Incremental {
+            watch_paths: vec![],
+            change_kind: None,
+        },
+    )
+    .expect("增量更新失败");
+    let stack = tech_stack_md(&repo).expect("tech-stack.md 应存在");
+    assert!(
+        stack.contains("serde@2.0"),
+        "非 git 裸 update 应检出 Cargo.toml 变更并刷新 tech-stack, 实际:\n{stack}"
+    );
+
+    // 无变更裸 update → no-op：指纹基线稳定，不误触发重生成（内容不变）
+    code_repo_wiki::run_pipeline(
+        Some(&config_path),
+        None,
+        false,
+        &root,
+        &code_repo_wiki::GenerationMode::Incremental {
+            watch_paths: vec![],
+            change_kind: None,
+        },
+    )
+    .expect("no-op update 应成功");
+    let stack2 = tech_stack_md(&repo).expect("tech-stack.md 应存在");
+    assert_eq!(
+        stack, stack2,
+        "无变更 update 不应改动 tech-stack（指纹基线稳定）"
+    );
+
+    // 删 Cargo.toml（非 git，删除信号由指纹基线判定）→ tech-stack 清理
+    std::fs::remove_file(repo.join("Cargo.toml")).unwrap();
+    code_repo_wiki::run_pipeline(
+        Some(&config_path),
+        None,
+        false,
+        &root,
+        &code_repo_wiki::GenerationMode::Incremental {
+            watch_paths: vec![],
+            change_kind: None,
+        },
+    )
+    .expect("删除清单的增量更新失败");
+    assert!(
+        !tech_stack_md(&repo).is_some(),
+        "非 git 仓库删 Cargo.toml 后 tech-stack.md 应被清理（删除信号 + 差集语义）"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+/// 常量一致性断言：增量判定的权威集合（model::PROJECT_CARD_INPUT_FILES）
+/// 必须覆盖 techstack::MANIFEST_FILES（清单）与 project_card::SPEC_FILES
+/// 的 basename（规约）——三处任一漂移都会导致增量漏检或误触发。
+#[test]
+fn test_project_card_input_files_cover_all_sources() {
+    // 清单：MANIFEST_FILES 每项都必须在权威集合中
+    for manifest in code_repo_wiki::analysis::techstack::MANIFEST_FILES {
+        assert!(
+            code_repo_wiki::model::PROJECT_CARD_INPUT_FILES.contains(manifest),
+            "清单 {manifest} 必须 ∈ PROJECT_CARD_INPUT_FILES（增量判定漏检）"
+        );
+    }
+    // 规约：SPEC_FILES 每项的 basename 都必须在权威集合中
+    for spec in code_repo_wiki::generate::project_card::SPEC_FILES {
+        let basename = spec.rsplit('/').next().unwrap_or(spec);
+        assert!(
+            code_repo_wiki::model::PROJECT_CARD_INPUT_FILES.contains(&basename),
+            "规约文件 {spec}（basename {basename}）必须 ∈ PROJECT_CARD_INPUT_FILES（增量判定漏检）"
+        );
+    }
 }

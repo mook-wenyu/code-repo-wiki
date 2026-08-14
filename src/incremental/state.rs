@@ -159,6 +159,25 @@ impl GenerationState {
                 }
             }
         }
+        // 项目卡输入文件（依赖清单/规约文件）不在 FileInsight 集：单独记
+        // 指纹基线，使非 git 仓库裸 update（无 watch 事件）能检出清单/规约
+        // 变更（run_file_watch_incremental 的 is_file_changed 比对）——否则
+        // 此类文件恒判"新文件已变更"，每次 update 都误触发项目卡重生成。
+        // 键 = 相对项目根路径（与 insights 键同规则，正斜杠形态）。
+        for name in crate::model::PROJECT_CARD_INPUT_FILES {
+            let rel = std::path::Path::new(name);
+            let abs = root.path().join(rel);
+            if abs.exists() {
+                match Self::compute_file_fingerprint(&abs) {
+                    Ok(fp) => {
+                        file_fingerprints.insert(name.to_string(), fp);
+                    }
+                    Err(e) => {
+                        tracing::warn!("计算项目卡输入文件指纹失败 {}: {}", abs.display(), e);
+                    }
+                }
+            }
+        }
 
         Ok(Self {
             last_commit_hash: Some(commit_hash.to_string()),

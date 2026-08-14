@@ -23,6 +23,19 @@ pub struct TechStackEntry {
     pub manifest: String,
 }
 
+/// 支持解析的清单文件名权威集合（增量判定/外部消费者引用）。
+/// parse_tech_stack 内部按解析顺序使用同名清单字面量——两处逐字一致，
+/// 一致性由 tests/test_project_cards.rs 的断言（MANIFEST_FILES ⊆
+/// model::PROJECT_CARD_INPUT_FILES）与各清单解析单测守护。
+pub const MANIFEST_FILES: &[&str] = &[
+    "Cargo.toml",
+    "Cargo.lock",
+    "package.json",
+    "pyproject.toml",
+    "requirements.txt",
+    "go.mod",
+];
+
 /// 解析项目根下的全部支持清单，返回确定性排序（按 (category, name) 字典序）的条目列表。
 ///
 /// 边界契约：
@@ -48,7 +61,9 @@ pub fn parse_tech_stack(root: &Path) -> Vec<TechStackEntry> {
                                 }
                             }
                         }
-                        Err(msg) => tracing::warn!(file = "Cargo.lock", %msg, "依赖清单解析失败，跳过补版本"),
+                        Err(msg) => {
+                            tracing::warn!(file = "Cargo.lock", %msg, "依赖清单解析失败，跳过补版本")
+                        }
                     }
                 }
                 all.append(&mut entries);
@@ -137,10 +152,7 @@ fn parse_cargo_toml(content: &str) -> Result<Vec<TechStackEntry>, String> {
     // workspace.dependencies 是嵌套表 `[workspace.dependencies]`，需逐层取而非用
     // 带点路径（后者会当作字面键导航到不存在的顶层 workspace 表）。
     for table in ["dependencies", "dev-dependencies"] {
-        let Some(deps) = doc
-            .get(table)
-            .and_then(|v| v.as_table())
-        else {
+        let Some(deps) = doc.get(table).and_then(|v| v.as_table()) else {
             continue;
         };
         push_cargo_deps(&mut out, deps);
@@ -201,8 +213,7 @@ fn parse_cargo_lock(content: &str) -> Result<HashMap<String, String>, String> {
 /// package.json：`dependencies`/`devDependencies` 对象；值按字符串原样保留
 /// （含 `^`/`~`/`>=` 等 semver 范围，不规范化）。
 fn parse_package_json(content: &str) -> Result<Vec<TechStackEntry>, String> {
-    let doc: serde_json::Value =
-        serde_json::from_str(content).map_err(|e| e.to_string())?;
+    let doc: serde_json::Value = serde_json::from_str(content).map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for table in ["dependencies", "devDependencies"] {
         let Some(deps) = doc.get(table).and_then(|v| v.as_object()) else {
@@ -269,8 +280,16 @@ fn pyproject_push(out: &mut Vec<TechStackEntry>, item: &toml::Value) {
             });
         }
         toml::Value::Table(t) => {
-            let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let version = t.get("version").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let name = t
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let version = t
+                .get("version")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             out.push(TechStackEntry {
                 name,
                 version,
@@ -418,9 +437,17 @@ shared = "0.9"
         assert_eq!(serde.manifest, "Cargo.toml");
         let tokio = find(&entries, "rust/cargo", "tokio");
         assert_eq!(tokio.version, "1.4", "表形态 version 字段");
-        assert_eq!(find(&entries, "rust/cargo", "gitdep").version, "", "git 依赖版本留空");
+        assert_eq!(
+            find(&entries, "rust/cargo", "gitdep").version,
+            "",
+            "git 依赖版本留空"
+        );
         assert_eq!(find(&entries, "rust/cargo", "tempfile").version, "3");
-        assert_eq!(find(&entries, "rust/cargo", "shared").version, "0.9", "workspace 依赖");
+        assert_eq!(
+            find(&entries, "rust/cargo", "shared").version,
+            "0.9",
+            "workspace 依赖"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -493,7 +520,10 @@ version = "0.1"
         let entries = parse_tech_stack(&dir);
         assert_eq!(find(&entries, "javascript/npm", "react").version, "^18.2.0");
         assert_eq!(find(&entries, "javascript/npm", "axios").version, "~1.4.0");
-        assert_eq!(find(&entries, "javascript/npm", "typescript").version, ">=5.0");
+        assert_eq!(
+            find(&entries, "javascript/npm", "typescript").version,
+            ">=5.0"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -570,7 +600,11 @@ require golang.org/x/text v0.15.0
             "v1.6.0",
             "indirect 注释剥离"
         );
-        assert_eq!(find(&entries, "go", "golang.org/x/text").version, "v0.15.0", "单行 require");
+        assert_eq!(
+            find(&entries, "go", "golang.org/x/text").version,
+            "v0.15.0",
+            "单行 require"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -652,11 +686,7 @@ zeta = "1"
 alpha = "2"
 "#,
         );
-        write_file(
-            &dir,
-            "requirements.txt",
-            "requests>=2.0\nclick==8.0\n",
-        );
+        write_file(&dir, "requirements.txt", "requests>=2.0\nclick==8.0\n");
         write_file(
             &dir,
             "go.mod",
@@ -677,9 +707,13 @@ require (
         // 全部按 (category, name) 字典序：go < javascript/npm < python/pip < rust/cargo
         for w in entries.windows(2) {
             assert!(
-                (w[0].category.as_str(), w[0].name.as_str()) <= (w[1].category.as_str(), w[1].name.as_str()),
+                (w[0].category.as_str(), w[0].name.as_str())
+                    <= (w[1].category.as_str(), w[1].name.as_str()),
                 "排序错误: {}/{} 应在 {}/{} 之前",
-                w[0].category, w[0].name, w[1].category, w[1].name
+                w[0].category,
+                w[0].name,
+                w[1].category,
+                w[1].name
             );
         }
         let _ = std::fs::remove_dir_all(&dir);

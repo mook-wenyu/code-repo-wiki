@@ -139,6 +139,35 @@ pub struct SpecItem {
     pub source: String,
 }
 
+/// 项目卡输入文件名集合（增量检测用，basename 匹配）：
+/// 依赖清单（techstack.rs 解析）∪ 规约文件（generate::project_card::SPEC_FILES）。
+///
+/// 放在 model 层的理由（依赖方向契约）：模块依赖方向 generate→incremental
+/// 已存在（run_generation_filtered 消费 IncrementalResult），incremental 不得
+/// 反向引用 generate（会成环）；本常量是 incremental（指纹检测）与 generate
+/// （重生成判定）的共同输入，置于两者共同依赖的底层 model 最合适。
+/// 与 techstack::MANIFEST_FILES / project_card::SPEC_FILES 的一致性由
+/// tests/test_project_cards.rs 的断言守护。
+pub const PROJECT_CARD_INPUT_FILES: &[&str] = &[
+    // 依赖清单（techstack.rs MANIFEST_FILES）
+    "Cargo.toml",
+    "Cargo.lock",
+    "package.json",
+    "pyproject.toml",
+    "requirements.txt",
+    "go.mod",
+    // 规约文件（project_card.rs SPEC_FILES；docs/glossary.md 的 basename 是
+    // glossary.md——SPEC_FILES 里是 "docs/glossary.md"，basename 匹配用
+    // glossary.md 覆盖，两处都列出）
+    "AGENTS.md",
+    ".editorconfig",
+    "rustfmt.toml",
+    ".rustfmt.toml",
+    "clippy.toml",
+    "CONTRIBUTING.md",
+    "glossary.md",
+];
+
 /// 实体摘要（用于 Knowledge Card）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntitySummary {
@@ -179,10 +208,7 @@ mod tests {
         }"#;
         let card: KnowledgeCard = serde_json::from_str(old).unwrap();
         assert_eq!(card.card_kind, CardKind::Module, "缺省应为模块卡");
-        assert!(
-            card.spec_categories.is_empty(),
-            "缺省应为空规约分类"
-        );
+        assert!(card.spec_categories.is_empty(), "缺省应为空规约分类");
     }
 
     /// CardKind 的 serde 序列化形态为 kebab-case 字符串
@@ -231,7 +257,10 @@ mod tests {
         assert_eq!(card.card_kind, CardKind::Spec);
         assert_eq!(card.spec_categories.len(), 1);
         assert_eq!(card.spec_categories[0].name, "提交纪律");
-        assert_eq!(card.spec_categories[0].items[0].rule, "一个逻辑变更一个提交");
+        assert_eq!(
+            card.spec_categories[0].items[0].rule,
+            "一个逻辑变更一个提交"
+        );
         assert_eq!(card.spec_categories[0].items[0].source, "AGENTS.md");
         // 缺省 source 归空串
         assert_eq!(card.spec_categories[0].items[1].source, "");
