@@ -25,7 +25,12 @@
 - `wiki_page_prompt` / `knowledge_card_prompt` 的 notes 参数链改为接收 plan notes（PlanNote{text, author}）
 - `WikiDocument` 新增 `parent` 字段（serde default，旧快照兼容）；`_toc.md` 按 parent 分组挂载自定义文档
 - 扫描器新增可选 scope 过滤（include/exclude，相对项目根匹配）
-- **embed 批内并发默认为 1（修复百炼 429 吞吐限流）**：批内 HTTP 并发从硬编码 4 改为可配置 `[embed] batch_concurrency`（缺省 1）——阿里百炼 qwen3-text-embedding 默认 TPM=1M/分钟，429 `insufficient_quota` 是 TPS/TPM 吞吐限流（非资金配额），批内 4 路并发 × 每请求 20 条 × 每条最多 8000 字符轻松打满且持续 429；默认串行批内请求压到 TPM 之下，整批并发仍由 `max_concurrency`（缺省 4）控制，`batch_concurrency=0` 解析期/构造期双双拒绝（buffer_unordered(0) panic 前拦截）
+- **embed 批内并发默认为 1（修复百炼 429 吞吐限流）**：批内 HTTP 并发从硬编码 4 改为可配置 `[embed] batch_concurrency`（缺省 1）——阿里百炼 qwen3.7-text-embedding 默认 TPM=1M/分钟，429 `insufficient_quota` 是 TPS/TPM 吞吐限流（官方错误码 `429-Throttling.AllocationQuota`，非资金配额），批内 4 路并发 × 每请求 20 条 × 每条最多 8000 字符轻松打满且持续 429；默认串行批内请求压到 TPM 之下，整批并发仍由 `max_concurrency`（缺省 4）控制，`batch_concurrency=0` 解析期/构造期双双拒绝（buffer_unordered(0) panic 前拦截）
+- `[embed]` 配置按官方文档核对对齐：模型 ID/业务空间专属端点/批次上限 20/限流表（RPM 24000、TPM 1,000,000）均与官方一致，注释补官方依据链接并显式写出 `batch_concurrency = 1`
+
+### Fixed
+- **api.md 不再嵌入源码 doc 注释首行（消除 bad-citation 误报）**：`render_api_reference` 实体行只保留签名与 path:line 锚点，不再拼接源码 doc 注释首行——此前该行被引用提取器当作散文 path:line 误收，产生 `feature.rs`/`lib.rs` 裸短名 bad-citation 告警
+- **`scan_template_residue` 收紧为未渲染占位符完整形态（消除误报）**：只报 `{{ident}}` / `{{ foo }}` 完整占位符形态，不再用 `contains("{{")`——代码/文档工具源码 doc 注释天然含大量 `{{` 描述（如 residue_check 自身文档），LLM 照实转述时会把「描述 `{{` 概念的合法文本」误判为泄漏；已知天花板：`{{foo`（无闭合 `}}` 的截断泄漏）会漏报（显式声明的简化取舍）
 
 ## [0.8.0] - 2026-08-14
 
