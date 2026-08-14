@@ -13,6 +13,10 @@
   - `knowledgecard.notes`：卡片生成引导（新增能力）
   - `knowledgecard.scope`（顶层 scope 为显式别名）：文件扫描范围覆盖（.gitignore 语法，解析期校验）
   - 文件不存在 = 默认行为零破坏；存在但解析/校验失败 = 显式报错终止（不静默忽略、不兜底）
+- **预构建架构地图 `architecture-map.md`**：`generate` 确定性合成模块边界与依赖常驻小地图（`{output}/wiki/{主语言}/architecture-map.md`），供 Agent 少调工具直接回答「X 如何实现 / 谁依赖 X」——职责复用 `module_descriptions.json` 缓存、依赖来自知识图谱静态聚合，零新增 LLM 调用；lint 全局豁免表同步纳入该产物（不报孤儿）
+- **MCP 工具 `wiki_get_dependencies`**：按模块名直接返回其依赖/调用关系（静态图聚合，只读；与既有 `wiki_search` 等工具并列，MCP 工具增至六个）
+- **install `--dsh`（DeepSeek Harness）**：新增安装目标——在项目根 `cordis.patch.yml` 写入/追加 `- insert:` 管理块，注册 `@deepseek-ai/dsh-mcp-client`（stdio，command 绑定本机 exe，args=[mcp]，cwd=project root）指向 repo-wiki MCP server；uninstall 对称移除（幂等、裸行升级、空文件清理）；dsh 不读 `.mcp.json`，MCP 须显式配置在 patch 层（官方格式依据 packages/mcp/mcp-client/README.md 与 examples/mcp-memory/）；`AGENTS.md`/`CLAUDE.md` 由 dsh 自动读取为 instruction file，与 `--claude`/`--codex` 等互不排斥
+- **Claude 注入指引增强**：`install --claude` 的 CLAUDE.md/AGENTS.md 注入块补强四节——产物新鲜度核对（llms.txt 过期判据与 update 刷新路径）、人工修改保护（指纹保护 + generate --force 强制覆盖）、何时不做（不手改确定性重生成产物）、预构建架构知识·少调工具（先读 architecture-map.md / llms-full.txt / 卡片 dependents 再决定是否调 MCP）
 
 ### Removed
 - **`[wiki.guide]` 配置段整体删除**：`pages` / `priority` / `notes` / `tier`（GuideTier / WikiGuideSection / trim_guide_notes 及模块页过滤/排序逻辑全部移除）——其职责由 `wiki_plan.yaml` 承接（页面白名单与排序能力不再保留，属简化决策）
