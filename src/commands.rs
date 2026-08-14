@@ -184,6 +184,12 @@ pub struct InstallOptions {
     pub claude: bool,
     /// 额外写 Codex CLI 用户级配置 `~/.codex/config.toml`（--codex）
     pub codex: bool,
+    /// 额外写 DeepSeek Harness（dsh）patch 层 `{root}/cordis.patch.yml`
+    /// （--dsh，W3）：dsh 不读 `.mcp.json`，MCP server 必须显式配置在
+    /// patch 层——注册 `@deepseek-ai/dsh-mcp-client`（stdio，command 绑定
+    /// 本机 exe）指向 repo-wiki 的 MCP server；AGENTS.md/CLAUDE.md 由 dsh
+    /// 自动读取作为 instruction file，文档指引零成本获得
+    pub dsh: bool,
 }
 
 /// code-repo-wiki 安装（v33 合并版）：OpenCode 插件 + 多 Agent MCP + AGENTS.md + git hooks
@@ -204,10 +210,14 @@ pub struct InstallOptions {
 ///    v39 起不再写项目根 .mcp.json——机器相关配置不入团队共享文件）
 /// 4. Codex MCP（--codex）：用户级 `~/.codex/config.toml` 的
 ///    `[mcp_servers.code-repo-wiki]` 表（Codex 官方用户级配置）
-/// 5. AGENTS.md：wiki 引用块（标记对幂等替换；默认执行）
-/// 6. CLAUDE.md（随 --claude，v36 起）：Claude Code 不读 AGENTS.md，
+/// 5. dsh MCP（--dsh，W3）：项目根 `{root}/cordis.patch.yml` 追加/更新
+///    `- insert:` 块注册 `@deepseek-ai/dsh-mcp-client`（stdio，command 绑定
+///    本机 exe）——dsh 不读 `.mcp.json`，MCP 必须显式配置在 patch 层；
+///    与 --codex 等互不排斥，install/uninstall 对称
+/// 6. AGENTS.md：wiki 引用块（标记对幂等替换；默认执行）
+/// 7. CLAUDE.md（随 --claude，v36 起）：Claude Code 不读 AGENTS.md，
 ///    注册 Claude MCP 时同步注入引用块
-/// 7. git hooks：post-commit/post-merge（含 code-repo-wiki 标记则升级覆盖；
+/// 8. git hooks：post-commit/post-merge（含 code-repo-wiki 标记则升级覆盖；
 ///    用户自定义 hook 保留并提示）
 ///
 /// 用户级默认配置的确保由调用方（main.rs）先行执行（v25 语义）。
@@ -264,11 +274,23 @@ pub fn install(root: &crate::project::ProjectRoot, opts: &InstallOptions) -> Res
         }
     }
 
-    // 5/6. AGENTS.md（默认）与 CLAUDE.md（v36 起随 --claude 同步——
+    // 5. dsh MCP（--dsh，W3 → 项目根 cordis.patch.yml patch 层）
+    if opts.dsh {
+        let dsh = crate::config::mcp::DshMcp {
+            path: project_root.join(Path::new("cordis.patch.yml")),
+        };
+        if dsh.install(&exe_str)? {
+            println!("✓ DeepSeek Harness MCP 已注册（cordis.patch.yml）");
+        } else {
+            println!("✓ DeepSeek Harness MCP 已是最新（cordis.patch.yml）");
+        }
+    }
+
+    // 6/7. AGENTS.md（默认）与 CLAUDE.md（v36 起随 --claude 同步——
     // Claude Code 不读 AGENTS.md，注册 MCP 时文档指引随之注入）
     install_wiki(root, opts.claude)?;
 
-    // 7. git hooks（v41：新装独立脚本；既有用户 hook 尾部追加块共存）
+    // 8. git hooks（v41：新装独立脚本；既有用户 hook 尾部追加块共存）
     let hooks_present = install_hooks(project_root)?;
 
     println!("✓ code-repo-wiki 安装完成");
@@ -526,8 +548,10 @@ fn remove_hooks(project_root: &std::path::Path) -> Result<()> {
 /// 3. Claude MCP `~/.claude.json` 顶层 mcpServers 条目（其他键/其他 server
 ///    保留；空 mcpServers 保留文件——OAuth 会话等用户配置绝不动）
 /// 4. Codex MCP 表（其他表/注释保留）
-/// 5. AGENTS.md / CLAUDE.md wiki 块（无标记则跳过）
-/// 6. git hooks（仅 code-repo-wiki 标记的删除；用户自定义 hook 保留）
+/// 5. dsh MCP 项目根 cordis.patch.yml 注册块（--dsh 的对称卸载，W3；
+///    其他 patch 操作/注释保留）
+/// 6. AGENTS.md / CLAUDE.md wiki 块（无标记则跳过）
+/// 7. git hooks（仅 code-repo-wiki 标记的删除；用户自定义 hook 保留）
 ///
 /// 保留（设计如此，配置与数据属用户资产）：用户级 config.toml、
 /// `.code-repo-wiki/` 产物数据。
@@ -579,10 +603,20 @@ pub fn uninstall(force: bool, root: &crate::project::ProjectRoot) -> Result<()> 
         println!("✓ Codex MCP 条目不存在，跳过（~/.codex/config.toml）");
     }
 
-    // 5. AGENTS.md / CLAUDE.md wiki 块
+    // 5. dsh MCP（项目根 cordis.patch.yml 注册块，W3——--dsh 的对称卸载）
+    let dsh = crate::config::mcp::DshMcp {
+        path: project_root.join(Path::new("cordis.patch.yml")),
+    };
+    if dsh.remove()? {
+        println!("✓ DeepSeek Harness MCP 条目已移除（cordis.patch.yml）");
+    } else {
+        println!("✓ DeepSeek Harness MCP 条目不存在，跳过（cordis.patch.yml）");
+    }
+
+    // 6. AGENTS.md / CLAUDE.md wiki 块
     uninstall_wiki(root)?;
 
-    // 6. git hooks
+    // 7. git hooks
     remove_hooks(project_root)?;
 
     println!("✓ code-repo-wiki 卸载完成 (数据保留: .code-repo-wiki/ 与用户级配置)");

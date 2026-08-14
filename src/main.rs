@@ -200,7 +200,10 @@ enum Commands {
     /// User scope——不再写项目根 .mcp.json）并同步注入 CLAUDE.md
     /// （--also-claude 并入——Claude Code 不读 AGENTS.md，注册 MCP
     /// 时必然需要文档指引，两个开关分离无意义）；--codex 额外注册 Codex
-    /// CLI MCP（用户级 ~/.codex/config.toml）。
+    /// CLI MCP（用户级 ~/.codex/config.toml）；--dsh 额外注册 DeepSeek
+    /// Harness MCP（项目根 cordis.patch.yml 的 patch 层——dsh 不读
+    /// .mcp.json，MCP 必须显式配置在 patch 层；AGENTS.md/CLAUDE.md 由 dsh
+    /// 自动读取，文档指引零成本）。
     /// 全部幂等；已存在的非 code-repo-wiki 内容（用户自定义 hook/其他 MCP server）保留。
     Install {
         /// 额外注册 Claude Code MCP（用户级 ~/.claude.json）并同步注入 CLAUDE.md
@@ -209,6 +212,9 @@ enum Commands {
         /// 额外注册 Codex CLI MCP（用户级 ~/.codex/config.toml，[mcp_servers.code-repo-wiki]）
         #[arg(long)]
         codex: bool,
+        /// 额外注册 DeepSeek Harness MCP（项目根 cordis.patch.yml 的 - insert: 块）
+        #[arg(long)]
+        dsh: bool,
         /// 项目根目录：插件/hook 安装基准，默认当前目录
         #[arg(long)]
         root: Option<PathBuf>,
@@ -1235,18 +1241,23 @@ fn main() -> anyhow::Result<()> {
         Commands::Install {
             claude,
             codex,
+            dsh,
             root,
         } => {
             // v25 起 init 并入 install：先确保用户级默认配置就绪
             // （缺失自动创建，含项目级 config.toml 覆盖链语义），
             // 再执行集成安装（v33 合并版：OpenCode 插件 + 多 Agent MCP
-            // + AGENTS.md + git hooks；--claude/--codex 扩展）。
+            // + AGENTS.md + git hooks；--claude/--codex/--dsh 扩展）。
             let root = resolve_root(root.as_deref())?;
             let (source, _config) = code_repo_wiki::config::load_default_config(&root)?;
             // 配置链解析完成（来源可能是用户级或项目级 config.toml——
             // 项目级存在时优先，用户级缺失不自动创建，见 load_default_config）
             tracing::info!("配置链就绪（来源: {}）", source.display());
-            let opts = code_repo_wiki::commands::InstallOptions { claude, codex };
+            let opts = code_repo_wiki::commands::InstallOptions {
+                claude,
+                codex,
+                dsh,
+            };
             code_repo_wiki::commands::install(&root, &opts)?;
         }
         Commands::Uninstall { force, root } => {
