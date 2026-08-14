@@ -112,6 +112,13 @@ struct ReadCardRequest {
     lang: Option<String>,
 }
 
+/// Get module dependencies request parameters
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct GetDependenciesRequest {
+    /// Module name, e.g. src::analysis, crate::net
+    module: String,
+}
+
 #[tool_router(router = tool_router)]
 impl RepoWikiMcp {
     /// Search code entities: keyword search over the pre-built code index
@@ -386,6 +393,55 @@ impl RepoWikiMcp {
             }
         }
         tool_success(out)
+    }
+
+    /// Return a module's dependencies and dependents, aggregated from the knowledge graph
+    #[tool(
+        name = "wiki_get_dependencies",
+        title = "Get module dependencies",
+        description = "Purpose: return a module's dependencies (modules it imports/calls) and dependents (modules that import/call it), aggregated from the knowledge graph (Imports + Calls edges, deduplicated). Same data source as architecture-map.md.\nWhen to use: to answer 'who depends on X' or 'what does X depend on' directly, without reading full module pages.\nWhen NOT to use: to read full module documentation, use wiki_read_page / wiki_read_card instead.\nWARNING: scans the entire source tree to rebuild the graph; cost scales with repository size.\nParameters & return example: {\"module\": \"src::analysis\"} -> \"模块 src::analysis\\n依赖: src::output\\n被依赖: src::generate\". Note: requires `code-repo-wiki generate` to have run (module names come from the graph's module clustering).",
+        annotations(read_only_hint = true)
+    )]
+    async fn get_dependencies(
+        &self,
+        Parameters(GetDependenciesRequest { module }): Parameters<GetDependenciesRequest>,
+    ) -> CallToolResult {
+        // 配置完整性校验（错误早暴露）；本工具数据源=知识图谱，无需 config 内容
+        if let Err(e) = crate::load_config_rooted(self.config_path.as_deref(), &self.root) {
+            return tool_error(format!("配置加载失败: {e}"));
+        }
+        // 扫描 + 重建图（与 execute_search hybrid 调用链补全同一路径：
+        // MCP server 无状态，每次现场重建；成本随仓库规模增长，description 已注明）
+        let scan = match crate::ingest::scan_and_parse_at(&self.root) {
+            Ok(s) => s,
+            Err(e) => return tool_error(format!("代码扫描失败: {e}")),
+        };
+        let graph = match crate::analysis::build_graph(&scan.insights) {
+            Ok(g) => g,
+            Err(e) => return tool_error(format!("知识图谱构建失败: {e}")),
+        };
+        // 与架构地图同一聚合函数（DRY）：模块级依赖 = imports/calls 边聚合
+        let deps = crate::analysis::architecture_map::module_dependencies(&graph);
+        // 模块不存在 → 合法空结果（查询执行成功、无命中），isError=false
+        let Some(d) = deps.iter().find(|d| d.name == module) else {
+            return tool_success(format!(
+                "未找到模块 \"{module}\"（可先运行 code-repo-wiki generate）"
+            ));
+        };
+        let deps_str = if d.dependencies.is_empty() {
+            "无".to_string()
+        } else {
+            d.dependencies.join(", ")
+        };
+        let deps_by_str = if d.dependents.is_empty() {
+            "无".to_string()
+        } else {
+            d.dependents.join(", ")
+        };
+        tool_success(format!(
+            "模块 {}\n依赖: {}\n被依赖: {}",
+            d.name, deps_str, deps_by_str
+        ))
     }
 }
 

@@ -141,7 +141,7 @@ async fn test_mcp_initialize_lists_tools_and_calls() {
     )
     .await;
 
-    // 3. tools/list：5 个工具全部注册
+    // 3. tools/list：工具全部注册
     let resp = rpc_call(
         &mut stdin,
         &mut stdout,
@@ -158,6 +158,7 @@ async fn test_mcp_initialize_lists_tools_and_calls() {
         "wiki_read_page",
         "wiki_read_card",
         "wiki_status",
+        "wiki_get_dependencies",
     ] {
         assert!(
             names.contains(&expected),
@@ -262,6 +263,106 @@ async fn test_mcp_initialize_lists_tools_and_calls() {
         text.contains("搜索索引不存在"),
         "索引缺失应引导运行 generate，实际: {text}"
     );
+
+    // 关闭
+    drop(stdin);
+    let _ = child.wait().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// wiki_get_dependencies I/O 契约（v0.9 W2）：已存在模块 → success 返回
+/// 依赖/被依赖（isError=false）；未知模块 → 合法空结果（isError=false）；
+/// 与架构地图同一数据源（知识图谱 imports/calls 边聚合）。
+#[tokio::test]
+async fn test_mcp_get_dependencies() {
+    let dir = unique_dir("getdeps");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join(".code-repo-wiki")).unwrap();
+    let config = mock_config();
+    std::fs::write(dir.join("mcp-test.toml"), &config).unwrap();
+    // 复用聚类 fixture（test_clustering.rs 验证过：src/a 两文件跨文件调用
+    // 聚为一个模块、src/b 独立目录一个模块——模块名 src::a / src::b）
+    std::fs::create_dir_all(dir.join("src").join("a")).unwrap();
+    std::fs::create_dir_all(dir.join("src").join("b")).unwrap();
+    std::fs::write(
+        dir.join("src").join("a").join("lib.rs"),
+        "pub mod helper;\npub fn process(data: &[u8]) -> u32 { helper::checksum(data) }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("src").join("a").join("helper.rs"),
+        "pub fn checksum(data: &[u8]) -> u32 { data.iter().fold(0u32, |acc, b| acc.wrapping_add(*b as u32)) }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("src").join("b").join("mod.rs"),
+        "pub fn beta() -> &'static str { \"beta\" }\n",
+    )
+    .unwrap();
+
+    let mut child = spawn_mcp(&dir);
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+
+    let resp = rpc_call(
+        &mut stdin,
+        &mut stdout,
+        1,
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "test", "version": "0.0.1"}
+        }),
+    )
+    .await;
+    assert!(resp["result"]["protocolVersion"].is_string());
+    notify(
+        &mut stdin,
+        "notifications/initialized",
+        serde_json::json!({}),
+    )
+    .await;
+
+    // 1. 已存在模块（src::a）：success（isError=false），返回依赖/被依赖行
+    let resp = rpc_call(
+        &mut stdin,
+        &mut stdout,
+        3,
+        "tools/call",
+        serde_json::json!({"name": "wiki_get_dependencies", "arguments": {"module": "src::a"}}),
+    )
+    .await;
+    assert_eq!(
+        resp["result"]["isError"],
+        serde_json::json!(false),
+        "已存在模块应置 isError=false: {resp}"
+    );
+    let text = resp["result"]["content"][0]["text"]
+        .as_str()
+        .expect("工具结果应有 text");
+    assert!(text.contains("模块 src::a"), "应回显模块名: {text}");
+    assert!(text.contains("依赖:"), "应含依赖行: {text}");
+    assert!(text.contains("被依赖:"), "应含被依赖行: {text}");
+
+    // 2. 未知模块：合法空结果（查询成功、无命中），isError=false
+    let resp = rpc_call(
+        &mut stdin,
+        &mut stdout,
+        4,
+        "tools/call",
+        serde_json::json!({"name": "wiki_get_dependencies", "arguments": {"module": "no_such_module"}}),
+    )
+    .await;
+    assert_eq!(
+        resp["result"]["isError"],
+        serde_json::json!(false),
+        "未知模块是合法空结果，isError 应为 false: {resp}"
+    );
+    let text = resp["result"]["content"][0]["text"]
+        .as_str()
+        .expect("工具结果应有 text");
+    assert!(text.contains("未找到模块"), "应提示未找到: {text}");
 
     // 关闭
     drop(stdin);
