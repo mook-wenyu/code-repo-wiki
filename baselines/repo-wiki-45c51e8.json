@@ -1,0 +1,100 @@
+{
+  "repo_name": "unknown",
+  "generated_at": "2026-08-14T12:51:29.232267500+00:00",
+  "coverage": {
+    "total_entities": 2136,
+    "covered_entities": 2136,
+    "ratio": 1.0
+  },
+  "doc_info": {
+    "pages": 17,
+    "words": 32491,
+    "cross_references": 91,
+    "code_blocks": 4,
+    "diagrams": 0,
+    "llm_judged": true,
+    "llm_score": 8.235294117647058,
+    "llm_judged_modules": 17,
+    "llm_abstain_modules": 0
+  },
+  "lint": {
+    "total_issues": 16,
+    "by_kind": {
+      "bad-citation": 2,
+      "entity-ownership": 14
+    }
+  },
+  "update_recall": {
+    "commits_scanned": 0,
+    "commits_with_changes": 0,
+    "correctly_updated": 0,
+    "recall": 1.0
+  },
+  "time": {
+    "scan_ms": 487,
+    "generate_ms": 0,
+    "total_ms": 636338
+  },
+  "tqs": {
+    "judged_modules": 2,
+    "avg_clarity": 8.0,
+    "avg_readability": 7.545454545454545,
+    "avg_conciseness": 7.590909090909091,
+    "avg_richness": 6.863636363636363,
+    "avg_structure": 7.704545454545455,
+    "avg_total": 7.540909090909091,
+    "repeats": 11,
+    "kappa_like": 0.8747186147186147,
+    "kappa": 0.42838760764129447,
+    "kappa_cohen": -0.14017769002961525,
+    "flip_rate": 0.4772727272727273,
+    "position_flip_rate": 0.7727272727272727,
+    "delta_kappa": 0.4463310070773202,
+    "kappa_table": [
+      [
+        2,
+        26
+      ],
+      [
+        16,
+        66
+      ]
+    ],
+    "eligible_modules": 2,
+    "parse_success_rate": 1.0,
+    "judgment_scale": "0-10 连续五维点分（clarity/readability/conciseness/richness/structure），解析后 clamp 到 [0,10]",
+    "aggregation_level": "模块级 macro average（每模块五维均值后跨模块平均）",
+    "tie_handling": "判定三态（A胜/平/B胜）：平局不进胜；AB 与 BA 顺序判定相异计位置翻转；2×2 一致表平局按 B 胜计入；解析/调用失败的模块排除并计入 low_confidence（不 recode）",
+    "position_bias": 0.09999999999999998,
+    "low_confidence_modules": [],
+    "avg_std": 0.5689292198803853,
+    "judge_model": "deepseek-v4-flash",
+    "tie_rate": 0.29545454545454547,
+    "agreement_breakdown": [
+      15,
+      16,
+      13
+    ]
+  },
+  "rubric": {
+    "rubric_nodes": 99,
+    "leaf_count": 63,
+    "satisfied_leaves": 2,
+    "coverage": 0.031746031746031744,
+    "score": 0.041555258467023175,
+    "score_std": 0.0,
+    "generation_calls": 4,
+    "judge_model": "deepseek-v4-flash",
+    "abstain_leaves": 0,
+    "abstain_rate": 0.0,
+    "leaf_verdict_repeats": 3,
+    "aggregation_level": "叶子级 3 次多数投票（争议升级 5 次）→ 权重自底向上聚合（abstain 叶子排除）"
+  },
+  "completeness": {
+    "total_entities": 2210,
+    "hit_entities": 1474,
+    "k": 10,
+    "ratio": 0.6669683257918552,
+    "judged": true
+  }
+}
