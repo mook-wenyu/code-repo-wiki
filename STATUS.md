@@ -985,3 +985,12 @@ knowing 全量 12 仓 mock 数据点齐（v29 9 + v30 3：rails 5239 实体/58 �
   - LLM_MAX_CONCURRENT 16→128（拐点内最大化收益 + 429 退避兜底）
   - complete_with_retry 简化：透传 llm.rs retry_with_backoff 重试结论（429/5xx/连接失败已重试；黑洞/业务 4xx 立即失败）——删除 CALL_RETRY_MAX
 - 验证：thinking 三态新测试 + 透传 2 测试 + lib 489 全绿 + bench 两套件 9/9 + clippy 0；文档（config.md 参考/CHANGELOG）；用户侧实测：Unity 项目 `update` 观察卡片阶段进度速率（配置 `thinking = false` 对比 5× 差距）
+
+## v51 生产基线重录与真实 LLM 全链路复验（2026-08-14）
+
+- 基线前准备：config.toml 关闭 thinking（提交 551eae8）；doctor 预检通过（配置/密钥/网络/协议全绿）
+- 真实 LLM generate（--force）：121 文件 / 2659 实体 / 33445 边 / 12 模块 / 13 页文档，耗时 359s；11 卡片成功，tests::edge 卡片因 response.incomplete 跳过（非致命）
+- bench 基线落盘 `baselines/repo-wiki-551eae8.json`（HEAD 551eae8，judge + rubrics-only）：总耗时约 30.7 分钟（LLM API 期间抖动，131 次 SSE 完成、5 次可恢复失败全部降级/abstain）
+- 关键维度：coverage 100%（2119/2119）；doc-info llm 评分 8.78（18 模块判定、2 abstain）；completeness@10 = 0.671；TQS 平均 8.11（仅 1 模块有效，tests 模块空响应计 low_confidence）；rubric 覆盖率 0.049（61 叶仅 3 满足）；update_recall 无 git 快照可测（1.0 真空）
+- lint 41 errors（exit 1）：entity-ownership 17 / bad-citation 7 / bad-citation-overlap 7 / dependency-fabricated 5 / orphan 3 / source-missing 1 / entity-coverage 1；几乎全部集中于 5 个指纹跳过未重生成的旧页面（benches/tests_edge/tests_progress_test/tests_tokenize/src_search，Aug-10 时间戳），属产物过期伪影
+- 异常记录：①embed API（BAILIAN）配额 429 → 语义索引构建失败，回退旧索引+纯文本搜索，completeness 在降级索引上判定；②TQS 模块 tests 空响应；③thinking/reasoning_effort 配置在 Responses 协议下被静默忽略——v50 修复路径对当前 provider 不生效（实证的前提漏洞）；④会话中断两次杀死前台/后台任务，最终改用 Start-Process 分离进程完成 bench
