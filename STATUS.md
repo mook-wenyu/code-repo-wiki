@@ -1,5 +1,15 @@
 # 项目状态简报 （AI自动维护，禁止贴代码）
 
+## 七十一、v0.9 Phase A9 集成验证与收尾（2026-08-14）——git 矛盾查证 + 全量验证 + 产物复验 + 文档收尾
+- 前置状态：三个并行 worker（W1 wiki_plan.yaml 重构 / W3 install 优化 + --dsh / W2 预构建架构地图 + wiki_get_dependencies）各自独立提交后，本轮为集成验证与收尾：查证工作区未提交改动来源、全量 test/clippy、mock 产物复验、补 CHANGELOG/README/cli 文档与 STATUS 记录
+- git 矛盾查证（W2 报告 src/config/mcp.rs、src/main.rs、tests/test_install_dsh.rs「未提交」vs W3 报告已提交 bdff415）：经 `git diff` 与 `git show --stat bdff415` 比对，三个文件**已由 bdff415 提交**，工作区残留为**纯 cargo fmt 排版差异**（换行包裹/调用折叠/struct 字面量重排，零功能改动）；证据：`git diff bdff415 HEAD -- <三文件>` 为空 + `cargo fmt --all -- --check` 工作区已 0 差异（即 bdff415 提交的是未格式化版本）。处置：按 fmt 修复并入收尾提交，2d97e89（chore(fmt)，3 文件 +22/-24）；既有 .opencode/ 三个未提交删除按约定保持不动
+- 全量验证（NO_PROXY=127.0.0.1,localhost,::1）：cargo fmt --all -- --check 0 差异；cargo test 全量 **902 passed / 0 failed**（40 个测试二进制；其中 2 个 HTTP mock 测试在默认代理环境下失败，NO_PROXY 下通过——与 v69 记录一致的环境性失败，非代码问题）；cargo clippy --all-targets 0 告警
+- 产物复验（mock provider，临时输出目录 /tmp/crw-mock/out，未污染 .code-repo-wiki/）：`code-repo-wiki generate --config <mock配置> --output <临时目录>` 成功（121 文件 / 2659 实体 / 15 页文档 / 46s）；`{OUTPUT_DIR}/wiki/zh/architecture-map.md` 真实产出且路径与 src/commands.rs:713 注入块引用路径 `{output_dir}/wiki/{lang}/architecture-map.md` 一致；`llms.txt` 正常生成（版本头 v0.8.0，Cargo.toml 未 bump）；embedding 无 key 降级纯文本（429 属预期降级路径）
+- 收尾文档：CHANGELOG [0.9.0] 补齐 W2/W3 关键点（architecture-map.md / wiki_get_dependencies / install --dsh / Claude 注入指引四节增强）；README 与 docs/reference/cli.md 更新 install `--dsh`、MCP 工具数五→六并补 wiki_get_dependencies；.swarm/phase-a9 状态全勾选 + 提交汇总
+- 提交：2d97e89（chore(fmt)）→ <changelog 提交> → <docs 提交> → 本次 chore(status)
+- 已知风险（诚实自曝）：llms.txt/architecture-map 产物由旧 .code-repo-wiki/ 仍为 v0.8.0 版本头（版本未 bump，属发布阶段动作）；真实 LLM 端到端未复验（沙箱无 key，mock 已验证全链路）；README/docs 的 wiki_plan.yaml 全量 schema 以 README 为准，config.md 仅字段摘要注释（W1 设计）
+- 下次最该做的事：真实 LLM 环境（有 key）按 docs/how-to/production.md 复跑 generate 并 `cargo run -- lint --root .` 复核 error 归零；发布前 bump Cargo.toml 0.8.0→0.9.0 与 CHANGELOG 版本一致
+
 ## 七十、v0.9 wiki_plan.yaml 前置干预重构（2026-08-14）——删除 [wiki.guide]，重建 plan 体系（对齐 Qoder 语义）
 - 前置状态：旧 `wiki_plan.yaml` 计划系统在 v30（ed2c5be）整体删除；v32 引入的 `[wiki.guide]`（pages/priority/notes/tier）成为生成干预的唯一入口。本轮以「删除 [wiki.guide] → 重建 wiki_plan.yaml」完成生成干预体系的收敛（对齐 Qoder 官方语义），分四阶段提交
 - 修改的功能（阶段一~四）：
