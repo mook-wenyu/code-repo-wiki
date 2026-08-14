@@ -1,5 +1,16 @@
 # 项目状态简报 （AI自动维护，禁止贴代码）
 
+## 七十三、真实 LLM bench 基线重录（干净版，Phase A10 复验）（2026-08-14）
+- 前置状态：v51 基线后用户充值阿里云百炼 embed 配额（此前 429 为 insufficient_quota）；thinking 修复已生效（config.toml `thinking = false`，openai-compatible chat 路径）；旧产物含 5 孤儿/坏引用页 + lint 41 errors；`.search/semantic_degraded` 标记存在（上次 embed 429 降级）
+- 构建：cargo build --release 无增量编译（0.44s，二进制已含 I3/I1 修复；HEAD 45c51e8）
+- 真实 generate --force（exit 0，113s）：121 文件 / 2677 实体 / 33811 边 / 12 模块 / 15 页文档（`✓ 生成完成: 扫描 121 个文件 / 2677 个实体 / 15 页文档（113s）`）；wiki/zh/*.md 全部刷新（17 页含全局合成文档）；旧 5 孤儿页中 benches/tests_progress_test/tests_tokenize 已被 I3 force 孤儿清理删除，src_search/tests_edge 为本次重新生成的有效页
+- **embed 结果：仍 429 insufficient_quota（充值未生效）**——semantic_degraded 标记未消失（Aug-14 20:36 刷新），semantic_index.db 仅 4096B（无向量落盘）；日志原文：`LLM API 返回可重试状态 429 Too Many Requests: {"error":{"message":"Allocated quota exceeded, please increase your quota limit. For details, see: https://www.alibabacloud.com/help/en/model-studio/error-code#token-limit","id":"920c6f68-...","type":"insufficient_quota","code":"insufficient_quota"}}`（10 次重试全 429，批量生成 embedding 失败）；语义搜索回退旧索引/纯文本，completeness 在降级索引上判定；附 WARN：删除部分写入的语义索引失败 `os error 32`（Windows 文件占用，疑与 IDE 的 code-repo-wiki mcp 进程持有索引句柄相关，非阻塞）
+- lint 复核（exit 1，16 问题 = 41 大幅下降）：error 级 2 个 bad-citation（api.md 正文散文 `feature.rs:144-155` 与 `lib.rs:617` 被引用提取器误收——文件实为 src/analysis/feature.rs 与 src/lib.rs 且均存在，属 LLM 散文 path:line 误用，非孤儿伪影）；warning 级 14 个 entity-ownership（src_search.md 12 + tests_fixtures_sample-repo_src.md 2，实体仅命中目录/文件 stem）；orphan 0（I3 force 孤儿清理生效）
+- bench 基线重录（judge + rubrics-only，总耗时 636s ≈ 10.6min，上次 30.7min）：coverage 100%（2136/2136）；doc-info llm 评分 8.24（17 模块全判定、0 abstain，上次 8.78/18 模块 2 abstain）；completeness@10 = 0.667（2210/1474，上次 0.671）；TQS 平均 7.54（2 模块有效、parse 100%、low_confidence 空，上次 8.11/1 模块/tests low_confidence）；rubric 覆盖率 0.032（63 叶仅 2 满足，上次 0.049）；update_recall 无 git 快照（rubrics-only 跳过回放，1.0 真空）；lint 16（2 error + 14 warn）
+- 提交：baselines/repo-wiki-45c51e8.json（chore(baseline)）+ 本节（chore(status)）
+- 已知风险（诚实自曝）：①embed 配额充值后仍 insufficient_quota——百炼「Allocated quota exceeded」通常需在 Model Studio 控制台为该模型显式申请/增加**已分配配额**，仅充值余额不一定生效；②api.md 2 个 bad-citation 是 LLM 散文 path:line 误用，需生成提示词约束正文引用必须用完整相对路径，或 lint 对该散文形态降级；③src_search/tests_fixtures_sample-repo_src 的 entity-ownership 属 A8 归属校验对「目录/文件 stem」实体的宽容告警（不阻断 exit）
+- 下次最该做的事：核对百炼 embed 模型配额分配状态（余额 vs 已分配配额）后复跑 generate 验证 semantic_degraded 消失；处理 api.md 散文引用误报（提示词约束或 lint 降级）；entity-ownership 14 告警确认是否需在提示词约束模块页实体列举
+
 ## 七十二、Phase A10 I3 根因修复（2026-08-14）——源码删除反向失效引用页 + force 孤儿清理
 - 前置状态：v51 基线重录后 lint 实测 41 errors（bad-citation 7 / bad-citation-overlap 7 / dependency-fabricated 5 / entity-coverage 1 / entity-ownership 17 / orphan 3 / source-missing 1），残留孤儿/坏引用页（benches / tests_edge / tests_progress_test / tests_tokenize / src_search）；根因调查确认四链断点：被删文件在图谱无节点（impact.rs `let Some(...) else { continue }` 跳过）、compensate_deleted_files 只按归属不按引用、force 时 load_protection 返回 old_state=None 致 cleanup_stale_outputs 短路、页面指纹=自身内容致永不过期（删除事件本身有检出，change.rs 标 Removed）
 - 修改的功能（两个逻辑阶段，各自独立提交）：
