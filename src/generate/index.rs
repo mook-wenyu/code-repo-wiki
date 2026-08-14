@@ -272,8 +272,7 @@ fn index_guide_prompt(infos: &[ModuleGuideInfo], language: &str) -> Vec<Message>
 /// （保留信息、消除断链）。纯字符串处理，确定性；fallback 骨架的链接
 /// 本已正确（`::`→`_` 仅替换分隔符），经本函数幂等。
 fn canonicalize_module_links(content: &str, language: &str, infos: &[ModuleGuideInfo]) -> String {
-    let known: std::collections::HashSet<&str> =
-        infos.iter().map(|i| i.name.as_str()).collect();
+    let known: std::collections::HashSet<&str> = infos.iter().map(|i| i.name.as_str()).collect();
     let mut out = String::with_capacity(content.len());
     let mut rest = content;
     while let Some(start) = rest.find("](") {
@@ -301,7 +300,8 @@ fn canonicalize_module_links(content: &str, language: &str, infos: &[ModuleGuide
             out.push_str(link_head);
             out.push_str(&format!("]({target})"));
         }
-        rest = &after[end.min(after.len())..];
+        // 跳过 ')' 本身（否则残留的 ')' 会被追加到输出，产生 `))` 双括号）
+        rest = &after[(end + 1).min(after.len())..];
     }
     out.push_str(rest);
     out
@@ -471,7 +471,17 @@ mod tests {
             "编造模块应降级为纯文本: {out}"
         );
         // (c) 正确链接与外链原样保留
-        assert!(out.contains("(wiki/zh/src_model.md)"), "正确链接保留: {out}");
+        assert!(
+            out.contains("(wiki/zh/src_model.md)"),
+            "正确链接保留: {out}"
+        );
         assert!(out.contains("(https://example.com)"), "外链保留: {out}");
+        // (d) 括号配对：无 `))` 双括号残留（rest 推进跳过 ')' 的防回归）
+        assert!(!out.contains("))"), "不得出现双括号残留: {out}");
+        assert_eq!(
+            out.matches(')').count(),
+            out.matches('(').count(),
+            "括号必须配对: {out}"
+        );
     }
 }
