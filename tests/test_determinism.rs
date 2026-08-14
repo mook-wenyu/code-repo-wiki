@@ -153,7 +153,15 @@ fn test_full_generate_artifact_set_deterministic() {
         .find(|p| {
             p.extension().map(|x| x == "md").unwrap_or(false)
                 && p.file_name()
-                    .map(|n| n != "api.md" && n != "overview.md" && n != "architecture.md")
+                    .map(|n| {
+                        n != "api.md"
+                            && n != "overview.md"
+                            && n != "architecture.md"
+                            // architecture-map.md 是确定性合成产物（v0.9 W2），
+                            // 每次 render 重写、不参与指纹保护——须排除否则手工
+                            // 修改会被重写覆盖，反向验证断言的「差异」丢失
+                            && n != "architecture-map.md"
+                    })
                     .unwrap_or(false)
         })
         .expect("应存在模块页");

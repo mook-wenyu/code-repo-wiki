@@ -1,3 +1,4 @@
+pub mod architecture_map;
 pub mod community;
 pub mod feature;
 pub mod graph;

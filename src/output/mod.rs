@@ -419,6 +419,22 @@ pub fn render_all(
         tracing::warn!("llms-full.txt 写入失败: {}", e);
     }
 
+    // 4.3 architecture-map.md（v0.9 W2）：预构建架构知识——确定性合成
+    // 的常驻小地图（模块职责 + 模块级依赖），供 Agent 少调工具快速答。
+    // 路径精确为 `wiki/{主语言}/architecture-map.md`（install 注入块与
+    // AGENTS.md 已按此路径引用，路径写错 agent 会读空文件）。职责复用
+    // module_descriptions.json 现有 LLM 缓存，依赖来自知识图谱静态聚合，
+    // 均不新增 LLM 调用。确定性重生成产物，不参与人工修改保护；写盘
+    // 失败向上传播（Agent 导航入口缺失是实质缺陷，非辅助产物）。
+    let arch_map_path = output_dir
+        .join("wiki")
+        .join(&primary_lang)
+        .join("architecture-map.md");
+    let descriptions =
+        crate::analysis::architecture_map::load_module_descriptions(output_dir, &primary_lang);
+    let arch_map = crate::analysis::architecture_map::render_architecture_map(graph, &descriptions);
+    crate::fs::write_file_atomic(&arch_map_path, &arch_map)?;
+
     // 5. 生成 Mermaid 依赖图
     let diagrams_dir = assets_dir.join("diagrams");
     std::fs::create_dir_all(&diagrams_dir)?;

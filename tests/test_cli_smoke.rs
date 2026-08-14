@@ -239,6 +239,10 @@ fn test_sync_merges_manual_edit_into_state() {
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|x| x == "md"))
+        // architecture-map.md 是确定性合成产物（v0.9 W2，非 LLM 文档，
+        // 不记录 doc_fingerprints）——必须排除，否则取到无指纹路径时
+        // 下方「状态应含文档指纹」断言会失败
+        .filter(|p| p.file_name().and_then(|n| n.to_str()) != Some("architecture-map.md"))
         .min()
         .expect("generate 后 wiki/zh 下应有页面文件");
     // macOS 临时目录 /var/folders 是指向 /private/var/folders 的符号链接：
@@ -598,6 +602,11 @@ fn test_mock_footer_marks_placeholder_pages() {
     for entry in std::fs::read_dir(&wiki_dir).unwrap() {
         let entry = entry.unwrap();
         if !entry.file_type().unwrap().is_file() {
+            continue;
+        }
+        // architecture-map.md 是确定性合成产物（v0.9 W2，非 LLM 占位内容），
+        // 不注入 mock 占位页脚——与 api.md 的 LLM/合成页脚语义区分
+        if entry.file_name().to_string_lossy() == "architecture-map.md" {
             continue;
         }
         let content = std::fs::read_to_string(entry.path()).unwrap();

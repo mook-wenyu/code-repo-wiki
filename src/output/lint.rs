@@ -172,11 +172,11 @@ pub fn lint(output_dir: &Path, source_roots: &[PathBuf]) -> Vec<LintIssue> {
 
 /// 全局/合成页判定（stem 命中受管文件名）：这些页面无模块归属，entity
 /// 归属校验对它们只做存在性（复用 is_global，与 check_orphan_pages 的
-/// 全局豁免同口径——api/overview/architecture/_toc/index/_log）。
+/// 全局豁免同口径——api/overview/architecture/_toc/index/_log/architecture-map）。
 fn is_global_page(stem: &str) -> bool {
     matches!(
         stem,
-        "api" | "overview" | "architecture" | "_toc" | "index" | "_log"
+        "api" | "overview" | "architecture" | "architecture-map" | "_toc" | "index" | "_log"
     )
 }
 
@@ -2287,6 +2287,36 @@ mod tests {
                 .iter()
                 .any(|i| i.kind == "orphan" && i.path.ends_with("m.md")),
             "普通无入链页面仍应报孤儿, 实际: {:?}",
+            issues
+        );
+    }
+
+    /// v0.9 W2 回归：architecture-map.md 是确定性合成产物（无任何入链），
+    /// lint 不得报孤儿——修复前全局豁免表缺 architecture-map 误报 orphan
+    ///（AGENTS.md 注入块引用的是仓库根文件，wiki 页之间无链接指向它）
+    #[test]
+    fn test_lint_architecture_map_not_reported_as_orphan() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_lint_arch_map_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wiki = dir.join("wiki").join("zh");
+        std::fs::create_dir_all(&wiki).unwrap();
+        // 确定性合成产物：无任何入链（模块名/依赖均为裸文本，无链接）
+        std::fs::write(
+            wiki.join("architecture-map.md"),
+            "# 架构地图\n\n## 模块总览\n\n- src — 无描述\n\n## 模块依赖\n\n- src → 依赖: 无；被依赖: 无\n",
+        )
+        .unwrap();
+
+        let issues = lint(&dir, &[]);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            !issues
+                .iter()
+                .any(|i| i.kind == "orphan" && i.path.ends_with("architecture-map.md")),
+            "architecture-map.md 不得报孤儿, 实际: {:?}",
             issues
         );
     }

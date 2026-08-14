@@ -206,9 +206,15 @@ fn test_large_fixture_incremental_impact() {
         // 组 B 模块页内容必然变化（实体集变更）；合成页（api/架构/索引/overview）
         // 由 render_all 每次重写——跳过；组 A/C 模块页必须字节级一致
         let is_group_b = (5..=9).any(|m| name.contains(&format!("m{m:02}")));
-        let is_synthetic = ["api.md", "architecture.md", "index.md", "overview.md"]
-            .iter()
-            .any(|s| name == s);
+        let is_synthetic = [
+            "api.md",
+            "architecture.md",
+            "architecture-map.md",
+            "index.md",
+            "overview.md",
+        ]
+        .iter()
+        .any(|s| name == s);
         if is_group_b || is_synthetic {
             continue;
         }
@@ -308,9 +314,15 @@ fn test_large_fixture_delete_file_keeps_pages() {
     // last_updated 保持快照值 → 字节与基线一致（合成页由 graph 重渲染，
     // 跳过；组 A/C 与组 B 均不受影响）
     for name in &after_names {
-        let is_synthetic = ["api.md", "architecture.md", "index.md", "overview.md"]
-            .iter()
-            .any(|s| name == s);
+        let is_synthetic = [
+            "api.md",
+            "architecture.md",
+            "architecture-map.md",
+            "index.md",
+            "overview.md",
+        ]
+        .iter()
+        .any(|s| name == s);
         if is_synthetic {
             continue;
         }
