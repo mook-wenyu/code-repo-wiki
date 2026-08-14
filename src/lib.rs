@@ -692,6 +692,7 @@ pub fn run_pipeline_with_config(
         old_state.as_ref(),
         &output::rendered_paths(&gen_output.documents, &gen_output.cards, &config),
         &preserved_modules,
+        config.output_dir(),
     );
     timings.render_ms = start.elapsed().as_millis() as u64
         - timings.scan_parse_ms
@@ -902,13 +903,23 @@ pub fn run_card_command(
 /// generate 也清理旧产物（旧实现仅增量路径调用）。
 ///
 /// 删除失败显式告警（文件被占用等），不静默吞错。
+///
+/// old_state=None（generate --force 或首次生成）时的 force 孤儿清理见
+/// cleanup_force_orphans：force 全量重生成后按「本次渲染集 vs 磁盘现存
+/// 产物」差集清理模块检测变化后不再产出的孤儿页。
 pub(crate) fn cleanup_stale_outputs(
     old_state: Option<&incremental::state::GenerationState>,
     rendered: &[std::path::PathBuf],
     preserved_modules: &std::collections::HashSet<String>,
+    output_dir: &Path,
 ) {
     let Some(state) = old_state else {
-        return; // 无旧状态（首次生成）：不存在可清理的旧产物
+        // 无旧状态：force 全量重生成（lib.rs load_protection force 时返回
+        // None）后仍有孤儿页可清理（上一轮产物残留在磁盘）；首次生成时
+        // 磁盘无产物，扫描差集为空，天然 no-op。不能直接 return——旧实现
+        // 在此短路导致 force 后孤儿页永久残留（Phase A10 / I3 根因之一）。
+        cleanup_force_orphans(rendered, output_dir);
+        return;
     };
     let mut stale: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
     stale.extend(state.doc_fingerprints.keys().map(String::as_str));
@@ -955,6 +966,109 @@ pub(crate) fn cleanup_stale_outputs(
     if removed > 0 {
         tracing::info!("清理过期产物 {} 个", removed);
     }
+}
+
+/// force 全量重生成后的孤儿页清理（cleanup_stale_outputs 的 old_state=None 分支）
+///
+/// 根因（Phase A10 / I3）：generate --force 时 load_protection 返回
+/// old_state=None（force 清保护语义），旧 cleanup_stale_outputs 遇 None 直接
+/// return——模块检测变化后不再产出的孤儿页（被删/重命名模块的旧 wiki 页与
+/// 卡片）永久残留（lint orphan 等错误由此产生）。
+///
+/// 语义：force 全量重生成后，本次渲染集（rendered）即当前全部产物（全量
+/// 覆盖所有模块，与增量"未受影响模块旧页须保留"不同，此处无需 preserved
+/// 豁免）。扫描磁盘现存产物（wiki/cards 下 .md 与输出目录根 _toc.md），
+/// 与 rendered 取差集删除。只删「工具生成形态」的页面（wiki 页含
+/// 「最后更新」元信息行、卡片 YAML frontmatter、mock 页脚），不删用户手工
+/// 创建的 .md——force 虽清空保护集，但清理语义仍须守护人工内容不被误删。
+fn cleanup_force_orphans(rendered: &[std::path::PathBuf], output_dir: &Path) {
+    let rendered_set: std::collections::HashSet<String> = rendered
+        .iter()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .collect();
+    let mut removed = 0usize;
+    for path in collect_output_md_files(output_dir) {
+        if rendered_set.contains(&path.to_string_lossy().replace('\\', "/")) {
+            continue;
+        }
+        // 全局/确定性合成文档（api/overview/architecture/architecture-map/
+        // _toc/index/_log）一律保留：它们由 render_all 直接写盘，不属于
+        // 本次渲染集（rendered_paths 不含 architecture-map），但并非孤儿
+        if path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .is_some_and(is_global_doc_stem)
+        {
+            continue;
+        }
+        // 非工具生成形态的 .md（用户手工创建）不删
+        if !looks_tool_generated(&path) {
+            continue;
+        }
+        if path.exists() {
+            match std::fs::remove_file(&path) {
+                Ok(()) => removed += 1,
+                Err(e) => tracing::warn!("清理过期产物失败 {}: {}", path.display(), e),
+            }
+        }
+    }
+    if removed > 0 {
+        tracing::info!("force 清理过期产物 {} 个", removed);
+    }
+}
+
+/// 收集输出目录下全部工具产物 .md：wiki/cards 递归 + 输出目录根 _toc.md。
+/// api/overview/architecture 等全局文档已包含在 wiki/{lang}/ 递归内。
+fn collect_output_md_files(output_dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for sub in ["wiki", "cards"] {
+        collect_md_files_recursive(&output_dir.join(sub), &mut out);
+    }
+    let toc = output_dir.join("_toc.md");
+    if toc.exists() {
+        out.push(toc);
+    }
+    out
+}
+
+/// 递归收集目录下所有 .md 文件
+fn collect_md_files_recursive(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            collect_md_files_recursive(&p, out);
+        } else if p.extension().is_some_and(|e| e == "md") {
+            out.push(p);
+        }
+    }
+}
+
+/// 判断 .md 是否为工具生成形态（防 force 清理误删用户手工创建的页面）：
+/// wiki 页渲染必含「> 最后更新:」元信息行（markdown.rs render_wiki_page），
+/// 卡片渲染以 `---\nmodule_name:` frontmatter 开头（render_knowledge_card），
+/// mock 产物带统一页脚标记。三者任一命中即视为工具生成。
+fn looks_tool_generated(path: &Path) -> bool {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    content.contains("> 最后更新:")
+        || content.starts_with("---\nmodule_name:")
+        || content.contains(crate::output::MOCK_FOOTER_MARK)
+}
+
+/// 全局/确定性合成产物文件名（wiki/cards 目录下、但非模块页面的 .md）：
+/// 即使本次未进 rendered_paths 也一律保留——它们由 render_all 直接写盘
+/// （architecture-map.md）或不在文档集合（api/overview/architecture/toc/
+/// index/_log）。force 清理只应删除「模块消失的孤儿页」，不得误伤全局文档。
+/// 与 lint.rs 全局豁免表（global_stems）同清单。
+fn is_global_doc_stem(stem: &str) -> bool {
+    matches!(
+        stem,
+        "api" | "overview" | "architecture" | "architecture-map" | "_toc" | "index" | "_log"
+    )
 }
 
 /// 组装"人工修改 → 卡片记录"映射（模块名 → 记录文本列表）
@@ -2385,7 +2499,12 @@ mod tests {
             .collect();
 
         // preserved 为空：src.md 的模块 src::foo 不在保留集 → 按原语义清理
-        cleanup_stale_outputs(Some(&state), &rendered, &std::collections::HashSet::new());
+        cleanup_stale_outputs(
+            Some(&state),
+            &rendered,
+            &std::collections::HashSet::new(),
+            &dir,
+        );
 
         for lang in ["zh", "en"] {
             assert!(
@@ -2434,7 +2553,12 @@ mod tests {
 
         // 本次渲染集合包含该路径（受保护文档属于生成集）
         let rendered = vec![manual.clone()];
-        cleanup_stale_outputs(Some(&state), &rendered, &std::collections::HashSet::new());
+        cleanup_stale_outputs(
+            Some(&state),
+            &rendered,
+            &std::collections::HashSet::new(),
+            &dir,
+        );
 
         assert!(manual.exists(), "渲染集合内的人工编辑文档不应被清理");
         let _ = std::fs::remove_dir_all(&dir);
@@ -2486,7 +2610,7 @@ mod tests {
         // 保留集含 src::fs（模块仍在扫描）但不含 src::deleted（已删除）
         let preserved: std::collections::HashSet<String> =
             ["src::fs".to_string()].into_iter().collect();
-        cleanup_stale_outputs(Some(&state), &[], &preserved);
+        cleanup_stale_outputs(Some(&state), &[], &preserved, &dir);
 
         assert!(fs_page.exists(), "仍在扫描的模块页面应保留");
         assert!(!gone_page.exists(), "已删除模块的页面应清理");
@@ -2502,7 +2626,70 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
-        cleanup_stale_outputs(None, &[], &std::collections::HashSet::new());
+        cleanup_stale_outputs(None, &[], &std::collections::HashSet::new(), &dir);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Phase A10 / I3：force 全量重生成（old_state=None）后的孤儿页清理。
+    /// 磁盘现存产物与本次渲染集取差集删除：已消失模块的旧 wiki 页/卡片被
+    /// 清理，本次渲染集内页面保留，用户手工创建的 .md（无工具生成形态）
+    /// 不误删。
+    #[test]
+    fn test_cleanup_force_orphans_removes_deleted_module_pages() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_force_orphan_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // 孤儿：已消失模块 benches 的旧 wiki 页 + 卡片（工具生成形态）
+        let orphan_page = dir.join("wiki").join("zh").join("src_benches.md");
+        let orphan_card = dir.join("cards").join("zh").join("src_benches.md");
+        std::fs::create_dir_all(orphan_page.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(orphan_card.parent().unwrap()).unwrap();
+        std::fs::write(
+            &orphan_page,
+            "# src::benches\n\n> 最后更新: 2026-01-01\n\n旧内容\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &orphan_card,
+            "---\nmodule_name: src::benches\nmodule_type: module\n---\n",
+        )
+        .unwrap();
+        // 本次渲染集内的有效页面（模块仍存在）→ 必须保留
+        let keep_page = dir.join("wiki").join("zh").join("src_net.md");
+        std::fs::write(
+            &keep_page,
+            "# src::net\n\n> 最后更新: 2026-01-01\n\n有效内容\n",
+        )
+        .unwrap();
+        // 用户手工创建的 .md（无工具生成形态）→ 不得误删
+        let user_page = dir.join("wiki").join("zh").join("用户笔记.md");
+        std::fs::write(&user_page, "# 我的笔记\n\n自定义内容\n").unwrap();
+        // 全局确定性合成产物（不在 rendered_paths 但由 render_all 直接写盘）
+        // → 不得误删
+        let arch_map = dir.join("wiki").join("zh").join("architecture-map.md");
+        std::fs::write(&arch_map, "# 架构地图\n\n> 预构建架构知识。\n").unwrap();
+
+        let rendered = vec![keep_page.clone()];
+        cleanup_stale_outputs(None, &rendered, &std::collections::HashSet::new(), &dir);
+
+        assert!(
+            !orphan_page.exists(),
+            "force 后已消失模块的孤儿 wiki 页应被清理"
+        );
+        assert!(
+            !orphan_card.exists(),
+            "force 后已消失模块的孤儿卡片应被清理"
+        );
+        assert!(keep_page.exists(), "本次渲染集内的页面应保留");
+        assert!(user_page.exists(), "用户手工创建的 .md 不得误删");
+        assert!(
+            arch_map.exists(),
+            "全局确定性产物 architecture-map.md 不得误删"
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -459,3 +459,205 @@ fn test_force_incremental_regenerates_all() {
 
     let _ = std::fs::remove_dir_all(&repo);
 }
+
+/// Phase A10 / I3 场景 1（根因修复）：删除源码文件 → 反向失效「引用它的
+/// 页面」并重生成，剔除对已删文件的引用。
+///
+/// 根因：被删文件（src/net/tcp.rs）在图谱中无节点，语义传播永远无法标记
+/// 「页面文本引用了它」的模块——引用页面残留坏引用（lint bad-citation/
+/// source-missing）。修复：删除时从旧导出快照构建反向索引，凡引用了被删
+/// 文件的模块并入受影响集，使其在增量 update 中被重生成。
+///
+/// 构造：http 模块页在上一轮（快照）引用了 tcp.rs；删除 tcp.rs 后增量
+/// update。无修复时 http 未被标记受影响，快照回填把注入的引用随旧内容
+/// 带回磁盘页；有修复时 http 重生成，引用被剔除。
+#[test]
+fn test_incremental_git_delete_referenced_file_regenerates_referrer() {
+    let repo =
+        std::env::temp_dir().join(format!("code_repo_wiki_git_delref_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&repo);
+    std::fs::create_dir_all(&repo).expect("构造临时仓库失败");
+    build_git_repo(&repo).expect("构造 fixture 失败");
+
+    let root = code_repo_wiki::project::ProjectRoot::new(repo.clone());
+    let config_path = repo.join("config.toml");
+    let tcp_mod = repo.join("src").join("net").join("tcp.rs");
+    let output = repo.join(".code-repo-wiki");
+    let snap_path = output.join(".state").join("export_snapshot.json");
+
+    // ---- 首次提交 + 全量生成（基线） ----
+    git_commit_all(&repo, "init");
+    code_repo_wiki::run_pipeline(
+        Some(&config_path),
+        None,
+        false,
+        &root,
+        &code_repo_wiki::GenerationMode::Full,
+    )
+    .expect("全量生成失败");
+
+    // 从快照定位 http 模块页（文件名 = module_path.join("_") + ".md"）
+    let snap: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&snap_path).unwrap()).unwrap();
+    let mut http_page_name = String::new();
+    let mut http_doc_found = false;
+    for doc in snap["documents"].as_array().unwrap() {
+        if doc["kind"].as_str() == Some("WikiPage") {
+            let mp: Vec<String> = doc["module_path"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s.as_str().unwrap().to_string())
+                .collect();
+            if mp.join("::").contains("http") {
+                http_page_name = format!("{}.md", mp.join("_"));
+                http_doc_found = true;
+                break;
+            }
+        }
+    }
+    assert!(http_doc_found, "快照应含 http 模块页文档");
+    let http_page = output.join("wiki").join("zh").join(&http_page_name);
+    assert!(http_page.exists(), "基线磁盘应有 http 模块页");
+
+    // ---- 模拟上一轮 http 页引用了 src/net/tcp.rs（只注入导出快照）----
+    // 快照是反向索引的数据源。不碰磁盘页与状态指纹：无修复时 http 未被
+    // 标记受影响 → 增量回填（backfill_unchanged_modules）把注入的引用随
+    // 快照内容带回磁盘页；有修复时 http 重生成，引用被剔除。
+    let mut snap: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&snap_path).unwrap()).unwrap();
+    for doc in snap["documents"].as_array_mut().unwrap() {
+        let mp: Vec<String> = doc["module_path"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s.as_str().unwrap().to_string())
+            .collect();
+        if mp.join("::").contains("http") {
+            let content = doc["content"].as_str().unwrap().to_string();
+            doc["content"] =
+                serde_json::Value::String(format!("{content}\n\n引用实现见 src/net/tcp.rs:1\n"));
+        }
+    }
+    std::fs::write(&snap_path, serde_json::to_string_pretty(&snap).unwrap()).unwrap();
+
+    // ---- 删除 tcp.rs 并提交 → 增量 update ----
+    std::fs::remove_file(&tcp_mod).expect("删除 tcp.rs 失败");
+    let commit2 = git_commit_all(&repo, "delete tcp.rs");
+    code_repo_wiki::run_pipeline(
+        Some(&config_path),
+        None,
+        false,
+        &root,
+        &code_repo_wiki::GenerationMode::Incremental {
+            watch_paths: vec![],
+            change_kind: None,
+        },
+    )
+    .expect("删除增量失败");
+
+    // ---- 断言 http 模块页被重生成且内容不再含对 tcp.rs 的引用 ----
+    let page_after = std::fs::read_to_string(&http_page).unwrap_or_default();
+    assert!(
+        !page_after.contains("tcp.rs"),
+        "http 页重生成后不得再引用已删文件 tcp.rs，实际: {page_after}"
+    );
+    let short = &commit2[..8.min(commit2.len())];
+    assert!(
+        page_after.contains(&format!("基于提交: {short}")),
+        "http 页应基于删除提交重生成（含「基于提交 {short}」），实际: {page_after}"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+/// Phase A10 / I3 场景 2（force 孤儿清理）：force 全量重生成后模块检测
+/// 变化（整模块删除）→ 旧孤儿页被清理（不在产物目录、不在 _toc）。
+///
+/// 根因：generate --force 时 load_protection 返回 old_state=None，旧
+/// cleanup_stale_outputs 遇 None 直接 return——模块检测变化后不再产出的
+/// 孤儿页永久残留（lint orphan）。修复：force 时按「本次渲染集 vs 磁盘
+/// 现存产物」差集清理孤儿页。
+#[test]
+fn test_force_regeneration_cleans_deleted_module_pages() {
+    let repo = std::env::temp_dir().join(format!(
+        "code_repo_wiki_git_forceorphan_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&repo);
+    std::fs::create_dir_all(&repo).expect("构造临时仓库失败");
+    build_git_repo(&repo).expect("构造 fixture 失败");
+
+    let root = code_repo_wiki::project::ProjectRoot::new(repo.clone());
+    let config_path = repo.join("config.toml");
+
+    // ---- 首次提交 + 全量生成（基线：net + http 两个社区页） ----
+    git_commit_all(&repo, "init");
+    code_repo_wiki::run_pipeline(
+        Some(&config_path),
+        None,
+        false,
+        &root,
+        &code_repo_wiki::GenerationMode::Full,
+    )
+    .expect("全量生成失败");
+    let before = wiki_pages_snapshot(&repo);
+    let http_pages: Vec<String> = before
+        .keys()
+        .filter(|k| k.contains("http"))
+        .cloned()
+        .collect();
+    assert!(
+        !http_pages.is_empty(),
+        "基线应含 http 社区页，实际: {:?}",
+        before.keys().collect::<Vec<_>>()
+    );
+
+    // ---- 删除 http 模块全部文件 → force 全量重生成 ----
+    std::fs::remove_file(repo.join("src").join("http").join("server.rs")).unwrap();
+    std::fs::remove_file(repo.join("src").join("http").join("client.rs")).unwrap();
+    git_commit_all(&repo, "delete http module");
+    code_repo_wiki::run_pipeline(
+        Some(&config_path),
+        None,
+        true,
+        &root,
+        &code_repo_wiki::GenerationMode::Full,
+    )
+    .expect("force 全量生成失败");
+
+    // ---- 断言旧孤儿页被清理：不在产物目录、不在 _toc ----
+    let after = wiki_pages_snapshot(&repo);
+    for name in &http_pages {
+        assert!(
+            !after.contains_key(name),
+            "force 后已删除模块的孤儿页 {name} 应被清理，实际残留: {:?}",
+            after.keys().collect::<Vec<_>>()
+        );
+    }
+    let toc = std::fs::read_to_string(output_dir_toc(&repo)).unwrap_or_default();
+    assert!(
+        !toc.contains("http"),
+        "force 后 _toc 不得再列出已删模块 http，实际: {toc}"
+    );
+    // net 社区产物必须保留（模块仍存在）
+    assert!(
+        after.keys().any(|k| k.contains("net")),
+        "force 后仍在的 net 社区页必须保留，实际: {:?}",
+        after.keys().collect::<Vec<_>>()
+    );
+    // 全局确定性合成产物 architecture-map.md 必须保留（render_all 直接写盘，
+    // 不在 rendered_paths，但不属于孤儿）
+    assert!(
+        after.contains_key("architecture-map.md"),
+        "force 后 architecture-map.md 必须保留，实际: {:?}",
+        after.keys().collect::<Vec<_>>()
+    );
+
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+/// 输出目录根 _toc.md 路径
+fn output_dir_toc(repo: &Path) -> std::path::PathBuf {
+    repo.join(".code-repo-wiki").join("_toc.md")
+}
