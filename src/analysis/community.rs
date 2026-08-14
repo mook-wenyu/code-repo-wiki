@@ -27,7 +27,7 @@ const LEIDEN_SEED: u64 = 42;
 /// 对代码图而言"任何跨文件调用都表示协作"，取 0.5（演进计划 D4 实测调参）
 const LEIDEN_RESOLUTION: f64 = 0.5;
 
-/// 社区检测边权重（与 src/analysis/graph.rs 构建时的字面量同源）
+/// 社区检测边权重（graph.rs 引用本常量，勿再硬编码字面量）
 pub const WEIGHT_IMPORTS: f64 = 0.8;
 pub const WEIGHT_CALLS: f64 = 0.7;
 

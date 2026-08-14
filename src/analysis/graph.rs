@@ -331,7 +331,7 @@ fn build_import_edges(
                         kind: EdgeKind::Imports,
                         source: file_id,
                         target: target_id,
-                        weight: 0.8,
+                        weight: crate::analysis::community::WEIGHT_IMPORTS,
                         location: Some((imp.line, imp.line)),
                     },
                 );
@@ -473,7 +473,7 @@ fn build_call_edges(
                                             kind: EdgeKind::Calls,
                                             source: *eid,
                                             target: callee_id,
-                                            weight: 0.7,
+                                            weight: crate::analysis::community::WEIGHT_CALLS,
                                             location: None,
                                         },
                                     );
