@@ -13,7 +13,7 @@
 | `export` | 导出 HTML（`--skip-generate` 从快照直接导出） |
 | `doctor` | 环境诊断（配置/产物/输出/Key/网络/版本六查） |
 | `key` | 交互式配置 LLM API key（用户级，`--env` 用环境变量引用） |
-| `install` | 一键集成：用户级默认配置 + OpenCode 全局 MCP/插件 + AGENTS.md 引导 + git hooks（`--claude` 加用户级 ~/.claude.json MCP + CLAUDE.md、`--codex` 加 Codex 配置） |
+| `install` | 一键集成：用户级默认配置 + OpenCode 全局 MCP/插件 + AGENTS.md 引导 + git hooks（`--claude` 加用户级 ~/.claude.json MCP + CLAUDE.md、`--codex` 加 Codex 配置、`--dsh` 写项目根 cordis.patch.yml 注册 DeepSeek Harness MCP） |
 | `uninstall` | 移除全部集成（MCP 条目/插件/引导块/hooks；需 `--force`） |
 | `search` | 搜索代码实体（text/semantic/hybrid 三引擎；`--query` 必填，`--engine` 默认 hybrid、`--top-k` 默认 10——均可省略；`--json` 机器可读） |
 | `ast-search` | AST 精确符号查找（文件+行号+签名） |
@@ -24,7 +24,7 @@
 
 ## MCP server 工具
 
-`mcp` 子命令启动 MCP stdio server（Claude Code/Cline 接入），暴露五个 `wiki_` 前缀工具（全部只读；产物由 `generate` 先行生成，未生成时工具显式报错提示）：
+`mcp` 子命令启动 MCP stdio server（Claude Code/Cline 接入），暴露六个 `wiki_` 前缀工具（全部只读；产物由 `generate` 先行生成，未生成时工具显式报错提示）：
 
 | 工具 | 用途 |
 |---|---|
@@ -33,6 +33,7 @@
 | `wiki_status` | 报告 Wiki 生成状态（页面/卡片计数、语义索引降级原因、lint 问题清单；未生成时提示先运行 generate） |
 | `wiki_read_page` | 读取模块页/架构/概览/API 页面 Markdown 内容（返回文件路径 + 正文） |
 | `wiki_read_card` | 读取知识卡片（模块结构化摘要；返回文件路径 + 正文） |
+| `wiki_get_dependencies` | 按模块名返回依赖/调用关系（静态图聚合，只读；直接回答「谁依赖 X」） |
 
 调用示例（Claude Code）：`wiki_status` 确认已生成 → `wiki_search` 定位实体 → `wiki_read_page` 读取对应模块页。
 

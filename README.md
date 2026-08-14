@@ -25,7 +25,7 @@ cd /path/to/your/repo
 code-repo-wiki generate
 ```
 
-**一键全自动（推荐）**：`code-repo-wiki install` 注册 git `post-commit`/`post-merge` hook——之后**每次 commit 后 Wiki 自动增量更新**，无需再手动执行任何命令；同时注册 OpenCode 插件与 MCP（用户级全局，一次安装所有仓库可用），`--claude` / `--codex` 可加注 Claude Code / Codex MCP。常驻实时模式用 `code-repo-wiki watch`（代码保存即更新）。卸载用 `code-repo-wiki uninstall --force`。
+**一键全自动（推荐）**：`code-repo-wiki install` 注册 git `post-commit`/`post-merge` hook——之后**每次 commit 后 Wiki 自动增量更新**，无需再手动执行任何命令；同时注册 OpenCode 插件与 MCP（用户级全局，一次安装所有仓库可用），`--claude` / `--codex` / `--dsh` 可加注 Claude Code / Codex / DeepSeek Harness MCP。常驻实时模式用 `code-repo-wiki watch`（代码保存即更新）。卸载用 `code-repo-wiki uninstall --force`。
 
 **可选配置**：默认零配置即可运行；需要自定义时使用 `config.toml`——用户级（Windows: `%USERPROFILE%\.code-repo-wiki\config.toml`；其他: `~/.code-repo-wiki/config.toml`，可用环境变量 `CODE_REPO_WIKI_HOME` 重定位；v41 起自动从旧目录一次性迁移）与项目级（仓库根 `config.toml`）字段级合并，详见[配置参考](docs/reference/config.md)。语义嵌入走纯远程 API（默认阿里百炼 `qwen3.7-text-embedding`，配置 `[embed]` 段，key 缺失时自动降级为纯文本搜索）
 
@@ -78,7 +78,7 @@ code-repo-wiki generate
 | 搜索 | BM25 全文 + 向量语义 + RRF 混合排序（默认 hybrid）；另有 `ast-search` 精确符号查找 |
 | 文件监听 | `watch` 常驻监听，保存即更新（内置崩溃自愈） |
 | HTML 导出 | `export` 一键导出静态 HTML 站点 |
-| AI Agent 友好 | 自动生成 `llms.txt`/`llms-full.txt`（Agent 索引）、AGENTS.md 引导块；`install` 注册 OpenCode 插件 / Claude / Codex MCP（用户级全局） |
+| AI Agent 友好 | 自动生成 `llms.txt`/`llms-full.txt`（Agent 索引）、AGENTS.md 引导块；`install` 注册 OpenCode 插件 / Claude / Codex / DeepSeek Harness MCP（用户级全局） |
 | 质量评测 | `bench` RepoDocBench 五维评测 + rubrics 准则评分；`lint` 九类健康检查（断链/过时/引用错位/LLM 编造） |
 
 ## 生成干预（wiki_plan.yaml）
@@ -114,10 +114,11 @@ knowledgecard:
 - `code-repo-wiki search --query "关键词"` —— 代码语义搜索（BM25 + 向量 + RRF 混合，默认 hybrid；另有 `ast-search` 精确符号查找）
 - 每次生成自动重写 `llms.txt` / `llms-full.txt` —— 按 Agent 上下文预算裁剪的仓库索引
 - `install` 向仓库根注入 AGENTS.md 引导块 —— AI 代理打开仓库即可按指引维护文档
-- 已注册的插件 / MCP 工具可供 OpenCode、Claude Code、Codex 会话直接调用。MCP server（`code-repo-wiki mcp`）暴露五个 `wiki_` 前缀工具（全部只读，产物由 `generate` 先行生成）：
+- 已注册的插件 / MCP 工具可供 OpenCode、Claude Code、Codex 会话直接调用。MCP server（`code-repo-wiki mcp`）暴露六个 `wiki_` 前缀工具（全部只读，产物由 `generate` 先行生成）：
   - `wiki_search` — 按关键词检索代码实体（text/semantic/hybrid 三引擎，hybrid 含调用链补全）；`wiki_ast_search` — 精确符号定义查找（全量 AST 扫描，返回文件+行号+签名，成本随仓库规模增长）
   - `wiki_status` — 报告 Wiki 生成状态与健康度（页面/卡片计数、语义索引降级原因、lint 问题清单）；`wiki_read_page` / `wiki_read_card` — 读取模块页/架构/概览/API 页面与知识卡片正文
-  - 调用示例（Claude Code）：`wiki_status` 确认已生成 → `wiki_search` 定位实体 → `wiki_read_page` 读取对应模块页
+  - `wiki_get_dependencies` — 按模块名直接返回依赖/调用关系（静态图聚合，无需逐页阅读即答「谁依赖 X」）
+  - 调用示例（Claude Code）：`wiki_status` 确认已生成 → `wiki_search` 定位实体 → `wiki_read_page` 读取对应模块页 → `wiki_get_dependencies` 查反向依赖
 
 ## 文档
 
