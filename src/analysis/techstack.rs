@@ -25,7 +25,7 @@ pub struct TechStackEntry {
 
 /// 支持解析的清单文件名权威集合（增量判定/外部消费者引用）。
 /// parse_tech_stack 内部按解析顺序使用同名清单字面量——两处逐字一致，
-/// 一致性由 tests/test_project_cards.rs 的断言（MANIFEST_FILES ⊆
+/// 一致性由 tests/overview/test_project_cards.rs 的断言（MANIFEST_FILES ⊆
 /// model::PROJECT_CARD_INPUT_FILES）与各清单解析单测守护。
 pub const MANIFEST_FILES: &[&str] = &[
     "Cargo.toml",

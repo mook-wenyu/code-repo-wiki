@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 /// clap 4.6.4 无原生多组子命令 help（官方 issue #1553 仍 open；
 /// next_help_heading 只作用于参数不作用于子命令列表），故用 override_help
 /// 静态文本替代，顶层 `-h/--help` 与 `help` 子命令输出此文本；子命令自身
-/// `-h` 仍走 clap 自动帮助。此文本是第二真源，tests/test_cli_smoke.rs 的
+/// `-h` 仍走 clap 自动帮助。此文本是第二真源，tests/cli/test_cli_smoke.rs 的
 /// test_help_shows_grouped_commands 守卫防漂移（4 分组标题 + 18 命令各一次）。
 const GROUPED_HELP: &str = "\
 代码仓库 Wiki 自动生成系统

@@ -2793,7 +2793,7 @@ mod tests {
 
     /// 票 02：state.json 存在但损坏（非 JSON）时 load_protection 必须 fail-loud，
     /// 不得静默返回空保护集（空保护会让人工修改保护在后续 update 中失效）。
-    /// 与 sync_from_git 对损坏状态的拒绝行为对偶（tests/test_git_sync.rs:109-121）。
+    /// 与 sync_from_git 对损坏状态的拒绝行为对偶（tests/incremental/test_git_sync.rs:109-121）。
     #[test]
     fn test_load_protection_corrupt_state_fails_loud() {
         let dir = std::env::temp_dir().join(format!(

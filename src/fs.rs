@@ -468,7 +468,7 @@ mod tests {
     // ==================== Phase 15.2 LockOptions 组合逻辑 ====================
     // 与集成测试互补：单测覆盖三种组合——wait 超时仍报错、skip 返回跳过、
     // wait 内让锁释放后成功（后台线程按短时序释放持锁）。跨进程冲突
-    // 语义（CLI 级）由 tests/test_cli.rs 覆盖。
+    // 语义（CLI 级）由 tests/cli/test_cli.rs 覆盖。
 
     /// skip_if_locked：无 wait 冲突时立即返回 Skipped（不等待）
     #[test]

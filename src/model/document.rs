@@ -147,7 +147,7 @@ pub struct SpecItem {
 /// 反向引用 generate（会成环）；本常量是 incremental（指纹检测）与 generate
 /// （重生成判定）的共同输入，置于两者共同依赖的底层 model 最合适。
 /// 与 techstack::MANIFEST_FILES / project_card::SPEC_FILES 的一致性由
-/// tests/test_project_cards.rs 的断言守护。
+/// tests/overview/test_project_cards.rs 的断言守护。
 pub const PROJECT_CARD_INPUT_FILES: &[&str] = &[
     // 依赖清单（techstack.rs MANIFEST_FILES）
     "Cargo.toml",
