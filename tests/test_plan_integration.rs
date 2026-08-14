@@ -130,7 +130,11 @@ fn test_plan_scope_exclude_filters_modules() {
     .expect("全量生成失败");
 
     let pages = list_wiki_pages(&repo);
-    assert!(pages.iter().any(|p| p == "src_a.md"), "src/a 应生成, 实际: {:?}", pages);
+    assert!(
+        pages.iter().any(|p| p == "src_a.md"),
+        "src/a 应生成, 实际: {:?}",
+        pages
+    );
     assert!(
         !pages.iter().any(|p| p == "src_b.md"),
         "被 exclude 的模块 src/b 不应生成, 实际: {:?}",

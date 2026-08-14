@@ -31,12 +31,7 @@ pub fn scan_and_parse_at_with_scope(
     root: &ProjectRoot,
     scope: Option<&crate::config::plan::PlanScope>,
 ) -> Result<ScanOutput> {
-    scan_and_parse_cached_at_with_scope(
-        root,
-        &None,
-        &std::collections::HashSet::new(),
-        scope,
-    )
+    scan_and_parse_cached_at_with_scope(root, &None, &std::collections::HashSet::new(), scope)
 }
 
 /// 带解析缓存的扫描（真增量扫描的 parse 层增量）

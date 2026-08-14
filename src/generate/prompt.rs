@@ -1476,7 +1476,15 @@ mod tests {
     fn test_wiki_page_prompt_injects_contexts() {
         let chunk = make_test_chunk(&["src", "alpha"]);
         // 空上下文：无相关节
-        let messages = wiki_page_prompt(&chunk, "卡片摘要", "zh", &[], PlanTemplate::Default, &[], &[]);
+        let messages = wiki_page_prompt(
+            &chunk,
+            "卡片摘要",
+            "zh",
+            &[],
+            PlanTemplate::Default,
+            &[],
+            &[],
+        );
         let user = &messages[1].content;
         assert!(!user.contains("## 依赖模块摘要"));
         assert!(!user.contains("## 调用方"));
@@ -1490,7 +1498,15 @@ mod tests {
             symbols: vec!["handle".into()],
             summary: Some("服务层".into()),
         }];
-        let messages = wiki_page_prompt(&chunk, "卡片摘要", "zh", &[], PlanTemplate::Default, &deps, &callers);
+        let messages = wiki_page_prompt(
+            &chunk,
+            "卡片摘要",
+            "zh",
+            &[],
+            PlanTemplate::Default,
+            &deps,
+            &callers,
+        );
         let user = &messages[1].content;
         assert!(
             user.contains("## 依赖模块摘要"),
@@ -1520,7 +1536,15 @@ mod tests {
             card[0].content
         );
 
-        let wiki = wiki_page_prompt(&chunk, "卡片摘要", "zh", &[], PlanTemplate::Default, &[], &[]);
+        let wiki = wiki_page_prompt(
+            &chunk,
+            "卡片摘要",
+            "zh",
+            &[],
+            PlanTemplate::Default,
+            &[],
+            &[],
+        );
         assert!(
             wiki[0].content.contains("## 设计意图"),
             "wiki system 必须含设计意图输出小节: {}",

@@ -316,7 +316,11 @@ mod tests {
             .iter()
             .map(|p| p.to_string_lossy().replace('\\', "/"))
             .collect();
-        assert_eq!(names.len(), 1, "include 白名单应只收 src/net/**，实际: {names:?}");
+        assert_eq!(
+            names.len(),
+            1,
+            "include 白名单应只收 src/net/**，实际: {names:?}"
+        );
         assert!(names[0].ends_with("src/net/tcp.rs"));
 
         // exclude 黑名单：排除 src/b.rs

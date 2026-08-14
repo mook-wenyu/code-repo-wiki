@@ -430,12 +430,7 @@ pub fn run_pipeline_with_config(
             .output_dir()
             .join(".state")
             .join("insights_cache.json");
-        ingest::scan_and_parse_cached_at_with_scope(
-            root,
-            &Some(cache_path),
-            &watch_set,
-            scope,
-        )?
+        ingest::scan_and_parse_cached_at_with_scope(root, &Some(cache_path), &watch_set, scope)?
     } else {
         ingest::scan_and_parse_at_with_scope(root, scope)?
     };

@@ -62,7 +62,10 @@ knowledgecard:
     assert_eq!(plan.version, 1);
     assert_eq!(plan.repowiki.template, PlanTemplate::Architecture);
     assert_eq!(plan.repowiki.notes.len(), 2);
-    assert_eq!(plan.repowiki.notes[0].text, "命名规范：公开函数必须写文档注释");
+    assert_eq!(
+        plan.repowiki.notes[0].text,
+        "命名规范：公开函数必须写文档注释"
+    );
     assert_eq!(plan.repowiki.notes[0].author, "架构组");
     // author 缺省 = 空串（兼容旧格式）
     assert_eq!(plan.repowiki.notes[1].author, "");
@@ -71,7 +74,10 @@ knowledgecard:
     assert_eq!(doc.parent, "运维手册");
     assert_eq!(doc.hints, "突出快速开始");
     assert_eq!(plan.knowledgecard.notes[0].text, "卡片注明编码规约");
-    let scope = plan.knowledgecard.scope.expect("knowledgecard.scope 应存在");
+    let scope = plan
+        .knowledgecard
+        .scope
+        .expect("knowledgecard.scope 应存在");
     assert_eq!(scope.include, vec!["src/**".to_string()]);
     assert_eq!(scope.exclude, vec!["src/vendor/**".to_string()]);
     let _ = std::fs::remove_dir_all(&dir);
@@ -183,7 +189,8 @@ fn test_plan_scope_alias_resolution() {
     let _ = std::fs::remove_dir_all(&dir);
 
     // 两层都提供 → knowledgecard.scope 优先（官方位置）
-    let yaml = "knowledgecard:\n  scope:\n    include: [\"src/**\"]\nscope:\n  include: [\"lib/**\"]\n";
+    let yaml =
+        "knowledgecard:\n  scope:\n    include: [\"src/**\"]\nscope:\n  include: [\"lib/**\"]\n";
     let (dir, result) = load_yaml("scope_both", yaml);
     let plan = result.expect("合法 plan 应加载成功").unwrap();
     assert_eq!(
