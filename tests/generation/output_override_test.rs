@@ -10,8 +10,7 @@
 
 use std::path::Path;
 
-mod common;
-use common::{copy_dir, unique_dir};
+use crate::common::{copy_dir, unique_dir};
 
 #[test]
 fn test_output_override_writes_to_given_dir() {

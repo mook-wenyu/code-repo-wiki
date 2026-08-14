@@ -8,9 +8,7 @@ use std::path::PathBuf;
 
 use code_repo_wiki::config::{load_config, schema};
 
-mod common;
-
-const TEMPLATE: &str = include_str!("../config.toml");
+const TEMPLATE: &str = include_str!("../../config.toml");
 
 /// 解析模板并断言不存在已废弃的配置段
 #[test]
@@ -73,7 +71,7 @@ fn test_mock_config_max_concurrency_effective() {
     let dir = std::env::temp_dir().join(format!("code-repo-wiki-mc-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path: PathBuf = dir.join("config.toml");
-    std::fs::write(&path, common::mock_config()).unwrap();
+    std::fs::write(&path, crate::common::mock_config()).unwrap();
 
     let config: schema::WikiConfig =
         load_config(&path).expect("mock_config 必须可被 load_config 加载");

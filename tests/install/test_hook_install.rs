@@ -13,8 +13,7 @@
 
 use std::path::{Path, PathBuf};
 
-mod common;
-use common::{run_bin_with_envs, unique_dir};
+use crate::common::{run_bin_with_envs, unique_dir};
 
 /// 隔离 HOME/USERPROFILE（install/uninstall 会读写 opencode 全局配置）
 fn home_envs(home: &Path) -> Vec<(&'static str, String)> {

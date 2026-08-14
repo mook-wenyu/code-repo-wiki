@@ -11,10 +11,9 @@
 //! acquire_run_lock 写入锁文件；Windows 上 LockFileEx 阻止子进程读锁定
 //! 区域，错误信息会退化为「PID 未知」——断言只依赖「正在运行」。
 
-mod common;
 use code_repo_wiki::config::schema::WikiConfig;
 use code_repo_wiki::fs::acquire_run_lock;
-use common::{mock_llm_server, openai_compatible_config, run_bin_with_envs, unique_dir};
+use crate::common::{mock_llm_server, openai_compatible_config, run_bin_with_envs, unique_dir};
 use std::path::Path;
 
 /// 复制 fixture 并写入指向 mock LLM 的 mock-server.toml，返回工作目录
@@ -25,7 +24,7 @@ fn prepare_repo(tag: &str) -> std::path::PathBuf {
         .join("sample-repo");
     let work_dir = unique_dir(tag);
     let _ = std::fs::remove_dir_all(&work_dir);
-    common::copy_dir(&fixture, &work_dir);
+    crate::common::copy_dir(&fixture, &work_dir);
     let port = mock_llm_server();
     std::fs::write(
         work_dir.join("mock-server.toml"),

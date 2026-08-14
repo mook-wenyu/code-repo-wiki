@@ -14,8 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
-mod common;
-use common::{run_bin_with_envs, unique_dir};
+use crate::common::{run_bin_with_envs, unique_dir};
 
 const BLOCK_START: &str = "# code-repo-wiki: dsh-mcp-client insert-begin";
 const BLOCK_END: &str = "# code-repo-wiki: dsh-mcp-client insert-end";

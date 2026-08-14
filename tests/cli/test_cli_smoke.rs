@@ -20,8 +20,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-mod common;
-use common::{copy_dir, mock_config, run_bin, run_bin_with_envs, unique_dir};
+use crate::common::{copy_dir, mock_config, run_bin, run_bin_with_envs, unique_dir};
 
 /// 复制 sample-repo 到唯一临时目录并改写 config.toml（mock provider，不触网），返回工作目录
 fn prepare_repo(tag: &str) -> PathBuf {

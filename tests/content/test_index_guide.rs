@@ -10,8 +10,7 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-mod common;
-use common::copy_dir;
+use crate::common::copy_dir;
 
 use petgraph::stable_graph::{EdgeIndex, NodeIndex, StableDiGraph};
 

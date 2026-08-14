@@ -12,8 +12,7 @@
 
 use std::path::PathBuf;
 
-mod common;
-use common::{run_bin_with_envs, unique_dir};
+use crate::common::{run_bin_with_envs, unique_dir};
 
 const START: &str = "<!-- CODE-REPO-WIKI:START -->";
 const END: &str = "<!-- CODE-REPO-WIKI:END -->";

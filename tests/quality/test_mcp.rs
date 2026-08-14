@@ -10,8 +10,7 @@ use std::process::Stdio;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-mod common;
-use common::{mock_config, run_bin_with_envs, unique_dir};
+use crate::common::{mock_config, run_bin_with_envs, unique_dir};
 
 /// 启动 code-repo-wiki mcp 子进程，返回子进程句柄
 fn spawn_mcp(dir: &Path) -> tokio::process::Child {

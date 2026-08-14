@@ -10,8 +10,7 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-mod common;
-use common::{copy_dir, openai_compatible_config, unique_dir};
+use crate::common::{copy_dir, openai_compatible_config, unique_dir};
 
 #[test]
 fn test_pipeline_progress_events_monotonic_and_done() {

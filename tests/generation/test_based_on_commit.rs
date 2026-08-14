@@ -6,8 +6,7 @@
 use std::fs;
 use std::path::Path;
 
-mod common;
-use common::{mock_config, run_bin, unique_dir};
+use crate::common::{mock_config, run_bin, unique_dir};
 
 /// 构造临时仓库：src/a.rs + config.toml（mock LLM），可选 git init+提交
 fn setup_repo(dir: &Path, with_git: bool) {

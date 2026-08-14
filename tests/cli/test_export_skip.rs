@@ -11,8 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-mod common;
-use common::{copy_dir, mock_config, run_bin, unique_dir};
+use crate::common::{copy_dir, mock_config, run_bin, unique_dir};
 
 /// 复制 sample-repo 到唯一临时目录并改写 config.toml（mock provider，不触网），返回工作目录
 /// （v19 t04：基于 common helper，output.dir 绝对路径化，不依赖 cwd；

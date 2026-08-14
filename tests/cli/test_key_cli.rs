@@ -18,8 +18,7 @@
 
 use std::path::PathBuf;
 
-mod common;
-use common::{run_bin_with_envs, unique_dir};
+use crate::common::{run_bin_with_envs, unique_dir};
 
 /// 构造隔离环境，返回 (工作目录, 用户级配置路径, 用户级目录, 环境变量注入表)
 fn setup(
