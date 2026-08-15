@@ -1861,8 +1861,9 @@ fn strip_modifier_prefix(sig: &str) -> &str {
 
 /// 提取 `- \`...\`` 声称行的反引号内文（非声称行返回 None）。
 /// extract_entity_names 借它做模块名原文精确匹配（多段名提取后会被截断），
-/// 不能只依赖 entity_name_from_signature 的提取结果
-fn claimed_backtick_inner(line: &str) -> Option<&str> {
+/// 不能只依赖 entity_name_from_signature 的提取结果。
+/// 生成侧 entity_claim_check 复用（DRY：提取语义单一来源）。
+pub(crate) fn claimed_backtick_inner(line: &str) -> Option<&str> {
     line.trim()
         .strip_prefix("- `")
         .and_then(|rest| rest.find('`').map(|end| &rest[..end]))
@@ -1876,7 +1877,8 @@ fn claimed_backtick_inner(line: &str) -> Option<&str> {
 /// `- \`anyhow\`` 外部 crate 名会被当实体、`- \`path\` 模块` 跨模块归属
 /// 不可靠。整节跳过消除这四类误报（R2 实测 6 条 error 误报中 4 条源于
 /// 依赖节，另 2 条源于规则 3 死代码）。
-fn is_non_entity_section(heading: &str) -> bool {
+/// 生成侧 entity_claim_check 复用（DRY：提取语义单一来源）。
+pub(crate) fn is_non_entity_section(heading: &str) -> bool {
     let lower = heading.trim_start_matches('#').trim().to_lowercase();
     lower.contains("依赖")
         || lower.contains("dependenc")
@@ -1889,7 +1891,8 @@ fn is_non_entity_section(heading: &str) -> bool {
 /// extract_entity_names 的带行变体：规则 2 归属降级（R2 附带处理）需要判断
 /// 「声称行是否自带 file:line 引用」——实体名本身不携带引用位置，只有行
 /// 文本能做这个判定。
-fn extract_entity_claims_with_lines(
+/// 生成侧 entity_claim_check 复用（DRY：提取语义单一来源）。
+pub(crate) fn extract_entity_claims_with_lines(
     content: &str,
     modules: &std::collections::HashSet<String>,
 ) -> Vec<(String, String)> {
@@ -2013,7 +2016,8 @@ pub(crate) fn extract_source_files(content: &str) -> Vec<String> {
 
 /// 代码扩展名判定（KNOWN-06）：对齐 ingest 扫描层 SUPPORTED_EXTENSIONS
 /// （管线只收可解析语言，"源文件"同理只认代码文件）。
-fn has_code_extension(path: &str) -> bool {
+/// 生成侧 entity_claim_check 复用（DRY：提取语义单一来源）。
+pub(crate) fn has_code_extension(path: &str) -> bool {
     Path::new(path)
         .extension()
         .and_then(|e| e.to_str())

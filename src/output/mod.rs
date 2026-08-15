@@ -3,6 +3,7 @@
 pub mod citation;
 pub mod crossref;
 pub mod dependency_check;
+pub mod entity_claim_check;
 pub mod html;
 pub mod lint;
 pub mod llms_txt;
