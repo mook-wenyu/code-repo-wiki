@@ -413,11 +413,25 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
                 );
             }
             if !last_dep_violations.is_empty() {
+                // 日志带声称明细（claimed + 原因）：无明细时虚构依赖无法诊断
+                // 根因（LLM 声称的是文件路径/子模块/真实但未推导模块，处理
+                // 方式不同——真实 LLM 复验多次出现 4 次耗尽缺页，须可观测）
+                let detail: Vec<String> = last_dep_violations
+                    .iter()
+                    .map(|v| {
+                        let reason = match v.reason {
+                            crate::output::dependency_check::DependencyViolationReason::NotADependency => "存在但非本模块依赖",
+                            crate::output::dependency_check::DependencyViolationReason::UnknownExternal => "疑似编造",
+                        };
+                        format!("`{}`({})", v.claimed, reason)
+                    })
+                    .collect();
                 tracing::warn!(
-                    "Wiki 页面依赖校验失败（第 {} 次，虚构 {} 条）: {}",
+                    "Wiki 页面依赖校验失败（第 {} 次，虚构 {} 条）: {} | {}",
                     attempt + 1,
                     last_dep_violations.len(),
-                    chunk.module_path.join("::")
+                    chunk.module_path.join("::"),
+                    detail.join("; ")
                 );
             }
             if !last_entity_claims.is_empty() {
