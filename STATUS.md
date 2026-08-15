@@ -1,5 +1,23 @@
 # 项目状态简报 （AI自动维护，禁止贴代码）
 
+## 七十八、U2 生成侧实体声明校验 + 收尾杂项（2026-08-16）
+- 前置状态：七十七收尾（U1 完成）；「下次最该做的事」= 生成侧实体声称校验 + 可选收尾；HEAD f094937
+- 决策（ask_user_question 全部采纳推荐）：**D1 实体校验耗尽 fail-fast**（与依赖校验同语义，编造不进页面）/ **D2 依赖反馈附允许集清单**（search::mod 式系统性编造直接抄）/ **D3 重试上限提至 3**（max(引用 2, Mermaid 2, 实体 3)=3 共 4 次调用）/ **D4 bench 基线本轮重录**（--repo-name 修 unknown 缺陷）
+- 修改的功能（9 提交 + 5 并行取证 worker + 3 并行实现 worker A/B/C）：
+  - **feat(output) entity_claim_check**（Worker A，e2d72e3）：第 5 类生成期校验——声称对照 chunk.entities 全量实体集（归一复用 lint 提取器族 pub(crate)：claimed_backtick_inner/is_non_entity_section/has_code_extension/extract_entity_claims_with_lines，DRY 单一来源）；放行规则 a-d（模块引用精确/`::` 前缀、本模块实体含 `fn()`/`Foo::bar` 归一形态、通配符系列名 `xxx_*`）；ENTITY_CLAIM_RETRY_MAX=3；14 项单测
+  - **feat(generate) wiki.rs 挂接**（Worker B，b82e333）：重试循环第 5 类校验 + fail-fast bail；上限三者 max=3；集成测试 ×2（编造重试成功/耗尽 bail）；**依赖反馈附允许集清单**（dependency_retry_feedback 增参 chunk + 全模块名，清单含 std/core 与判定同源）+ 测试
+  - **fix(generate) 依赖允许集并入全项目模块名**（8724d44）：真实复验发现 tests::overview 声称 tests::cli 等真实兄弟模块被判「疑似编造」（测试模块间无代码级 import，图推导不出依赖边）→ 4 次耗尽缺页且每轮随机移动靶子；允许集精确匹配全模块名放行——**`src::search::mod` 文件级声称仍拦**（依赖节格式错误语义保留）；generate_wiki_page 增参 all_module_names（graph.modules 推导）；新增测试 ×2
+  - **fix(output) force 孤儿清理保护失败模块页**（4ac5d9a）：真实复验 LLM API 全挂一轮 update --force 后 **27 个模块页全部消失**（force 差集清理把失败模块旧页当孤儿删）；cleanup_force_orphans 增参 preserved_modules（文件 stem 命中仍在扫描模块名即保留，失败≠消失）+ 测试
+  - **fix(bench)**（ee608f6 前序）：docs_tree `truncate(40_000)` 中文截断 panic → floor_char_boundary
+  - **fix(generate) 依赖校验日志带声称明细**（8105d11）：claimed+原因（仿残留校验先例，无明细无法诊断）
+  - **chore**（9e5a40b）：`.codegraph/` 入 .gitignore；测试夹具 10 处 weight:0.7 统一引用 WEIGHT_CALLS（值不变，消硬编码漂移）
+  - **chore(bench)**（基线与文档）：重录 `baselines/repo-wiki-ee608f6.json`（35 模块 / llm_score 8.886 / coverage 0.988 / repo_name 修复）
+- 摸到的文件：src/output/{entity_claim_check(新),dependency_check,lint,mod}.rs、src/generate/{wiki,mod}.rs、src/lib.rs、src/bench/mod.rs、src/analysis/{community,module,feature}.rs（测试夹具）、.gitignore、baselines/、CHANGELOG.md、.swarm/plan-U2-entity-claim.md
+- 是否改变了接口/契约：**行为变更**——①模块页生成新增第 5 类校验（编造实体 → 反馈重试 → 耗尽 fail-fast 缺页）；②依赖校验允许集含全项目模块名（概念依赖放行）；③重试循环上限 2→3（共 4 次调用）；④`dependency_retry_feedback` 签名变更（增参 chunk + all_module_names，内部 API）；⑤`generate_wiki_page` 增参（内部 API）；⑥force 清理保留失败模块旧页；产物格式不变
+- 验证：`cargo test -j 2` 全量 **1005+ 测试全绿**（NO_PROXY=127.0.0.1,localhost,::1 必需，HTTP mock 测试环境依赖）；clippy 0 告警；fmt 0 差异；**bench 重录** exit 0（约 21 分钟，LLM API 期间抖动 5 次可恢复失败全部降级）；**真实 LLM 复验部分完成**：generate --force exit 0（279s，31 模块/29 页，**语义索引构建成功**——embed key 注入生效，U16 降级未复现）→ **search::mod 系统性失败根治**（src_search.md 正常生成）→ 实体校验工作（tests::content 编造 8 条被拦重试收敛、src/src::generate 各 1 条）→ 依赖校验修复前 2 模块缺页（src_analysis/tests_plan，update 补偿 1 轮成功）→ 依赖允许集修复后再跑：依赖校验失败消失
+- 已知风险（诚实自曝）：①**复验未完成（外部阻塞）**：opencode.ai API 持续不可达（约 30+ 分钟，本机网络正常、DNS 正常，确认外部服务故障）——当前 .code-repo-wiki/ 产物被 API 故障轮 update --force 清空（仅剩 5 全局页，force 清理缺陷已修复但产物需重建），**API 恢复后需跑 generate --force + lint 终验**（broken/stale/entity-coverage 3 条残余应清零——实体校验拦截后编造不再进页面）；②依赖校验偶发 4 次耗尽缺页在允许集修复前实测消失（修复后未复验确认，见 ①）；③entity-ownership 23 条 warning（A8 宽容）；④PATH 旧版 exe 与当前代码不一致（复验须 cargo run）
+- 下次最该做的事：**API 恢复后完成复验闭环**（generate --force → lint：broken 0 / stale 0 / entity-coverage 0 预期）→ 更新本 STATUS 段；可选：U16 mcp 句柄、语义索引 embed 配额核对
+
 ## 七十七、U1 模块划分质量（跨域约束 + tests 功能域拆分 + γ 实证 + 真实 LLM 复验）（2026-08-15）
 - 前置状态：七十六收尾唯一 P0 遗留 U1（缝合实证：tests::gamma_scan 页把 benches/gamma_scan.rs + src/output/residue_check.rs + src/search/tokenize.rs + 4 个 tests 文件缝进一页，LLM 转述占位符 doc 注释触发残留重试；约束前基线 γ=0.2~0.6 最大社区 97~115 文件——**γ 调参无法拆散缝合**，桥接边累积权重远超 γ）；HEAD f0ec376
 - 决策（ask_user_question 全部采纳推荐）：**D1 跨域边剔除**（社区划分跳过跨顶层目录 Imports/Calls 边；leiden-rs 0.8.1 无约束分区 API，后处理分裂治标不治本）/ **D2 fixtures 进噪音清单**（任意深度剪枝）/ **D3 tests 拆子目录 + 目录聚簇**（39 文件 → 10 功能域，wiki 按域分页）/ **D4 路径首段即域**（src/tests/benches/<root> 各一域，src 子目录间不设限）
