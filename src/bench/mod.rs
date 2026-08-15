@@ -1750,8 +1750,11 @@ fn measure_rubrics(
         tracing::warn!("Rubric 跳过：被测仓库无 README/docs 文档（无法推导仓库意图）");
         return Ok(None);
     }
-    // 成本控制：docs 过长时保留前 40K 字符（意图声明通常在前部）
-    docs_text.truncate(40_000);
+    // 成本控制：docs 过长时保留前 40K 字符（意图声明通常在前部）。
+    // truncate 要求字节位置为字符边界——中文文档按字节截断会 panic
+    // （实测 docs_tree 含中文时 is_char_boundary 断言失败），先回退到
+    // 最近字符边界再截断（floor_char_boundary，rustc 1.73+ 稳定）。
+    docs_text.truncate(docs_text.floor_char_boundary(40_000));
 
     let provider = match crate::generate::create_provider(config) {
         Ok(p) => p,
