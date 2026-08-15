@@ -173,8 +173,11 @@ fn watch_e2e_file_change_triggers_incremental() {
         // 防抖 300ms 只合并同内容事件，注释行保证每次都是新事件）
         if touch < 4 && start.elapsed() >= Duration::from_secs(20 * (touch + 1) as u64) {
             touch += 1;
-            std::fs::write(&alpha_path, format!("{base_content}// watch touch #{touch}\n"))
-                .expect("touch alpha.rs 失败");
+            std::fs::write(
+                &alpha_path,
+                format!("{base_content}// watch touch #{touch}\n"),
+            )
+            .expect("touch alpha.rs 失败");
         }
         std::thread::sleep(Duration::from_millis(500));
     }
