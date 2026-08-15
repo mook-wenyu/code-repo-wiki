@@ -172,13 +172,23 @@ fn module_files_fingerprint(
 /// 引用契约重试上限（P0-1）：生成后校验源码引用，无效时重试注入
 /// 反馈，最多重试 CITATION_RETRY_MAX 次（共 CITATION_RETRY_MAX + 1 次
 /// 调用）。"总是重试"但必须有上限防死循环（每次重试消耗 LLM 调用）。
+/// 该值仅描述**本类**校验的重试预算；重试循环的总上限取所有校验类别
+/// 的最大值（见 generate_wiki_page 内 `retry_max`），非本类独立上限。
 pub const CITATION_RETRY_MAX: usize = 2;
 
 /// Mermaid 语法校验重试上限（G2）：与引用契约对齐——首次调用 + 每次
 /// 坏块反馈后重试，共 `MERMAID_RETRY_MAX + 1` 次调用；耗尽后降级
 /// （坏块转 text + 标记注释，见 output::mermaid_check::degrade_mermaid_blocks）。
-/// 与 CITATION_RETRY_MAX 合并进同一重试循环（上限取两者最大值）。
+/// 与 CITATION_RETRY_MAX / 实体校验合并进同一重试循环（上限取三者最大值）。
 pub const MERMAID_RETRY_MAX: usize = crate::output::mermaid_check::MERMAID_RETRY_MAX;
+
+/// 实体声明契约重试上限（第 5 类校验）：值转发到
+/// crate::output::entity_claim_check::ENTITY_CLAIM_RETRY_MAX（当前 3），
+/// 供 generate_wiki_page 计算共享循环的 `retry_max`。本值不是独立上限——
+/// 重试循环总上限 = max(引用 2, Mermaid 2, 实体 3) = 3，循环
+/// `0..=retry_max` 共调用 `retry_max + 1 = 4` 次。每类校验在循环内每次
+/// 调用后都执行，任一失败都注入对应反馈。
+pub const ENTITY_CLAIM_RETRY_MAX: usize = crate::output::entity_claim_check::ENTITY_CLAIM_RETRY_MAX;
 
 /// 一次 LLM 调用 + 失败告警透传（v50 起不再实现重试）。
 ///
@@ -278,6 +288,11 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
     /// text fence + 标记注释（OpenWiki degrade-and-repair），页面照常产出。
     /// 依赖防幻觉契约：正文「## 依赖关系」声称对照允许集校验（dependency_check），
     /// 违反时注入反馈重试；重试耗尽后 fail-fast bail（不产出含虚构依赖的页面）。
+    /// 实体声明契约（第 5 类）：正文「## 核心实体」声称对照 chunk.entities 校验
+    /// （entity_claim_check），LLM 不得声称该模块不存在的实体（编造实体易混淆
+    /// 真伪、误导 readers 与下游校验）；违反时注入反馈重试（反馈含编造清单 +
+    /// 实体名规范化说明），重试耗尽后 fail-fast bail（与依赖校验同语义，
+    /// 实体真实性可由 chunk 验证，无降级选项）。
     #[allow(clippy::too_many_arguments)]
     pub async fn generate_wiki_page(
         &self,
@@ -307,11 +322,15 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
         let mut last_invalid = Vec::new();
         let mut last_mermaid = Vec::new();
         let mut last_dep_violations = Vec::new();
+        let mut last_entity_claims = Vec::new();
 
         // 重试循环：首次调用 + 每次校验失败后追加反馈重试（共 RETRY_MAX + 1 次调用）。
-        // 引用与 Mermaid 校验共享同一循环（上限取两者最大值——当前均为 2），
-        // 每次调用后两类校验都执行，任一失败都注入对应反馈。
-        let retry_max = CITATION_RETRY_MAX.max(MERMAID_RETRY_MAX);
+        // 引用 / Mermaid / 实体三类校验共享同一循环（上限取三者最大值——
+        // 当前实体 3、引用/Mermaid 2，故 retry_max = 3），每次调用后
+        // 三类校验都执行，任一失败都注入对应反馈。
+        let retry_max = CITATION_RETRY_MAX
+            .max(MERMAID_RETRY_MAX)
+            .max(ENTITY_CLAIM_RETRY_MAX);
         // T08b：模板占位符残留检测与引用/Mermaid 校验并列（同循环、同反馈、同收尾）
         let mut last_residue = Vec::new();
         for attempt in 0..=retry_max {
@@ -351,10 +370,14 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
             // 依赖防幻觉：正文「## 依赖关系」声称对照允许集校验（虚构依赖重试）
             last_dep_violations =
                 crate::output::dependency_check::validate_dependencies(&content, chunk);
+            // 实体声明契约：正文「## 核心实体」声称对照 chunk.entities 校验（编造实体重试）
+            last_entity_claims =
+                crate::output::entity_claim_check::validate_entity_claims(&content, chunk);
             if last_invalid.is_empty()
                 && last_mermaid.is_empty()
                 && last_residue.is_empty()
                 && last_dep_violations.is_empty()
+                && last_entity_claims.is_empty()
             {
                 break;
             }
@@ -397,6 +420,14 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
                     chunk.module_path.join("::")
                 );
             }
+            if !last_entity_claims.is_empty() {
+                tracing::warn!(
+                    "Wiki 页面实体校验失败（第 {} 次，编造 {} 条）: {}",
+                    attempt + 1,
+                    last_entity_claims.len(),
+                    chunk.module_path.join("::")
+                );
+            }
             // 重试机会已用完：跳出循环走收尾路径
             if attempt == retry_max {
                 break;
@@ -420,6 +451,14 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
                 messages.push(Message::user(
                     crate::output::dependency_check::dependency_retry_feedback(
                         &last_dep_violations,
+                        chunk,
+                    ),
+                ));
+            }
+            if !last_entity_claims.is_empty() {
+                messages.push(Message::user(
+                    crate::output::entity_claim_check::entity_claim_retry_feedback(
+                        &last_entity_claims,
                     ),
                 ));
             }
@@ -441,6 +480,17 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
                 "Wiki 页面依赖校验失败（重试 {} 次仍虚构，共 {} 条）: {}",
                 retry_max,
                 last_dep_violations.len(),
+                chunk.module_path.join("::")
+            );
+        }
+        // 实体校验：重试耗尽仍编造 → 失败（fail-fast，不产出混淆真实/编造
+        // 实体的页面，与依赖校验同语义；实体真实性可由 chunk.entities 验证，
+        // 无降级选项）
+        if !last_entity_claims.is_empty() {
+            anyhow::bail!(
+                "Wiki 页面实体校验失败（重试 {} 次仍编造，共 {} 条）: {}",
+                retry_max,
+                last_entity_claims.len(),
                 chunk.module_path.join("::")
             );
         }
@@ -1367,8 +1417,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let root = crate::project::ProjectRoot::new(dir.clone());
 
-        // 全部输出无效引用（文件不存在）
+        // 全部输出无效引用（文件不存在）——注：循环上限取所有校验类别最大值
+        // （max(引用 2, Mermaid 2, 实体 3) = 3），故需 4 次输出以触发耗尽
         let provider = ScriptedProvider::new(vec![
+            "引用 nonexistent.rs:99".to_string(),
             "引用 nonexistent.rs:99".to_string(),
             "引用 nonexistent.rs:99".to_string(),
             "引用 nonexistent.rs:99".to_string(),
@@ -1386,10 +1438,13 @@ mod tests {
             err.contains("引用校验失败"),
             "错误信息应说明引用校验失败: {err}"
         );
+        let retry_max = CITATION_RETRY_MAX
+            .max(MERMAID_RETRY_MAX)
+            .max(ENTITY_CLAIM_RETRY_MAX);
         assert_eq!(
             provider.calls.load(std::sync::atomic::Ordering::Relaxed),
-            CITATION_RETRY_MAX + 1,
-            "应调用 CITATION_RETRY_MAX+1 次后放弃"
+            retry_max + 1,
+            "应调用循环上限 + 1 次后放弃"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1525,8 +1580,10 @@ mod tests {
             crate::output::citation::EntityRanges::new();
         ranges.insert("src/server.rs".to_string(), vec![(2, 4)]);
 
-        // 全部输出区间外引用（8 行）
+        // 全部输出区间外引用（8 行）——循环上限取所有校验类别最大值
+        // （max(引用 2, Mermaid 2, 实体 3) = 3），故需 4 次输出以触发 bail
         let provider = ScriptedProvider::new(vec![
+            "核心实体 `Server` 见 src/server.rs:8。".to_string(),
             "核心实体 `Server` 见 src/server.rs:8。".to_string(),
             "核心实体 `Server` 见 src/server.rs:8。".to_string(),
             "核心实体 `Server` 见 src/server.rs:8。".to_string(),
@@ -1594,8 +1651,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let root = crate::project::ProjectRoot::new(dir.clone());
 
-        // 连续 3 次（MERMAID_RETRY_MAX + 1）都输出坏图
+        // 连续（循环上限 + 1）次都输出坏图——上限取所有校验类别最大值
+        // （max(引用 2, Mermaid 2, 实体 3) = 3），故需 4 次输出以触发降级
         let provider = ScriptedProvider::new(vec![
+            "```mermaid\nflowchart LR\nA[hello world\nB --> C\n```\n".to_string(),
             "```mermaid\nflowchart LR\nA[hello world\nB --> C\n```\n".to_string(),
             "```mermaid\nflowchart LR\nA[hello world\nB --> C\n```\n".to_string(),
             "```mermaid\nflowchart LR\nA[hello world\nB --> C\n```\n".to_string(),
@@ -1617,10 +1676,13 @@ mod tests {
             doc.content.contains("code-repo-wiki: mermaid parse failed"),
             "应含降级标记注释"
         );
+        let retry_max = CITATION_RETRY_MAX
+            .max(MERMAID_RETRY_MAX)
+            .max(ENTITY_CLAIM_RETRY_MAX);
         assert_eq!(
             provider.calls.load(std::sync::atomic::Ordering::Relaxed),
-            MERMAID_RETRY_MAX + 1,
-            "应调用 MERMAID_RETRY_MAX+1 次后降级"
+            retry_max + 1,
+            "应调用循环上限 + 1 次后降级"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1670,7 +1732,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let root = crate::project::ProjectRoot::new(dir.clone());
 
+        // 全部虚构依赖触发耗尽——循环上限取所有校验类别最大值
+        // （max(引用 2, Mermaid 2, 实体 3) = 3），故需 4 次输出以触发 bail
         let provider = ScriptedProvider::new(vec![
+            "## 依赖关系\n- fake_crate — 编造\n".to_string(),
             "## 依赖关系\n- fake_crate — 编造\n".to_string(),
             "## 依赖关系\n- fake_crate — 编造\n".to_string(),
             "## 依赖关系\n- fake_crate — 编造\n".to_string(),
@@ -1688,10 +1753,91 @@ mod tests {
             err.contains("依赖校验失败"),
             "错误信息应说明依赖校验失败: {err}"
         );
+        let retry_max = CITATION_RETRY_MAX
+            .max(MERMAID_RETRY_MAX)
+            .max(ENTITY_CLAIM_RETRY_MAX);
         assert_eq!(
             provider.calls.load(std::sync::atomic::Ordering::Relaxed),
-            CITATION_RETRY_MAX + 1,
-            "应调用重试上限 + 1 次后放弃"
+            retry_max + 1,
+            "应调用循环上限 + 1 次后放弃"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 实体声明契约重试：编造实体 → 注入反馈 → 第二次输出真实实体则成功
+    /// （make_test_chunk 的 chunk.entities 含 struct `Server`）
+    #[tokio::test]
+    async fn test_wiki_page_retries_on_fabricated_entity() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_entity_retry_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = crate::project::ProjectRoot::new(dir.clone());
+
+        // 第一次声称编造实体 fake_entity，第二次列出真实实体 Server
+        let provider = ScriptedProvider::new(vec![
+            "## 核心实体\n- `fake_entity` — 编造\n".to_string(),
+            "## 核心实体\n- `Server` — HTTP 服务\n".to_string(),
+        ]);
+        let generator = WikiGenerator::new(&provider, 0);
+        let config = WikiConfig::default();
+        let chunk = make_test_chunk();
+
+        let doc = generator
+            .generate_wiki_page(&chunk, "摘要", &config, &root, None, &[], &[])
+            .await
+            .unwrap();
+        assert!(doc.content.contains("Server"), "重试后应使用真实实体");
+        assert_eq!(
+            provider.calls.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "编造实体应触发一次重试"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 实体声明契约重试耗尽：超过循环上限仍编造实体 → fail-fast bail
+    /// （不产出混淆真实/编造实体的页面，与依赖校验同语义）
+    #[tokio::test]
+    async fn test_wiki_page_bails_on_fabricated_entity() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_entity_fail_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = crate::project::ProjectRoot::new(dir.clone());
+
+        // 全部编造实体触发耗尽——循环上限取所有校验类别最大值
+        // （max(引用 2, Mermaid 2, 实体 3) = 3），故需 4 次输出以触发 bail
+        let provider = ScriptedProvider::new(vec![
+            "## 核心实体\n- `fake_entity` — 编造\n".to_string(),
+            "## 核心实体\n- `fake_entity` — 编造\n".to_string(),
+            "## 核心实体\n- `fake_entity` — 编造\n".to_string(),
+            "## 核心实体\n- `fake_entity` — 编造\n".to_string(),
+        ]);
+        let generator = WikiGenerator::new(&provider, 0);
+        let config = WikiConfig::default();
+        let chunk = make_test_chunk();
+
+        let result = generator
+            .generate_wiki_page(&chunk, "摘要", &config, &root, None, &[], &[])
+            .await;
+        assert!(result.is_err(), "实体校验重试耗尽应报错");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("实体校验失败"),
+            "错误信息应说明实体校验失败: {err}"
+        );
+        let retry_max = CITATION_RETRY_MAX
+            .max(MERMAID_RETRY_MAX)
+            .max(ENTITY_CLAIM_RETRY_MAX);
+        assert_eq!(
+            provider.calls.load(std::sync::atomic::Ordering::Relaxed),
+            retry_max + 1,
+            "应调用循环上限 + 1 次后放弃"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

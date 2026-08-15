@@ -101,6 +101,8 @@ fn claim_name_from_line(item: &str) -> String {
 }
 
 /// 构建允许集：chunk.dependencies ∪ 每条导入的顶级 crate 名
+/// ∪ {"std"/"core"}（Rust 标准库前缀，与 is_allowed 的硬编码兜底一致——
+/// 加入集合使重试反馈的允许集清单也能列出标准库，避免反馈与判定脱节）
 fn build_allowed_set(chunk: &Chunk) -> BTreeSet<String> {
     let mut allowed: BTreeSet<String> = chunk.dependencies.iter().cloned().collect();
     for import in &chunk.imports {
@@ -110,6 +112,8 @@ fn build_allowed_set(chunk: &Chunk) -> BTreeSet<String> {
             allowed.insert(top.to_string());
         }
     }
+    allowed.insert("std".to_string());
+    allowed.insert("core".to_string());
     allowed
 }
 
@@ -168,7 +172,10 @@ pub fn validate_dependencies(content: &str, chunk: &Chunk) -> Vec<DependencyViol
 }
 
 /// 将违反列表格式化为重试反馈文本（注入 LLM 输入）
-pub fn dependency_retry_feedback(violations: &[DependencyViolation]) -> String {
+///
+/// 反馈附「允许集清单」：由 build_allowed_set(chunk) 构造（BTreeSet，
+/// 已排序、确定性输出），告诉 LLM 只能列哪些模块，从源头杜绝编造。
+pub fn dependency_retry_feedback(violations: &[DependencyViolation], chunk: &Chunk) -> String {
     let mut lines =
         String::from("上一版输出存在虚构或不存在的依赖关系，请修正后重新输出完整文档：\n");
     for v in violations {
@@ -181,6 +188,11 @@ pub fn dependency_retry_feedback(violations: &[DependencyViolation]) -> String {
             }
         };
         lines.push_str(&format!("- `{}` — {}\n", v.claimed, reason));
+    }
+    // 允许集清单（BTreeSet 已排序，确定性、去重输出；真实可以引用的上限）
+    lines.push_str("\n本模块的真实依赖/导入清单（只能列出这些，不得添加其他模块）：\n");
+    for allowed in build_allowed_set(chunk) {
+        lines.push_str(&format!("- {allowed}\n"));
     }
     lines.push_str(
         "要求：「依赖关系」小节只列出输入依赖模块节中给出的模块名以及实际导入的\
@@ -309,6 +321,7 @@ mod tests {
 
     #[test]
     fn test_dependency_retry_feedback_lists_reasons() {
+        let chunk = make_chunk(&["src::db"], &["serde::Serialize"]);
         let violations = vec![
             DependencyViolation {
                 claimed: "src::nonexistent".into(),
@@ -319,11 +332,32 @@ mod tests {
                 reason: DependencyViolationReason::UnknownExternal,
             },
         ];
-        let feedback = dependency_retry_feedback(&violations);
+        let feedback = dependency_retry_feedback(&violations, &chunk);
         assert!(feedback.contains("src::nonexistent"));
         assert!(feedback.contains("不在本模块的依赖列表中"));
         assert!(feedback.contains("fake_crate"));
         assert!(feedback.contains("疑似编造"));
         assert!(feedback.contains("重新输出完整文档"));
+        assert!(
+            feedback.contains("本模块的真实依赖/导入清单"),
+            "反馈应附允许集清单: {feedback}"
+        );
+    }
+
+    /// 允许集清单：反馈按 chunk 的真实依赖/导入构建允许集并逐项列出
+    /// （deps={"src::db"} + imports={"serde::Serialize" }→ 允许集含
+    /// src::db、serde，并含 std/core 前缀兜底），LLM 只能在这些中选
+    #[test]
+    fn test_dependency_retry_feedback_lists_allowed_set() {
+        let chunk = make_chunk(&["src::db"], &["serde::Serialize"]);
+        let feedback = dependency_retry_feedback(&[], &chunk);
+        assert!(feedback.contains("src::db"), "应列出真实依赖");
+        assert!(feedback.contains("serde"), "应列出导入 crate 顶级名");
+        assert!(feedback.contains("std"), "应含 std 前缀兜底条目");
+        assert!(feedback.contains("core"), "应含 core 前缀兜底条目");
+        assert!(
+            feedback.contains("本模块的真实依赖/导入清单"),
+            "应含允许集清单标题: {feedback}"
+        );
     }
 }
