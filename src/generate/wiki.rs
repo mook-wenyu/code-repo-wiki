@@ -276,6 +276,11 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
     /// * `chunk` — 模块的代码数据块
     /// * `card_summary` — 之前生成的 Knowledge Card 摘要，作为上下文参考
     /// * `config` — Wiki 配置（用于获取语言设置等）
+    /// * `root` — 项目根（引用校验的文件存在性基准）
+    /// * `entity_ranges` — 实体行区间表（引用两级校验；None 退化文件级）
+    /// * `all_module_names` — 全项目模块名集合（依赖校验允许集：真实模块
+    ///   声称放行——测试/工具模块间无代码级 import 时图推导不出依赖边，
+    ///   兄弟模块声称是合理概念依赖，缺此集会被误拦耗尽缺页）
     /// * `dep_contexts` — 依赖模块摘要（wiki 阶段卡片已就绪，带依赖方卡片摘要）
     /// * `caller_contexts` — 调用方模块上下文（真实调用图推导）
     ///
@@ -301,6 +306,7 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
         config: &WikiConfig,
         root: &crate::project::ProjectRoot,
         entity_ranges: Option<&crate::output::citation::EntityRanges>,
+        all_module_names: &std::collections::HashSet<String>,
         dep_contexts: &[crate::generate::context::DependencyContext],
         caller_contexts: &[crate::generate::context::CallerContext],
     ) -> Result<WikiDocument> {
@@ -368,8 +374,11 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
             last_mermaid = crate::output::mermaid_check::validate_mermaid_blocks(&content);
             last_residue = crate::output::residue_check::scan_template_residue(&content);
             // 依赖防幻觉：正文「## 依赖关系」声称对照允许集校验（虚构依赖重试）
-            last_dep_violations =
-                crate::output::dependency_check::validate_dependencies(&content, chunk);
+            last_dep_violations = crate::output::dependency_check::validate_dependencies(
+                &content,
+                chunk,
+                all_module_names,
+            );
             // 实体声明契约：正文「## 核心实体」声称对照 chunk.entities 校验（编造实体重试）
             last_entity_claims =
                 crate::output::entity_claim_check::validate_entity_claims(&content, chunk);
@@ -466,6 +475,7 @@ impl<'a, P: LlmProvider> WikiGenerator<'a, P> {
                     crate::output::dependency_check::dependency_retry_feedback(
                         &last_dep_violations,
                         chunk,
+                        all_module_names,
                     ),
                 ));
             }
@@ -1335,6 +1345,11 @@ mod tests {
         assert_eq!(provider.calls.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 
+    /// 空全模块名集（依赖校验第三参；大多数测试不涉及全模块声称）
+    fn no_modules() -> std::collections::HashSet<String> {
+        std::collections::HashSet::new()
+    }
+
     fn make_test_chunk() -> Chunk {
         let entity = Entity {
             name: "Server".into(),
@@ -1376,7 +1391,16 @@ mod tests {
         };
 
         let result = generator
-            .generate_wiki_page(&empty_chunk, "", &config, &root, None, &[], &[])
+            .generate_wiki_page(
+                &empty_chunk,
+                "",
+                &config,
+                &root,
+                None,
+                &no_modules(),
+                &[],
+                &[],
+            )
             .await;
         assert!(result.is_err());
     }
@@ -1405,7 +1429,16 @@ mod tests {
         let chunk = make_test_chunk();
 
         let doc = generator
-            .generate_wiki_page(&chunk, "摘要", &config, &root, None, &[], &[])
+            .generate_wiki_page(
+                &chunk,
+                "摘要",
+                &config,
+                &root,
+                None,
+                &no_modules(),
+                &[],
+                &[],
+            )
             .await
             .unwrap();
         assert!(
@@ -1444,7 +1477,16 @@ mod tests {
         let chunk = make_test_chunk();
 
         let result = generator
-            .generate_wiki_page(&chunk, "摘要", &config, &root, None, &[], &[])
+            .generate_wiki_page(
+                &chunk,
+                "摘要",
+                &config,
+                &root,
+                None,
+                &no_modules(),
+                &[],
+                &[],
+            )
             .await;
         assert!(result.is_err(), "重试耗尽后应报错");
         let err = result.unwrap_err().to_string();
@@ -1480,7 +1522,16 @@ mod tests {
         let chunk = make_test_chunk();
 
         let doc = generator
-            .generate_wiki_page(&chunk, "摘要", &config, &root, None, &[], &[])
+            .generate_wiki_page(
+                &chunk,
+                "摘要",
+                &config,
+                &root,
+                None,
+                &no_modules(),
+                &[],
+                &[],
+            )
             .await
             .unwrap();
         assert_eq!(doc.content, "模块职责是管理连接。");
@@ -1513,7 +1564,16 @@ mod tests {
         let chunk = make_test_chunk();
 
         let doc = generator
-            .generate_wiki_page(&chunk, "摘要", &config, &root, None, &[], &[])
+            .generate_wiki_page(
+                &chunk,
+                "摘要",
+                &config,
+                &root,
+                None,
+                &no_modules(),
+                &[],
+                &[],
+            )
             .await
             .unwrap();
         assert!(
@@ -1559,7 +1619,16 @@ mod tests {
         let chunk = make_test_chunk();
 
         let doc = generator
-            .generate_wiki_page(&chunk, "摘要", &config, &root, Some(&ranges), &[], &[])
+            .generate_wiki_page(
+                &chunk,
+                "摘要",
+                &config,
+                &root,
+                Some(&ranges),
+                &no_modules(),
+                &[],
+                &[],
+            )
             .await
             .unwrap();
         assert!(
@@ -1607,7 +1676,16 @@ mod tests {
         let chunk = make_test_chunk();
 
         let result = generator
-            .generate_wiki_page(&chunk, "摘要", &config, &root, Some(&ranges), &[], &[])
+            .generate_wiki_page(
+                &chunk,
+                "摘要",
+                &config,
+                &root,
+                Some(&ranges),
+                &no_modules(),
+                &[],
+                &[],
+            )
             .await;
         assert!(result.is_err(), "区间重叠校验重试耗尽应报错");
         let err = result.unwrap_err().to_string();
@@ -1641,7 +1719,16 @@ mod tests {
         let chunk = make_test_chunk();
 
         let doc = generator
-            .generate_wiki_page(&chunk, "摘要", &config, &root, Some(&ranges), &[], &[])
+            .generate_wiki_page(
+                &chunk,
+                "摘要",
+                &config,
+                &root,
+                Some(&ranges),
+                &no_modules(),
+                &[],
+                &[],
+            )
             .await
             .unwrap();
         assert!(doc.content.contains("README.md:1"), "无实体文件引用应放行");
@@ -1678,7 +1765,16 @@ mod tests {
         let chunk = make_test_chunk();
 
         let doc = generator
-            .generate_wiki_page(&chunk, "摘要", &config, &root, None, &[], &[])
+            .generate_wiki_page(
+                &chunk,
+                "摘要",
+                &config,
+                &root,
+                None,
+                &no_modules(),
+                &[],
+                &[],
+            )
             .await
             .unwrap();
         assert!(
@@ -1722,7 +1818,16 @@ mod tests {
         let chunk = make_test_chunk();
 
         let doc = generator
-            .generate_wiki_page(&chunk, "摘要", &config, &root, None, &[], &[])
+            .generate_wiki_page(
+                &chunk,
+                "摘要",
+                &config,
+                &root,
+                None,
+                &no_modules(),
+                &[],
+                &[],
+            )
             .await
             .unwrap();
         assert!(doc.content.contains("tokio"), "重试后应使用真实依赖");
@@ -1759,7 +1864,16 @@ mod tests {
         let chunk = make_test_chunk();
 
         let result = generator
-            .generate_wiki_page(&chunk, "摘要", &config, &root, None, &[], &[])
+            .generate_wiki_page(
+                &chunk,
+                "摘要",
+                &config,
+                &root,
+                None,
+                &no_modules(),
+                &[],
+                &[],
+            )
             .await;
         assert!(result.is_err(), "依赖校验重试耗尽应报错");
         let err = result.unwrap_err().to_string();
@@ -1800,7 +1914,16 @@ mod tests {
         let chunk = make_test_chunk();
 
         let doc = generator
-            .generate_wiki_page(&chunk, "摘要", &config, &root, None, &[], &[])
+            .generate_wiki_page(
+                &chunk,
+                "摘要",
+                &config,
+                &root,
+                None,
+                &no_modules(),
+                &[],
+                &[],
+            )
             .await
             .unwrap();
         assert!(doc.content.contains("Server"), "重试后应使用真实实体");
@@ -1837,7 +1960,16 @@ mod tests {
         let chunk = make_test_chunk();
 
         let result = generator
-            .generate_wiki_page(&chunk, "摘要", &config, &root, None, &[], &[])
+            .generate_wiki_page(
+                &chunk,
+                "摘要",
+                &config,
+                &root,
+                None,
+                &no_modules(),
+                &[],
+                &[],
+            )
             .await;
         assert!(result.is_err(), "实体校验重试耗尽应报错");
         let err = result.unwrap_err().to_string();

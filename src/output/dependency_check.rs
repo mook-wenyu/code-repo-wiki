@@ -103,7 +103,16 @@ fn claim_name_from_line(item: &str) -> String {
 /// 构建允许集：chunk.dependencies ∪ 每条导入的顶级 crate 名
 /// ∪ {"std"/"core"}（Rust 标准库前缀，与 is_allowed 的硬编码兜底一致——
 /// 加入集合使重试反馈的允许集清单也能列出标准库，避免反馈与判定脱节）
-fn build_allowed_set(chunk: &Chunk) -> BTreeSet<String> {
+/// ∪ 全项目模块名（all_module_names 精确匹配）——测试/工具模块间常无
+/// 代码级 import（图推导不出依赖边），但 LLM 声称它们是合理依赖；
+/// 真实模块名不在允许集会被误拦（真实复验 tests::overview 声称
+/// tests::cli 等兄弟模块被判"疑似编造"，4 次耗尽缺页）。只做精确匹配：
+/// `src::search::mod` 这类文件级声称（非模块名）仍被拦，依赖节格式
+/// 错误语义保留。
+fn build_allowed_set(
+    chunk: &Chunk,
+    all_module_names: &std::collections::HashSet<String>,
+) -> BTreeSet<String> {
     let mut allowed: BTreeSet<String> = chunk.dependencies.iter().cloned().collect();
     for import in &chunk.imports {
         // 导入形如 "serde::Serialize" / "std::collections::HashMap"：
@@ -114,6 +123,7 @@ fn build_allowed_set(chunk: &Chunk) -> BTreeSet<String> {
     }
     allowed.insert("std".to_string());
     allowed.insert("core".to_string());
+    allowed.extend(all_module_names.iter().cloned());
     allowed
 }
 
@@ -161,8 +171,17 @@ pub fn validate_claims<'a>(
 }
 
 /// 校验正文的「## 依赖关系」声称（生成期入口，重试循环消费）
-pub fn validate_dependencies(content: &str, chunk: &Chunk) -> Vec<DependencyViolation> {
-    let allowed = build_allowed_set(chunk);
+///
+/// `all_module_names` = 全项目模块名集合（图推导，与 entity_claim_check
+/// 的模块引用名集同源）：声称精确命中真实模块名即放行（概念依赖——
+/// 测试/工具模块间无代码级 import 时图推导不出依赖边，但 LLM 声称
+/// 兄弟模块是合理依赖，真实复验曾因此误拦导致 4 次耗尽缺页）。
+pub fn validate_dependencies(
+    content: &str,
+    chunk: &Chunk,
+    all_module_names: &std::collections::HashSet<String>,
+) -> Vec<DependencyViolation> {
+    let allowed = build_allowed_set(chunk, all_module_names);
     validate_claims(
         extract_dependency_claims(content)
             .iter()
@@ -173,9 +192,14 @@ pub fn validate_dependencies(content: &str, chunk: &Chunk) -> Vec<DependencyViol
 
 /// 将违反列表格式化为重试反馈文本（注入 LLM 输入）
 ///
-/// 反馈附「允许集清单」：由 build_allowed_set(chunk) 构造（BTreeSet，
-/// 已排序、确定性输出），告诉 LLM 只能列哪些模块，从源头杜绝编造。
-pub fn dependency_retry_feedback(violations: &[DependencyViolation], chunk: &Chunk) -> String {
+/// 反馈附「允许集清单」：由 build_allowed_set(chunk, all_module_names)
+/// 构造（BTreeSet，已排序、确定性输出），告诉 LLM 只能列哪些模块，
+/// 从源头杜绝编造。清单与判定同源（含全项目模块名），反馈与判定不脱节。
+pub fn dependency_retry_feedback(
+    violations: &[DependencyViolation],
+    chunk: &Chunk,
+    all_module_names: &std::collections::HashSet<String>,
+) -> String {
     let mut lines =
         String::from("上一版输出存在虚构或不存在的依赖关系，请修正后重新输出完整文档：\n");
     for v in violations {
@@ -191,7 +215,7 @@ pub fn dependency_retry_feedback(violations: &[DependencyViolation], chunk: &Chu
     }
     // 允许集清单（BTreeSet 已排序，确定性、去重输出；真实可以引用的上限）
     lines.push_str("\n本模块的真实依赖/导入清单（只能列出这些，不得添加其他模块）：\n");
-    for allowed in build_allowed_set(chunk) {
+    for allowed in build_allowed_set(chunk, all_module_names) {
         lines.push_str(&format!("- {allowed}\n"));
     }
     lines.push_str(
@@ -274,6 +298,11 @@ mod tests {
         );
     }
 
+    /// 空全模块名集（大多数测试不涉及全模块声称）
+    fn no_modules() -> std::collections::HashSet<String> {
+        std::collections::HashSet::new()
+    }
+
     #[test]
     fn test_validate_dependencies_allows_known_deps_and_imports() {
         let chunk = make_chunk(
@@ -282,18 +311,50 @@ mod tests {
         );
         // 依赖模块、导入 crate（及其子路径）、std 前缀 → 全部通过
         let content = "## 依赖关系\n- src::db — 持久层\n- serde — 序列化\n- serde::Deserialize\n- std::io\n- core::fmt\n";
-        let violations = validate_dependencies(content, &chunk);
+        let violations = validate_dependencies(content, &chunk, &no_modules());
         assert!(
             violations.is_empty(),
             "已知依赖与导入 crate 不应判违反: {violations:?}"
         );
     }
 
+    /// 全项目模块名精确匹配放行：tests::overview 声称 tests::cli 等真实
+    /// 兄弟模块（测试模块间无代码级 import，图推导不出依赖边）——真实
+    /// 复验曾因此误拦导致 4 次耗尽缺页，全模块名并入允许集后放行
+    #[test]
+    fn test_validate_dependencies_allows_real_module_names() {
+        let chunk = make_chunk(&[], &[]);
+        let all: std::collections::HashSet<String> =
+            ["tests::cli", "tests::incremental", "tests::plan"]
+                .into_iter()
+                .map(String::from)
+                .collect();
+        let content = "## 依赖关系\n- tests::cli — 兄弟测试模块\n- tests::incremental\n";
+        let violations = validate_dependencies(content, &chunk, &all);
+        assert!(
+            violations.is_empty(),
+            "真实模块名声称不应判违反: {violations:?}"
+        );
+    }
+
+    /// 全模块名放行只做精确匹配：文件级声称（src::search::mod，非模块名）
+    /// 仍被拦——依赖节格式错误语义保留
+    #[test]
+    fn test_validate_dependencies_still_catches_file_level_claim() {
+        let chunk = make_chunk(&["src::search"], &[]);
+        let all: std::collections::HashSet<String> =
+            ["src::search"].into_iter().map(String::from).collect();
+        let content = "## 依赖关系\n- src::search — 模块\n- src::search::mod — 文件级\n";
+        let violations = validate_dependencies(content, &chunk, &all);
+        assert_eq!(violations.len(), 1, "文件级声称仍应拦: {violations:?}");
+        assert_eq!(violations[0].claimed, "src::search::mod");
+    }
+
     #[test]
     fn test_validate_dependencies_catches_fabricated() {
         let chunk = make_chunk(&["src::db"], &["serde::Serialize"]);
         let content = "## 依赖关系\n- src::db — 持久层\n- src::nonexistent — 不存在\n- totally_made_up_crate — 编造\n";
-        let violations = validate_dependencies(content, &chunk);
+        let violations = validate_dependencies(content, &chunk, &no_modules());
         assert_eq!(violations.len(), 2, "应捕获 2 条违反: {violations:?}");
         // 内部形态 → NotADependency；外部编造 → UnknownExternal
         assert_eq!(
@@ -312,7 +373,7 @@ mod tests {
     fn test_validate_dependencies_ignores_other_sections() {
         let chunk = make_chunk(&[], &[]);
         let content = "## 概述\nsrc::db 不在此节\n## 核心实体\n- tokio — 不是依赖节\n";
-        let violations = validate_dependencies(content, &chunk);
+        let violations = validate_dependencies(content, &chunk, &no_modules());
         assert!(
             violations.is_empty(),
             "非依赖节的内容不参与校验: {violations:?}"
@@ -332,7 +393,7 @@ mod tests {
                 reason: DependencyViolationReason::UnknownExternal,
             },
         ];
-        let feedback = dependency_retry_feedback(&violations, &chunk);
+        let feedback = dependency_retry_feedback(&violations, &chunk, &no_modules());
         assert!(feedback.contains("src::nonexistent"));
         assert!(feedback.contains("不在本模块的依赖列表中"));
         assert!(feedback.contains("fake_crate"));
@@ -350,7 +411,7 @@ mod tests {
     #[test]
     fn test_dependency_retry_feedback_lists_allowed_set() {
         let chunk = make_chunk(&["src::db"], &["serde::Serialize"]);
-        let feedback = dependency_retry_feedback(&[], &chunk);
+        let feedback = dependency_retry_feedback(&[], &chunk, &no_modules());
         assert!(feedback.contains("src::db"), "应列出真实依赖");
         assert!(feedback.contains("serde"), "应列出导入 crate 顶级名");
         assert!(feedback.contains("std"), "应含 std 前缀兜底条目");

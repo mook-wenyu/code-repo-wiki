@@ -970,6 +970,11 @@ async fn generate_wiki_pages<P: LlmProvider>(
     let total = chunks.len() as u32;
     let mut lang_cfg = config.clone();
     lang_cfg.wiki.language = language.clone();
+    // 全项目模块名集（依赖校验允许集）：测试/工具模块间常无代码级 import，
+    // 图推导不出依赖边，但 LLM 声称兄弟模块是合理概念依赖——真实模块名
+    // 并入允许集避免误拦耗尽缺页（见 dependency_check::build_allowed_set）
+    let all_module_names: std::collections::HashSet<String> =
+        graph.modules.iter().map(|m| m.name.clone()).collect();
     for (i, chunk) in chunks.iter().enumerate() {
         // P1-1：卡片位 None（空 chunk/失败）→ 摘要为空串，页面照常生成（None 占位保证索引一一对应，不再前移错位）
         let card_summary = cards
@@ -985,6 +990,7 @@ async fn generate_wiki_pages<P: LlmProvider>(
         let semaphore = semaphore.clone();
         let lang_cfg = lang_cfg.clone();
         let done = done.clone();
+        let all_module_names = all_module_names.clone();
         task_modules.push(chunk.module_path.join("::"));
         handles.push(async move {
             let _permit = semaphore
@@ -998,6 +1004,7 @@ async fn generate_wiki_pages<P: LlmProvider>(
                     &lang_cfg,
                     root,
                     Some(entity_ranges),
+                    &all_module_names,
                     &dep_contexts,
                     &caller_contexts,
                 )
