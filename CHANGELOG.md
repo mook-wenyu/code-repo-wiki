@@ -3,7 +3,9 @@
 本文件记录 code-repo-wiki 的重要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（SemVer）。
 
-## [Unreleased]
+## [0.10.0] - 2026-08-16
+
+> 注：**0.9.0 未发布至 crates.io**（无 git tag，其下 [0.9.0] 段为当时规划记录）——crates.io 从 0.8.0 直接升 0.10.0，[0.9.0] 段所列变更（wiki_plan.yaml 重构 / Spec 卡 / 技术栈卡 / install --dsh 等）全部包含于本版本。
 
 ### Changed
 - **生成侧实体声明校验（U2）**：模块页生成第 5 类契约——正文声称的实体名对照 `chunk.entities` 真实实体集校验（复用 lint 提取器族，fence/节跟踪/路径形态感知），编造实体注入反馈重试（上限 3，与引用/Mermaid 共享循环取最大值），耗尽 **fail-fast**（不产出混淆真实/编造实体的页面）；放行规则覆盖本模块实体（含 `fn()`/`Foo::bar` 归一形态）、模块引用（自身/依赖/导入 crate 精确与 `::` 前缀）、通配符系列名（`xxx_*` 概括）
