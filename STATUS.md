@@ -1,6 +1,7 @@
 # 项目状态简报 （AI自动维护，禁止贴代码）
 
 ## 七十八、U2 生成侧实体声明校验 + 收尾杂项（2026-08-16）
+- **v0.10.0 已发布（2026-08-16）**：crates.io 0.10.0 上线（0.9.0 未发布过，crates.io 从 0.8.0 直升）+ GitHub Release 正式（3 平台二进制：linux/windows/macos）；发布前置 CI 验证发现并修复：Cargo.lock root version 同步（--locked 拒绝旧 lock）、watch e2e CI Windows 注册窗口竞态（500ms→2s + 事件丢失 touch 重试，三次稳定失败修复）；release.yml 全流程成功（create-release → test 三平台 → publish-dry-run → build-binaries ×3 → publish-crates-io → publish-release）
 - 前置状态：七十七收尾（U1 完成）；「下次最该做的事」= 生成侧实体声称校验 + 可选收尾；HEAD f094937
 - 决策（ask_user_question 全部采纳推荐）：**D1 实体校验耗尽 fail-fast**（与依赖校验同语义，编造不进页面）/ **D2 依赖反馈附允许集清单**（search::mod 式系统性编造直接抄）/ **D3 重试上限提至 3**（max(引用 2, Mermaid 2, 实体 3)=3 共 4 次调用）/ **D4 bench 基线本轮重录**（--repo-name 修 unknown 缺陷）
 - 修改的功能（9 提交 + 5 并行取证 worker + 3 并行实现 worker A/B/C）：
