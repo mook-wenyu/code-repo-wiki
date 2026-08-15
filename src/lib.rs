@@ -966,7 +966,7 @@ pub(crate) fn cleanup_stale_outputs(
         // None）后仍有孤儿页可清理（上一轮产物残留在磁盘）；首次生成时
         // 磁盘无产物，扫描差集为空，天然 no-op。不能直接 return——旧实现
         // 在此短路导致 force 后孤儿页永久残留（Phase A10 / I3 根因之一）。
-        cleanup_force_orphans(rendered, output_dir);
+        cleanup_force_orphans(rendered, output_dir, preserved_modules);
         return;
     };
     let mut stale: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
@@ -1029,7 +1029,17 @@ pub(crate) fn cleanup_stale_outputs(
 /// 与 rendered 取差集删除。只删「工具生成形态」的页面（wiki 页含
 /// 「最后更新」元信息行、卡片 YAML frontmatter、mock 页脚），不删用户手工
 /// 创建的 .md——force 虽清空保护集，但清理语义仍须守护人工内容不被误删。
-fn cleanup_force_orphans(rendered: &[std::path::PathBuf], output_dir: &Path) {
+///
+/// preserved_modules 例外（失败≠消失）：模块仍在当前扫描（graph.modules）
+/// 但本次生成失败（LLM API 故障/校验耗尽）时，其旧页面不在渲染集——
+/// 直接差集删除会把有效旧产物清空（真实复验：API 全挂一轮 update --force
+/// 后 27 个模块页全部消失，仅剩全局文档）。文件 stem 命中 preserved 模块名
+/// （"::" → "_" 落盘命名）即保留，等待下次成功生成覆盖。
+fn cleanup_force_orphans(
+    rendered: &[std::path::PathBuf],
+    output_dir: &Path,
+    preserved_modules: &std::collections::HashSet<String>,
+) {
     let rendered_set: std::collections::HashSet<String> = rendered
         .iter()
         .map(|p| p.to_string_lossy().replace('\\', "/"))
@@ -1046,6 +1056,20 @@ fn cleanup_force_orphans(rendered: &[std::path::PathBuf], output_dir: &Path) {
             .file_stem()
             .and_then(|s| s.to_str())
             .is_some_and(is_global_doc_stem)
+        {
+            continue;
+        }
+        // 失败/未生成保护：文件 stem 命中仍在扫描的模块名（落盘命名
+        // "::" → "_"）→ 该模块本次生成失败而非消失，旧页面是有效产物，
+        // 保留等待下次成功生成覆盖（见函数 doc 的 preserved 例外说明）
+        if path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .is_some_and(|stem| {
+                preserved_modules
+                    .iter()
+                    .any(|m| m.replace("::", "_") == stem)
+            })
         {
             continue;
         }
@@ -2734,6 +2758,60 @@ mod tests {
         assert!(
             arch_map.exists(),
             "全局确定性产物 architecture-map.md 不得误删"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 失败≠消失保护（真实复验缺陷）：force 全量路径下模块仍在当前扫描
+    /// （preserved）但本次生成失败（LLM API 故障/校验耗尽）→ 旧页面不在
+    /// 渲染集，直接差集删除会把有效旧产物清空（实测 API 全挂一轮后 27 个
+    /// 模块页全部消失）；preserved 命中即保留。已消失模块（不在 preserved）
+    /// 的孤儿页仍清理。
+    #[test]
+    fn test_cleanup_force_orphans_preserves_failed_module_pages() {
+        let dir = std::env::temp_dir().join(format!(
+            "code_repo_wiki_test_force_failed_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // 失败模块（仍在扫描 preserved 含 src::config）的旧页面 → 保留
+        let failed_page = dir.join("wiki").join("zh").join("src_config.md");
+        std::fs::create_dir_all(failed_page.parent().unwrap()).unwrap();
+        std::fs::write(
+            &failed_page,
+            "# src::config\n\n> 最后更新: 2026-01-01\n\n旧内容\n",
+        )
+        .unwrap();
+        let failed_card = dir.join("cards").join("zh").join("src_config.md");
+        std::fs::create_dir_all(failed_card.parent().unwrap()).unwrap();
+        std::fs::write(
+            &failed_card,
+            "---\nmodule_name: src::config\nmodule_type: module\n---\n",
+        )
+        .unwrap();
+        // 已消失模块（不在 preserved）的孤儿页 → 清理
+        let gone_page = dir.join("wiki").join("zh").join("src_gone.md");
+        std::fs::write(
+            &gone_page,
+            "# src::gone\n\n> 最后更新: 2026-01-01\n\n旧内容\n",
+        )
+        .unwrap();
+
+        // 渲染集为空（全部模块生成失败）+ preserved 含 src::config（仍在扫描）
+        let preserved: std::collections::HashSet<String> =
+            ["src::config".to_string()].into_iter().collect();
+        cleanup_stale_outputs(None, &[], &preserved, &dir);
+
+        assert!(
+            failed_page.exists(),
+            "仍在扫描但本次失败的模块旧页面应保留（失败≠消失）"
+        );
+        assert!(failed_card.exists(), "仍在扫描但本次失败的模块旧卡片应保留");
+        assert!(
+            !gone_page.exists(),
+            "已消失模块（不在 preserved）的孤儿页应清理"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
