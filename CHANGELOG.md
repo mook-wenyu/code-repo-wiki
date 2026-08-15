@@ -6,6 +6,10 @@
 ## [Unreleased]
 
 ### Changed
+- **生成侧实体声明校验（U2）**：模块页生成第 5 类契约——正文声称的实体名对照 `chunk.entities` 真实实体集校验（复用 lint 提取器族，fence/节跟踪/路径形态感知），编造实体注入反馈重试（上限 3，与引用/Mermaid 共享循环取最大值），耗尽 **fail-fast**（不产出混淆真实/编造实体的页面）；放行规则覆盖本模块实体（含 `fn()`/`Foo::bar` 归一形态）、模块引用（自身/依赖/导入 crate 精确与 `::` 前缀）、通配符系列名（`xxx_*` 概括）
+- **依赖校验允许集并入全项目模块名**：真实模块声称放行（测试/工具模块间无代码级 import 时图推导不出依赖边，概念依赖误拦曾致 4 次耗尽缺页）；只精确匹配——`src::search::mod` 文件级声称仍拦（依赖节格式错误语义保留）
+- **依赖重试反馈附允许集清单**：`dependency_retry_feedback` 增参 chunk + 全模块名，反馈列出本模块真实依赖/导入清单（含 std/core），LLM 直接抄（根治系统性编造重试）
+- **重试循环上限提至 3**（实体校验 3 > 引用/Mermaid 2）：共 4 次调用，既有耗尽测试断言同步修正
 - **模块划分质量（U1）**：社区检测加**跨顶层域约束**——Imports/Calls 边两端文件顶层目录（`src`/`tests`/`benches`/根散文件 `<root>`）不同即不参与社区合并（根治 tests/benches 经共享工具与跨域 API 调用桥把 src 内部模块缝进同一社区的输入污染源）；非 src 域文件一律按目录聚簇（`/common` 目录并入父目录键），src 域孤立文件按目录聚簇、有依赖文件仍走实体级 Leiden（γ 分辨率参数语义不变）
 - **噪音目录清单新增 `fixtures`**（任意深度剪枝）：测试夹具数据目录不再被当作真实源码文档化（修复 tests/fixtures 演示仓库生成误导性模块页的问题）；scope include 无法恢复（噪音剪枝先于 scope 过滤，既有机制边界）
 - **lint entity-coverage 识别通配符系列名**：模块页用 `test_render_*` 概括同名测试函数系列（真实 LLM 常见写法）不再误报——权威/源码侧存在同前缀实体即放行；无任何同前缀实体仍报（防编造语义不变）
@@ -13,9 +17,13 @@
 ### Added
 - **`detect_communities_with_quality`**（analysis 层 pub API）：返回 `(社区划分, Leiden CPM quality)`——gamma_scan 等实证工具获取划分质量；目录分流/无 Leiden 时 quality=0.0 语义值
 - **gamma_scan 增强**：输出 Leiden quality 与「跨域社区数」（U1 约束后恒 0，缝合消失的回归哨兵）；注释明确 quality 跨 γ 不可直接比较（CPM 目标函数随 γ 变化），γ 选优看模块数-γ 曲线稳定平台
+- **`entity_claim_check`**（output 层新模块，第 5 类生成期校验）：`validate_entity_claims` + `entity_claim_retry_feedback` + `ENTITY_CLAIM_RETRY_MAX=3`；提取复用 lint 提取器族（pub(crate) 放宽，DRY 单一来源）
 
 ### Fixed
 - **增量 large_fixture 删除场景语义随 U1 更新**：目录聚簇粒度下删除目录内单文件 → 模块页重生成（删除传播）且页面集合无增减，不再有单文件页清理
+- **force 孤儿清理保护失败模块旧页（失败≠消失）**：LLM API 故障/校验耗尽时模块页不在渲染集，force 差集清理曾把有效旧产物清空（实测 API 全挂一轮后 27 个模块页全部消失）——文件 stem 命中仍在扫描模块名即保留，等待下次成功生成覆盖
+- **bench docs_tree 中文截断 panic**：`measure_rubrics` 的 `truncate(40_000)` 按字节截断中文文档触发 `is_char_boundary` 断言崩溃——改用 `floor_char_boundary` 回退到最近字符边界
+- **依赖校验失败日志带声称明细**（claimed + 原因）：无明细时虚构依赖无法诊断根因（文件路径/子模块/真实但未推导模块处理方式不同）
 
 ## [0.9.0] - 2026-08-14
 
