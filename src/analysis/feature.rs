@@ -376,7 +376,7 @@ mod tests {
                     kind: EdgeKind::Calls,
                     source: s,
                     target: t,
-                    weight: 0.7,
+                    weight: crate::analysis::community::WEIGHT_CALLS,
                     location: None,
                 },
             );
@@ -469,7 +469,7 @@ mod tests {
                 kind: EdgeKind::Calls,
                 source: e1,
                 target: e2,
-                weight: 0.7,
+                weight: crate::analysis::community::WEIGHT_CALLS,
                 location: None,
             },
         );
@@ -540,7 +540,7 @@ mod tests {
                     kind: EdgeKind::Calls,
                     source: s,
                     target: t,
-                    weight: 0.7,
+                    weight: crate::analysis::community::WEIGHT_CALLS,
                     location: None,
                 },
             );

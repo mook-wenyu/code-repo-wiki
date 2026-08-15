@@ -25,3 +25,6 @@ bench-out/
 
 # opencode 会话配置（bench 工作区干净检查忽略）
 .opencode/
+
+# CodeGraph 索引（SQLite，可重建）
+.codegraph/

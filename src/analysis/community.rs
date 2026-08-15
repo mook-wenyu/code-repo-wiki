@@ -553,7 +553,7 @@ mod tests {
                 kind: EdgeKind::Calls,
                 source: ea,
                 target: eb,
-                weight: 0.7,
+                weight: WEIGHT_CALLS,
                 location: None,
             },
         );
@@ -714,7 +714,7 @@ mod tests {
                 kind: EdgeKind::Calls,
                 source: fns[0],
                 target: fns[1],
-                weight: 0.7,
+                weight: WEIGHT_CALLS,
                 location: None,
             },
         );
@@ -790,7 +790,7 @@ mod tests {
                     kind: EdgeKind::Calls,
                     source: ea,
                     target: eb,
-                    weight: 0.7,
+                    weight: WEIGHT_CALLS,
                     location: None,
                 },
             );
@@ -1006,7 +1006,7 @@ mod tests {
                 kind: EdgeKind::Calls,
                 source: from,
                 target: to,
-                weight: 0.7,
+                weight: WEIGHT_CALLS,
                 location: None,
             },
         );
