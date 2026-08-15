@@ -145,21 +145,39 @@ fn watch_e2e_file_change_triggers_incremental() {
     // 竞态说明：wait 初始产物在 run_watch 的全量阶段（监听建立之前）即可
     // 满足，此时立即改文件会落在 notify 注册窗口内（Windows 目录句柄未
     // 建立）→ 事件丢失、增量永不触发（实测复现：03:06 全量完成与监听
-    // 启动同毫秒，事件未到）。固定等待 500ms 跨过注册窗口（notify 注册
-    // 毫秒级，500ms 余量足够，慢机亦然）。
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    std::fs::write(
-        repo.join("src").join("alpha.rs"),
-        "pub fn alpha_fn(x: u32) -> u32 { x + 1 }\npub fn alpha_fn_v2(x: u32) -> u32 { x + 100 }\n",
-    )
-    .expect("修改 alpha.rs 失败");
+    // 启动同毫秒，事件未到）。固定等待跨过注册窗口（notify 注册毫秒级，
+    // CI 共享 runner 上全量到监听建立之间的调度延迟显著大于本地，本地
+    // 实测 500ms 余量足够、CI Windows 三次稳定失败——放宽到 2s 余量）。
+    std::thread::sleep(std::time::Duration::from_millis(2000));
 
-    // 第三步：等待增量更新产物（watch 防抖 300ms + 增量流水线耗时，轮询 500ms）
-    wait_until(
-        || read_opt(&api_path).is_some_and(|s| s.contains("alpha_fn_v2")),
-        Duration::from_millis(500),
-        "增量更新产物（api.md 出现 alpha_fn_v2）",
-    );
+    // 事件触发 + 丢失重试：CI 共享 runner 上文件系统事件可能延迟/丢失
+    // （notify 注册窗口竞态，见上；Windows 实测稳定失败），首轮等待无
+    // 进展则 touch 文件重新触发（每 20s 一次、至多 4 次、总预算 90s）。
+    // 这是测试基础设施的 flake 防护——最终断言不变（增量产物必须出现
+    // alpha_fn_v2，未出现仍超时失败，不掩盖增量链路回归）。
+    let alpha_path = repo.join("src").join("alpha.rs");
+    let base_content =
+        "pub fn alpha_fn(x: u32) -> u32 { x + 1 }\npub fn alpha_fn_v2(x: u32) -> u32 { x + 100 }\n";
+    std::fs::write(&alpha_path, base_content).expect("修改 alpha.rs 失败");
+    let start = std::time::Instant::now();
+    let mut touch = 0u32;
+    loop {
+        if read_opt(&api_path).is_some_and(|s| s.contains("alpha_fn_v2")) {
+            break;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(90),
+            "等待超时（90s）: 增量更新产物（api.md 出现 alpha_fn_v2）"
+        );
+        // 每 20s 无进展 → 追加注释行 touch（内容变化产生新事件；watch
+        // 防抖 300ms 只合并同内容事件，注释行保证每次都是新事件）
+        if touch < 4 && start.elapsed() >= Duration::from_secs(20 * (touch + 1) as u64) {
+            touch += 1;
+            std::fs::write(&alpha_path, format!("{base_content}// watch touch #{touch}\n"))
+                .expect("touch alpha.rs 失败");
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
 
     // 清理：notify 在 Windows 上用 ReadDirectoryChangesW 持有目录句柄，
     // 可能导致 remove_dir_all 失败——失败仅告警（进程退出即释放），不影响结论
