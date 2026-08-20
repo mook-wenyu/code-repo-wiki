@@ -3,6 +3,22 @@
 本文件记录 code-repo-wiki 的重要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（SemVer）。
 
+## [0.11.0] - 2026-08-20
+
+### Added
+- **DeepSeek Harness (dsh) 全面集成（W4）**：
+  - `dsh_detect` 模块：检测 dsh 安装状态（`$DSH_HOME`/`~/.dsh`/npx 可用性/dsh 版本）
+  - `dsh_profile` 模块：自动合入 `$DSH_HOME/profiles/*/cordis.patch.yml`（扫描所有 profile，幂等跳过已存在条目）
+  - `--dsh` → `--no-dsh` 语义反转：默认自动检测并写入项目根 `cordis.patch.yml`，`--no-dsh` 可禁用
+  - `dsh-bundle/` 目录：npm 包结构，支持 `dsh plugin add` 安装（package.json 声明 `dsh.bundle.patch`）
+  - `doctor` 检查项：新增 DeepSeek Harness 集成状态检测（dsh 安装 + cordis.patch.yml 注册 + profile 合入）
+  - 单元测试：dsh_detect 6 测试 + dsh_profile 7 测试 + 集成测试 5 测试
+
+### Changed
+- **install 命令默认行为**：默认包含 dsh MCP 注册（检测到 dsh 时自动写入 cordis.patch.yml + 合入 profile）
+- **uninstall 命令**：对称清理 dsh profile 中的 code-repo-wiki 条目
+- **CLI 参数**：`--dsh` 移除，新增 `--no-dsh`（反转语义）
+
 ## [0.10.0] - 2026-08-16
 
 > 注：**0.9.0 未发布至 crates.io**（无 git tag，其下 [0.9.0] 段为当时规划记录）——crates.io 从 0.8.0 直接升 0.10.0，[0.9.0] 段所列变更（wiki_plan.yaml 重构 / Spec 卡 / 技术栈卡 / install --dsh 等）全部包含于本版本。
