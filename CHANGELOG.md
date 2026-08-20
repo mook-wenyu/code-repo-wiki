@@ -3,6 +3,11 @@
 本文件记录 code-repo-wiki 的重要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)（SemVer）。
 
+## [0.11.1] - 2026-08-20
+
+### Changed
+- **AGENTS.md 按需调用指引**：wiki_block_template 添加"代码知识按需调用"section，明确场景→工具映射表（定义查找/依赖查询/架构概览/模块文档/调用链/状态检查）和"何时不调用"边界，优化 dsh 会话中 MCP 工具的触发准确性
+
 ## [0.11.0] - 2026-08-20
 
 ### Added
