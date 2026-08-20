@@ -7,6 +7,11 @@ pub mod opencode;
 pub mod plan;
 pub mod schema;
 
+/// DeepSeek Harness (dsh) 安装状态检测
+pub mod dsh_detect;
+/// DeepSeek Harness (dsh) profile 自动合入（扫描 $DSH_HOME/profiles/ 并合入）
+pub mod dsh_profile;
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};

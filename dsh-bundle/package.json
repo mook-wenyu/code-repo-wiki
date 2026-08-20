@@ -1,0 +1,19 @@
+{
+  "name": "code-repo-wiki-dsh-bundle",
+  "version": "0.10.0",
+  "description": "code-repo-wiki MCP integration for DeepSeek Harness",
+  "type": "module",
+  "main": "index.js",
+  "files": ["index.js", "cordis.patch.yml", "README.md"],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mook-wenyu/code-repo-wiki"
+  },
+  "license": "Apache-2.0",
+  "keywords": ["dsh", "dsh-bundle", "mcp", "code-repo-wiki", "documentation"]
+}

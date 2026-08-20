@@ -31,7 +31,7 @@ Usage: code-repo-wiki <COMMAND>
   watch          监听文件变更并自动增量更新
 
 维护命令:
-  install        安装集成（插件/MCP/AGENTS.md/hooks）
+  install        安装集成（插件/MCP/AGENTS.md/hooks/dsh）
   uninstall      卸载集成
   key            交互式配置 LLM API key
   doctor         环境诊断（六项检查）
@@ -196,14 +196,14 @@ enum Commands {
     /// ② 注册 OpenCode 插件（用户级 ~/.config/opencode/plugins/code-repo-wiki.ts）；
     /// ③ 注册 OpenCode MCP（用户级全局 opencode.json 的 mcp 块）；
     /// ④ 注入 AGENTS.md wiki 引用块；⑤ 安装 git post-commit/post-merge hooks。
+    /// ⑥ 自动检测 DeepSeek Harness (dsh) 并注册 MCP（项目根 cordis.patch.yml）；
+    ///    检测到 dsh 时默认写入，--no-dsh 可禁用。dsh 自动读取 AGENTS.md/CLAUDE.md
+    ///    作为 instruction file，文档指引零成本。
     /// --claude 额外注册 Claude Code MCP（用户级 ~/.claude.json 顶层 mcpServers，
     /// User scope——不再写项目根 .mcp.json）并同步注入 CLAUDE.md
     /// （--also-claude 并入——Claude Code 不读 AGENTS.md，注册 MCP
     /// 时必然需要文档指引，两个开关分离无意义）；--codex 额外注册 Codex
-    /// CLI MCP（用户级 ~/.codex/config.toml）；--dsh 额外注册 DeepSeek
-    /// Harness MCP（项目根 cordis.patch.yml 的 patch 层——dsh 不读
-    /// .mcp.json，MCP 必须显式配置在 patch 层；AGENTS.md/CLAUDE.md 由 dsh
-    /// 自动读取，文档指引零成本）。
+    /// CLI MCP（用户级 ~/.codex/config.toml）。
     /// 全部幂等；已存在的非 code-repo-wiki 内容（用户自定义 hook/其他 MCP server）保留。
     Install {
         /// 额外注册 Claude Code MCP（用户级 ~/.claude.json）并同步注入 CLAUDE.md
@@ -212,9 +212,10 @@ enum Commands {
         /// 额外注册 Codex CLI MCP（用户级 ~/.codex/config.toml，[mcp_servers.code-repo-wiki]）
         #[arg(long)]
         codex: bool,
-        /// 额外注册 DeepSeek Harness MCP（项目根 cordis.patch.yml 的 - insert: 块）
+        /// 禁用 DeepSeek Harness MCP 注册（默认自动检测并注册；检测到 dsh 时
+        /// 写入项目根 cordis.patch.yml 的 - insert: 块，注册 @deepseek-ai/dsh-mcp-client）
         #[arg(long)]
-        dsh: bool,
+        no_dsh: bool,
         /// 项目根目录：插件/hook 安装基准，默认当前目录
         #[arg(long)]
         root: Option<PathBuf>,
@@ -1241,19 +1242,25 @@ fn main() -> anyhow::Result<()> {
         Commands::Install {
             claude,
             codex,
-            dsh,
+            no_dsh,
             root,
         } => {
             // v25 起 init 并入 install：先确保用户级默认配置就绪
             // （缺失自动创建，含项目级 config.toml 覆盖链语义），
             // 再执行集成安装（v33 合并版：OpenCode 插件 + 多 Agent MCP
-            // + AGENTS.md + git hooks；--claude/--codex/--dsh 扩展）。
+            // + AGENTS.md + git hooks；--claude/--codex 扩展）。
+            // W4：--dsh → --no-dsh 反转语义，默认自动检测并注册 dsh MCP，
+            // --no-dsh 可禁用。检测到 dsh 时写入项目根 cordis.patch.yml。
             let root = resolve_root(root.as_deref())?;
             let (source, _config) = code_repo_wiki::config::load_default_config(&root)?;
             // 配置链解析完成（来源可能是用户级或项目级 config.toml——
             // 项目级存在时优先，用户级缺失不自动创建，见 load_default_config）
             tracing::info!("配置链就绪（来源: {}）", source.display());
-            let opts = code_repo_wiki::commands::InstallOptions { claude, codex, dsh };
+            let opts = code_repo_wiki::commands::InstallOptions {
+                claude,
+                codex,
+                dsh: !no_dsh,
+            };
             code_repo_wiki::commands::install(&root, &opts)?;
         }
         Commands::Uninstall { force, root } => {

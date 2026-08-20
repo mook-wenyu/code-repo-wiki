@@ -170,10 +170,12 @@ fn collect_md_files(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// install 的可选集成（v33 多 Agent 支持）
+/// install 的可选集成（v33 多 Agent 支持，W4 dsh 默认集成）
 ///
 /// 默认集成集 = OpenCode 插件 + OpenCode MCP（用户级全局）+ AGENTS.md
-/// + git hooks；以下 flag 扩展集成面。
+/// + git hooks + dsh MCP（W4：自动检测 dsh 并写入 cordis.patch.yml）；
+///
+/// 以下 flag 扩展集成面。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct InstallOptions {
     /// 额外注册 Claude Code MCP（--claude，用户级 `~/.claude.json` 顶层
@@ -184,11 +186,10 @@ pub struct InstallOptions {
     pub claude: bool,
     /// 额外写 Codex CLI 用户级配置 `~/.codex/config.toml`（--codex）
     pub codex: bool,
-    /// 额外写 DeepSeek Harness（dsh）patch 层 `{root}/cordis.patch.yml`
-    /// （--dsh，W3）：dsh 不读 `.mcp.json`，MCP server 必须显式配置在
-    /// patch 层——注册 `@deepseek-ai/dsh-mcp-client`（stdio，command 绑定
-    /// 本机 exe）指向 repo-wiki 的 MCP server；AGENTS.md/CLAUDE.md 由 dsh
-    /// 自动读取作为 instruction file，文档指引零成本获得
+    /// 是否集成 DeepSeek Harness（dsh）MCP（W4：默认 true，--no-dsh
+    /// 设为 false）。检测到 dsh 时写项目根 `cordis.patch.yml` + 自动合入
+    /// `$DSH_HOME/profiles/*/cordis.patch.yml`；dsh 自动读取 AGENTS.md/
+    /// CLAUDE.md 作为 instruction file，文档指引零成本获得
     pub dsh: bool,
 }
 
@@ -274,8 +275,10 @@ pub fn install(root: &crate::project::ProjectRoot, opts: &InstallOptions) -> Res
         }
     }
 
-    // 5. dsh MCP（--dsh，W3 → 项目根 cordis.patch.yml patch 层）
+    // 5. dsh MCP（W4：默认自动检测，--no-dsh 可禁用）
+    //    写入项目根 cordis.patch.yml + 自动合入 $DSH_HOME/profiles/
     if opts.dsh {
+        // 5a. 写入项目根 cordis.patch.yml（MCP 注册）
         let dsh = crate::config::mcp::DshMcp {
             path: project_root.join(Path::new("cordis.patch.yml")),
         };
@@ -284,6 +287,24 @@ pub fn install(root: &crate::project::ProjectRoot, opts: &InstallOptions) -> Res
         } else {
             println!("✓ DeepSeek Harness MCP 已是最新（cordis.patch.yml）");
         }
+        // 5b. 自动合入 dsh profile（$DSH_HOME/profiles/*/cordis.patch.yml）
+        match crate::config::dsh_profile::merge_all_profiles(&exe_str) {
+            Ok((merged, already, total)) if total > 0 => {
+                println!(
+                    "✓ dsh profile 合入: {} 个已合入, {} 个已存在, 共 {} 个 profile",
+                    merged, already, total
+                );
+            }
+            Ok(_) => {
+                // 无 dsh home 或无 profile → 静默跳过（正常路径：用户未安装 dsh）
+            }
+            Err(e) => {
+                tracing::warn!("dsh profile 合入失败（不影响核心安装）: {}", e);
+            }
+        }
+    } else {
+        // --no-dsh：显式跳过 dsh 集成
+        println!("ℹ DeepSeek Harness MCP 已跳过（--no-dsh）");
     }
 
     // 6/7. AGENTS.md（默认）与 CLAUDE.md（v36 起随 --claude 同步——
@@ -548,8 +569,8 @@ fn remove_hooks(project_root: &std::path::Path) -> Result<()> {
 /// 3. Claude MCP `~/.claude.json` 顶层 mcpServers 条目（其他键/其他 server
 ///    保留；空 mcpServers 保留文件——OAuth 会话等用户配置绝不动）
 /// 4. Codex MCP 表（其他表/注释保留）
-/// 5. dsh MCP 项目根 cordis.patch.yml 注册块（--dsh 的对称卸载，W3；
-///    其他 patch 操作/注释保留）
+/// 5. dsh MCP 项目根 cordis.patch.yml 注册块 + $DSH_HOME/profiles/ 合入块
+///    （W4：与 install 对称卸载；其他 patch 操作/注释保留）
 /// 6. AGENTS.md / CLAUDE.md wiki 块（无标记则跳过）
 /// 7. git hooks（仅 code-repo-wiki 标记的删除；用户自定义 hook 保留）
 ///
@@ -559,7 +580,9 @@ pub fn uninstall(force: bool, root: &crate::project::ProjectRoot) -> Result<()> 
     let project_root = root.path();
 
     if !force {
-        println!("警告: 卸载将移除 code-repo-wiki 集成配置（插件/MCP/hook/AGENTS.md 引用块）。");
+        println!(
+            "警告: 卸载将移除 code-repo-wiki 集成配置（插件/MCP/hook/AGENTS.md 引用块/dsh 集成）。"
+        );
         println!("保留：用户级 config.toml 与产物数据 .code-repo-wiki/（使用 --force 跳过确认）。");
         anyhow::bail!("请添加 --force 参数确认卸载");
     }
@@ -603,7 +626,7 @@ pub fn uninstall(force: bool, root: &crate::project::ProjectRoot) -> Result<()> 
         println!("✓ Codex MCP 条目不存在，跳过（~/.codex/config.toml）");
     }
 
-    // 5. dsh MCP（项目根 cordis.patch.yml 注册块，W3——--dsh 的对称卸载）
+    // 5. dsh MCP（W4：项目根 cordis.patch.yml + $DSH_HOME/profiles/ 合入块）
     let dsh = crate::config::mcp::DshMcp {
         path: project_root.join(Path::new("cordis.patch.yml")),
     };
@@ -611,6 +634,19 @@ pub fn uninstall(force: bool, root: &crate::project::ProjectRoot) -> Result<()> 
         println!("✓ DeepSeek Harness MCP 条目已移除（cordis.patch.yml）");
     } else {
         println!("✓ DeepSeek Harness MCP 条目不存在，跳过（cordis.patch.yml）");
+    }
+    // 5b. 从所有 dsh profile 移除
+    match crate::config::dsh_profile::remove_all_profiles() {
+        Ok(removed) if removed > 0 => {
+            println!(
+                "✓ dsh profile 已移除: {} 个 profile 中的 code-repo-wiki 条目",
+                removed
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!("dsh profile 移除失败（不影响核心卸载）: {}", e);
+        }
     }
 
     // 6. AGENTS.md / CLAUDE.md wiki 块

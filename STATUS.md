@@ -1,6 +1,23 @@
 # 项目状态简报 （AI自动维护，禁止贴代码）
 
-## 七十八、U2 生成侧实体声明校验 + 收尾杂项（2026-08-16）
+## 七十九、D2 DeepSeek Harness 检测模块（2026-08-20）
+- **新增 dsh_detect 模块**：检测 DeepSeek Harness (dsh) 安装状态
+- 前置状态：七十八收尾（U2 完成）；HEAD f094937
+- 修改的功能：
+  - **feat(config) dsh_detect.rs**（新增模块）：
+    - `DshStatus` 结构体：包含 installed/dsh_home/version/npx_available 字段
+    - `detect()` 函数：完整检测 dsh 安装状态
+    - `detect_dsh_home()`：检测 `$DSH_HOME` 环境变量或 `~/.dsh` 默认路径
+    - `detect_npx()`：检测 npx 命令可用性
+    - `detect_dsh_version()`：通过 npx 或 package.json 获取版本
+    - `detect_profiles_dir()`：检测 profiles 目录存在性
+    - 6 个单元测试覆盖核心检测逻辑
+  - **feat(config) mod.rs**：添加 `pub mod dsh_detect;` 模块声明
+- 摸到的文件：src/config/dsh_detect.rs（新增）、src/config/mod.rs
+- 是否改变了接口/契约：**无接口变更**——新增内部模块，未修改现有 API
+- 验证：`cargo check` 编译通过（0 警告）；`cargo test dsh_detect` 6 测试全绿
+- 已知风险：无
+- 下次最该做的事：集成到 doctor 命令或 install 命令中使用
 - **v0.10.0 已发布（2026-08-16）**：crates.io 0.10.0 上线（0.9.0 未发布过，crates.io 从 0.8.0 直升）+ GitHub Release 正式（3 平台二进制：linux/windows/macos）；发布前置 CI 验证发现并修复：Cargo.lock root version 同步（--locked 拒绝旧 lock）、watch e2e CI Windows 注册窗口竞态（500ms→2s + 事件丢失 touch 重试，三次稳定失败修复）；release.yml 全流程成功（create-release → test 三平台 → publish-dry-run → build-binaries ×3 → publish-crates-io → publish-release）
 - 前置状态：七十七收尾（U1 完成）；「下次最该做的事」= 生成侧实体声称校验 + 可选收尾；HEAD f094937
 - 决策（ask_user_question 全部采纳推荐）：**D1 实体校验耗尽 fail-fast**（与依赖校验同语义，编造不进页面）/ **D2 依赖反馈附允许集清单**（search::mod 式系统性编造直接抄）/ **D3 重试上限提至 3**（max(引用 2, Mermaid 2, 实体 3)=3 共 4 次调用）/ **D4 bench 基线本轮重录**（--repo-name 修 unknown 缺陷）

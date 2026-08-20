@@ -5,9 +5,11 @@
 //! 用户级 `~/.claude.json` 顶层 `mcpServers`（User scope——command 绑定
 //! 本机 exe 路径=用户级内容，v39 起不再写项目根 `.mcp.json`），`--codex`
 //! 额外写用户级 `~/.codex/config.toml` 的 `[mcp_servers.<name>]` 表，
-//! `--dsh`（W3）额外写**项目根** `cordis.patch.yml`（DeepSeek Harness 的
-//! patch 层——dsh 不读 `.mcp.json`，MCP server 必须显式配置在 patch 层；
-//! AGENTS.md/CLAUDE.md 由 dsh 自动读取作为 instruction file，零成本基线）。
+//! dsh（W4：默认自动检测，`--no-dsh` 可禁用）写**项目根** `cordis.patch.yml`
+//! （DeepSeek Harness 的 patch 层——dsh 不读 `.mcp.json`，MCP server 必须
+//! 显式配置在 patch 层；AGENTS.md/CLAUDE.md 由 dsh 自动读取作为 instruction
+//! file，零成本基线）。W4 新增 profile 自动合入：检测到 dsh home 时自动将
+//! MCP 注册合入 `$DSH_HOME/profiles/*/cordis.patch.yml`。
 //!
 //! 四个 writer（`OpencodeMcp`/`ClaudeMcp`/`CodexMcp`/`DshMcp`）各自封装
 //! 一种格式，共同契约：

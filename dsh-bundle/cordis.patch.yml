@@ -1,0 +1,12 @@
+# code-repo-wiki MCP server registration for DeepSeek Harness
+# Install: dsh plugin add <path-to-this-package>
+# Or merge into your profile's cordis.patch.yml
+- insert:
+    - id: code-repo-wiki
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: code-repo-wiki
+        transport: stdio
+        command: "code-repo-wiki"
+        args: [mcp]
+        cwd: !!js process.cwd()

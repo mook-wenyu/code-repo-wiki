@@ -339,6 +339,55 @@ pub fn run(config_path: Option<&Path>, root: &ProjectRoot) -> Result<Vec<CheckRe
     };
     checks.push(version_check);
 
+    // 8. DeepSeek Harness (dsh) 集成状态（W4）：检测 dsh 是否已安装、
+    //    cordis.patch.yml 是否包含 code-repo-wiki、profile 合入状态。
+    //    无 dsh 安装 → 通过（不算失败，dsh 是可选集成）；
+    //    有 dsh 但未注册 → 提示可运行 install 注册；
+    //    已注册 → 通过。
+    let dsh_check = {
+        let dsh_home = crate::config::dsh_profile::detect_dsh_home();
+        let patch_exists = root.path().join("cordis.patch.yml").exists();
+        let patch_has_wiki = if patch_exists {
+            std::fs::read_to_string(root.path().join("cordis.patch.yml"))
+                .map(|c| {
+                    c.contains(crate::config::mcp::DSH_BLOCK_START)
+                        || c.lines().any(|l| l.trim_start() == "- id: code-repo-wiki")
+                })
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        match (&dsh_home, patch_has_wiki) {
+            (None, false) => CheckResult {
+                name: "DeepSeek Harness",
+                ok: true,
+                detail: Some("未检测到 dsh（可选集成，跳过）".to_string()),
+            },
+            (Some(_), true) => CheckResult {
+                name: "DeepSeek Harness",
+                ok: true,
+                detail: Some("dsh 已安装且 cordis.patch.yml 已注册 code-repo-wiki".to_string()),
+            },
+            (Some(dsh), false) => CheckResult {
+                name: "DeepSeek Harness",
+                ok: true, // 不算失败，只是提示
+                detail: Some(format!(
+                    "dsh 已安装（{}）但 cordis.patch.yml 未注册 code-repo-wiki。运行 `code-repo-wiki install` 可自动注册",
+                    dsh.path.display()
+                )),
+            },
+            (None, true) => CheckResult {
+                name: "DeepSeek Harness",
+                ok: true,
+                detail: Some(
+                    "cordis.patch.yml 已注册 code-repo-wiki（dsh 未检测到，可能通过 --patch 引用）"
+                        .to_string(),
+                ),
+            },
+        }
+    };
+    checks.push(dsh_check);
+
     Ok(checks)
 }
 
@@ -407,7 +456,7 @@ max_concurrent = 1
         let (dir, config) = temp_config("pass", "");
         let root = ProjectRoot::new(dir.clone());
         let checks = run(Some(&config), &root).unwrap();
-        assert_eq!(checks.len(), 7, "应恰好七项检查: {:?}", checks);
+        assert_eq!(checks.len(), 8, "应恰好八项检查: {:?}", checks);
         for c in &checks {
             assert!(c.ok, "{} 应通过: {:?}", c.name, c.detail);
         }

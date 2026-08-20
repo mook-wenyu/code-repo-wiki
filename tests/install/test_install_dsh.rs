@@ -1,12 +1,12 @@
-//! DeepSeek Harness（dsh）`--dsh` 安装闭环测试（W3）
+//! DeepSeek Harness（dsh）默认集成闭环测试（W4）
 //!
+//! W4 语义变更：--dsh → --no-dsh 反转语义，默认自动检测并注册 dsh MCP。
 //! 通过 env!("CARGO_BIN_EXE_code-repo-wiki") 调用真实二进制，覆盖：
-//! 1. install --dsh 写项目根 cordis.patch.yml 的 `- insert:` 管理块，
-//!    注册 @deepseek-ai/dsh-mcp-client（stdio，command=当前 exe 绝对路径，
-//!    args=[mcp]，cwd=process.cwd()）
-//! 2. 重复 install --dsh 幂等（内容不变）
-//! 3. --dsh 与 --codex 互不排斥（两个目标同时写入）
-//! 4. uninstall --force 移除 cordis.patch.yml 管理块；未安装时退出码 0
+//! 1. 默认 install（无 --no-dsh）自动写项目根 cordis.patch.yml 管理块
+//! 2. 重复 install 幂等（内容不变）
+//! 3. --no-dsh 禁用 dsh 集成
+//! 4. 默认 install 与 --codex 互不排斥（两个目标同时写入）
+//! 5. uninstall --force 移除 cordis.patch.yml 管理块；未安装时退出码 0
 //!
 //! install 默认步骤仍会写用户级 opencode.json/插件与用户级默认配置，
 //! 必须隔离 HOME/USERPROFILE（Windows 下 config_dir 依赖 USERPROFILE，
@@ -46,16 +46,17 @@ fn codex_config(home: &Path) -> PathBuf {
 
 // ==================== 测试用例 ====================
 
-/// install --dsh：写项目根 cordis.patch.yml 管理块（官方 dsh patch 层形态）
+/// 默认 install（无 --no-dsh）：自动写项目根 cordis.patch.yml 管理块
+/// （W4 语义：默认包含 dsh 集成）
 #[test]
-fn test_install_dsh_writes_patch_file() {
-    let (work_dir, _home, envs) = setup("dsh_writes");
+fn test_install_default_writes_dsh_patch_file() {
+    let (work_dir, _home, envs) = setup("dsh_default");
     let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
-    let out = run_bin_with_envs(&work_dir, &["install", "--dsh"], &envs_ref);
+    let out = run_bin_with_envs(&work_dir, &["install"], &envs_ref);
     assert!(
         out.status.success(),
-        "install --dsh 应成功，stderr: {}",
+        "默认 install 应成功，stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     let path = patch_file(&work_dir);
@@ -87,36 +88,67 @@ fn test_install_dsh_writes_patch_file() {
     let _ = std::fs::remove_dir_all(&work_dir);
 }
 
-/// install --dsh 幂等：重复执行内容不变
+/// 默认 install 幂等：重复执行内容不变
 #[test]
-fn test_install_dsh_idempotent() {
+fn test_install_default_dsh_idempotent() {
     let (work_dir, _home, envs) = setup("dsh_idem");
     let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
-    let out1 = run_bin_with_envs(&work_dir, &["install", "--dsh"], &envs_ref);
-    assert!(out1.status.success(), "首次 install --dsh 应成功");
+    let out1 = run_bin_with_envs(&work_dir, &["install"], &envs_ref);
+    assert!(out1.status.success(), "首次 install 应成功");
     let path = patch_file(&work_dir);
     let content1 = std::fs::read_to_string(&path).unwrap();
 
-    let out2 = run_bin_with_envs(&work_dir, &["install", "--dsh"], &envs_ref);
-    assert!(out2.status.success(), "重复 install --dsh 应成功");
+    let out2 = run_bin_with_envs(&work_dir, &["install"], &envs_ref);
+    assert!(out2.status.success(), "重复 install 应成功");
     let content2 = std::fs::read_to_string(&path).unwrap();
     assert_eq!(content1, content2, "重复安装应幂等（内容不变）");
 
     let _ = std::fs::remove_dir_all(&work_dir);
 }
 
-/// --dsh 与 --codex 互不排斥：同一次 install 同时写 cordis.patch.yml 与
+/// --no-dsh：跳过 dsh 集成，不写 cordis.patch.yml
+#[test]
+fn test_install_no_dsh_skips_patch_file() {
+    let (work_dir, _home, envs) = setup("dsh_no_dsh");
+    let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
+
+    let out = run_bin_with_envs(&work_dir, &["install", "--no-dsh"], &envs_ref);
+    assert!(
+        out.status.success(),
+        "install --no-dsh 应成功，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // cordis.patch.yml 不应被创建（或不应含管理块）
+    let path = patch_file(&work_dir);
+    if path.exists() {
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !content.contains(BLOCK_START),
+            "--no-dsh 不应写入管理块，实际: {content}"
+        );
+    }
+    // stdout 应包含跳过提示
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("--no-dsh") || stdout.contains("跳过"),
+        "应提示 dsh 已跳过，实际: {stdout}"
+    );
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+}
+
+/// 默认 install 与 --codex 互不排斥：同时写 cordis.patch.yml 与
 /// ~/.codex/config.toml
 #[test]
-fn test_install_dsh_with_codex_both_written() {
+fn test_install_default_dsh_with_codex_both_written() {
     let (work_dir, home, envs) = setup("dsh_codex");
     let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
-    let out = run_bin_with_envs(&work_dir, &["install", "--dsh", "--codex"], &envs_ref);
+    let out = run_bin_with_envs(&work_dir, &["install", "--codex"], &envs_ref);
     assert!(
         out.status.success(),
-        "install --dsh --codex 应成功，stderr: {}",
+        "install --codex 应成功，stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     let patch = std::fs::read_to_string(patch_file(&work_dir)).unwrap();
@@ -139,14 +171,15 @@ fn test_uninstall_dsh_removes_block() {
     let envs_ref: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (*k, v.as_str())).collect();
     let path = patch_file(&work_dir);
 
-    // 预置用户 patch + 本工具管理块（模拟 install --dsh 后用户追加内容）
+    // 预置用户 patch + 本工具管理块（模拟 install 后用户追加内容）
     std::fs::write(
         &path,
         "# 用户注释\n- insert:\n    - id: memory-my-server\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: my-memory\n        transport: stdio\n        command: my-memory-mcp\n",
     )
     .unwrap();
-    let out = run_bin_with_envs(&work_dir, &["install", "--dsh"], &envs_ref);
-    assert!(out.status.success(), "install --dsh 应成功");
+    // 默认 install（W4：不带 --dsh）
+    let out = run_bin_with_envs(&work_dir, &["install"], &envs_ref);
+    assert!(out.status.success(), "install 应成功");
 
     let out2 = run_bin_with_envs(&work_dir, &["uninstall", "--force"], &envs_ref);
     assert!(
