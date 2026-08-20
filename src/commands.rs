@@ -722,6 +722,21 @@ pub fn wiki_block_template(output_dir: &str, lang: &str) -> String {
 | `wiki_read_page` | 读取模块页/架构/概览/API 页面正文 |
 | `wiki_read_card` | 读取知识卡片（模块结构化摘要） |
 
+## 代码知识按需调用
+
+当用户的问题涉及以下场景时，**主动调用**对应的工具获取准确信息，不要凭记忆回答：
+
+| 场景 | 调用工具 | 示例 |
+|------|----------|------|
+| X 函数/类在哪里定义 | `wiki_ast_search` | 精确查找 load_config 的定义位置 |
+| X 模块有哪些依赖/被谁依赖 | `wiki_search` 或 `wiki_read_card` | 搜索 config 模块的依赖关系 |
+| 项目整体架构是什么 | `wiki_read_page`（architecture） | 读取架构概览页 |
+| 某个模块的详细文档 | `wiki_read_page` 或 `wiki_read_card` | 读取模块页或知识卡片 |
+| 代码中谁调用了 X | `wiki_search`（hybrid 引擎） | 搜索 load_config 的调用者 |
+| Wiki 是否需要更新 | `wiki_status` | 检查产物状态和语义索引 |
+
+**何时不调用**：用户问简单事实（版本号、文件路径等）直接读文件即可；Wiki 未生成时先提示运行 `code-repo-wiki generate`。
+
 ## 完成定义
 
 - `update` 输出 no-op（无文件变更，跳过更新）即无增量待生成；
