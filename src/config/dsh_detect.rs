@@ -264,9 +264,8 @@ mod tests {
         let result = detect_dsh_version();
         // 这个测试在有 dsh 的环境中应该成功
         // 在没有 dsh 的环境中应该失败
-        match result {
-            Ok(version) => assert!(!version.is_empty()),
-            Err(_) => {} // 在没有 dsh 的环境中这是预期的
+        if let Ok(version) = result {
+            assert!(!version.is_empty());
         }
     }
 
